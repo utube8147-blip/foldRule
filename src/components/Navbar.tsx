@@ -1,14 +1,15 @@
 import React from 'react';
-import { Download, HardHat, Cloud } from 'lucide-react';
+import { Download, HardHat, Cloud, Grid3X3 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 interface NavbarProps {
   projectName: string;
   onProjectNameChange: (name: string) => void;
   onExport: () => void;
+  onOpenPresets?: () => void;
 }
 
-export function Navbar({ projectName, onProjectNameChange, onExport }: NavbarProps) {
+export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPresets }: NavbarProps) {
   return (
     <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-6 z-50 fixed top-0 w-full">
       <div className="flex items-center gap-6 h-full">
@@ -33,6 +34,16 @@ export function Navbar({ projectName, onProjectNameChange, onExport }: NavbarPro
           <Cloud className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
           <span className="text-[10px] font-mono font-bold text-zinc-400">SYNCED</span>
         </div>
+        
+        {onOpenPresets && (
+          <button
+            onClick={onOpenPresets}
+            className="bg-slate-700 hover:bg-slate-600 text-amber-400 font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 border border-amber-500"
+          >
+            <Grid3X3 className="w-4 h-4" />
+            PRESETS
+          </button>
+        )}
         
         <button
           onClick={onExport}

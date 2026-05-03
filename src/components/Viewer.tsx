@@ -5,13 +5,19 @@ import {
   MousePointer2, CircleDot, Ruler, Square, Hash, FolderOpen,
   Check, Scaling, Target, Settings2,
 } from 'lucide-react';
-import { cn } from '../lib/utils';
-import { ToolType, TakeoffRow, Drawing } from '../types';
-import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import { cn } from '@/lib/utils';
+import { ToolType, TakeoffRow, Drawing } from '@/types';
+import { PresetTemplate } from './presets/PresetTemplates';
+import { PresetDrawer } from './presets/PresetDrawer';
+
+const pdfWorkerUrl = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url
+).toString();
 import { SnapSettingsPanel } from './SnapSettingsPanel';
-import { useSnapEngine } from '../hooks/useSnapEngine';
-import { useMeasurements } from '../hooks/useMeasurements';
-import type { PdfDimensions } from '../types/viewerTypes';
+import { useSnapEngine } from '@/hooks/useSnapEngine';
+import { useMeasurements } from '@/hooks/useMeasurements';
+import type { PdfDimensions } from '@/types/viewerTypes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
@@ -31,7 +37,9 @@ function SnapCandidateDialog({ count, onAccept, onDismiss }: SnapCandidateDialog
         <div className="text-[11px] font-bold text-zinc-200">
           {count} point{count > 1 ? 's' : ''} can be snapped to nearby corners
         </div>
-        <div className="text-[9px] text-zinc-500 uppercase tracking-wider mt-0.5">Auto-fix detected loose placements</div>
+        <div className="text-[9px] text-zinc-500 uppercase tracking-wider mt-0.5">
+          Auto-fix detected loose placements
+        </div>
       </div>
       <div className="flex gap-2">
         <button
@@ -63,6 +71,10 @@ interface ViewerProps {
   onScaleSet: (factor: number) => void;
   activeDrawing: Drawing | null;
   onDrawingAdded: (name: string, fileUrl: string, file?: File) => void;
+  // Preset drawer
+  showPresetDrawer: boolean;
+  onClosePresetDrawer: () => void;
+  onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
 }
 
 // ─── Main Viewer Component ────────────────────────────────────────────────────
@@ -70,6 +82,7 @@ interface ViewerProps {
 export function Viewer({
   activeTool, setActiveTool, measurements, onAddMeasurement,
   onUpdateMeasurement, scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
+  showPresetDrawer, onClosePresetDrawer, onSelectPreset,
 }: ViewerProps) {
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -156,7 +169,6 @@ export function Viewer({
     toCanvas,
   } = measureEngine;
 
-  // Inject onScaleSet into useMeasurements via the static ref side-channel
   useEffect(() => {
     (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
   }, [onScaleSet]);
@@ -171,7 +183,7 @@ export function Viewer({
     { id: 'scale',  icon: Scaling,       label: 'Calibrate',    shortcut: 'S' },
   ];
 
-  // ── Fit to screen ────────────────────────────────────────────────────────────
+  // ── Fit to screen ─────────────────────────────────────────────────────────────
   const fitToScreen = useCallback(async (pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
     try {
       const page     = await pdfDoc.getPage(pageNum);
@@ -185,7 +197,7 @@ export function Viewer({
   }, []);
 
   // ── File Upload ───────────────────────────────────────────────────────────────
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
     Array.from(files).forEach(file => {
@@ -214,12 +226,14 @@ export function Viewer({
       reader.onload = () => {
         if (!isMounted) return;
         pdfjsLib.getDocument({ data: new Uint8Array(reader.result as ArrayBuffer) }).promise
-          .then(handlePdfLoad).catch(err => { console.error(err); if (isMounted) setLoading(false); });
+          .then(handlePdfLoad)
+          .catch(err => { console.error(err); if (isMounted) setLoading(false); });
       };
       reader.readAsArrayBuffer(activeDrawing.file);
     } else {
       pdfjsLib.getDocument(activeDrawing.fileUrl).promise
-        .then(handlePdfLoad).catch(err => { console.error(err); if (isMounted) setLoading(false); });
+        .then(handlePdfLoad)
+        .catch(err => { console.error(err); if (isMounted) setLoading(false); });
     }
 
     return () => { isMounted = false; };
@@ -332,7 +346,8 @@ export function Viewer({
 
   return (
     <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden">
-      {/* Header / Tools */}
+
+      {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
       <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-20 shadow-sm relative">
         <div className="flex gap-1">
           {tools.map(tool => (
@@ -441,7 +456,7 @@ export function Viewer({
         </div>
       </div>
 
-      {/* Snap Settings Panel */}
+      {/* ── Snap Settings Panel ──────────────────────────────────────────────── */}
       {showSnapSettings && (
         <SnapSettingsPanel
           showPins={showPins}
@@ -455,7 +470,7 @@ export function Viewer({
         />
       )}
 
-      {/* Main Canvas Area */}
+      {/* ── Canvas Scroll Area ───────────────────────────────────────────────── */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
@@ -471,39 +486,53 @@ export function Viewer({
         onPointerLeave={handlePointerUp}
         tabIndex={0}
       >
-        <div className={cn('min-h-full min-w-full flex w-max h-max', !pdf ? 'items-center justify-center p-8' : 'p-[50vh] xl:p-[100vh]')}>
+        <div className={cn(
+          'min-h-full min-w-full flex w-max h-max',
+          !pdf ? 'items-center justify-center p-8' : 'p-[50vh] xl:p-[100vh]',
+        )}>
+          {/* Empty state */}
           {!pdf && !loading && (
             <div className="flex flex-col items-center gap-6 p-12 border-2 border-dashed border-industrial-border bg-industrial-panel/50 backdrop-blur-sm max-w-xl w-full text-center">
               <FolderOpen className="w-12 h-12 text-zinc-700" />
               <div>
-                <h2 className="text-xl font-mono font-bold tracking-tighter text-zinc-200 mb-2">IMPORT PROJECT DRAWING</h2>
+                <h2 className="text-xl font-mono font-bold tracking-tighter text-zinc-200 mb-2">
+                  IMPORT PROJECT DRAWING
+                </h2>
                 <p className="text-xs text-zinc-500 font-mono leading-relaxed uppercase tracking-widest">
                   DRAG AND DROP OR SELECT A PDF, DWG, OR IMAGE FILE TO BEGIN MEASURING QUANTITIES.
                 </p>
               </div>
               <label className="bg-amber-400 hover:bg-amber-300 text-black px-10 py-3 font-mono font-bold text-xs uppercase tracking-widest cursor-pointer transition-all shadow-xl shadow-amber-400/10 active:scale-95">
                 Select File(s)
-                <input type="file" multiple className="hidden" accept=".pdf,.png,.jpg,.jpeg,.dwg" onChange={handleFileUpload} />
+                <input
+                  type="file"
+                  multiple
+                  className="hidden"
+                  accept=".pdf,.png,.jpg,.jpeg,.dwg"
+                  onChange={handleFileUpload}
+                />
               </label>
             </div>
           )}
 
+          {/* Loading spinner */}
           {loading && (
             <div className="flex flex-col items-center gap-4 m-auto">
               <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
-              <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">Processing Vector Data...</span>
+              <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
+                Processing Vector Data...
+              </span>
             </div>
           )}
 
+          {/* PDF canvas stack */}
           {pdf && (
             <div
               className="relative shadow-2xl border border-industrial-border bg-white transition-all flex-shrink-0 m-auto"
               style={pdfDimensions ? { width: pdfDimensions.w, height: pdfDimensions.h } : {}}
             >
-              {/* PDF canvas */}
               <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
-              {/* Measurement drawing canvas */}
               <canvas
                 ref={drawingCanvasRef}
                 onClick={handleCanvasClick}
@@ -516,31 +545,36 @@ export function Viewer({
                 }}
                 className={cn(
                   'absolute inset-0 z-10 w-full h-full mix-blend-multiply',
-                  activeTool !== 'select' && !isPanning ? 'cursor-crosshair' : isPanning ? 'cursor-grabbing' : 'cursor-grab',
+                  activeTool !== 'select' && !isPanning
+                    ? 'cursor-crosshair'
+                    : isPanning
+                    ? 'cursor-grabbing'
+                    : 'cursor-grab',
                 )}
               />
 
-              {/* Pin overlay canvas */}
               <canvas
                 ref={pinCanvasRef}
                 className="absolute inset-0 z-20 w-full h-full pointer-events-none"
-                style={{ opacity: showPins && activeTool !== 'select' ? 1 : 0, transition: 'opacity 0.2s' }}
+                style={{
+                  opacity: showPins && activeTool !== 'select' ? 1 : 0,
+                  transition: 'opacity 0.2s',
+                }}
               />
 
-              {/* Snap flash animations */}
               {snapFlashes.map(flash => (
                 <div
                   key={flash.id}
                   className="absolute pointer-events-none z-30"
                   style={{ left: flash.x, top: flash.y, transform: 'translate(-50%,-50%)' }}
                 >
-                  <div className="w-8 h-8 rounded-full border-2 border-green-400"
+                  <div
+                    className="w-8 h-8 rounded-full border-2 border-green-400"
                     style={{ animation: 'snapPulse 0.6s ease-out forwards' }}
                   />
                 </div>
               ))}
 
-              {/* Finish button */}
               {tempPoints.length > 1 && (activeTool === 'area' || activeTool === 'linear') && (() => {
                 const lastPt = toCanvas(
                   tempPoints[tempPoints.length - 1].x,
@@ -562,7 +596,7 @@ export function Viewer({
           )}
         </div>
 
-        {/* Post-draw snap correction dialog */}
+        {/* Snap correction dialog */}
         {pendingSnapCandidates && pendingSnapCandidates.length > 0 && (
           <SnapCandidateDialog
             count={pendingSnapCandidates.length}
@@ -573,13 +607,11 @@ export function Viewer({
                   if (!byId.has(cand.measurementId)) byId.set(cand.measurementId, []);
                   byId.get(cand.measurementId)!.push(cand);
                 }
-
                 byId.forEach((candidates, measurementId) => {
                   const target =
                     measurements.find(m => m.id === measurementId) ??
                     measurements[measurements.length - 1];
                   if (!target) return;
-
                   const updatedPoints = [...target.points];
                   for (const c of candidates) {
                     if (c.pointIndex < updatedPoints.length) {
@@ -596,7 +628,7 @@ export function Viewer({
         )}
       </div>
 
-      {/* Footer */}
+      {/* ── Page Footer ─────────────────────────────────────────────────────── */}
       {pdf && (
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
@@ -631,6 +663,13 @@ export function Viewer({
           </div>
         </div>
       )}
+
+      {/* ── Preset Drawer (Moved OUTSIDE the scrollable container) ── */}
+      <PresetDrawer
+        isOpen={showPresetDrawer}
+        onClose={onClosePresetDrawer}
+        onSelectPreset={onSelectPreset}
+      />
 
       <style>{`
         @keyframes snapPulse {

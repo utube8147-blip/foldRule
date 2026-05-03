@@ -1,8 +1,10 @@
+'use client';
+
 import React from 'react';
-import { useLocation } from 'wouter';
+import { useRouter } from 'next/navigation';
 import { HardHat, FolderOpen, Plus, Search, Filter, BoxSelect, LogOut } from 'lucide-react';
 import { motion } from 'motion/react';
-import { cn } from '../lib/utils';
+import { cn } from '@/lib/utils';
 
 const MOCK_PROJECTS = [
   { id: 1, name: 'LOGISTICS_HUB_P2', date: 'Oct 24, 2023', items: 1542, status: 'Active', updated: '2 hrs ago' },
@@ -11,8 +13,8 @@ const MOCK_PROJECTS = [
   { id: 4, name: 'FACTORY_FLOOR_B3', date: 'Jul 18, 2023', items: 210, status: 'Archived', updated: '1 month ago' },
 ];
 
-export function Dashboard() {
-  const [, setLocation] = useLocation();
+export default function Dashboard() {
+  const router = useRouter();
 
   return (
     <div className="min-h-screen bg-industrial-black flex flex-col font-mono text-zinc-200">
@@ -61,7 +63,7 @@ export function Dashboard() {
               JD
             </div>
             <button 
-              onClick={() => setLocation('/')}
+              onClick={() => router.push('/')}
               className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors ml-2"
               title="Logout"
             >
@@ -83,7 +85,7 @@ export function Dashboard() {
               Filter
             </button>
             <button 
-              onClick={() => setLocation('/workspace')}
+              onClick={() => router.push('/workspace')}
               className="flex items-center gap-2 text-[10px] font-bold bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(245,158,11,0.15)] active:scale-95"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -99,7 +101,7 @@ export function Dashboard() {
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: i * 0.05 }}
               key={project.id}
-              onClick={() => setLocation('/workspace')}
+              onClick={() => router.push('/workspace')}
               className="group bg-industrial-panel border border-industrial-border hover:border-amber-accent/50 cursor-pointer transition-all hover:shadow-2xl hover:shadow-amber-accent/5 flex flex-col"
             >
               <div className="h-32 bg-stone-900 border-b border-industrial-border relative overflow-hidden flex items-center justify-center">
@@ -136,7 +138,7 @@ export function Dashboard() {
           ))}
           
           <button 
-            onClick={() => setLocation('/workspace')}
+            onClick={() => router.push('/workspace')}
             className="border-2 border-dashed border-industrial-border hover:border-amber-accent/40 bg-industrial-panel/30 hover:bg-amber-accent/5 flex flex-col items-center justify-center p-8 text-zinc-500 hover:text-amber-accent transition-all min-h-[280px]"
           >
             <Plus className="w-8 h-8 mb-4 border border-current rounded-none" />

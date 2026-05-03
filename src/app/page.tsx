@@ -1,11 +1,13 @@
+'use client';
+
 import React from 'react';
-import { useLocation } from 'wouter';
+import { useRouter } from 'next/navigation';
 import { HardHat, ArrowRight, Layers, FileSpreadsheet, Maximize, ArrowUpRight } from 'lucide-react';
 import { motion } from 'motion/react';
 import { cn } from '../lib/utils';
 
-export function Landing() {
-  const [, setLocation] = useLocation();
+export default function Landing() {
+  const router = useRouter();
 
   const navLinks = ['FEATURES', 'HOW IT WORKS', 'PRICING', 'ENTERPRISE'];
 
@@ -37,13 +39,13 @@ export function Landing() {
 
         <div className="flex items-center gap-6">
           <button 
-            onClick={() => setLocation('/login')}
+            onClick={() => router.push('/login')}
             className="text-[10px] font-bold uppercase tracking-widest text-zinc-300 hover:text-white transition-colors"
           >
             Login
           </button>
           <button 
-            onClick={() => setLocation('/register')}
+            onClick={() => router.push('/register')}
             className="bg-[#F59E0B] hover:bg-amber-400 text-black px-6 py-2.5 text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(245,158,11,0.1)]"
           >
             Get Started
@@ -89,7 +91,7 @@ export function Landing() {
             className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full"
           >
             <button 
-              onClick={() => setLocation('/register')}
+              onClick={() => router.push('/register')}
               className="w-full sm:w-auto bg-[#F59E0B] hover:bg-amber-400 text-black px-8 py-4 text-[11px] font-bold uppercase tracking-widest transition-all"
             >
               Get Started Free

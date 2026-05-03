@@ -3,316 +3,385 @@
 <html class="dark" lang="en"><head>
 <meta charset="utf-8"/>
 <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
-<title>Quantity Savior | Professional Estimation Software</title>
 <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700;900&amp;family=Inter:wght@300;400;500;600&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&amp;family=Inter:wght@400;500;600&amp;family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
 <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
 <style>
-        .blueprint-grid {
-            background-image: linear-gradient(to right, rgba(39, 39, 42, 0.2) 1px, transparent 1px),
-                              linear-gradient(to bottom, rgba(39, 39, 42, 0.2) 1px, transparent 1px);
-            background-size: 32px 32px;
-        }
-        .corner-bracket {
-            position: absolute;
-            width: 8px;
-            height: 8px;
-            border-color: #3F3F46;
-        }
-        .bracket-tl { top: 0; left: 0; border-top: 1px solid; border-left: 1px solid; }
-        .bracket-tr { top: 0; right: 0; border-top: 1px solid; border-right: 1px solid; }
-        .bracket-bl { bottom: 0; left: 0; border-bottom: 1px solid; border-left: 1px solid; }
-        .bracket-br { bottom: 0; right: 0; border-bottom: 1px solid; border-right: 1px solid; }
-    </style>
+    .material-symbols-outlined {
+      font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    }
+    .grid-bg {
+      background-image: linear-gradient(to right, #27272a 1px, transparent 1px),
+                        linear-gradient(to bottom, #27272a 1px, transparent 1px);
+      background-size: 32px 32px;
+      opacity: 0.05;
+    }
+    .blueprint-bracket::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 0;
+      width: 8px; height: 8px;
+      border-top: 1px solid #f59e0b;
+      border-left: 1px solid #f59e0b;
+    }
+    .blueprint-bracket::after {
+      content: '';
+      position: absolute;
+      bottom: 0; right: 0;
+      width: 8px; height: 8px;
+      border-bottom: 1px solid #f59e0b;
+      border-right: 1px solid #f59e0b;
+    }
+    input::-webkit-outer-spin-button,
+    input::-webkit-inner-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+  </style>
 <script id="tailwind-config">
-        tailwind.config = {
-          darkMode: "class",
-          theme: {
-            extend: {
-              "colors": {
-                      "surface-container": "#201f1f",
-                      "secondary-fixed": "#e5e2e1",
-                      "inverse-on-surface": "#313030",
-                      "surface-tint": "#ffb95f",
-                      "on-surface": "#e5e2e1",
-                      "on-tertiary-fixed": "#1a1b22",
-                      "on-error": "#690005",
-                      "on-tertiary-fixed-variant": "#45464e",
-                      "on-secondary-container": "#b7b4b4",
-                      "surface-container-highest": "#353534",
-                      "surface-container-high": "#2a2a2a",
-                      "tertiary": "#cccbd5",
-                      "secondary-fixed-dim": "#c8c6c5",
-                      "on-secondary-fixed-variant": "#474746",
-                      "on-primary": "#472a00",
-                      "on-surface-variant": "#d8c3ad",
-                      "on-background": "#e5e2e1",
-                      "tertiary-fixed-dim": "#c6c6cf",
-                      "outline": "#a08e7a",
-                      "on-primary-fixed-variant": "#653e00",
-                      "primary-fixed-dim": "#ffb95f",
-                      "on-tertiary-container": "#42434b",
-                      "primary-fixed": "#ffddb8",
-                      "on-secondary": "#313030",
-                      "on-primary-container": "#613b00",
-                      "on-error-container": "#ffdad6",
-                      "primary-container": "#f59e0b",
-                      "on-tertiary": "#2f3037",
-                      "inverse-surface": "#e5e2e1",
-                      "on-primary-fixed": "#2a1700",
-                      "surface-container-lowest": "#0e0e0e",
-                      "secondary-container": "#474746",
-                      "background": "#131313",
-                      "error": "#ffb4ab",
-                      "secondary": "#c8c6c5",
-                      "tertiary-container": "#b0b0b9",
-                      "surface-dim": "#131313",
-                      "outline-variant": "#534434",
-                      "surface": "#131313",
-                      "tertiary-fixed": "#e2e1eb",
-                      "surface-bright": "#3a3939",
-                      "error-container": "#93000a",
-                      "surface-variant": "#353534",
-                      "primary": "#ffc174",
-                      "inverse-primary": "#855300",
-                      "surface-container-low": "#1c1b1b",
-                      "on-secondary-fixed": "#1c1b1b"
-              },
-              "borderRadius": {
-                      "DEFAULT": "0.25rem",
-                      "lg": "0.5rem",
-                      "xl": "0.75rem",
-                      "full": "9999px"
-              },
-              "spacing": {
-                      "density-high": "4px",
-                      "margin": "24px",
-                      "container-max": "1440px",
-                      "density-med": "12px",
-                      "unit": "4px",
-                      "gutter": "16px"
-              },
-              "fontFamily": {
-                      "headline-xl": ["Space Grotesk"],
-                      "data-label": ["Space Grotesk"],
-                      "headline-lg": ["Space Grotesk"],
-                      "body-base": ["Inter"],
-                      "headline-md": ["Space Grotesk"],
-                      "body-sm": ["Inter"],
-                      "technical-data": ["Space Grotesk"]
-              },
-              "fontSize": {
-                      "headline-xl": ["40px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
-                      "data-label": ["11px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "500"}],
-                      "headline-lg": ["24px", {"lineHeight": "1.2", "letterSpacing": "-0.01em", "fontWeight": "600"}],
-                      "body-base": ["14px", {"lineHeight": "1.5", "letterSpacing": "0.01em", "fontWeight": "400"}],
-                      "headline-md": ["18px", {"lineHeight": "1.2", "fontWeight": "600"}],
-                      "body-sm": ["12px", {"lineHeight": "1.4", "fontWeight": "400"}],
-                      "technical-data": ["13px", {"lineHeight": "1", "letterSpacing": "0.02em", "fontWeight": "400"}]
-              }
-            },
+    tailwind.config = {
+      darkMode: "class",
+      theme: {
+        extend: {
+          "colors": {
+                  "on-tertiary-fixed-variant": "#45464e",
+                  "surface-variant": "#353534",
+                  "on-surface-variant": "#d8c3ad",
+                  "inverse-surface": "#e5e2e1",
+                  "on-primary-fixed": "#2a1700",
+                  "inverse-on-surface": "#313030",
+                  "error-container": "#93000a",
+                  "surface-bright": "#3a3939",
+                  "on-error-container": "#ffdad6",
+                  "secondary-fixed": "#e5e2e1",
+                  "on-primary-container": "#613b00",
+                  "surface-container-highest": "#353534",
+                  "primary": "#ffc174",
+                  "on-secondary-fixed": "#1c1b1b",
+                  "on-primary-fixed-variant": "#653e00",
+                  "tertiary-container": "#b0b0b9",
+                  "on-error": "#690005",
+                  "surface-tint": "#ffb95f",
+                  "on-secondary-fixed-variant": "#474746",
+                  "primary-fixed": "#ffddb8",
+                  "surface": "#131313",
+                  "tertiary-fixed-dim": "#c6c6cf",
+                  "on-primary": "#472a00",
+                  "tertiary-fixed": "#e2e1eb",
+                  "secondary": "#c8c6c5",
+                  "inverse-primary": "#855300",
+                  "surface-dim": "#131313",
+                  "surface-container-lowest": "#0e0e0e",
+                  "outline-variant": "#534434",
+                  "on-secondary": "#313030",
+                  "secondary-container": "#474746",
+                  "outline": "#a08e7a",
+                  "on-tertiary": "#2f3037",
+                  "on-secondary-container": "#b7b4b4",
+                  "surface-container-low": "#1c1b1b",
+                  "surface-container": "#201f1f",
+                  "secondary-fixed-dim": "#c8c6c5",
+                  "tertiary": "#cccbd5",
+                  "primary-container": "#f59e0b",
+                  "error": "#ffb4ab",
+                  "surface-container-high": "#2a2a2a",
+                  "on-background": "#e5e2e1",
+                  "on-tertiary-container": "#42434b",
+                  "on-surface": "#e5e2e1",
+                  "primary-fixed-dim": "#ffb95f",
+                  "on-tertiary-fixed": "#1a1b22",
+                  "background": "#131313"
           },
-        }
-    </script>
+          "borderRadius": {
+                  "DEFAULT": "0.25rem",
+                  "lg": "0.5rem",
+                  "xl": "0.75rem",
+                  "full": "9999px"
+          },
+          "spacing": {
+                  "gutter": "16px",
+                  "density-high": "4px",
+                  "density-med": "12px",
+                  "container-max": "1440px",
+                  "unit": "4px",
+                  "margin": "24px"
+          },
+          "fontFamily": {
+                  "headline-xl": ["Space Grotesk"],
+                  "body-base": ["Inter"],
+                  "headline-lg": ["Space Grotesk"],
+                  "body-sm": ["Inter"],
+                  "data-label": ["Space Grotesk"],
+                  "technical-data": ["Space Grotesk"],
+                  "headline-md": ["Space Grotesk"]
+          },
+          "fontSize": {
+                  "headline-xl": ["40px", {"lineHeight": "1.1", "letterSpacing": "-0.02em", "fontWeight": "700"}],
+                  "body-base": ["14px", {"lineHeight": "1.5", "letterSpacing": "0.01em", "fontWeight": "400"}],
+                  "headline-lg": ["24px", {"lineHeight": "1.2", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                  "body-sm": ["12px", {"lineHeight": "1.4", "fontWeight": "400"}],
+                  "data-label": ["11px", {"lineHeight": "1", "letterSpacing": "0.05em", "fontWeight": "500"}],
+                  "technical-data": ["13px", {"lineHeight": "1", "letterSpacing": "0.02em", "fontWeight": "400"}],
+                  "headline-md": ["18px", {"lineHeight": "1.2", "fontWeight": "600"}]
+          }
+        },
+      },
+    }
+  </script>
 </head>
-<body class="bg-[#0D0D0D] text-on-surface font-body-base blueprint-grid selection:bg-primary-container selection:text-on-primary">
-<nav class="bg-[#0D0D0D] dark:bg-[#0D0D0D] fixed top-0 w-full z-50 border-b border-zinc-800 bg-opacity-95 backdrop-blur-md">
-<div class="flex justify-between items-center px-6 py-4 max-w-full mx-auto">
-<div class="text-xl font-black text-amber-500 dark:text-amber-500 tracking-tighter font-headline-xl">
-                QUANTITY SAVIOR
-            </div>
-<div class="hidden md:flex items-center gap-8 font-['Space_Grotesk'] uppercase tracking-tight text-sm font-bold">
-<a class="text-amber-500 border-b-2 border-amber-500 pb-1" href="#">Features</a>
-<a class="text-zinc-400 hover:text-zinc-100 transition-colors" href="#">How it Works</a>
-<a class="text-zinc-400 hover:text-zinc-100 transition-colors" href="#">Pricing</a>
-<a class="text-zinc-400 hover:text-zinc-100 transition-colors" href="#">Enterprise</a>
-</div>
-<div class="flex items-center gap-4">
-<button class="font-['Space_Grotesk'] uppercase tracking-tight text-sm font-bold text-zinc-400 hover:text-zinc-100 transition-all duration-200 active:scale-95">Login</button>
-<button class="bg-primary-container text-on-primary-container px-6 py-2 font-['Space_Grotesk'] uppercase tracking-tight text-sm font-bold hover:bg-amber-400 transition-all duration-200 active:scale-95">Get Started</button>
-</div>
-</div>
+<body class="bg-surface text-on-surface font-body-base overflow-hidden">
+<div class="grid-bg fixed inset-0 pointer-events-none"></div>
+<!-- TopAppBar Execution from JSON -->
+<header class="fixed top-0 w-full z-50 flex justify-between items-center px-4 h-14 bg-[#161616] border-b border-zinc-800">
+<div class="flex items-center gap-6">
+<span class="text-amber-500 font-black text-xl tracking-tighter font-headline-lg">QUANTITY SAVIOR</span>
+<nav class="hidden md:flex gap-6 items-center h-full pt-1">
+<a class="font-['Space_Grotesk'] uppercase tracking-wider text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Library</a>
+<a class="font-['Space_Grotesk'] uppercase tracking-wider text-xs font-bold text-amber-500 border-b-2 border-amber-500 pb-2" href="#">Estimates</a>
+<a class="font-['Space_Grotesk'] uppercase tracking-wider text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Workflows</a>
+<a class="font-['Space_Grotesk'] uppercase tracking-wider text-xs font-bold text-zinc-400 hover:text-zinc-200 transition-colors" href="#">Analytics</a>
 </nav>
-<header class="relative pt-32 pb-20 px-6 overflow-hidden min-h-[921px] flex flex-col items-center justify-center">
-<div class="relative z-10 text-center max-w-4xl mx-auto mb-16">
-<div class="inline-flex items-center gap-2 border border-zinc-800 bg-zinc-900/50 px-3 py-1 mb-6">
-<span class="w-2 h-2 bg-amber-500"></span>
-<span class="font-technical-data text-technical-data uppercase tracking-widest text-zinc-400">V2.4.0 Engine Active</span>
 </div>
-<h1 class="font-headline-xl text-[clamp(40px,8vw,80px)] uppercase mb-6 leading-none tracking-tighter">
-                ESTIMATION AT THE <br/><span class="text-amber-500">SPEED OF LIGHT</span>
-</h1>
-<p class="font-body-base text-lg md:text-xl text-zinc-400 max-w-2xl mx-auto mb-10 leading-relaxed">
-                Industrial-grade precision for modern estimators. Auto-count, auto-scale, and export to Excel in seconds.
-            </p>
-<div class="flex flex-col sm:flex-row gap-4 justify-center">
-<button class="bg-amber-500 text-black px-8 py-4 font-headline-md uppercase tracking-tight hover:bg-amber-400 transition-all active:scale-95">
-                    Get Started Free
-                </button>
-<button class="border border-zinc-700 text-zinc-300 px-8 py-4 font-headline-md uppercase tracking-tight hover:bg-zinc-800 transition-all active:scale-95">
-                    Book a Demo
-                </button>
-</div>
-</div>
-<div class="relative w-full max-w-6xl mx-auto mt-12 group">
-<div class="absolute -inset-4 bg-amber-500/10 blur-3xl rounded-full opacity-30"></div>
-<div class="relative bg-zinc-900 border border-zinc-800 p-2 shadow-2xl">
-<div class="absolute top-4 left-4 flex gap-1 z-20">
-<div class="w-2 h-2 bg-zinc-700"></div>
-<div class="w-2 h-2 bg-zinc-700"></div>
-<div class="w-2 h-2 bg-zinc-700"></div>
-</div>
-<img alt="Quantity Savior Canvas Interface" class="w-full grayscale group-hover:grayscale-0 transition-all duration-700 border border-zinc-800" data-alt="A highly detailed interface of a construction estimation software showing a digital blueprint canvas. The screen features precise vector lines, orange measurement callouts, and technical data overlays with a dark mode aesthetic. The workspace is filled with architectural plans, auto-scale tools, and quantity takeoff tables, illuminated by a professional technical workstation lighting." src="https://lh3.googleusercontent.com/aida-public/AB6AXuAavaUkNU-9PQKub1NM4i2Ew_qdyKmVxwf1J9VEkHydjvweU33ul72q4eQg2BIT1b3wedmBlx3c7jLCzcUXYlq0ue2TLBT3TGFGMbbeNoDdFKKOFFSbn84fnyCSNp0F4lhegw0Zztj70D-wZ7RdqMBlQcoXPUOa2YszziwS0ddljzsvUnj4PbbRo7Ag8kUZZwtOYPwtj31P8JLlQwECbp8vglI3sSkFkyyS690Y7JxdLdl-QviMtq6gbJlE2VJpviUqvsSHQdOk_eOo"/>
-<div class="absolute -bottom-6 -right-6 bg-[#0D0D0D] border border-zinc-700 p-6 hidden lg:block">
-<div class="corner-bracket bracket-tl"></div>
-<div class="corner-bracket bracket-tr"></div>
-<div class="corner-bracket bracket-bl"></div>
-<div class="corner-bracket bracket-br"></div>
-<div class="space-y-4">
 <div class="flex items-center gap-4">
-<span class="material-symbols-outlined text-amber-500 text-sm">precision_manufacturing</span>
-<div class="text-left">
-<p class="font-data-label text-zinc-500 uppercase">Calculated Area</p>
-<p class="font-technical-data text-lg">1,450.82 M²</p>
+<div class="flex items-center gap-2">
+<button class="p-2 text-zinc-400 hover:bg-zinc-800 transition-colors">
+<span class="material-symbols-outlined">notifications</span>
+</button>
+<button class="p-2 text-zinc-400 hover:bg-zinc-800 transition-colors">
+<span class="material-symbols-outlined">settings</span>
+</button>
 </div>
-</div>
-<div class="w-full h-1 bg-zinc-800">
-<div class="h-full bg-amber-500 w-3/4"></div>
-</div>
-</div>
-</div>
-</div>
+<button class="bg-amber-500 text-black px-4 py-2 font-headline-md text-xs uppercase font-bold tracking-widest hover:opacity-80 transition-opacity">
+        New Template
+      </button>
 </div>
 </header>
-<section class="py-12 border-y border-zinc-800 bg-zinc-900/20">
-<div class="max-w-7xl mx-auto px-6">
-<p class="font-data-label text-center text-zinc-500 uppercase tracking-widest mb-8">Trusted by 500+ Engineering Firms</p>
-<div class="flex flex-wrap justify-center items-center gap-12 md:gap-24 opacity-50 grayscale hover:grayscale-0 transition-all duration-500">
-<div class="flex items-center gap-2">
-<span class="material-symbols-outlined text-3xl">architecture</span>
-<span class="font-headline-md font-bold uppercase tracking-tighter">STRUCTURA</span>
+<!-- SideNavBar Execution from JSON -->
+<aside class="fixed left-0 top-14 bottom-0 flex flex-col pt-4 bg-[#0D0D0D] border-r border-zinc-800 w-64">
+<div class="px-6 mb-8">
+<div class="text-amber-500 font-bold font-headline-md">ESTIMATOR PRO</div>
+<div class="text-zinc-500 text-[10px] tracking-widest uppercase">Industrial v4.2</div>
 </div>
-<div class="flex items-center gap-2">
-<span class="material-symbols-outlined text-3xl">home_repair_service</span>
-<span class="font-headline-md font-bold uppercase tracking-tighter">CORE BUILD</span>
-</div>
-<div class="flex items-center gap-2">
-<span class="material-symbols-outlined text-3xl">precision_manufacturing</span>
-<span class="font-headline-md font-bold uppercase tracking-tighter">PRIME ENG</span>
-</div>
-<div class="flex items-center gap-2">
-<span class="material-symbols-outlined text-3xl">foundation</span>
-<span class="font-headline-md font-bold uppercase tracking-tighter">AXIS ARCH</span>
-</div>
-</div>
-</div>
-</section>
-<section class="py-24 px-6 max-w-7xl mx-auto">
-<div class="mb-16">
-<h2 class="font-headline-xl uppercase text-4xl md:text-5xl mb-4">
-                BUILT FOR THE FIELD, <br/><span class="text-amber-500">REFINED FOR THE OFFICE</span>
-</h2>
-<div class="w-20 h-1 bg-amber-500"></div>
-</div>
-<div class="grid grid-cols-1 md:grid-cols-3 gap-8">
-<div class="relative bg-zinc-900 border border-zinc-800 p-8 group hover:border-amber-500/50 transition-colors">
-<div class="corner-bracket bracket-tl"></div>
-<div class="corner-bracket bracket-tr"></div>
-<div class="corner-bracket bracket-bl"></div>
-<div class="corner-bracket bracket-br"></div>
-<div class="mb-6 w-12 h-12 flex items-center justify-center bg-zinc-800 text-amber-500">
+<nav class="flex-1 flex flex-col">
+<a class="flex items-center gap-4 px-6 py-3 bg-zinc-900 text-amber-500 border-r-4 border-amber-500 transition-all duration-150 font-technical-data" href="#">
+<span class="material-symbols-outlined">architecture</span>
+        Templates
+      </a>
+<a class="flex items-center gap-4 px-6 py-3 text-zinc-500 hover:bg-zinc-900/50 hover:text-zinc-300 transition-all duration-150 font-technical-data" href="#">
 <span class="material-symbols-outlined">layers</span>
+        Assemblies
+      </a>
+<a class="flex items-center gap-4 px-6 py-3 text-zinc-500 hover:bg-zinc-900/50 hover:text-zinc-300 transition-all duration-150 font-technical-data" href="#">
+<span class="material-symbols-outlined">view_in_ar</span>
+        Materials
+      </a>
+<a class="flex items-center gap-4 px-6 py-3 text-zinc-500 hover:bg-zinc-900/50 hover:text-zinc-300 transition-all duration-150 font-technical-data" href="#">
+<span class="material-symbols-outlined">engineering</span>
+        Labor
+      </a>
+<a class="flex items-center gap-4 px-6 py-3 text-zinc-500 hover:bg-zinc-900/50 hover:text-zinc-300 transition-all duration-150 font-technical-data" href="#">
+<span class="material-symbols-outlined">construction</span>
+        Equipment
+      </a>
+</nav>
+<div class="border-t border-zinc-800 pt-4 pb-6">
+<a class="flex items-center gap-4 px-6 py-2 text-zinc-500 hover:text-zinc-300 font-technical-data" href="#">
+<span class="material-symbols-outlined">help</span>
+        Support
+      </a>
+<a class="flex items-center gap-4 px-6 py-2 text-zinc-500 hover:text-zinc-300 font-technical-data" href="#">
+<span class="material-symbols-outlined">account_circle</span>
+        Account
+      </a>
 </div>
-<h3 class="font-headline-lg uppercase mb-4">Precision Takeoffs</h3>
-<p class="text-zinc-400 mb-6 leading-relaxed">Vector-based accuracy that snaps to your PDF geometry. No more guessing pixel-by-pixel. Precision within 0.001mm.</p>
-<div class="flex items-center gap-2 text-amber-500 font-data-label uppercase">
-<span>Learn More</span>
-<span class="material-symbols-outlined text-sm">arrow_forward</span>
+</aside>
+<!-- Main Canvas -->
+<main class="ml-64 mt-14 p-6 h-[calc(100vh-3.5rem)] overflow-y-auto">
+<!-- Header Section -->
+<div class="mb-8 flex items-end justify-between">
+<div>
+<span class="text-amber-500 text-xs font-bold font-data-label uppercase tracking-[0.2em] mb-1 block">Active Workflow</span>
+<h1 class="font-headline-xl text-white uppercase">TEMPLATE: INDUSTRIAL STUD PARTITION</h1>
 </div>
-</div>
-<div class="relative bg-zinc-900 border border-zinc-800 p-8 group hover:border-amber-500/50 transition-colors">
-<div class="corner-bracket bracket-tl"></div>
-<div class="corner-bracket bracket-tr"></div>
-<div class="corner-bracket bracket-bl"></div>
-<div class="corner-bracket bracket-br"></div>
-<div class="mb-6 w-12 h-12 flex items-center justify-center bg-zinc-800 text-amber-500">
-<span class="material-symbols-outlined">straighten</span>
-</div>
-<h3 class="font-headline-lg uppercase mb-4">Auto-Scaling</h3>
-<p class="text-zinc-400 mb-6 leading-relaxed">OCR-powered ratio detection instantly recognizes drawing scales. Calibrate once, and let the engine handle the rest.</p>
-<div class="flex items-center gap-2 text-amber-500 font-data-label uppercase">
-<span>Learn More</span>
-<span class="material-symbols-outlined text-sm">arrow_forward</span>
-</div>
-</div>
-<div class="relative bg-zinc-900 border border-zinc-800 p-8 group hover:border-amber-500/50 transition-colors">
-<div class="corner-bracket bracket-tl"></div>
-<div class="corner-bracket bracket-tr"></div>
-<div class="corner-bracket bracket-bl"></div>
-<div class="corner-bracket bracket-br"></div>
-<div class="mb-6 w-12 h-12 flex items-center justify-center bg-zinc-800 text-amber-500">
-<span class="material-symbols-outlined">file_export</span>
-</div>
-<h3 class="font-headline-lg uppercase mb-4">One-Click Excel Export</h3>
-<p class="text-zinc-400 mb-6 leading-relaxed">Industry-standard formatting that integrates directly with your existing cost databases. Clean, structured, and audit-ready.</p>
-<div class="flex items-center gap-2 text-amber-500 font-data-label uppercase">
-<span>Learn More</span>
-<span class="material-symbols-outlined text-sm">arrow_forward</span>
-</div>
-</div>
-</div>
-</section>
-<section class="py-24 px-6 bg-zinc-900/40 relative">
-<div class="max-w-7xl mx-auto">
-<div class="text-center mb-20">
-<h2 class="font-headline-xl uppercase mb-4">SCAN. MEASURE. ESTIMATE.</h2>
-<p class="text-zinc-500 uppercase tracking-widest font-data-label">Simplified Workflow</p>
-</div>
-<div class="flex flex-col md:flex-row items-center justify-between gap-12 relative">
-<div class="absolute top-1/2 left-0 w-full h-[1px] bg-zinc-800 hidden md:block -z-10"></div>
-<div class="flex flex-col items-center text-center max-w-[280px]">
-<div class="w-16 h-16 bg-[#0D0D0D] border border-amber-500 flex items-center justify-center mb-6 relative z-10">
-<span class="font-headline-lg text-amber-500">01</span>
-</div>
-<h4 class="font-headline-md uppercase mb-2">Upload</h4>
-<p class="text-body-sm text-zinc-400">Drag and drop your PDF blueprints. Our engine parses vector data instantly.</p>
-</div>
-<div class="flex flex-col items-center text-center max-w-[280px]">
-<div class="w-16 h-16 bg-[#0D0D0D] border border-amber-500 flex items-center justify-center mb-6 relative z-10">
-<span class="font-headline-lg text-amber-500">02</span>
-</div>
-<h4 class="font-headline-md uppercase mb-2">Identify</h4>
-<p class="text-body-sm text-zinc-400">Mark areas, count fixtures, and measure lengths with smart snapping tools.</p>
-</div>
-<div class="flex flex-col items-center text-center max-w-[280px]">
-<div class="w-16 h-16 bg-[#0D0D0D] border border-amber-500 flex items-center justify-center mb-6 relative z-10">
-<span class="font-headline-lg text-amber-500">03</span>
-</div>
-<h4 class="font-headline-md uppercase mb-2">Quantify</h4>
-<p class="text-body-sm text-zinc-400">Automatic generation of BOQs with intelligent classification and grouping.</p>
-</div>
-<div class="flex flex-col items-center text-center max-w-[280px]">
-<div class="w-16 h-16 bg-amber-500 border border-amber-500 flex items-center justify-center mb-6 relative z-10">
-<span class="font-headline-lg text-black">04</span>
-</div>
-<h4 class="font-headline-md uppercase mb-2">Export</h4>
-<p class="text-body-sm text-zinc-400">Finalize and export to XLS or CSV formatted for your procurement ERP.</p>
+<div class="flex gap-2">
+<button class="border border-zinc-700 text-zinc-400 px-4 py-2 text-xs font-bold uppercase tracking-widest hover:bg-zinc-800 transition-colors">Discard</button>
+<button class="bg-amber-500 text-black px-6 py-2 text-xs font-bold uppercase tracking-widest hover:opacity-90">Commit To Estimate</button>
 </div>
 </div>
+<!-- Smart Configuration Panel -->
+<div class="grid grid-cols-12 gap-gutter h-full min-h-[600px]">
+<!-- Left Panel: Technical Diagram -->
+<section class="col-span-4 bg-[#161616] border border-zinc-800 p-6 flex flex-col relative blueprint-bracket">
+<header class="mb-6">
+<h2 class="font-headline-md text-white uppercase text-sm tracking-widest flex items-center gap-2">
+<span class="w-2 h-2 bg-amber-500"></span>
+            Cross-Section Diagram
+          </h2>
+</header>
+<div class="flex-1 flex items-center justify-center bg-[#0D0D0D] border border-zinc-800 relative group overflow-hidden">
+<!-- Mock Technical Diagram -->
+<div class="w-48 h-80 border-x-2 border-zinc-700 relative flex justify-center items-center">
+<!-- Studs -->
+<div class="absolute inset-y-0 left-4 w-4 bg-zinc-800/50 border-x border-zinc-600"></div>
+<div class="absolute inset-y-0 right-4 w-4 bg-zinc-800/50 border-x border-zinc-600"></div>
+<!-- Noggins -->
+<div class="absolute top-1/4 left-0 right-0 h-4 border-y border-zinc-600 bg-zinc-800/30"></div>
+<div class="absolute top-2/4 left-0 right-0 h-4 border-y border-zinc-600 bg-zinc-800/30"></div>
+<div class="absolute top-3/4 left-0 right-0 h-4 border-y border-zinc-600 bg-zinc-800/30"></div>
+<!-- Labels -->
+<div class="absolute -left-12 top-1/2 -translate-y-1/2 -rotate-90 text-[10px] font-data-label text-zinc-500 uppercase tracking-tighter">Vertical Stud (Typical)</div>
+<div class="absolute -right-16 top-1/2 -translate-y-1/2 rotate-90 text-[10px] font-data-label text-amber-500 uppercase tracking-tighter">Noggin Row Level</div>
 </div>
-</section>
-<footer class="bg-[#0D0D0D] dark:bg-[#0D0D0D] w-full py-12 px-6 border-t border-zinc-800">
-<div class="flex flex-col md:flex-row justify-between items-center gap-8 max-w-7xl mx-auto">
-<div class="flex flex-col items-center md:items-start">
-<div class="text-lg font-bold text-zinc-100 uppercase tracking-tighter mb-2 font-headline-md">QUANTITY SAVIOR</div>
-<p class="font-['Space_Grotesk'] text-xs uppercase tracking-widest text-zinc-500">© 2024 Quantity Savior. Precision built for estimators.</p>
+<img alt="Technical Diagram Backdrop" class="absolute inset-0 object-cover opacity-10 pointer-events-none" data-alt="A highly detailed architectural technical blueprint showing the cross-section of a steel and timber stud wall partition. The image features thin white lines against a deep charcoal background, highlighting internal structural components like insulation, noggins, and plasterboard layers. The style is surgical and precise, mimicking professional CAD software with measurement annotations in a monospaced font." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDfPgF86fNbxSAyYGskS6NS6Jn3Bly9_0YbOkoCBcyrLfW3U76KEHG20I17MfE9t0CuV9dY4NUOAxSPgEd1TkJy4c-2E_d8PtuSOyaX6oLW175dIb1--FRFRYtkIx-u2lOxJwNaNpwEKjPqYbggEjlT0mg448bZWdjsJwJlIc79Zq0YTPTagJxgegm2x_gHhKJj5pAeJWE1uex36J2L1m6F5FCXvKtQtNNGFbEIpYp43KOKLJSrKIZKd4cAEC8EykmlwsaNtpKN431c"/>
 </div>
-<div class="flex gap-8 font-['Space_Grotesk'] text-xs uppercase tracking-widest">
-<a class="text-zinc-500 hover:text-amber-500 transition-colors" href="#">Terms of Service</a>
-<a class="text-zinc-500 hover:text-amber-500 transition-colors" href="#">Privacy Policy</a>
-<a class="text-zinc-500 hover:text-amber-500 transition-colors" href="#">Documentation</a>
-<a class="text-zinc-500 hover:text-amber-500 transition-colors" href="#">Support</a>
-</div>
-</div>
+<footer class="mt-4 text-[10px] text-zinc-500 font-data-label flex justify-between">
+<span>SCALE: 1:20 @ A3</span>
+<span>REF: DWG-STU-001</span>
 </footer>
+</section>
+<!-- Center Panel: Framing Logic -->
+<section class="col-span-5 flex flex-col gap-gutter">
+<!-- Dimensions & Framing -->
+<div class="bg-[#161616] border border-zinc-800 p-6 flex-1 blueprint-bracket relative">
+<h2 class="font-headline-md text-white uppercase text-sm tracking-widest mb-6 flex items-center gap-2">
+<span class="w-2 h-2 bg-amber-500"></span>
+            Framing Parameters
+          </h2>
+<div class="grid grid-cols-2 gap-4 mb-8">
+<div class="space-y-1">
+<label class="font-data-label text-zinc-500 uppercase text-[10px]">Length (L)</label>
+<div class="flex items-center bg-[#0D0D0D] border border-zinc-800 focus-within:border-amber-500 transition-colors">
+<input class="bg-transparent border-none text-white font-technical-data w-full focus:ring-0 px-3 py-2" type="number" value="12500"/>
+<span class="text-zinc-600 font-technical-data pr-3 text-[10px] uppercase">mm</span>
+</div>
+</div>
+<div class="space-y-1">
+<label class="font-data-label text-zinc-500 uppercase text-[10px]">Height (H)</label>
+<div class="flex items-center bg-[#0D0D0D] border border-zinc-800 focus-within:border-amber-500 transition-colors">
+<input class="bg-transparent border-none text-white font-technical-data w-full focus:ring-0 px-3 py-2" type="number" value="2700"/>
+<span class="text-zinc-600 font-technical-data pr-3 text-[10px] uppercase">mm</span>
+</div>
+</div>
+</div>
+<div class="space-y-6">
+<div class="space-y-3">
+<label class="font-data-label text-zinc-500 uppercase text-[10px]">Stud Spacing</label>
+<div class="flex gap-2">
+<button class="flex-1 py-2 border border-amber-500 text-amber-500 bg-amber-500/10 font-technical-data text-xs uppercase">450mm</button>
+<button class="flex-1 py-2 border border-zinc-800 text-zinc-500 hover:border-zinc-600 font-technical-data text-xs uppercase">600mm</button>
+<button class="flex-1 py-2 border border-zinc-800 text-zinc-500 hover:border-zinc-600 font-technical-data text-xs uppercase">Custom</button>
+</div>
+</div>
+<div class="grid grid-cols-2 gap-4">
+<div class="space-y-1">
+<label class="font-data-label text-zinc-500 uppercase text-[10px]">Noggin Rows</label>
+<select class="w-full bg-[#0D0D0D] border border-zinc-800 text-white font-technical-data text-xs focus:ring-0 focus:border-amber-500 p-2">
+<option>1 Row</option>
+<option selected="">2 Rows</option>
+<option>3 Rows</option>
+</select>
+</div>
+<div class="space-y-1">
+<label class="font-data-label text-zinc-500 uppercase text-[10px]">Material Thickness</label>
+<select class="w-full bg-[#0D0D0D] border border-zinc-800 text-white font-technical-data text-xs focus:ring-0 focus:border-amber-500 p-2">
+<option>45mm</option>
+<option selected="">70mm</option>
+<option>90mm</option>
+</select>
+</div>
+</div>
+</div>
+</div>
+<!-- Leaves & Insulation -->
+<div class="bg-[#161616] border border-zinc-800 p-6 blueprint-bracket relative">
+<h2 class="font-headline-md text-white uppercase text-sm tracking-widest mb-4 flex items-center gap-2">
+<span class="w-2 h-2 bg-amber-500"></span>
+            Finishing Leaves
+          </h2>
+<div class="space-y-3">
+<label class="flex items-center justify-between group cursor-pointer p-2 hover:bg-zinc-900/50 transition-colors border border-transparent hover:border-zinc-800">
+<span class="flex items-center gap-3">
+<span class="material-symbols-outlined text-amber-500" style="font-variation-settings: 'FILL' 1;">check_box</span>
+<span class="font-technical-data text-xs uppercase text-zinc-300">Plasterboard (Face) - 12.5mm FireShield</span>
+</span>
+<span class="text-[10px] font-data-label text-zinc-500">QTY: 13.5 SHEETS</span>
+</label>
+<label class="flex items-center justify-between group cursor-pointer p-2 hover:bg-zinc-900/50 transition-colors border border-transparent hover:border-zinc-800">
+<span class="flex items-center gap-3">
+<span class="material-symbols-outlined text-amber-500" style="font-variation-settings: 'FILL' 1;">check_box</span>
+<span class="font-technical-data text-xs uppercase text-zinc-300">Plasterboard (Back) - 12.5mm SoundShield</span>
+</span>
+<span class="text-[10px] font-data-label text-zinc-500">QTY: 13.5 SHEETS</span>
+</label>
+<label class="flex items-center justify-between group cursor-pointer p-2 hover:bg-zinc-900/50 transition-colors border border-transparent hover:border-zinc-800">
+<span class="flex items-center gap-3">
+<span class="material-symbols-outlined text-amber-500" style="font-variation-settings: 'FILL' 1;">check_box</span>
+<span class="font-technical-data text-xs uppercase text-zinc-300">Acoustic Insulation - 50mm Rockwool</span>
+</span>
+<span class="text-[10px] font-data-label text-zinc-500">QTY: 33.75 M2</span>
+</label>
+</div>
+</div>
+</section>
+<!-- Right Panel: Material Calcs -->
+<section class="col-span-3 bg-[#161616] border border-zinc-800 p-6 flex flex-col blueprint-bracket relative overflow-hidden">
+<div class="absolute -right-4 top-1/2 -translate-y-1/2 rotate-90 text-[40px] font-black text-zinc-900/50 pointer-events-none select-none">DATA CALCULATION ENGINE</div>
+<header class="mb-8">
+<h2 class="font-headline-md text-white uppercase text-sm tracking-widest flex items-center gap-2">
+<span class="w-2 h-2 bg-amber-500"></span>
+            Material Calcs
+          </h2>
+</header>
+<div class="space-y-8 relative z-10">
+<div class="space-y-1">
+<span class="font-data-label text-zinc-500 uppercase text-[10px] tracking-widest">Total Stud Count</span>
+<div class="flex items-baseline gap-2">
+<span class="text-4xl font-headline-xl text-amber-500 leading-none">22</span>
+<span class="text-zinc-500 font-data-label uppercase text-[10px]">Vertical Units</span>
+</div>
+<div class="w-full bg-zinc-900 h-1 mt-2 flex gap-1">
+<div class="h-full bg-amber-500 w-1/4"></div>
+<div class="h-full bg-amber-500 w-1/4"></div>
+<div class="h-full bg-amber-500 w-1/4"></div>
+<div class="h-full bg-zinc-700 w-1/4"></div>
+</div>
+</div>
+<div class="space-y-1">
+<span class="font-data-label text-zinc-500 uppercase text-[10px] tracking-widest">Total Timber Length</span>
+<div class="flex items-baseline gap-2">
+<span class="text-4xl font-headline-xl text-amber-500 leading-none">84.5</span>
+<span class="text-zinc-500 font-data-label uppercase text-[10px]">Linear Metres</span>
+</div>
+<div class="w-full bg-zinc-900 h-1 mt-2 flex gap-1">
+<div class="h-full bg-amber-500 w-1/6"></div>
+<div class="h-full bg-amber-500 w-1/6"></div>
+<div class="h-full bg-amber-500 w-1/6"></div>
+<div class="h-full bg-amber-500 w-1/6"></div>
+<div class="h-full bg-amber-500 w-1/6"></div>
+<div class="h-full bg-zinc-700 w-1/6"></div>
+</div>
+</div>
+<div class="space-y-1">
+<span class="font-data-label text-zinc-500 uppercase text-[10px] tracking-widest">Plasterboard Area</span>
+<div class="flex items-baseline gap-2">
+<span class="text-4xl font-headline-xl text-amber-500 leading-none">67.5</span>
+<span class="text-zinc-500 font-data-label uppercase text-[10px]">Square Metres</span>
+</div>
+<p class="text-[10px] text-zinc-600 font-body-sm leading-relaxed mt-2 italic">Calculated based on double-sided coverage including 5% wastage allowance.</p>
+</div>
+<div class="mt-auto pt-8 border-t border-zinc-800">
+<div class="flex justify-between items-center mb-4">
+<span class="font-data-label text-zinc-300 uppercase text-[10px]">Est. Subtotal</span>
+<span class="font-technical-data text-amber-500 font-bold">$1,422.40</span>
+</div>
+<button class="w-full bg-zinc-900 border border-zinc-700 text-zinc-300 py-3 text-[10px] font-bold uppercase tracking-[0.2em] flex items-center justify-center gap-2 hover:bg-zinc-800 transition-colors">
+<span class="material-symbols-outlined text-sm">download</span>
+              Export BOM (CSV)
+            </button>
+</div>
+</div>
+</section>
+</div>
+</main>
+<!-- Contextual FAB Suppression: Hide on Config Panel per UX mandate -->
 </body></html>

@@ -1,10 +1,12 @@
+'use client';
+
 import React from 'react';
-import { useLocation } from 'wouter';
+import { useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import { motion } from 'motion/react';
 
-export function Register() {
-  const [, setLocation] = useLocation();
+export default function Register() {
+  const router = useRouter();
 
   return (
     <div className="min-h-screen bg-[#0A0A0A] flex relative overflow-hidden font-mono">
@@ -127,7 +129,7 @@ export function Register() {
               </div>
               
               <button
-                onClick={() => setLocation('/dashboard')}
+                onClick={() => router.push('/dashboard')}
                 className="w-full bg-amber-accent hover:bg-amber-400 text-[#111] font-bold tracking-widest text-xs py-4 flex items-center justify-center gap-3 transition-colors mt-8 uppercase"
               >
                 <Lock className="w-3.5 h-3.5" />
@@ -137,7 +139,7 @@ export function Register() {
               <div className="pt-6 text-center text-sm text-zinc-400">
                 Already registered?{' '}
                 <button 
-                  onClick={() => setLocation('/login')}
+                  onClick={() => router.push('/login')}
                   className="text-amber-accent hover:text-amber-300 transition-colors border-b border-amber-accent/30 hover:border-amber-accent pb-0.5"
                 >
                   Sign In
