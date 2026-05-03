@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React from 'react';
+import Preset3DVisualizer from './Preset3DVisualizer';
 
 // ─── Shared Types ──────────────────────────────────────────────────────────────
 
@@ -24,7 +25,6 @@ export interface PresetTemplate {
   }[];
 }
 
-/** Props every individual preset form component receives */
 export interface PresetFormComponentProps {
   formData: Record<string, any>;
   onChange: (key: string, value: any) => void;
@@ -33,10 +33,10 @@ export interface PresetFormComponentProps {
 
 // ─── Shared UI Primitives ──────────────────────────────────────────────────────
 
-const inputBase =
+export const inputBase =
   'w-full bg-[#0d0d0d] border border-[#2a2a2a] text-white font-mono text-[11px] px-3 py-2 focus:outline-none focus:border-amber-500 transition-colors';
 
-function FieldLabel({ children, unit }: { children: React.ReactNode; unit?: string }) {
+export function FieldLabel({ children, unit }: { children: React.ReactNode; unit?: string }) {
   return (
     <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-600 mb-1">
       {children}
@@ -45,7 +45,7 @@ function FieldLabel({ children, unit }: { children: React.ReactNode; unit?: stri
   );
 }
 
-function NumberInput({
+export function NumberInput({
   fieldKey, label, unit, placeholder, value, onChange,
 }: {
   fieldKey: string; label: string; unit?: string;
@@ -66,7 +66,7 @@ function NumberInput({
   );
 }
 
-function SelectInput({
+export function SelectInput({
   fieldKey, label, options, value, onChange,
 }: {
   fieldKey: string; label: string; options: string[]; value: any;
@@ -87,7 +87,7 @@ function SelectInput({
   );
 }
 
-function ToggleGroup({
+export function ToggleGroup({
   fieldKey, label, options, value, onChange,
 }: {
   fieldKey: string; label: string; options: string[]; value: any;
@@ -116,17 +116,14 @@ function ToggleGroup({
   );
 }
 
-function CheckLeaf({
+export function CheckLeaf({
   fieldKey, label, qty, value, onChange,
 }: {
   fieldKey: string; label: string; qty?: string; value: boolean;
   onChange: (k: string, v: any) => void;
 }) {
   return (
-    <label
-      className="flex items-center justify-between cursor-pointer p-2.5 hover:bg-[#1a1a1a]
-                 border border-transparent hover:border-[#2a2a2a] transition-all col-span-2"
-    >
+    <label className="flex items-center justify-between cursor-pointer p-2.5 hover:bg-[#1a1a1a] border border-transparent hover:border-[#2a2a2a] transition-all col-span-2">
       <div className="flex items-center gap-3" onClick={() => onChange(fieldKey, !value)}>
         <svg viewBox="0 0 24 24" className={`w-5 h-5 shrink-0 ${value ? 'text-amber-500' : 'text-zinc-600'}`} fill="currentColor">
           {value
@@ -141,16 +138,169 @@ function CheckLeaf({
   );
 }
 
-function SectionHeading({ children }: { children: React.ReactNode }) {
+export function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h4 className="col-span-2 text-[9px] font-black uppercase tracking-widest text-amber-500/70
-                   border-b border-[#1e1e1e] pb-1 mb-1 mt-2">
+    <h4 className="col-span-2 text-[9px] font-black uppercase tracking-widest text-amber-500/70 border-b border-[#1e1e1e] pb-1 mb-1 mt-2">
       {children}
     </h4>
   );
 }
 
+export function StatStrip({ stats }: { stats: { label: string; value: number | string; unit: string }[] }) {
+  return (
+    <div className="col-span-2 mt-2 grid gap-2 border border-[#1e1e1e] p-3 bg-[#0d0d0d]"
+      style={{ gridTemplateColumns: `repeat(${stats.length}, 1fr)` }}>
+      {stats.map(({ label, value, unit }) => (
+        <div key={label} className="text-center">
+          <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">{label}</p>
+          <p className="text-[20px] font-black text-amber-500 leading-none mt-0.5">{value}</p>
+          <p className="text-[8px] font-mono text-zinc-700 uppercase">{unit}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Wrapper that injects 3D viz above any form ────────────────────────────────
+// Every form component is wrapped here so the viz is always present.
+// The drawer does NOT need to be touched at all.
+
+function withViz(
+  FormComponent: React.ComponentType<PresetFormComponentProps>,
+): React.ComponentType<PresetFormComponentProps> {
+  return function WrappedForm(props: PresetFormComponentProps) {
+    return (
+      <div className="flex flex-col gap-4">
+        {/* ── 3D Visualizer ── */}
+        <Preset3DVisualizer
+          presetId={props.template.id}
+          formData={props.formData}
+          height={260}
+        />
+        {/* ── Form fields ── */}
+        <FormComponent {...props} />
+      </div>
+    );
+  };
+}
+
 // ─── Individual Preset Form Components ────────────────────────────────────────
+
+// ── Carcass (detailed — from preset1-carcass.tsx) ──────────────────────────
+
+function calcCarcassQuantities(fd: Record<string, any>) {
+  const W = parseFloat(fd.width  ?? 600) / 1000;
+  const H = parseFloat(fd.height ?? 720) / 1000;
+  const D = parseFloat(fd.depth  ?? 550) / 1000;
+  const T = parseFloat(fd.panelThickness ?? 18) / 1000;
+  const shelves   = parseInt(fd.shelfCount  ?? 2);
+  const doorCount = parseInt(fd.doorCount   ?? 1);
+
+  const iW = W - 2 * T;
+  const iH = H - 2 * T;
+
+  let totalBoard = 0;
+  if (fd.hasBack)      totalBoard += iW * iH;
+  if (fd.hasTop)       totalBoard += iW * D;
+  if (fd.hasBottom)    totalBoard += iW * D;
+  if (fd.hasLeftSide)  totalBoard += D * H;
+  if (fd.hasRightSide) totalBoard += D * H;
+  if (shelves > 0)     totalBoard += iW * D * shelves;
+  if (fd.hasDivider)   totalBoard += H * D * parseInt(fd.dividerCount ?? 1);
+
+  const edgeBanding =
+    (fd.hasTop    ? 2 * (iW + D) : 0) +
+    (fd.hasBottom ? 2 * (iW + D) : 0) +
+    (fd.hasLeftSide  ? 2 * (D + H) : 0) +
+    (fd.hasRightSide ? 2 * (D + H) : 0) +
+    (shelves > 0 ? (2 * iW + D) * shelves : 0);
+
+  const doorArea    = fd.hasDoors   ? (W / doorCount) * H * doorCount : 0;
+  const toeKickArea = fd.hasToeKick ? W * 0.15 : 0;
+
+  return {
+    boardArea:    +totalBoard.toFixed(3),
+    edgeBanding:  +edgeBanding.toFixed(2),
+    doorArea:     +doorArea.toFixed(3),
+    toeKickArea:  +toeKickArea.toFixed(3),
+  };
+}
+
+function CarcassForm({ formData, onChange }: PresetFormComponentProps) {
+  const q       = calcCarcassQuantities(formData);
+  const W       = parseFloat(formData.width  ?? 600);
+  const H       = parseFloat(formData.height ?? 720);
+  const D       = parseFloat(formData.depth  ?? 550);
+  const shelves = parseInt(formData.shelfCount ?? 2);
+
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+
+      <SectionHeading>Carcass Dimensions</SectionHeading>
+      <NumberInput fieldKey="width"          label="Width"           unit="MM" placeholder="600" value={formData.width}          onChange={onChange} />
+      <NumberInput fieldKey="height"         label="Height"          unit="MM" placeholder="720" value={formData.height}         onChange={onChange} />
+      <NumberInput fieldKey="depth"          label="Depth"           unit="MM" placeholder="550" value={formData.depth}          onChange={onChange} />
+      <NumberInput fieldKey="panelThickness" label="Panel Thickness" unit="MM" placeholder="18"  value={formData.panelThickness} onChange={onChange} />
+
+      <SectionHeading>Material</SectionHeading>
+      <SelectInput fieldKey="boardMaterial" label="Board Material"
+        options={['18mm MDF','18mm MFC','18mm Ply','25mm MDF','25mm Ply','16mm HMR MDF']}
+        value={formData.boardMaterial} onChange={onChange} />
+      <SelectInput fieldKey="edgeTape" label="Edge Tape"
+        options={['PVC 0.4mm','PVC 2mm ABS','Veneer','Solid Timber']}
+        value={formData.edgeTape} onChange={onChange} />
+
+      <SectionHeading>Panels (check what to include)</SectionHeading>
+      <CheckLeaf fieldKey="hasBack"      label="Back Panel"       qty={W > 0 && H > 0 ? `${+((W-36)*(H-36)/1e6).toFixed(3)} M²` : undefined} value={!!formData.hasBack}      onChange={onChange} />
+      <CheckLeaf fieldKey="hasTop"       label="Top Panel"        qty={W > 0 && D > 0 ? `${+((W-36)*D/1e6).toFixed(3)} M²` : undefined}       value={!!formData.hasTop}       onChange={onChange} />
+      <CheckLeaf fieldKey="hasBottom"    label="Bottom Panel"     qty={W > 0 && D > 0 ? `${+((W-36)*D/1e6).toFixed(3)} M²` : undefined}       value={!!formData.hasBottom}    onChange={onChange} />
+      <CheckLeaf fieldKey="hasLeftSide"  label="Left Side Panel"  qty={H > 0 && D > 0 ? `${+(D*H/1e6).toFixed(3)} M²` : undefined}            value={!!formData.hasLeftSide}  onChange={onChange} />
+      <CheckLeaf fieldKey="hasRightSide" label="Right Side Panel" qty={H > 0 && D > 0 ? `${+(D*H/1e6).toFixed(3)} M²` : undefined}            value={!!formData.hasRightSide} onChange={onChange} />
+
+      <SectionHeading>Shelves & Dividers</SectionHeading>
+      <div>
+        <FieldLabel>Shelf Count</FieldLabel>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => onChange('shelfCount', Math.max(0, shelves - 1))}
+            className="w-7 h-7 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors">−</button>
+          <span className="text-[20px] font-black text-amber-500 w-8 text-center leading-none">{shelves}</span>
+          <button type="button" onClick={() => onChange('shelfCount', Math.min(12, shelves + 1))}
+            className="w-7 h-7 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors">+</button>
+        </div>
+      </div>
+      <SelectInput fieldKey="shelfSpacing" label="Shelf Spacing" options={['Equal','Custom']} value={formData.shelfSpacing} onChange={onChange} />
+
+      <CheckLeaf fieldKey="hasDivider" label="Vertical Divider(s)" value={!!formData.hasDivider} onChange={onChange} />
+      {formData.hasDivider && (
+        <NumberInput fieldKey="dividerCount" label="Divider Count" placeholder="1" value={formData.dividerCount} onChange={onChange} />
+      )}
+
+      <SectionHeading>Doors & Hardware</SectionHeading>
+      <CheckLeaf fieldKey="hasDoors" label="Doors" value={!!formData.hasDoors} onChange={onChange} />
+      {formData.hasDoors && (
+        <>
+          <NumberInput fieldKey="doorCount"    label="No. of Doors"  placeholder="1"                                                          value={formData.doorCount}    onChange={onChange} />
+          <SelectInput fieldKey="doorSwing"    label="Door Swing"    options={['Left Hinge','Right Hinge','Both','Sliding']}                   value={formData.doorSwing}    onChange={onChange} />
+          <SelectInput fieldKey="doorMaterial" label="Door Material" options={['MDF Primed','MFC Wrapped','Veneer','Glass','Acrylic']}          value={formData.doorMaterial} onChange={onChange} />
+        </>
+      )}
+      <CheckLeaf fieldKey="hasDrawers" label="Drawer Fronts" value={!!formData.hasDrawers} onChange={onChange} />
+      {formData.hasDrawers && (
+        <NumberInput fieldKey="drawerCount" label="Drawer Count" placeholder="2" value={formData.drawerCount} onChange={onChange} />
+      )}
+      <CheckLeaf fieldKey="hasToeKick" label="Toe Kick / Plinth" value={!!formData.hasToeKick} onChange={onChange} />
+
+      <StatStrip stats={[
+        { label: 'Board Area',   value: q.boardArea,   unit: 'M²' },
+        { label: 'Edge Banding', value: q.edgeBanding, unit: 'LM' },
+        { label: 'Door Area',    value: q.doorArea,    unit: 'M²' },
+        { label: 'Shelves',      value: shelves,        unit: 'pcs' },
+      ]} />
+    </div>
+  );
+}
+
+// ── Stud Wall ──────────────────────────────────────────────────────────────
 
 function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
   const L = parseFloat(formData.length ?? 0);
@@ -158,7 +308,7 @@ function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
   const spacingMm = formData.spacing === '600mm' ? 600 : 450;
   const studCount = L > 0 ? Math.ceil((L / spacingMm) * 1000) + 1 : 0;
   const timberLength = L > 0 && H > 0 ? +((studCount * H / 1000) + (L / 1000) * 3).toFixed(1) : 0;
-  const plasterArea = L > 0 && H > 0 ? +((L / 1000) * (H / 1000) * 2 * 1.05).toFixed(1) : 0;
+  const plasterArea  = L > 0 && H > 0 ? +((L / 1000) * (H / 1000) * 2 * 1.05).toFixed(1) : 0;
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -167,64 +317,32 @@ function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
       <NumberInput fieldKey="height" label="Height" unit="MM" placeholder="2700"  value={formData.height} onChange={onChange} />
 
       <SectionHeading>Framing</SectionHeading>
-      <ToggleGroup fieldKey="spacing"    label="Stud Spacing"        options={['450mm','600mm','Custom']}    value={formData.spacing}    onChange={onChange} />
-      <SelectInput fieldKey="nogginRows" label="Noggin Rows"         options={['1 Row','2 Rows','3 Rows']}   value={formData.nogginRows} onChange={onChange} />
-      <SelectInput fieldKey="thickness"  label="Material Thickness"  options={['45mm','70mm','90mm']}        value={formData.thickness}  onChange={onChange} />
+      <ToggleGroup fieldKey="spacing"    label="Stud Spacing"       options={['450mm','600mm','Custom']}  value={formData.spacing}    onChange={onChange} />
+      <SelectInput fieldKey="nogginRows" label="Noggin Rows"        options={['1 Row','2 Rows','3 Rows']} value={formData.nogginRows} onChange={onChange} />
+      <SelectInput fieldKey="thickness"  label="Material Thickness" options={['45mm','70mm','90mm']}      value={formData.thickness}  onChange={onChange} />
 
       <SectionHeading>Leaves</SectionHeading>
       <CheckLeaf fieldKey="facePlasterboard" label="Plasterboard (Face) — 12.5mm FireShield"  qty={studCount > 0 ? `~${Math.ceil(plasterArea / 3.6)} sheets` : undefined} value={!!formData.facePlasterboard} onChange={onChange} />
       <CheckLeaf fieldKey="backPlasterboard" label="Plasterboard (Back) — 12.5mm SoundShield" qty={studCount > 0 ? `~${Math.ceil(plasterArea / 3.6)} sheets` : undefined} value={!!formData.backPlasterboard} onChange={onChange} />
       <CheckLeaf fieldKey="insulation"       label="Acoustic Insulation — 50mm Rockwool"       qty={plasterArea > 0 ? `${plasterArea} M²` : undefined}                    value={!!formData.insulation}       onChange={onChange} />
 
-      {/* Live calc strip */}
       {studCount > 0 && (
-        <div className="col-span-2 mt-2 grid grid-cols-3 gap-2 border border-[#1e1e1e] p-3 bg-[#0d0d0d]">
-          {[
-            { label: 'Studs', value: studCount, unit: 'pcs' },
-            { label: 'Timber', value: timberLength, unit: 'LM' },
-            { label: 'Plasterboard', value: plasterArea, unit: 'M²' },
-          ].map(({ label, value, unit }) => (
-            <div key={label} className="text-center">
-              <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">{label}</p>
-              <p className="text-[20px] font-black text-amber-500 leading-none mt-0.5">{value}</p>
-              <p className="text-[8px] font-mono text-zinc-700 uppercase">{unit}</p>
-            </div>
-          ))}
-        </div>
+        <StatStrip stats={[
+          { label: 'Studs',        value: studCount,     unit: 'pcs' },
+          { label: 'Timber',       value: timberLength,  unit: 'LM'  },
+          { label: 'Plasterboard', value: plasterArea,   unit: 'M²'  },
+        ]} />
       )}
     </div>
   );
 }
 
-function CarcassForm({ formData, onChange }: PresetFormComponentProps) {
-  return (
-    <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-      <SectionHeading>Dimensions</SectionHeading>
-      <NumberInput fieldKey="length" label="Length" unit="M" value={formData.length} onChange={onChange} />
-      <NumberInput fieldKey="width"  label="Width"  unit="M" value={formData.width}  onChange={onChange} />
-      <NumberInput fieldKey="height" label="Height" unit="M" value={formData.height} onChange={onChange} />
-
-      <SectionHeading>Specification</SectionHeading>
-      <SelectInput fieldKey="material" label="Material" options={['Concrete','Steel','Mixed']} value={formData.material} onChange={onChange} />
-
-      <div className="col-span-2">
-        <FieldLabel>Notes</FieldLabel>
-        <textarea
-          value={formData.notes ?? ''}
-          onChange={e => onChange('notes', e.target.value)}
-          rows={3}
-          className={inputBase + ' resize-none'}
-          placeholder="Site notes, constraints…"
-        />
-      </div>
-    </div>
-  );
-}
+// ── Floor Slab ─────────────────────────────────────────────────────────────
 
 function FloorSlabForm({ formData, onChange }: PresetFormComponentProps) {
-  const area = (parseFloat(formData.length ?? 0) * parseFloat(formData.width ?? 0)).toFixed(1);
+  const area        = (parseFloat(formData.length ?? 0) * parseFloat(formData.width ?? 0)).toFixed(1);
   const thicknessMm = parseInt(formData.thickness ?? '100');
-  const volume = area && thicknessMm ? +((parseFloat(area) * thicknessMm) / 1000).toFixed(2) : 0;
+  const volume      = area && thicknessMm ? +((parseFloat(area) * thicknessMm) / 1000).toFixed(2) : 0;
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -233,27 +351,21 @@ function FloorSlabForm({ formData, onChange }: PresetFormComponentProps) {
       <NumberInput fieldKey="width"  label="Width"  unit="M" value={formData.width}  onChange={onChange} />
 
       <SectionHeading>Specification</SectionHeading>
-      <SelectInput fieldKey="thickness"     label="Thickness"          options={['100mm','150mm','200mm','250mm']}    value={formData.thickness}     onChange={onChange} />
-      <SelectInput fieldKey="reinforcement" label="Reinforcement Type" options={['Mesh','Bars','Fibre']}              value={formData.reinforcement} onChange={onChange} />
-      <SelectInput fieldKey="finishType"    label="Finish Type"        options={['Smooth','Rough','Polished']}        value={formData.finishType}    onChange={onChange} />
+      <SelectInput fieldKey="thickness"     label="Thickness"          options={['100mm','150mm','200mm','250mm']} value={formData.thickness}     onChange={onChange} />
+      <SelectInput fieldKey="reinforcement" label="Reinforcement Type" options={['Mesh','Bars','Fibre']}           value={formData.reinforcement} onChange={onChange} />
+      <SelectInput fieldKey="finishType"    label="Finish Type"        options={['Smooth','Rough','Polished']}     value={formData.finishType}    onChange={onChange} />
 
       {volume > 0 && (
-        <div className="col-span-2 mt-2 grid grid-cols-2 gap-2 border border-[#1e1e1e] p-3 bg-[#0d0d0d]">
-          <div className="text-center">
-            <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Area</p>
-            <p className="text-[20px] font-black text-amber-500 leading-none mt-0.5">{area}</p>
-            <p className="text-[8px] font-mono text-zinc-700 uppercase">M²</p>
-          </div>
-          <div className="text-center">
-            <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Concrete Vol.</p>
-            <p className="text-[20px] font-black text-amber-500 leading-none mt-0.5">{volume}</p>
-            <p className="text-[8px] font-mono text-zinc-700 uppercase">M³</p>
-          </div>
-        </div>
+        <StatStrip stats={[
+          { label: 'Area',         value: area,   unit: 'M²' },
+          { label: 'Concrete Vol', value: volume, unit: 'M³' },
+        ]} />
       )}
     </div>
   );
 }
+
+// ── Roof ───────────────────────────────────────────────────────────────────
 
 function RoofForm({ formData, onChange }: PresetFormComponentProps) {
   return (
@@ -263,31 +375,26 @@ function RoofForm({ formData, onChange }: PresetFormComponentProps) {
       <NumberInput fieldKey="roofPitch" label="Roof Pitch" unit="DEG" value={formData.roofPitch} onChange={onChange} />
 
       <SectionHeading>Specification</SectionHeading>
-      <SelectInput fieldKey="roofType"   label="Roof Type"             options={['Pitched','Flat','Curved']}          value={formData.roofType}   onChange={onChange} />
-      <SelectInput fieldKey="material"   label="Material"              options={['Tile','Slate','Metal','Asphalt']}    value={formData.material}   onChange={onChange} />
-      <SelectInput fieldKey="insulation" label="Insulation Thickness"  options={['100mm','150mm','200mm']}             value={formData.insulation} onChange={onChange} />
+      <SelectInput fieldKey="roofType"   label="Roof Type"            options={['Pitched','Flat','Curved']}       value={formData.roofType}   onChange={onChange} />
+      <SelectInput fieldKey="material"   label="Material"             options={['Tile','Slate','Metal','Asphalt']} value={formData.material}   onChange={onChange} />
+      <SelectInput fieldKey="insulation" label="Insulation Thickness" options={['100mm','150mm','200mm']}          value={formData.insulation} onChange={onChange} />
     </div>
   );
 }
+
+// ── Door ───────────────────────────────────────────────────────────────────
 
 function DoorForm({ formData, onChange }: PresetFormComponentProps) {
   const qty = parseInt(formData.quantity ?? 1);
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Quantity</SectionHeading>
-      {/* Stepper widget — more intuitive than a plain number field for doors */}
       <div className="col-span-2 flex items-center gap-3">
-        <button
-          type="button"
-          onClick={() => onChange('quantity', Math.max(1, qty - 1))}
-          className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg"
-        >−</button>
+        <button type="button" onClick={() => onChange('quantity', Math.max(1, qty - 1))}
+          className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg">−</button>
         <span className="text-[28px] font-black text-amber-500 w-12 text-center leading-none">{qty}</span>
-        <button
-          type="button"
-          onClick={() => onChange('quantity', qty + 1)}
-          className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg"
-        >+</button>
+        <button type="button" onClick={() => onChange('quantity', qty + 1)}
+          className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg">+</button>
         <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">doors</span>
       </div>
 
@@ -296,17 +403,19 @@ function DoorForm({ formData, onChange }: PresetFormComponentProps) {
       <SelectInput fieldKey="height" label="Height" options={['2000mm','2100mm','2400mm']}       value={formData.height} onChange={onChange} />
 
       <SectionHeading>Specification</SectionHeading>
-      <SelectInput fieldKey="doorType"  label="Door Type"   options={['Swing','Sliding','Folding','Bi-fold']}    value={formData.doorType}  onChange={onChange} />
-      <SelectInput fieldKey="material"  label="Material"    options={['Wood','Steel','Aluminium','Glass']}       value={formData.material}  onChange={onChange} />
-      <SelectInput fieldKey="frameType" label="Frame Type"  options={['Timber','Steel','Aluminium']}             value={formData.frameType} onChange={onChange} />
+      <SelectInput fieldKey="doorType"  label="Door Type"  options={['Swing','Sliding','Folding','Bi-fold']} value={formData.doorType}  onChange={onChange} />
+      <SelectInput fieldKey="material"  label="Material"   options={['Wood','Steel','Aluminium','Glass']}    value={formData.material}  onChange={onChange} />
+      <SelectInput fieldKey="frameType" label="Frame Type" options={['Timber','Steel','Aluminium']}          value={formData.frameType} onChange={onChange} />
     </div>
   );
 }
 
+// ── Window ─────────────────────────────────────────────────────────────────
+
 function WindowForm({ formData, onChange }: PresetFormComponentProps) {
-  const qty = parseInt(formData.quantity ?? 1);
-  const w = parseFloat(formData.width ?? 0);
-  const h = parseFloat(formData.height ?? 0);
+  const qty       = parseInt(formData.quantity ?? 1);
+  const w         = parseFloat(formData.width  ?? 0);
+  const h         = parseFloat(formData.height ?? 0);
   const glassArea = w > 0 && h > 0 ? +((w / 1000) * (h / 1000) * qty).toFixed(2) : 0;
 
   return (
@@ -326,21 +435,18 @@ function WindowForm({ formData, onChange }: PresetFormComponentProps) {
       <NumberInput fieldKey="height" label="Height" unit="MM" value={formData.height} onChange={onChange} />
 
       <SectionHeading>Glazing & Frame</SectionHeading>
-      <SelectInput fieldKey="windowType" label="Window Type"  options={['Casement','Sash','Slider','Fixed']}        value={formData.windowType} onChange={onChange} />
-      <SelectInput fieldKey="glazing"    label="Glazing Type" options={['Single','Double','Triple']}                 value={formData.glazing}    onChange={onChange} />
-      <SelectInput fieldKey="frameType"  label="Frame Type"   options={['Timber','UPVC','Aluminium','Steel']}        value={formData.frameType}  onChange={onChange} />
+      <SelectInput fieldKey="windowType" label="Window Type"  options={['Casement','Sash','Slider','Fixed']}   value={formData.windowType} onChange={onChange} />
+      <SelectInput fieldKey="glazing"    label="Glazing Type" options={['Single','Double','Triple']}            value={formData.glazing}    onChange={onChange} />
+      <SelectInput fieldKey="frameType"  label="Frame Type"   options={['Timber','UPVC','Aluminium','Steel']}   value={formData.frameType}  onChange={onChange} />
 
       {glassArea > 0 && (
-        <div className="col-span-2 mt-2 flex items-center gap-4 border border-[#1e1e1e] p-3 bg-[#0d0d0d]">
-          <div>
-            <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Total glass area</p>
-            <p className="text-[24px] font-black text-amber-500 leading-none mt-0.5">{glassArea} <span className="text-sm font-mono text-zinc-500">M²</span></p>
-          </div>
-        </div>
+        <StatStrip stats={[{ label: 'Total Glass Area', value: glassArea, unit: 'M²' }]} />
       )}
     </div>
   );
 }
+
+// ── Ceiling ────────────────────────────────────────────────────────────────
 
 function CeilingForm({ formData, onChange }: PresetFormComponentProps) {
   return (
@@ -357,6 +463,8 @@ function CeilingForm({ formData, onChange }: PresetFormComponentProps) {
   );
 }
 
+// ── Staircase ──────────────────────────────────────────────────────────────
+
 function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
   const steps = parseInt(formData.stepCount ?? 0);
   const riser = steps > 0 && formData.flightRise
@@ -366,10 +474,9 @@ function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Quantity & Size</SectionHeading>
-      <NumberInput fieldKey="quantity"   label="Quantity"        value={formData.quantity}   onChange={onChange} />
+      <NumberInput fieldKey="quantity"   label="Quantity"           value={formData.quantity}   onChange={onChange} />
       <NumberInput fieldKey="flightRise" label="Flight Rise" unit="M" value={formData.flightRise} onChange={onChange} />
-      <NumberInput fieldKey="stepCount"  label="No. of Steps"    value={formData.stepCount}  onChange={onChange} />
-
+      <NumberInput fieldKey="stepCount"  label="No. of Steps"       value={formData.stepCount}  onChange={onChange} />
       {riser && (
         <div className="flex flex-col justify-end">
           <FieldLabel>Riser Height (calc)</FieldLabel>
@@ -378,12 +485,14 @@ function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
       )}
 
       <SectionHeading>Specification</SectionHeading>
-      <SelectInput fieldKey="stringType" label="String Type"   options={['Open','Closed']}                          value={formData.stringType} onChange={onChange} />
-      <SelectInput fieldKey="material"   label="Material"      options={['Timber','Concrete','Steel','Composite']}   value={formData.material}   onChange={onChange} />
-      <SelectInput fieldKey="railing"    label="Railing Type"  options={['Timber','Metal','Glass','None']}           value={formData.railing}    onChange={onChange} />
+      <SelectInput fieldKey="stringType" label="String Type"  options={['Open','Closed']}                         value={formData.stringType} onChange={onChange} />
+      <SelectInput fieldKey="material"   label="Material"     options={['Timber','Concrete','Steel','Composite']}  value={formData.material}   onChange={onChange} />
+      <SelectInput fieldKey="railing"    label="Railing Type" options={['Timber','Metal','Glass','None']}          value={formData.railing}    onChange={onChange} />
     </div>
   );
 }
+
+// ── Beam ───────────────────────────────────────────────────────────────────
 
 function BeamForm({ formData, onChange }: PresetFormComponentProps) {
   const qty    = parseInt(formData.quantity ?? 1);
@@ -393,8 +502,8 @@ function BeamForm({ formData, onChange }: PresetFormComponentProps) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Quantity & Length</SectionHeading>
-      <NumberInput fieldKey="quantity" label="Quantity"          value={formData.quantity} onChange={onChange} />
-      <NumberInput fieldKey="length"   label="Length" unit="M"   value={formData.length}   onChange={onChange} />
+      <NumberInput fieldKey="quantity" label="Quantity"         value={formData.quantity} onChange={onChange} />
+      <NumberInput fieldKey="length"   label="Length"  unit="M" value={formData.length}   onChange={onChange} />
       {total > 0 && (
         <div className="col-span-2 text-[10px] font-mono text-zinc-500">
           Total run: <span className="text-amber-500 font-black">{total} LM</span>
@@ -402,8 +511,8 @@ function BeamForm({ formData, onChange }: PresetFormComponentProps) {
       )}
 
       <SectionHeading>Section</SectionHeading>
-      <SelectInput fieldKey="beamType"    label="Beam Type"       options={['I-Beam','H-Beam','Channel','Box']}               value={formData.beamType}    onChange={onChange} />
-      <SelectInput fieldKey="material"    label="Material"        options={['Steel','Concrete','Timber']}                      value={formData.material}    onChange={onChange} />
+      <SelectInput fieldKey="beamType" label="Beam Type" options={['I-Beam','H-Beam','Channel','Box']}  value={formData.beamType} onChange={onChange} />
+      <SelectInput fieldKey="material" label="Material"  options={['Steel','Concrete','Timber']}        value={formData.material} onChange={onChange} />
       <div className="col-span-2">
         <FieldLabel>Section Size</FieldLabel>
         <input type="text" placeholder="e.g. 305×165×40 UB"
@@ -418,16 +527,18 @@ function BeamForm({ formData, onChange }: PresetFormComponentProps) {
   );
 }
 
+// ── Column ─────────────────────────────────────────────────────────────────
+
 function ColumnForm({ formData, onChange }: PresetFormComponentProps) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Quantity & Height</SectionHeading>
-      <NumberInput fieldKey="quantity" label="Quantity"        value={formData.quantity} onChange={onChange} />
-      <NumberInput fieldKey="height"   label="Height" unit="M" value={formData.height}   onChange={onChange} />
+      <NumberInput fieldKey="quantity" label="Quantity"         value={formData.quantity} onChange={onChange} />
+      <NumberInput fieldKey="height"   label="Height"  unit="M" value={formData.height}   onChange={onChange} />
 
       <SectionHeading>Section</SectionHeading>
-      <SelectInput fieldKey="columnType"  label="Column Type"    options={['Circular','Square','Rectangular','I-Section']} value={formData.columnType}  onChange={onChange} />
-      <SelectInput fieldKey="material"    label="Material"       options={['Steel','Concrete','Timber']}                   value={formData.material}    onChange={onChange} />
+      <SelectInput fieldKey="columnType" label="Column Type" options={['Circular','Square','Rectangular','I-Section']} value={formData.columnType} onChange={onChange} />
+      <SelectInput fieldKey="material"   label="Material"    options={['Steel','Concrete','Timber']}                   value={formData.material}   onChange={onChange} />
       <div className="col-span-2">
         <FieldLabel>Section Size</FieldLabel>
         <input type="text" placeholder="e.g. 300×300"
@@ -442,24 +553,25 @@ function ColumnForm({ formData, onChange }: PresetFormComponentProps) {
   );
 }
 
+// ── Tiling ─────────────────────────────────────────────────────────────────
+
 function TilingForm({ formData, onChange }: PresetFormComponentProps) {
-  const area = parseFloat(formData.area ?? 0);
-  // tile size e.g. "300x300" → 0.3 × 0.3 = 0.09 m² per tile
+  const area        = parseFloat(formData.area ?? 0);
   const tileSizeStr = formData.tileSize ?? '';
-  const [tw, th] = tileSizeStr.split('x').map((n: string) => parseInt(n) / 1000);
-  const tileCount = tw && th && area > 0 ? Math.ceil((area * 1.1) / (tw * th)) : null;
+  const [tw, th]    = tileSizeStr.split('x').map((n: string) => parseInt(n) / 1000);
+  const tileCount   = tw && th && area > 0 ? Math.ceil((area * 1.1) / (tw * th)) : null;
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Area</SectionHeading>
-      <NumberInput fieldKey="area" label="Area" unit="M²" value={formData.area} onChange={onChange} />
-      <SelectInput fieldKey="tilingLocation" label="Location" options={['Wall','Floor','Both']} value={formData.tilingLocation} onChange={onChange} />
+      <NumberInput fieldKey="area"           label="Area"     unit="M²" value={formData.area}           onChange={onChange} />
+      <SelectInput fieldKey="tilingLocation" label="Location" options={['Wall','Floor','Both']}          value={formData.tilingLocation} onChange={onChange} />
 
       <SectionHeading>Tile Spec</SectionHeading>
-      <SelectInput fieldKey="tileSize"  label="Tile Size"  options={['200x200','300x300','400x400','600x600']} value={formData.tileSize}  onChange={onChange} />
-      <SelectInput fieldKey="material"  label="Material"   options={['Ceramic','Porcelain','Glass','Natural Stone']} value={formData.material}  onChange={onChange} />
-      <SelectInput fieldKey="groutType" label="Grout Type" options={['Cement','Epoxy','Urethane']}             value={formData.groutType} onChange={onChange} />
-      <SelectInput fieldKey="jointWidth" label="Joint Width" options={['3mm','4mm','5mm','6mm']}               value={formData.jointWidth} onChange={onChange} />
+      <SelectInput fieldKey="tileSize"   label="Tile Size"   options={['200x200','300x300','400x400','600x600']}     value={formData.tileSize}   onChange={onChange} />
+      <SelectInput fieldKey="material"   label="Material"    options={['Ceramic','Porcelain','Glass','Natural Stone']} value={formData.material}   onChange={onChange} />
+      <SelectInput fieldKey="groutType"  label="Grout Type"  options={['Cement','Epoxy','Urethane']}                 value={formData.groutType}  onChange={onChange} />
+      <SelectInput fieldKey="jointWidth" label="Joint Width" options={['3mm','4mm','5mm','6mm']}                     value={formData.jointWidth} onChange={onChange} />
 
       {tileCount && (
         <div className="col-span-2 mt-2 border border-[#1e1e1e] p-3 bg-[#0d0d0d]">
@@ -471,56 +583,58 @@ function TilingForm({ formData, onChange }: PresetFormComponentProps) {
   );
 }
 
+// ── Plumbing ───────────────────────────────────────────────────────────────
+
 function PlumbingForm({ formData, onChange }: PresetFormComponentProps) {
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Pipe Run</SectionHeading>
-      <NumberInput fieldKey="pipeLength"   label="Pipe Length"  unit="M"  value={formData.pipeLength}   onChange={onChange} />
-      <SelectInput fieldKey="pipeDiameter" label="Diameter"               options={['15mm','20mm','25mm','32mm','50mm']}              value={formData.pipeDiameter} onChange={onChange} />
+      <NumberInput fieldKey="pipeLength"   label="Pipe Length" unit="M" value={formData.pipeLength}   onChange={onChange} />
+      <SelectInput fieldKey="pipeDiameter" label="Diameter"    options={['15mm','20mm','25mm','32mm','50mm']} value={formData.pipeDiameter} onChange={onChange} />
 
       <SectionHeading>System</SectionHeading>
-      <SelectInput fieldKey="pipeType"   label="Pipe Type"     options={['Copper','PVC','HDPE','Steel']}                    value={formData.pipeType}   onChange={onChange} />
-      <SelectInput fieldKey="systemType" label="System Type"   options={['Cold Water','Hot Water','Waste','Vent']}           value={formData.systemType} onChange={onChange} />
+      <SelectInput fieldKey="pipeType"   label="Pipe Type"   options={['Copper','PVC','HDPE','Steel']}               value={formData.pipeType}   onChange={onChange} />
+      <SelectInput fieldKey="systemType" label="System Type" options={['Cold Water','Hot Water','Waste','Vent']}      value={formData.systemType} onChange={onChange} />
 
       <SectionHeading>Fittings</SectionHeading>
-      <SelectInput fieldKey="fittings" label="Fittings Type"       options={['Compression','Push-Fit','Soldered','Threaded']} value={formData.fittings} onChange={onChange} />
-      <NumberInput fieldKey="quantity" label="Qty of Fittings"     value={formData.quantity} onChange={onChange} />
+      <SelectInput fieldKey="fittings" label="Fittings Type"   options={['Compression','Push-Fit','Soldered','Threaded']} value={formData.fittings} onChange={onChange} />
+      <NumberInput fieldKey="quantity" label="Qty of Fittings" value={formData.quantity} onChange={onChange} />
     </div>
   );
 }
 
 // ─── PRESET_FORM_MAP ───────────────────────────────────────────────────────────
-// This is the only place you touch when adding a new preset.
-// key = template.id, value = the form component for that preset.
+// withViz() wraps each form so the 3D visualizer appears above the fields.
+// The PresetDrawer renders FormComponent directly — no changes needed there.
 
 export const PRESET_FORM_MAP: Record<string, React.ComponentType<PresetFormComponentProps>> = {
-  'carcass':    CarcassForm,
-  'stud-wall':  StudWallForm,
-  'floor-slab': FloorSlabForm,
-  'roof':       RoofForm,
-  'door':       DoorForm,
-  'window':     WindowForm,
-  'ceiling':    CeilingForm,
-  'staircase':  StaircaseForm,
-  'beam':       BeamForm,
-  'column':     ColumnForm,
-  'tiling':     TilingForm,
-  'plumbing':   PlumbingForm,
+  'carcass':    withViz(CarcassForm),
+  'stud-wall':  withViz(StudWallForm),
+  'floor-slab': withViz(FloorSlabForm),
+  'roof':       withViz(RoofForm),
+  'door':       withViz(DoorForm),
+  'window':     withViz(WindowForm),
+  'ceiling':    withViz(CeilingForm),
+  'staircase':  withViz(StaircaseForm),
+  'beam':       withViz(BeamForm),
+  'column':     withViz(ColumnForm),
+  'tiling':     withViz(TilingForm),
+  'plumbing':   withViz(PlumbingForm),
 };
 
-// ─── ELEMENT_PRESETS (metadata only — no fields needed for the drawer gallery) ─
+// ─── ELEMENT_PRESETS ──────────────────────────────────────────────────────────
 
 export const ELEMENT_PRESETS: PresetTemplate[] = [
-  { id: 'carcass',    name: 'Carcass',    category: 'Structure', measurementType: 'area',   description: 'Building structural carcass and framework', fields: [] },
-  { id: 'stud-wall',  name: 'Stud Wall',  category: 'Walls',     measurementType: 'linear', description: 'Interior stud wall framing',                fields: [] },
-  { id: 'floor-slab', name: 'Floor Slab', category: 'Structure', measurementType: 'area',   description: 'Concrete floor slabs and platforms',         fields: [] },
-  { id: 'roof',       name: 'Roof',       category: 'Envelope',  measurementType: 'area',   description: 'Roof structures and coverings',              fields: [] },
-  { id: 'door',       name: 'Door',       category: 'Openings',  measurementType: 'count',  description: 'Door frames and installations',              fields: [] },
-  { id: 'window',     name: 'Window',     category: 'Openings',  measurementType: 'count',  description: 'Window frames and glazing',                  fields: [] },
-  { id: 'ceiling',    name: 'Ceiling',    category: 'Interior',  measurementType: 'area',   description: 'Ceiling systems and finishes',               fields: [] },
-  { id: 'staircase',  name: 'Staircase',  category: 'Structure', measurementType: 'count',  description: 'Stair construction and railings',            fields: [] },
-  { id: 'beam',       name: 'Beam',       category: 'Structure', measurementType: 'linear', description: 'Structural beams and supports',              fields: [] },
-  { id: 'column',     name: 'Column',     category: 'Structure', measurementType: 'count',  description: 'Structural columns and supports',            fields: [] },
-  { id: 'tiling',     name: 'Tiling',     category: 'Finishes',  measurementType: 'area',   description: 'Wall and floor tiling installation',         fields: [] },
-  { id: 'plumbing',   name: 'Plumbing',   category: 'Services',  measurementType: 'linear', description: 'Water supply and drainage systems',          fields: [] },
+  { id: 'carcass',    name: 'Carcass',    category: 'Structure', measurementType: 'area',   description: 'Cabinet / joinery carcass with panel takeoff',  fields: [] },
+  { id: 'stud-wall',  name: 'Stud Wall',  category: 'Walls',     measurementType: 'linear', description: 'Interior stud wall framing',                     fields: [] },
+  { id: 'floor-slab', name: 'Floor Slab', category: 'Structure', measurementType: 'area',   description: 'Concrete floor slabs and platforms',             fields: [] },
+  { id: 'roof',       name: 'Roof',       category: 'Envelope',  measurementType: 'area',   description: 'Roof structures and coverings',                  fields: [] },
+  { id: 'door',       name: 'Door',       category: 'Openings',  measurementType: 'count',  description: 'Door frames and installations',                  fields: [] },
+  { id: 'window',     name: 'Window',     category: 'Openings',  measurementType: 'count',  description: 'Window frames and glazing',                      fields: [] },
+  { id: 'ceiling',    name: 'Ceiling',    category: 'Interior',  measurementType: 'area',   description: 'Ceiling systems and finishes',                   fields: [] },
+  { id: 'staircase',  name: 'Staircase',  category: 'Structure', measurementType: 'count',  description: 'Stair construction and railings',                fields: [] },
+  { id: 'beam',       name: 'Beam',       category: 'Structure', measurementType: 'linear', description: 'Structural beams and supports',                  fields: [] },
+  { id: 'column',     name: 'Column',     category: 'Structure', measurementType: 'count',  description: 'Structural columns and supports',                fields: [] },
+  { id: 'tiling',     name: 'Tiling',     category: 'Finishes',  measurementType: 'area',   description: 'Wall and floor tiling installation',             fields: [] },
+  { id: 'plumbing',   name: 'Plumbing',   category: 'Services',  measurementType: 'linear', description: 'Water supply and drainage systems',              fields: [] },
 ];
