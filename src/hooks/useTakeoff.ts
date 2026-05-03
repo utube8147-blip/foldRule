@@ -1,3 +1,4 @@
+// hooks/useTakeoff.ts
 import { useState, useCallback, useEffect } from 'react';
 import { ProjectState, TakeoffRow, Point, ToolType, MeasurementType } from '../types';
 
@@ -62,24 +63,37 @@ export function useTakeoff() {
     }));
   }, []);
 
+  // FIXED: Add safety checks for activeDrawingId
   const addMeasurement = useCallback((measurement: Omit<TakeoffRow, 'id' | 'color' | 'isVisible' | 'drawingId'>) => {
     setProjectState(prev => {
-      if (!prev.activeDrawingId) return prev;
-      const activeMeasurements = prev.measurements.filter(m => m.drawingId === prev.activeDrawingId).length;
-      const nextColor = PALETTE[activeMeasurements % PALETTE.length];
+      // Check if there's an active drawing
+      if (!prev.activeDrawingId) {
+        console.warn('Cannot add measurement: No active drawing selected');
+        return prev;
+      }
+      
+      // Count measurements for this drawing only
+      const activeMeasurements = prev.measurements.filter(m => m.drawingId === prev.activeDrawingId);
+      const nextColor = PALETTE[activeMeasurements.length % PALETTE.length];
+      
       const newMeasurement: TakeoffRow = {
         ...measurement,
         id: crypto.randomUUID(),
         drawingId: prev.activeDrawingId,
         color: nextColor,
         isVisible: true,
+        // Ensure these fields exist with defaults
+        points: measurement.points || [],
+        notes: measurement.notes || '',
+        unitRate: measurement.unitRate || 0,
+        quantity: measurement.quantity || 0,
       };
+      
       return {
         ...prev,
         measurements: [...prev.measurements, newMeasurement],
       };
     });
-    return '';
   }, []);
 
   const updateMeasurement = useCallback((id: string, updates: Partial<TakeoffRow>) => {
@@ -102,10 +116,13 @@ export function useTakeoff() {
       if (id) {
         return {
           ...prev,
-          measurements: prev.measurements.map(m => m.id === id ? { ...m, isVisible: !m.isVisible } : m)
+          measurements: prev.measurements.map(m => 
+            m.id === id ? { ...m, isVisible: !m.isVisible } : m
+          )
         };
       } else {
-        const allVisible = prev.measurements.every(m => m.isVisible);
+        // Safe check: if no measurements, default to true
+        const allVisible = prev.measurements.length === 0 || prev.measurements.every(m => m.isVisible);
         return {
           ...prev,
           measurements: prev.measurements.map(m => ({ ...m, isVisible: !allVisible }))
@@ -134,7 +151,7 @@ export function useTakeoff() {
     deleteMeasurement,
     toggleVisibility,
     clearAll,
-    measurements: projectState.measurements, // Added for convenience
+    measurements: projectState.measurements,
     materials: projectState.materials
   };
 }

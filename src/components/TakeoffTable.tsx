@@ -1,5 +1,6 @@
+// components/TakeoffTable.tsx
 import React, { useState } from 'react';
-import { Trash2, Plus, Pencil, Check, Eye, EyeOff } from 'lucide-react';
+import { Trash2, Plus, Pencil, Check, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { TakeoffRow, MaterialSpec } from '../types';
 
@@ -15,9 +16,50 @@ interface TakeoffTableProps {
 export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAddManual, onToggleVisibility }: TakeoffTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
+
+  // Organize measurements into groups
+  const organizedData = React.useMemo(() => {
+    const groups: Map<string, { header: TakeoffRow; items: TakeoffRow[] }> = new Map();
+    const ungrouped: TakeoffRow[] = [];
+
+    measurements.forEach(measurement => {
+      if (measurement.isGroupHeader && measurement.groupId) {
+        groups.set(measurement.groupId, {
+          header: measurement,
+          items: []
+        });
+      } else if (measurement.groupId && groups.has(measurement.groupId)) {
+        groups.get(measurement.groupId)!.items.push(measurement);
+      } else if (!measurement.isGroupHeader) {
+        ungrouped.push(measurement);
+      }
+    });
+
+    return { groups, ungrouped };
+  }, [measurements]);
+
+  const toggleGroup = (groupId: string) => {
+    setExpandedGroups(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(groupId)) {
+        newSet.delete(groupId);
+      } else {
+        newSet.add(groupId);
+      }
+      return newSet;
+    });
+  };
+
+  const calculateGroupTotal = (items: TakeoffRow[], type: 'cost' | 'quantity' = 'cost') => {
+    if (type === 'quantity') {
+      return items.reduce((sum, item) => sum + item.quantity, 0);
+    }
+    return items.reduce((sum, item) => sum + (item.quantity * item.unitRate), 0);
+  };
 
   const totalCost = measurements.reduce((sum, m) => sum + (m.quantity * m.unitRate), 0);
-  const allVisible = measurements.every(m => m.isVisible);
+  const allVisible = measurements.every(m => m.isVisible !== false);
 
   const renderCell = (row: TakeoffRow, field: keyof TakeoffRow, type: 'text' | 'number' | 'material' = 'text') => {
     const isEditing = editingId === row.id && editingField === field;
@@ -82,10 +124,15 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
     return (
       <div 
         onClick={() => {
-          setEditingId(row.id);
-          setEditingField(field);
+          if (!row.isGroupHeader) {
+            setEditingId(row.id);
+            setEditingField(field);
+          }
         }}
-        className="cursor-text hover:text-amber-accent transition-colors truncate min-h-[16px] w-full"
+        className={cn(
+          "cursor-text hover:text-amber-accent transition-colors truncate min-h-[16px] w-full",
+          row.isGroupHeader && "cursor-default"
+        )}
       >
         {type === 'number' && typeof value === 'number' ? value.toFixed(2) : value as string}
       </div>
@@ -128,16 +175,169 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
             </tr>
           </thead>
           <tbody className="divide-y divide-industrial-border">
-            {measurements.map((row, idx) => (
-              <tr key={row.id} className="hover:bg-zinc-800/50 transition-colors group">
+            {/* Render Groups */}
+            {Array.from(organizedData.groups.entries()).map(([groupId, { header, items }], groupIdx) => {
+              const isExpanded = expandedGroups.has(groupId);
+              
+              return (
+                <React.Fragment key={groupId}>
+                  {/* Group Header Row */}
+                  <tr 
+                    className="border-t border-amber-500/20 bg-[#1a1a1a] cursor-pointer hover:bg-[#222] transition-colors group"
+                    onClick={() => toggleGroup(groupId)}
+                  >
+                    <td className="p-2 text-center border-r border-industrial-border text-amber-500 font-bold">
+                      {groupIdx + 1}
+                    </td>
+                    <td className="p-2 border-r border-industrial-border">
+                      <div className="flex items-center gap-2">
+                        {isExpanded ? 
+                          <ChevronDown className="w-3 h-3 text-amber-500" /> : 
+                          <ChevronRight className="w-3 h-3 text-amber-500" />
+                        }
+                        <FolderOpen className="w-3 h-3 text-amber-500/60" />
+                        <span className="text-[11px] font-bold text-amber-500 uppercase tracking-wider">
+                          {header.groupName}
+                        </span>
+                        <span className="text-[8px] text-zinc-600 ml-2">
+                          ({items.length} items)
+                        </span>
+                      </div>
+                    </td>
+                    <td className="p-2 border-r border-industrial-border text-right">
+                      <span className="text-[11px] font-mono text-amber-400">
+                        {calculateGroupTotal(items, 'quantity').toFixed(1)}
+                      </span>
+                    </td>
+                    <td className="p-2 border-r border-industrial-border">
+                      <span className="text-[9px] text-zinc-600">assembly</span>
+                    </td>
+                    <td className="p-2 border-r border-industrial-border text-right">
+                      <span className="text-[11px] font-mono text-zinc-500">-</span>
+                    </td>
+                    <td className="p-2 text-right border-r border-industrial-border font-bold text-amber-500">
+                      {formatCurrency(calculateGroupTotal(items))}
+                    </td>
+                    <td className="p-2 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <button 
+                          onClick={() => onDelete(header.id)}
+                          className="text-zinc-700 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                  
+                  {/* Group Items (if expanded) */}
+                  {isExpanded && items.map((item, itemIdx) => (
+                    <tr key={item.id} className="border-t border-[#1a1a1a] hover:bg-stone-900/50 transition-colors group/item">
+                      <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[9px]">
+                        {groupIdx + 1}.{itemIdx + 1}
+                      </td>
+                      <td className="p-2 border-r border-industrial-border pl-7">
+                        <div className="flex items-center gap-2">
+                          <Package className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
+                          <div className="flex flex-col flex-1 min-w-0">
+                            <div className="text-zinc-300 text-[10px]">
+                              {renderCell(item, 'description', item.category === 'Board Materials' ? 'material' : 'text')}
+                            </div>
+                            {item.notes && (
+                              <div className="text-[7px] text-zinc-600 font-mono truncate">
+                                {item.notes}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="p-2 border-r border-industrial-border text-right">
+                        <div className="flex justify-end items-center gap-1">
+                          {renderCell(item, 'quantity', 'number')}
+                          {item.isOverridden && (
+                            <Pencil className="w-2 h-2 text-amber-accent/60" />
+                          )}
+                        </div>
+                      </td>
+                      <td className="p-2 border-r border-industrial-border text-zinc-500">
+                        {renderCell(item, 'unit')}
+                      </td>
+                      <td className="p-2 border-r border-industrial-border text-right">
+                        {renderCell(item, 'unitRate', 'number')}
+                      </td>
+                      <td className="p-2 text-right border-r border-industrial-border font-bold text-zinc-300">
+                        {(item.quantity * item.unitRate).toFixed(2)}
+                      </td>
+                      <td className="p-2 text-center">
+                        <div className="flex items-center justify-center gap-2">
+                          <label className="cursor-pointer">
+                            <input 
+                              type="color" 
+                              value={item.color || '#EF9F27'} 
+                              onChange={(e) => onUpdate(item.id, { color: e.target.value })}
+                              className="opacity-0 w-0 h-0 absolute pointer-events-none" 
+                            />
+                            <div 
+                              className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" 
+                              style={{ backgroundColor: item.color || '#EF9F27' }}
+                            />
+                          </label>
+                          <button 
+                            onClick={() => onToggleVisibility(item.id)}
+                            className={cn(
+                              "transition-colors",
+                              item.isVisible !== false ? "text-zinc-500 hover:text-amber-accent" : "text-zinc-700 hover:text-amber-accent"
+                            )}
+                          >
+                            {item.isVisible !== false ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                          </button>
+                          <button 
+                            onClick={() => onDelete(item.id)}
+                            className="text-zinc-700 hover:text-red-500 transition-colors opacity-0 group-hover/item:opacity-100"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  
+                  {/* Group Summary (if expanded) */}
+                  {isExpanded && items.length > 0 && (
+                    <tr className="bg-[#111] border-t border-[#1e1e1e]">
+                      <td colSpan={7} className="p-1.5 px-3 text-right">
+                        <div className="flex items-center justify-end gap-3 text-[8px] text-zinc-600 font-mono">
+                          <span>Subtotal: {formatCurrency(calculateGroupTotal(items))}</span>
+                          <span className="w-px h-2 bg-zinc-700" />
+                          <span>+10% waste: {formatCurrency(calculateGroupTotal(items) * 0.1)}</span>
+                          <span className="w-px h-2 bg-zinc-700" />
+                          <span className="text-amber-500">
+                            Total: {formatCurrency(calculateGroupTotal(items) * 1.1)}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+            
+            {/* Ungrouped Items (simple presets) */}
+            {organizedData.ungrouped.map((row, idx) => (
+              <tr key={row.id} className="border-t border-industrial-border hover:bg-stone-900/50 transition-colors group">
                 <td className="p-2 text-center border-r border-industrial-border text-zinc-600 font-bold">
-                  {(idx + 1).toString().padStart(2, '0')}
+                  {(organizedData.groups.size + idx + 1).toString().padStart(2, '0')}
                 </td>
                 <td className="p-2 border-r border-industrial-border font-medium text-zinc-200">
-                  {renderCell(row, 'description', 'material')}
+                  <div className="flex flex-col">
+                    {renderCell(row, 'description', 'material')}
+                    {row.notes && (
+                      <div className="text-[7px] text-zinc-600 font-mono">{row.notes}</div>
+                    )}
+                  </div>
                 </td>
                 <td className="p-2 border-r border-industrial-border text-right font-bold text-amber-accent relative">
-                  <div className="flex justify-end items-center gap-1 group/qty">
+                  <div className="flex justify-end items-center gap-1">
                     {renderCell(row, 'quantity', 'number')}
                     {row.isOverridden && (
                       <Pencil className="w-2.5 h-2.5 text-amber-accent/60" />
@@ -153,25 +353,28 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
                 <td className="p-2 text-right border-r border-industrial-border font-bold text-zinc-200">
                   {(row.quantity * row.unitRate).toFixed(2)}
                 </td>
-                <td className="p-2 text-center relative">
+                <td className="p-2 text-center">
                   <div className="flex items-center justify-center gap-2">
                     <label className="cursor-pointer">
                       <input 
                         type="color" 
-                        value={row.color} 
+                        value={row.color || '#EF9F27'} 
                         onChange={(e) => onUpdate(row.id, { color: e.target.value })}
                         className="opacity-0 w-0 h-0 absolute pointer-events-none" 
                       />
                       <div 
                         className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" 
-                        style={{ backgroundColor: row.color }}
+                        style={{ backgroundColor: row.color || '#EF9F27' }}
                       />
                     </label>
                     <button 
                       onClick={() => onToggleVisibility(row.id)}
-                      className={cn("transition-colors", row.isVisible ? "text-zinc-500 hover:text-amber-accent" : "text-zinc-700 hover:text-amber-accent")}
+                      className={cn(
+                        "transition-colors",
+                        row.isVisible !== false ? "text-zinc-500 hover:text-amber-accent" : "text-zinc-700 hover:text-amber-accent"
+                      )}
                     >
-                      {row.isVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                      {row.isVisible !== false ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                     </button>
                     <button 
                       onClick={() => onDelete(row.id)}

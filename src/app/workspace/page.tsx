@@ -1,3 +1,4 @@
+// app/workspace/page.tsx (updated sections)
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -15,6 +16,7 @@ import { exportToExcel } from '@/lib/excelExport';
 import { PanelRightClose, Sidebar as SidebarIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
+import { TakeoffRow } from '@/types';
 
 export default function Workspace() {
   const router = useRouter();
@@ -35,91 +37,35 @@ export default function Workspace() {
     toggleVisibility,
   } = useTakeoff();
 
-  const [leftCollapsed, setLeftCollapsed]           = useState(false);
-  const [rightCollapsed, setRightCollapsed]         = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
-  const [showExportModal, setShowExportModal]       = useState(false);
-  // Single boolean that tells Viewer to open its built-in preset gallery drawer
-  const [showPresetDrawer, setShowPresetDrawer]     = useState(false);
-  const [toasts, setToasts]                         = useState<any[]>([]);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showPresetDrawer, setShowPresetDrawer] = useState(false);
+  const [toasts, setToasts] = useState<any[]>([]);
 
-  const activeDrawing      = ps.drawings.find(d => d.id === ps.activeDrawingId) || null;
+  const activeDrawing = ps.drawings.find(d => d.id === ps.activeDrawingId) || null;
   const currentScaleFactor = activeDrawing ? activeDrawing.scaleFactor : 1;
   const activeMeasurements = ps.measurements.filter(m => m.drawingId === ps.activeDrawingId);
 
-  // ── Toast helper ────────────────────────────────────────────────────────────
   const addToast = (message: string, type: 'success' | 'info' = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
-  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
-      switch (e.key.toLowerCase()) {
-        case 'l':      setActiveTool('linear');  break;
-        case 'a':      setActiveTool('area');    break;
-        case 'c':      setActiveTool('count');   break;
-        case 'p':      setActiveTool('point');   break;
-        case 'v':      setActiveTool('select');  break;
-        case 'escape': setActiveTool('select');  break;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [setActiveTool]);
+  // Generate unique group ID
+  const generateGroupId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-  // ── Measurement helpers ─────────────────────────────────────────────────────
-  const handleAddMeasurement = (m: any) => {
-    if (!activeDrawing) {
-      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
-      return;
-    }
-    addMeasurement(m);
-    addToast(`MEASUREMENT ADDED: ${m.description || m.type}`, 'success');
-  };
-
-  // ── Called when user commits a preset form inside the Viewer ───────────────
-  // data   = the filled-in field values from PresetForm
-  // template = the chosen PresetTemplate
-  const handlePresetSelect = (data: Record<string, any>, template: PresetTemplate) => {
-    if (!activeDrawing) {
-      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
-      return;
-    }
-
-    // For carcass, generate multiple measurement line items
-    if (template.id === 'carcass') {
-      const measurements = generateCarcassMeasurements(data, template);
-      measurements.forEach(measurement => {
-        addMeasurement(measurement);
-      });
-      addToast(`${template.name.toUpperCase()} PRESET ADDED (${measurements.length} line items)`, 'success');
-    } else {
-      // Default handling for other presets
-      addMeasurement({
-        description: template.name,
-        type: getMeasurementType(template.measurementType),
-        quantity: calculateQuantity(data, template),
-        unit: getUnit(template),
-        unitRate: 0,
-        notes: `Preset: ${template.name} · ${template.category}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-      });
-      addToast(`${template.name.toUpperCase()} PRESET ADDED`, 'success');
-    }
-  };
-
-  // Add this helper function in Workspace.tsx or a separate file
-  function generateCarcassMeasurements(data: Record<string, any>, template: PresetTemplate) {
-    const measurements = [];
+  // Generate grouped measurements for carcass
+  const generateGroupedCarcassMeasurements = (
+    data: Record<string, any>,
+    template: PresetTemplate,
+    drawingId: string,
+    groupId: string
+  ): { measurements: Partial<TakeoffRow>[]; groupName: string } => {
+    const measurements: Partial<TakeoffRow>[] = [];
     
-    // Calculate quantities (reuse your calcCarcassQuantities)
     const W = parseFloat(data.width ?? 600) / 1000;
     const H = parseFloat(data.height ?? 720) / 1000;
     const D = parseFloat(data.depth ?? 550) / 1000;
@@ -130,229 +76,131 @@ export default function Workspace() {
     const iW = W - 2 * T;
     const iH = H - 2 * T;
     
-    // 1. Board Materials (by component)
+    const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
+    
+    // Board Materials
     if (data.hasBack !== false) {
       measurements.push({
-        description: `${template.name} - Back Panel`,
+        description: 'Back Panel',
         type: 'Area',
         quantity: +(iW * iH).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Board Materials'
+        category: 'Board Materials',
+        isOverridden: true
       });
     }
     
     if (data.hasTop !== false) {
       measurements.push({
-        description: `${template.name} - Top Panel`,
+        description: 'Top Panel',
         type: 'Area',
         quantity: +(iW * D).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Board Materials'
+        category: 'Board Materials',
+        isOverridden: true
       });
     }
     
     if (data.hasBottom !== false) {
       measurements.push({
-        description: `${template.name} - Bottom Panel`,
+        description: 'Bottom Panel',
         type: 'Area',
         quantity: +(iW * D).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Board Materials'
+        category: 'Board Materials',
+        isOverridden: true
       });
     }
     
     if (data.hasLeftSide !== false) {
       measurements.push({
-        description: `${template.name} - Left Side Panel`,
+        description: 'Left Side Panel',
         type: 'Area',
         quantity: +(D * H).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Board Materials'
+        category: 'Board Materials',
+        isOverridden: true
       });
     }
     
     if (data.hasRightSide !== false) {
       measurements.push({
-        description: `${template.name} - Right Side Panel`,
+        description: 'Right Side Panel',
         type: 'Area',
         quantity: +(D * H).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Board Materials'
+        category: 'Board Materials',
+        isOverridden: true
       });
     }
     
-    // 2. Shelves
+    // Shelves
     if (shelves > 0) {
       measurements.push({
-        description: `${template.name} - Shelves (${shelves} pcs)`,
+        description: `Shelves (${shelves} pcs)`,
         type: 'Area',
         quantity: +(iW * D * shelves).toFixed(3),
         unit: 'm²',
-        unitRate: 0,
-        notes: `Shelf count: ${shelves} | Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Shelves'
+        notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`,
+        category: 'Shelves',
+        isOverridden: true
       });
     }
     
-    // 3. Doors (if applicable)
-    if (data.hasDoors && data.doorMaterial) {
+    // Doors
+    if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
       measurements.push({
-        description: `${template.name} - Doors (${doorCount} pcs)`,
+        description: `Doors (${doorCount} pcs)`,
         type: 'Area',
         quantity: +doorArea.toFixed(3),
         unit: 'm²',
-        unitRate: 0,
-        notes: `Door material: ${data.doorMaterial} | Style: ${data.doorSwing || 'Standard'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Doors'
+        notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`,
+        category: 'Doors',
+        isOverridden: true
       });
       
-      // Add door hardware separately
       measurements.push({
-        description: `${template.name} - Door Hardware`,
+        description: 'Door Hardware',
         type: 'Count',
         quantity: doorCount,
         unit: 'sets',
-        unitRate: 0,
-        notes: `Hinges (2 per door), handles (1 per door)`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Hardware'
+        notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,
+        category: 'Hardware',
+        isOverridden: true
       });
     }
     
-    // 4. Drawers (if applicable)
+    // Drawers
     if (data.hasDrawers) {
       const drawerCount = parseInt(data.drawerCount ?? 2);
       measurements.push({
-        description: `${template.name} - Drawer Fronts`,
+        description: `Drawer Fronts (${drawerCount} pcs)`,
         type: 'Count',
         quantity: drawerCount,
         unit: 'pcs',
-        unitRate: 0,
-        notes: `Drawer fronts | Material: ${data.drawerMaterial || 'Match doors'}`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Drawers'
+        notes: `Material: ${data.drawerMaterial || 'Match doors'}`,
+        category: 'Drawers',
+        isOverridden: true
       });
       
       measurements.push({
-        description: `${template.name} - Drawer Hardware`,
+        description: 'Drawer Hardware',
         type: 'Count',
         quantity: drawerCount,
         unit: 'sets',
-        unitRate: 0,
-        notes: `Drawer slides (1 pair per drawer), handles (1 per drawer)`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Hardware'
+        notes: `Drawer slides (1 pair per drawer), handles`,
+        category: 'Hardware',
+        isOverridden: true
       });
     }
     
-    // 5. Edge Banding
-    const edgeBanding = calculateEdgeBanding(data);
-    if (edgeBanding > 0) {
-      measurements.push({
-        description: `${template.name} - Edge Banding`,
-        type: 'Length',
-        quantity: edgeBanding,
-        unit: 'm',
-        unitRate: 0,
-        notes: `Edge tape: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges`,
-        points: [],
-        isOverridden: true,
-        presetData: data,
-        presetId: template.id,
-        category: 'Finishing'
-      });
-    }
-    
-    // 6. Assembly & Installation
-    measurements.push({
-      description: `${template.name} - Assembly & Installation`,
-      type: 'Count',
-      quantity: 1,
-      unit: 'each',
-      unitRate: 0,
-      notes: `Labor for assembly, cam locks, fixing brackets`,
-      points: [],
-      isOverridden: true,
-      presetData: data,
-      presetId: template.id,
-      category: 'Labor'
-    });
-    
-    // 7. Packaging & Delivery (optional)
-    measurements.push({
-      description: `${template.name} - Packaging & Protection`,
-      type: 'Count',
-      quantity: 1,
-      unit: 'lump sum',
-      unitRate: 0,
-      notes: `Corner protectors, shrink wrap, edge protection`,
-      points: [],
-      isOverridden: true,
-      presetData: data,
-      presetId: template.id,
-      category: 'Logistics'
-    });
-    
-    return measurements;
-  }
-
-  function calculateEdgeBanding(data: Record<string, any>): number {
-    const W = parseFloat(data.width ?? 600) / 1000;
-    const H = parseFloat(data.height ?? 720) / 1000;
-    const D = parseFloat(data.depth ?? 550) / 1000;
-    const T = parseFloat(data.panelThickness ?? 18) / 1000;
-    const shelves = parseInt(data.shelfCount ?? 2);
-    
-    const iW = W - 2 * T;
-    
+    // Edge Banding
     let edgeBanding = 0;
     if (data.hasTop !== false) edgeBanding += 2 * (iW + D);
     if (data.hasBottom !== false) edgeBanding += 2 * (iW + D);
@@ -360,45 +208,198 @@ export default function Workspace() {
     if (data.hasRightSide !== false) edgeBanding += 2 * (D + H);
     if (shelves > 0) edgeBanding += (2 * iW + D) * shelves;
     
-    return +(edgeBanding * 1.1).toFixed(2); // +10% waste factor
-  }
-
-  // Helper functions
-  const getMeasurementType = (measurementType: string) => {
-    const types: Record<string, string> = {
-      'linear': 'Length',
-      'area': 'Area',
-      'count': 'Count',
-      'point': 'Point'
-    };
-    return types[measurementType] || 'Length';
+    if (edgeBanding > 0) {
+      measurements.push({
+        description: 'Edge Banding',
+        type: 'Length',
+        quantity: +(edgeBanding * 1.1).toFixed(2),
+        unit: 'm',
+        notes: `Material: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges +10% waste`,
+        category: 'Finishing',
+        isOverridden: true
+      });
+    }
+    
+    // Assembly
+    measurements.push({
+      description: 'Assembly & Installation',
+      type: 'Count',
+      quantity: 1,
+      unit: 'each',
+      notes: `Labor, cam locks, fixing brackets, assembly hardware`,
+      category: 'Labor',
+      isOverridden: true
+    });
+    
+    // Toe Kick
+    if (data.hasToeKick) {
+      measurements.push({
+        description: 'Toe Kick / Plinth',
+        type: 'Length',
+        quantity: W,
+        unit: 'm',
+        notes: `Material: ${data.kickboardMaterial || 'Same as carcass'} | Height: ${data.kickboardHeight || '100mm'}`,
+        category: 'Finishing',
+        isOverridden: true
+      });
+    }
+    
+    return { measurements, groupName };
   };
 
-  const getUnit = (template: PresetTemplate) => {
-    const units: Record<string, string> = {
-      'linear': 'm',
-      'area': 'm²',
-      'count': 'pcs',
-      'point': 'each'
-    };
-    return units[template.measurementType] || 'm';
-  };
+  // Enhanced preset handler with grouping
+  const handlePresetSelect = (data: Record<string, any>, template: PresetTemplate) => {
+    if (!activeDrawing) {
+      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
+      return;
+    }
 
-  const calculateQuantity = (data: Record<string, any>, template: PresetTemplate) => {
-    switch (template.measurementType) {
-      case 'linear':
-        return parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
-      case 'area':
-        return parseFloat(data.area ?? data.roofArea ?? 0) || 
-              (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0) / 1e6) || 0;
-      case 'count':
-        return parseInt(data.quantity ?? data.doorCount ?? data.windowCount ?? 1);
-      default:
-        return 0;
+    const groupId = generateGroupId();
+    
+    // Handle Carcass as grouped takeoff
+    if (template.id === 'carcass') {
+      const { measurements, groupName } = generateGroupedCarcassMeasurements(
+        data, 
+        template, 
+        activeDrawing.id,
+        groupId
+      );
+      
+      // Add group header
+      const headerRow: TakeoffRow = {
+        id: `${groupId}-header`,
+        drawingId: activeDrawing.id,
+        groupId: groupId,
+        groupName: groupName,
+        groupType: template.id,
+        isGroupHeader: true,
+        isExpanded: true,
+        description: groupName,
+        type: 'Count',
+        quantity: 1,
+        unit: 'assembly',
+        unitRate: 0,
+        notes: `Complete ${template.name.toLowerCase()} assembly`,
+        points: [],
+        isOverridden: true,
+        presetId: template.id,
+        presetData: data,
+        category: 'Group Header',
+        color: '#EF9F27',
+        isVisible: true
+      };
+      
+      addMeasurement(headerRow);
+      
+      // Add all component measurements
+      measurements.forEach(measurement => {
+        addMeasurement({
+          id: `${groupId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          drawingId: activeDrawing.id,
+          groupId: groupId,
+          parentId: `${groupId}-header`,
+          ...measurement,
+          presetData: data,
+          presetId: template.id,
+          color: '#85B7EB',
+          isVisible: true
+        } as TakeoffRow);
+      });
+      
+      addToast(`${groupName} ADDED (${measurements.length} components)`, 'success');
+      
+    } else {
+      // Simple preset - single line item
+      let quantity = 0;
+      let unit = 'm';
+      
+      switch (template.measurementType) {
+        case 'linear':
+          quantity = parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
+          unit = 'm';
+          break;
+        case 'area':
+          quantity = parseFloat(data.area ?? data.roofArea ?? 0) || 
+                    (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0) / 1e6) || 0;
+          unit = 'm²';
+          break;
+        case 'count':
+          quantity = parseInt(data.quantity ?? data.doorCount ?? data.windowCount ?? 1);
+          unit = 'pcs';
+          break;
+        default:
+          quantity = 0;
+      }
+      
+      addMeasurement({
+        id: `${activeDrawing.id}-${Date.now()}`,
+        drawingId: activeDrawing.id,
+        description: template.name,
+        type: template.measurementType === 'linear' ? 'Length' : 
+              template.measurementType === 'area' ? 'Area' : 'Count',
+        quantity: quantity,
+        unit: unit,
+        unitRate: 0,
+        notes: `Preset: ${template.name} · ${template.category}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        color: '#EF9F27',
+        isVisible: true
+      } as TakeoffRow);
+      
+      addToast(`${template.name.toUpperCase()} ADDED`, 'success');
     }
   };
 
-  // ── Export ──────────────────────────────────────────────────────────────────
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
+      switch (e.key.toLowerCase()) {
+        case 'l': setActiveTool('linear'); break;
+        case 'a': setActiveTool('area'); break;
+        case 'c': setActiveTool('count'); break;
+        case 'p': setActiveTool('point'); break;
+        case 'v': setActiveTool('select'); break;
+        case 'escape': setActiveTool('select'); break;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [setActiveTool]);
+
+  const handleAddMeasurement = (m: any) => {
+    if (!activeDrawing) {
+      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
+      return;
+    }
+    
+    // Ensure the measurement has all required fields
+    const safeMeasurement = {
+      description: m.description || 'Untitled Measurement',
+      type: m.type || 'Length',
+      quantity: m.quantity || 0,
+      unit: m.unit || 'm',
+      unitRate: m.unitRate || 0,
+      notes: m.notes || '',
+      points: m.points || [],
+      isOverridden: m.isOverridden !== false,
+      presetData: m.presetData,
+      presetId: m.presetId,
+      groupId: m.groupId,
+      groupName: m.groupName,
+      groupType: m.groupType,
+      parentId: m.parentId,
+      isGroupHeader: m.isGroupHeader || false,
+      category: m.category,
+    };
+    
+    addMeasurement(safeMeasurement);
+    addToast(`MEASUREMENT ADDED: ${safeMeasurement.description}`, 'success');
+  };
+
   const handleExport = () => setShowExportModal(true);
 
   const executeExport = () => {
@@ -407,7 +408,6 @@ export default function Workspace() {
     setShowExportModal(false);
   };
 
-  // ── Scale ───────────────────────────────────────────────────────────────────
   const handleScaleSet = (f: number) => {
     if (activeDrawing) {
       updateDrawingScale(activeDrawing.id, f);
@@ -421,13 +421,10 @@ export default function Workspace() {
         projectName={ps.projectName}
         onProjectNameChange={(name) => setProjectState(prev => ({ ...prev, projectName: name }))}
         onExport={handleExport}
-        // Opens the gallery drawer that now lives inside <Viewer />
         onOpenPresets={() => setShowPresetDrawer(true)}
       />
 
       <div className="flex flex-1 pt-14 overflow-hidden relative">
-
-        {/* ── Left Sidebar ──────────────────────────────────────────────────── */}
         <Sidebar
           isCollapsed={leftCollapsed}
           projectState={ps}
@@ -439,7 +436,6 @@ export default function Workspace() {
           onProjectNumberChange={(num) => setProjectState(prev => ({ ...prev, projectNumber: num }))}
         />
 
-        {/* Sidebar collapse toggle */}
         <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
           <button
             onClick={() => setLeftCollapsed(!leftCollapsed)}
@@ -450,9 +446,6 @@ export default function Workspace() {
           </button>
         </div>
 
-        {/* ── Viewer ────────────────────────────────────────────────────────── */}
-        {/* The preset gallery drawer AND the preset detail form both live       */}
-        {/* inside Viewer so they only cover the canvas area.                    */}
         <Viewer
           activeTool={activeTool}
           setActiveTool={setActiveTool}
@@ -468,7 +461,6 @@ export default function Workspace() {
           onSelectPreset={handlePresetSelect}
         />
 
-        {/* ── Right Panel — Takeoff Table ───────────────────────────────────── */}
         <div className={cn(
           'flex flex-col h-full overflow-hidden transition-all duration-300',
           rightCollapsed ? 'w-0' : 'w-96',
@@ -480,19 +472,22 @@ export default function Workspace() {
             onDelete={deleteMeasurement}
             onToggleVisibility={toggleVisibility}
             onAddManual={() => handleAddMeasurement({
-              description:  'Manual Item',
-              type:         'Length',
-              quantity:     0,
-              unit:         'm',
-              unitRate:     0,
-              notes:        '',
-              points:       [],
+              id: `${activeDrawing?.id || 'manual'}-${Date.now()}`,
+              drawingId: activeDrawing?.id || '',
+              description: 'Manual Item',
+              type: 'Length',
+              quantity: 0,
+              unit: 'm',
+              unitRate: 0,
+              notes: '',
+              points: [],
               isOverridden: true,
-            })}
+              color: '#EF9F27',
+              isVisible: true
+            } as TakeoffRow)}
           />
         </div>
 
-        {/* Right panel collapse toggle */}
         <div className="absolute right-0 bottom-10 z-[60] mr-2">
           <button
             onClick={() => setRightCollapsed(!rightCollapsed)}
@@ -504,7 +499,6 @@ export default function Workspace() {
         </div>
       </div>
 
-      {/* ── Modals ─────────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {showMaterialLibrary && (
           <MaterialLibrary
@@ -520,11 +514,6 @@ export default function Workspace() {
             onExport={executeExport}
           />
         )}
-        {/* NOTE: PresetGallery fullscreen overlay is intentionally removed.
-            The preset flow now lives entirely inside <Viewer />:
-              1. showPresetDrawer=true  → PresetGalleryDrawer slides up in canvas
-              2. User clicks a card    → PresetForm slide-over opens (right edge)
-              3. User commits          → handlePresetSelect adds the measurement  */}
       </AnimatePresence>
 
       <ToastContainer
@@ -532,7 +521,6 @@ export default function Workspace() {
         onRemove={(id) => setToasts(prev => prev.filter(t => t.id !== id))}
       />
 
-      {/* ── Status bar ─────────────────────────────────────────────────────────── */}
       <footer className="h-6 bg-industrial-black border-t border-industrial-border flex items-center justify-between px-4 z-50 flex-shrink-0 font-mono">
         <div className="flex items-center gap-6">
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
