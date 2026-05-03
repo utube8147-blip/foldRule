@@ -310,7 +310,11 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-2 h-2 bg-amber-500 shrink-0" />
                 <span className="text-[10px] font-mono font-black uppercase tracking-widest text-zinc-300 shrink-0">
-                  PRESET TEMPLATES
+                    <button
+                      onClick={() => setSelectedTemplate(null)}
+                      >                  
+                      PRESET TEMPLATES
+                    </button>
                 </span>
 
                 {selectedTemplate ? (
