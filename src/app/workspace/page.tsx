@@ -90,23 +90,312 @@ export default function Workspace() {
       return;
     }
 
-    // Build a TakeoffRow-compatible object from the preset data.
-    // Adjust field mappings to match your actual TakeoffRow type.
-    addMeasurement({
-      description:  template.name,
-      type:         'Length',          // default; override per template if needed
-      quantity:     parseFloat(data.length ?? data.area ?? data.pipeLength ?? data.roofArea ?? 0) || 0,
-      unit:         data.unit ?? 'm',
-      unitRate:     0,
-      notes:        data.notes ?? `Preset: ${template.name} · ${template.category}`,
-      points:       [],
-      isOverridden: true,
-      // Attach all raw preset fields as metadata for reference
-      presetData:   data,
-      presetId:     template.id,
-    });
+    // For carcass, generate multiple measurement line items
+    if (template.id === 'carcass') {
+      const measurements = generateCarcassMeasurements(data, template);
+      measurements.forEach(measurement => {
+        addMeasurement(measurement);
+      });
+      addToast(`${template.name.toUpperCase()} PRESET ADDED (${measurements.length} line items)`, 'success');
+    } else {
+      // Default handling for other presets
+      addMeasurement({
+        description: template.name,
+        type: getMeasurementType(template.measurementType),
+        quantity: calculateQuantity(data, template),
+        unit: getUnit(template),
+        unitRate: 0,
+        notes: `Preset: ${template.name} · ${template.category}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+      });
+      addToast(`${template.name.toUpperCase()} PRESET ADDED`, 'success');
+    }
+  };
 
-    addToast(`${template.name.toUpperCase()} PRESET ADDED`, 'success');
+  // Add this helper function in Workspace.tsx or a separate file
+  function generateCarcassMeasurements(data: Record<string, any>, template: PresetTemplate) {
+    const measurements = [];
+    
+    // Calculate quantities (reuse your calcCarcassQuantities)
+    const W = parseFloat(data.width ?? 600) / 1000;
+    const H = parseFloat(data.height ?? 720) / 1000;
+    const D = parseFloat(data.depth ?? 550) / 1000;
+    const T = parseFloat(data.panelThickness ?? 18) / 1000;
+    const shelves = parseInt(data.shelfCount ?? 2);
+    const doorCount = parseInt(data.doorCount ?? 1);
+    
+    const iW = W - 2 * T;
+    const iH = H - 2 * T;
+    
+    // 1. Board Materials (by component)
+    if (data.hasBack !== false) {
+      measurements.push({
+        description: `${template.name} - Back Panel`,
+        type: 'Area',
+        quantity: +(iW * iH).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Board Materials'
+      });
+    }
+    
+    if (data.hasTop !== false) {
+      measurements.push({
+        description: `${template.name} - Top Panel`,
+        type: 'Area',
+        quantity: +(iW * D).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Board Materials'
+      });
+    }
+    
+    if (data.hasBottom !== false) {
+      measurements.push({
+        description: `${template.name} - Bottom Panel`,
+        type: 'Area',
+        quantity: +(iW * D).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Board Materials'
+      });
+    }
+    
+    if (data.hasLeftSide !== false) {
+      measurements.push({
+        description: `${template.name} - Left Side Panel`,
+        type: 'Area',
+        quantity: +(D * H).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Board Materials'
+      });
+    }
+    
+    if (data.hasRightSide !== false) {
+      measurements.push({
+        description: `${template.name} - Right Side Panel`,
+        type: 'Area',
+        quantity: +(D * H).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Board Materials'
+      });
+    }
+    
+    // 2. Shelves
+    if (shelves > 0) {
+      measurements.push({
+        description: `${template.name} - Shelves (${shelves} pcs)`,
+        type: 'Area',
+        quantity: +(iW * D * shelves).toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Shelf count: ${shelves} | Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Shelves'
+      });
+    }
+    
+    // 3. Doors (if applicable)
+    if (data.hasDoors && data.doorMaterial) {
+      const doorArea = (W / doorCount) * H * doorCount;
+      measurements.push({
+        description: `${template.name} - Doors (${doorCount} pcs)`,
+        type: 'Area',
+        quantity: +doorArea.toFixed(3),
+        unit: 'm²',
+        unitRate: 0,
+        notes: `Door material: ${data.doorMaterial} | Style: ${data.doorSwing || 'Standard'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Doors'
+      });
+      
+      // Add door hardware separately
+      measurements.push({
+        description: `${template.name} - Door Hardware`,
+        type: 'Count',
+        quantity: doorCount,
+        unit: 'sets',
+        unitRate: 0,
+        notes: `Hinges (2 per door), handles (1 per door)`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Hardware'
+      });
+    }
+    
+    // 4. Drawers (if applicable)
+    if (data.hasDrawers) {
+      const drawerCount = parseInt(data.drawerCount ?? 2);
+      measurements.push({
+        description: `${template.name} - Drawer Fronts`,
+        type: 'Count',
+        quantity: drawerCount,
+        unit: 'pcs',
+        unitRate: 0,
+        notes: `Drawer fronts | Material: ${data.drawerMaterial || 'Match doors'}`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Drawers'
+      });
+      
+      measurements.push({
+        description: `${template.name} - Drawer Hardware`,
+        type: 'Count',
+        quantity: drawerCount,
+        unit: 'sets',
+        unitRate: 0,
+        notes: `Drawer slides (1 pair per drawer), handles (1 per drawer)`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Hardware'
+      });
+    }
+    
+    // 5. Edge Banding
+    const edgeBanding = calculateEdgeBanding(data);
+    if (edgeBanding > 0) {
+      measurements.push({
+        description: `${template.name} - Edge Banding`,
+        type: 'Length',
+        quantity: edgeBanding,
+        unit: 'm',
+        unitRate: 0,
+        notes: `Edge tape: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges`,
+        points: [],
+        isOverridden: true,
+        presetData: data,
+        presetId: template.id,
+        category: 'Finishing'
+      });
+    }
+    
+    // 6. Assembly & Installation
+    measurements.push({
+      description: `${template.name} - Assembly & Installation`,
+      type: 'Count',
+      quantity: 1,
+      unit: 'each',
+      unitRate: 0,
+      notes: `Labor for assembly, cam locks, fixing brackets`,
+      points: [],
+      isOverridden: true,
+      presetData: data,
+      presetId: template.id,
+      category: 'Labor'
+    });
+    
+    // 7. Packaging & Delivery (optional)
+    measurements.push({
+      description: `${template.name} - Packaging & Protection`,
+      type: 'Count',
+      quantity: 1,
+      unit: 'lump sum',
+      unitRate: 0,
+      notes: `Corner protectors, shrink wrap, edge protection`,
+      points: [],
+      isOverridden: true,
+      presetData: data,
+      presetId: template.id,
+      category: 'Logistics'
+    });
+    
+    return measurements;
+  }
+
+  function calculateEdgeBanding(data: Record<string, any>): number {
+    const W = parseFloat(data.width ?? 600) / 1000;
+    const H = parseFloat(data.height ?? 720) / 1000;
+    const D = parseFloat(data.depth ?? 550) / 1000;
+    const T = parseFloat(data.panelThickness ?? 18) / 1000;
+    const shelves = parseInt(data.shelfCount ?? 2);
+    
+    const iW = W - 2 * T;
+    
+    let edgeBanding = 0;
+    if (data.hasTop !== false) edgeBanding += 2 * (iW + D);
+    if (data.hasBottom !== false) edgeBanding += 2 * (iW + D);
+    if (data.hasLeftSide !== false) edgeBanding += 2 * (D + H);
+    if (data.hasRightSide !== false) edgeBanding += 2 * (D + H);
+    if (shelves > 0) edgeBanding += (2 * iW + D) * shelves;
+    
+    return +(edgeBanding * 1.1).toFixed(2); // +10% waste factor
+  }
+
+  // Helper functions
+  const getMeasurementType = (measurementType: string) => {
+    const types: Record<string, string> = {
+      'linear': 'Length',
+      'area': 'Area',
+      'count': 'Count',
+      'point': 'Point'
+    };
+    return types[measurementType] || 'Length';
+  };
+
+  const getUnit = (template: PresetTemplate) => {
+    const units: Record<string, string> = {
+      'linear': 'm',
+      'area': 'm²',
+      'count': 'pcs',
+      'point': 'each'
+    };
+    return units[template.measurementType] || 'm';
+  };
+
+  const calculateQuantity = (data: Record<string, any>, template: PresetTemplate) => {
+    switch (template.measurementType) {
+      case 'linear':
+        return parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
+      case 'area':
+        return parseFloat(data.area ?? data.roofArea ?? 0) || 
+              (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0) / 1e6) || 0;
+      case 'count':
+        return parseInt(data.quantity ?? data.doorCount ?? data.windowCount ?? 1);
+      default:
+        return 0;
+    }
   };
 
   // ── Export ──────────────────────────────────────────────────────────────────
