@@ -161,24 +161,32 @@ export function StatStrip({ stats }: { stats: { label: string; value: number | s
   );
 }
 
-// ─── Wrapper that injects 3D viz above any form ────────────────────────────────
-// Every form component is wrapped here so the viz is always present.
-// The drawer does NOT need to be touched at all.
+// ─── Wrapper that places 3D viz beside the form ────────────────────────────────
+// Updated to use side-by-side layout instead of stacked
+
+// ─── Wrapper that places 3D viz beside the form ────────────────────────────────
 
 function withViz(
   FormComponent: React.ComponentType<PresetFormComponentProps>,
 ): React.ComponentType<PresetFormComponentProps> {
   return function WrappedForm(props: PresetFormComponentProps) {
+    console.log('Rendering withViz for preset:', props.template.id, props.formData);
+    
     return (
-      <div className="flex flex-col gap-4">
-        {/* ── 3D Visualizer ── */}
-        <Preset3DVisualizer
-          presetId={props.template.id}
-          formData={props.formData}
-          height={260}
-        />
-        {/* ── Form fields ── */}
-        <FormComponent {...props} />
+      <div className="flex flex-row gap-4 relative" style={{ isolation: 'isolate', minHeight: '450px' }}>
+        {/* ── 3D Visualizer - Left Side ── */}
+        <div style={{ flex: '0 0 45%', position: 'relative', zIndex: 20, backgroundColor: '#0a0a0a', border: '1px solid #2a2a2a' }}>
+          <Preset3DVisualizer
+            presetId={props.template.id}
+            formData={props.formData}
+            height={450}
+          />
+        </div>
+        
+        {/* ── Form fields - Right Side ── */}
+        <div style={{ flex: '0 0 53%', position: 'relative', zIndex: 5, maxHeight: '70vh', overflowY: 'auto', paddingRight: '4px' }}>
+          <FormComponent {...props} />
+        </div>
       </div>
     );
   };
@@ -604,7 +612,7 @@ function PlumbingForm({ formData, onChange }: PresetFormComponentProps) {
 }
 
 // ─── PRESET_FORM_MAP ───────────────────────────────────────────────────────────
-// withViz() wraps each form so the 3D visualizer appears above the fields.
+// withViz() wraps each form so the 3D visualizer appears beside the fields.
 // The PresetDrawer renders FormComponent directly — no changes needed there.
 
 export const PRESET_FORM_MAP: Record<string, React.ComponentType<PresetFormComponentProps>> = {
