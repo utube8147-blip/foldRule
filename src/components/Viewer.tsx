@@ -405,6 +405,18 @@ export function Viewer({
   }, [activeDrawingId, activeDrawingUrl]);
 
   // ── PDF Rendering ─────────────────────────────────────────────────────────
+  // DPR-aware rendering: we render the PDF canvas at physical pixel resolution
+  // (scale × devicePixelRatio, capped at 2× to avoid memory blowout on 3× screens)
+  // but set CSS width/height to the logical size so the document div stays the
+  // correct size for layout, mouse events, and coordinate math.
+  //
+  // drawingCanvasRef and pinCanvasRef are also sized at physical pixels and their
+  // 2D contexts are pre-scaled by DPR so all measurement/snap drawing code
+  // continues to use logical CSS-pixel coordinates unchanged.
+  //
+  // setPdfDimensions always stores LOGICAL (CSS) pixel sizes — this is what
+  // the document wrapper div, centerDocumentInViewport, and the snap/measure
+  // hooks all depend on. Never store physical pixel sizes there.
   useEffect(() => {
     if (!pdf) return;
     let active     = true;
@@ -412,25 +424,60 @@ export function Viewer({
 
     const renderPage = async () => {
       try {
-        const page     = await pdf.getPage(pageNumber);
+        const page = await pdf.getPage(pageNumber);
         if (!active) return;
-        const viewport = page.getViewport({ scale });
-        const canvas   = pdfCanvasRef.current;
+
+        // Cap DPR at 2 — a 3× Retina screen at high zoom would otherwise
+        // produce canvases hundreds of MB large and can crash the tab.
+        const dpr          = Math.min(window.devicePixelRatio || 1, 3);
+        const logicalVP    = page.getViewport({ scale });          // CSS-pixel size
+        const physicalVP   = page.getViewport({ scale: scale * dpr }); // physical pixels
+
+        const cssW = logicalVP.width;
+        const cssH = logicalVP.height;
+        const phyW = physicalVP.width;
+        const phyH = physicalVP.height;
+
+        // ── PDF canvas: render at physical resolution, display at CSS size ──
+        const canvas  = pdfCanvasRef.current;
         if (!canvas) return;
-        const context  = canvas.getContext('2d');
+        const context = canvas.getContext('2d');
         if (!context) return;
-        canvas.height  = viewport.height;
-        canvas.width   = viewport.width;
+        canvas.width        = phyW;
+        canvas.height       = phyH;
+        canvas.style.width  = `${cssW}px`;
+        canvas.style.height = `${cssH}px`;
+
+        // ── Drawing canvas: same physical size, context pre-scaled by DPR ──
         if (drawingCanvasRef.current) {
-          drawingCanvasRef.current.width  = viewport.width;
-          drawingCanvasRef.current.height = viewport.height;
+          const dc = drawingCanvasRef.current;
+          dc.width        = phyW;
+          dc.height       = phyH;
+          dc.style.width  = `${cssW}px`;
+          dc.style.height = `${cssH}px`;
+          const dctx = dc.getContext('2d');
+          if (dctx) {
+            dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          }
         }
+
+        // ── Pin canvas: same treatment ──
         if (pinCanvasRef.current) {
-          pinCanvasRef.current.width  = viewport.width;
-          pinCanvasRef.current.height = viewport.height;
+          const pc = pinCanvasRef.current;
+          pc.width        = phyW;
+          pc.height       = phyH;
+          pc.style.width  = `${cssW}px`;
+          pc.style.height = `${cssH}px`;
+          const pctx = pc.getContext('2d');
+          if (pctx) {
+            pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          }
         }
-        setPdfDimensions({ w: viewport.width, h: viewport.height });
-        renderTask = page.render({ canvasContext: context, viewport });
+
+        // Store LOGICAL dimensions — everything else (layout, events, snap) uses CSS px
+        setPdfDimensions({ w: cssW, h: cssH });
+
+        renderTask = page.render({ canvasContext: context, viewport: physicalVP });
         await renderTask.promise;
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') console.error('Render error:', err);
