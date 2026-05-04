@@ -170,11 +170,10 @@ export function Viewer({
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
   // ── Snap Engine ─────────────────────────────────────────────────────────────
-  // FIX: Type assertion for pinCanvasRef to match hook's expected type
   const snapEngine = useSnapEngine({
     pinCanvasRef: pinCanvasRef as React.RefObject<HTMLCanvasElement>,
-    pdfDimensionsRef,
-    pageNumberRef,
+    pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
+    pageNumberRef: pageNumberRef as React.RefObject<number>,
     snapEnabled,
     showPins,
     snapThreshold,
@@ -197,14 +196,18 @@ export function Viewer({
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   // ── Measurements Engine ─────────────────────────────────────────────────────
-  // FIX: Type assertion for drawingCanvasRef to match hook's expected type
+  // Create a wrapper for setActiveTool that accepts string
+  const setActiveToolString = useCallback((tool: string) => {
+    setActiveTool(tool as ToolType);
+  }, [setActiveTool]);
+
   const measureEngine = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
-    pdfDimensionsRef,
-    pageNumberRef,
-    scaleRef,
+    pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
+    pageNumberRef: pageNumberRef as React.RefObject<number>,
+    scaleRef: scaleRef as React.RefObject<number>,
     activeTool,
-    setActiveTool,
+    setActiveTool: setActiveToolString,
     measurements,
     scaleFactor,
     onAddMeasurement,
@@ -953,7 +956,7 @@ export function Viewer({
               <Minimap
                 pdf={pdf}
                 pageNumber={pageNumber}
-                containerRef={containerRef}
+                containerRef={containerRef as React.RefObject<HTMLDivElement>}
                 pdfDimensions={pdfDimensions}
                 canvasPadding={CANVAS_PADDING}
               />
