@@ -21,7 +21,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
   const isDraggingRef    = useRef(false);
   const wrapperRef       = useRef<HTMLDivElement>(null);
 
-  const [locked, setLocked]   = useState(false);
+  const [locked, setLocked]     = useState(false);
   const [hovering, setHovering] = useState(false);
 
   // panel is visible when locked OR the mouse is inside the wrapper
@@ -56,7 +56,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
         cvs.height = Math.round(vp.height);
         const ctx = cvs.getContext('2d');
         if (!ctx || cancelled) return;
-        await page.render({ canvasContext: ctx, viewport: vp }).promise;
+        await page.render({ canvasContext: ctx, viewport: vp, canvas: cvs }).promise;
       } catch { /* ignore */ }
     })();
 
@@ -187,8 +187,6 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
         style={{
           opacity:       panelVisible ? 1 : 0,
           transform:     panelVisible ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(5px)',
-          // IMPORTANT: always allow pointer events so mouseleave on outer div
-          // still fires correctly, but inner interactive elements work
           pointerEvents: panelVisible ? 'auto' : 'none',
           transition:    'opacity 0.18s ease-out, transform 0.18s ease-out',
         }}
