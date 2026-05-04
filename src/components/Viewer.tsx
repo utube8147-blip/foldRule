@@ -458,30 +458,28 @@ export function Viewer({
         canvas.style.width  = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
 
-        // ── Drawing canvas: same physical size, context pre-scaled by DPR ──
+        // ── Drawing canvas: CSS pixel size only — NOT scaled by DPR ──
+        // The useMeasurements and useSnapEngine hooks do all their coordinate
+        // math in CSS pixels (based on getBoundingClientRect + clientX/Y).
+        // If we size this canvas at physical pixels, every click lands at the
+        // wrong position (offset by the DPR factor). Keep it at logical size
+        // so coordinate math stays correct. The measurement overlay lines are
+        // thin enough that DPR sharpness here is not noticeable.
         if (drawingCanvasRef.current) {
           const dc = drawingCanvasRef.current;
-          dc.width        = phyW;
-          dc.height       = phyH;
+          dc.width        = cssW;
+          dc.height       = cssH;
           dc.style.width  = `${cssW}px`;
           dc.style.height = `${cssH}px`;
-          const dctx = dc.getContext('2d');
-          if (dctx) {
-            dctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          }
         }
 
-        // ── Pin canvas: same treatment ──
+        // ── Pin canvas: same — CSS pixel size, no DPR scaling ──
         if (pinCanvasRef.current) {
           const pc = pinCanvasRef.current;
-          pc.width        = phyW;
-          pc.height       = phyH;
+          pc.width        = cssW;
+          pc.height       = cssH;
           pc.style.width  = `${cssW}px`;
           pc.style.height = `${cssH}px`;
-          const pctx = pc.getContext('2d');
-          if (pctx) {
-            pctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          }
         }
 
         // Store LOGICAL dimensions — everything else (layout, events, snap) uses CSS px
