@@ -244,20 +244,14 @@ export function Viewer({
     if (!container) return;
 
     requestAnimationFrame(() => {
-      const scrollW = container.scrollWidth;
-      const scrollH = container.scrollHeight;
-      const viewW   = container.clientWidth;
-      const viewH   = container.clientHeight;
-
-      // Always center horizontally — overflow goes equally left and right,
-      // both sides fully reachable via scrollLeft.
-      container.scrollLeft = Math.max(0, (scrollW - viewW) / 2);
-
-      // Vertical: center when it fits, pin to top when it overflows so the
-      // top of the document is always visible first.
-      container.scrollTop = scrollH > viewH
-        ? 0
-        : Math.max(0, (scrollH - viewH) / 2);
+      // The wrapper is always large (max(doc+padding, viewport*3)).
+      // Scrolling to (scrollWidth-viewWidth)/2 and (scrollHeight-viewHeight)/2
+      // lands us exactly at the center of the wrapper, which is where the
+      // document is positioned (both small and large docs).
+      const viewW = container.clientWidth;
+      const viewH = container.clientHeight;
+      container.scrollLeft = Math.round((container.scrollWidth  - viewW) / 2);
+      container.scrollTop  = Math.round((container.scrollHeight - viewH) / 2);
     });
   }, []);
 
@@ -700,18 +694,19 @@ export function Viewer({
           permanently unreachable.
         */}
         <div
-          className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : undefined)}
-          style={pdf ? {
-            // Force the wrapper to always be wider/taller than the document + padding.
-            // Without explicit minWidth/minHeight the wrapper collapses to the viewport
-            // size, margin:auto centers within the viewport, and the overflow on both
-            // left and right sides is unreachable (scrollLeft can't access it).
-            // With these set, the scroll container's scrollable area always covers
-            // doc + padding on every edge.
-            minWidth:  pdfDimensions ? pdfDimensions.w + CANVAS_PADDING * 2 : undefined,
-            minHeight: pdfDimensions ? pdfDimensions.h + CANVAS_PADDING * 2 : undefined,
-            padding: CANVAS_PADDING,
-          } : undefined}
+          className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
+          style={pdf && pdfDimensions ? (() => {
+            // Always give the wrapper a large canvas around the document so:
+            // 1. When doc > viewport: both sides are scrollable (no clipping).
+            // 2. When doc < viewport: user can still pan/drag in all directions.
+            // We use max(docSize + 2*padding, viewportSize * 3) so the doc is
+            // always centered with plenty of scrollable space on every edge.
+            const vw = containerRef.current?.clientWidth  ?? 0;
+            const vh = containerRef.current?.clientHeight ?? 0;
+            const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
+            const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
+            return { width: wrapW, height: wrapH };
+          })() : undefined}
         >
           {!pdf && !loading && (
             <div className="flex flex-col items-center gap-6 p-12 border-2 border-dashed border-industrial-border bg-industrial-panel/50 backdrop-blur-sm max-w-xl w-full text-center">
@@ -749,7 +744,25 @@ export function Viewer({
           {pdf && (
             <div
               className="relative shadow-2xl border border-industrial-border bg-white"
-              style={pdfDimensions ? { width: pdfDimensions.w, height: pdfDimensions.h, marginLeft: 'auto', marginRight: 'auto' } : { marginLeft: 'auto', marginRight: 'auto' }}
+              style={pdfDimensions && containerRef.current ? (() => {
+                // Position the document in the absolute center of the large wrapper.
+                // This ensures the doc is centered on load and the user can pan equally
+                // in all directions regardless of whether the doc is smaller or larger
+                // than the viewport.
+                const vw = containerRef.current.clientWidth;
+                const vh = containerRef.current.clientHeight;
+                const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
+                const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
+                const left = Math.round((wrapW - pdfDimensions.w) / 2);
+                const top  = Math.round((wrapH - pdfDimensions.h) / 2);
+                return {
+                  position: 'absolute' as const,
+                  left,
+                  top,
+                  width:  pdfDimensions.w,
+                  height: pdfDimensions.h,
+                };
+              })() : {}}
             >
               <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
