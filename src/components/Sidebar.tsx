@@ -34,7 +34,7 @@ export function Sidebar({
       )}
     >
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center shrink-0">
-        <span className="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Project Explorer</span>
+        <span className="text-[10px] font-bold text-zinc-500 my-1 tracking-widest uppercase">Project Explorer</span>
         <div className="flex gap-2">
           <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
             <Filter className="w-3.5 h-3.5" />
