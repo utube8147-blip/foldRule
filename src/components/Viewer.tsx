@@ -170,8 +170,9 @@ export function Viewer({
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
   // ── Snap Engine ─────────────────────────────────────────────────────────────
+  // FIX: Type assertion for pinCanvasRef to match hook's expected type
   const snapEngine = useSnapEngine({
-    pinCanvasRef,
+    pinCanvasRef: pinCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef,
     pageNumberRef,
     snapEnabled,
