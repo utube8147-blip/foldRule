@@ -406,7 +406,7 @@ export function Viewer({
 
   // ── PDF Rendering ─────────────────────────────────────────────────────────
   // DPR-aware rendering: we render the PDF canvas at physical pixel resolution
-  // (scale × devicePixelRatio, capped at 2× to avoid memory blowout on 3× screens)
+  // (scale × devicePixelRatio, adaptively capped so canvas never exceeds 16M physical pixels)
   // but set CSS width/height to the logical size so the document div stays the
   // correct size for layout, mouse events, and coordinate math.
   //
@@ -427,11 +427,21 @@ export function Viewer({
         const page = await pdf.getPage(pageNumber);
         if (!active) return;
 
-        // Cap DPR at 2 — a 3× Retina screen at high zoom would otherwise
-        // produce canvases hundreds of MB large and can crash the tab.
-        const dpr          = Math.min(window.devicePixelRatio || 1, 3);
-        const logicalVP    = page.getViewport({ scale });          // CSS-pixel size
-        const physicalVP   = page.getViewport({ scale: scale * dpr }); // physical pixels
+        // Adaptive DPR — scales with canvas size to protect memory.
+        // Never let any single canvas exceed 16M physical pixels.
+        // At low zoom (small canvas) → full screen DPR sharpness (up to 3×).
+        // At high zoom (large canvas) → DPR is automatically reduced.
+        //
+        // Why this matters on your laptop:
+        //   DPR 3, 200% zoom, A1 PDF → ~147M px × 3 canvases ≈ 1.7 GB → crash
+        //   With adaptive cap       → ~16M px × 3 canvases ≈ 185 MB  → safe
+        const MAX_CANVAS_PIXELS = 16_000_000;
+        const rawDpr     = window.devicePixelRatio || 1;
+        const logicalVP  = page.getViewport({ scale });
+        const logicalPx  = logicalVP.width * logicalVP.height;
+        const safeDpr    = Math.sqrt(MAX_CANVAS_PIXELS / logicalPx);
+        const dpr        = Math.min(rawDpr, safeDpr, 3); // never exceed screen DPR or 3×
+        const physicalVP = page.getViewport({ scale: scale * dpr }); // physical pixels
 
         const cssW = logicalVP.width;
         const cssH = logicalVP.height;
