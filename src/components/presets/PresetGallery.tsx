@@ -20,12 +20,91 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ELEMENT_PRESETS, PresetTemplate, PRESET_FORM_MAP } from './PresetTemplates';
+
 interface PresetGalleryProps {
   onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
   /** FIX: which top-nav tab should appear active when the gallery is opened.
    *  Pass 'Library' when opened from the Takeoff / Viewer context.
    *  Defaults to 'Library'. */
   activeTopNav?: string;
+}
+
+// ─── PresetForm Component ──────────────────────────────────────────────────────
+
+interface PresetFormProps {
+  template: PresetTemplate;
+  onSubmit: (data: Record<string, any>) => void;
+  onClose: () => void;
+}
+
+function PresetForm({ template, onSubmit, onClose }: PresetFormProps) {
+  const [formData, setFormData] = React.useState<Record<string, any>>({});
+  const FormComponent = PRESET_FORM_MAP[template.id];
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    onSubmit(formData);
+  };
+
+  if (!FormComponent) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+        <div className="bg-[#111] border border-[#2a2a2a] p-6 max-w-md">
+          <h3 className="text-sm font-bold text-amber-500 mb-2">No form available</h3>
+          <p className="text-xs text-zinc-500 mb-4">Template "{template.name}" has no associated form.</p>
+          <button 
+            onClick={onClose} 
+            className="px-4 py-2 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm">
+      <div className="bg-[#111] border border-[#2a2a2a] w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+        <form onSubmit={handleSubmit}>
+          <div className="sticky top-0 bg-[#111] border-b border-[#2a2a2a] p-4 flex justify-between items-center z-10">
+            <h2 className="text-sm font-black uppercase tracking-widest text-amber-500">
+              {template.name}
+            </h2>
+            <button 
+              type="button"
+              onClick={onClose}
+              className="text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="p-6">
+            <FormComponent 
+              formData={formData}
+              onChange={(key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }))}
+              template={template}
+            />
+          </div>
+          <div className="sticky bottom-0 bg-[#111] border-t border-[#2a2a2a] p-4 flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 border border-[#2a2a2a] text-zinc-400 hover:text-zinc-200 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              className="px-4 py-2 bg-amber-500 text-black font-bold hover:bg-amber-400 transition-colors"
+            >
+              Add to Takeoff
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 }
 
 /* ══════════════════════════════════════════
@@ -405,9 +484,7 @@ export function PresetGallery({ onSelectPreset, activeTopNav = 'Library' }: Pres
         </div>
       </div>
 
-      {/* FIX: PresetForm now mounts as a slide-over, not a fullscreen replace.
-              The gallery grid stays visible behind the dim backdrop.
-              Pass activeTopNav so the form header shows the correct active tab. */}
+      {/* PresetForm Modal */}
       {selectedTemplate && (
         <PresetForm
           template={selectedTemplate}
@@ -463,13 +540,13 @@ function PresetCard({ preset, onEdit }: { preset: PresetTemplate; onEdit: () => 
         {/* Spec rows */}
         <div className="flex-1 space-y-1.5 border-t border-[#1e1e1e] pt-3 mb-3">
           {specRows.length > 0 ? specRows.map(field => {
-            const val = field.defaultValue !== undefined && String(field.defaultValue).trim() !== ''
-              ? String(field.defaultValue).toUpperCase()
+            const val = field.default !== undefined && String(field.default).trim() !== ''
+              ? String(field.default).toUpperCase()
               : null;
             return (
-              <div key={field.name} className="flex justify-between items-center gap-2">
+              <div key={field.key} className="flex justify-between items-center gap-2">
                 <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold truncate">
-                  {field.label ?? field.name}
+                  {field.label ?? field.key}
                 </span>
                 {val
                   ? <span className="text-[10px] text-zinc-200 font-black tracking-wide shrink-0">{val}</span>
