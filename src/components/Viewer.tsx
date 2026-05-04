@@ -197,8 +197,9 @@ export function Viewer({
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   // ── Measurements Engine ─────────────────────────────────────────────────────
+  // FIX: Type assertion for drawingCanvasRef to match hook's expected type
   const measureEngine = useMeasurements({
-    drawingCanvasRef,
+    drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef,
     pageNumberRef,
     scaleRef,
