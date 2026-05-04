@@ -1,4 +1,4 @@
-// FILE: src/app/(app)/takeoff-full/page.tsx
+// FILE: src/app/(project)/takeoff-full/page.tsx
 // Redesigned to match ESTIMATOR_PRO_V1 reference UI:
 //   • Fixed top nav bar with project breadcrumb + stat chips + Share / Export BOQ
 //   • Icon-only left sidebar (Files, Layers, Snap, Tools, History, Team)

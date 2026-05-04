@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
+import { useRouter } from 'next/navigation';
 import {
   ChevronDown, ChevronRight, ChevronUp, X, Check, Search,
   Ruler, Square, Hash, CircleDot, Layers, RotateCcw,
-  Copy, Lock, Sparkles,
+  Copy, Lock, Sparkles, ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -14,6 +15,7 @@ import {
   PresetTemplate,
   PresetFormComponentProps,
 } from './PresetTemplates';
+import { usePresetContext } from '@/context/PresetContext';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -80,21 +82,17 @@ function EnterpriseUpgradeModal({ onClose }: { onClose: () => void }) {
         onClick={e => e.stopPropagation()}
       >
         <BlueprintBrackets amber />
-
         <div className="flex flex-col items-center text-center gap-4">
           <div className="w-16 h-16 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center">
             <Sparkles className="w-8 h-8 text-amber-500" />
           </div>
-
           <h3 className="text-lg font-black uppercase tracking-tight text-zinc-100">
             Enterprise Feature
           </h3>
-
           <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
             This template is part of our Enterprise library. Upgrade to access
             advanced structural templates, custom formulas, and team collaboration.
           </p>
-
           <div className="flex items-center gap-3 mt-2 w-full">
             <button
               onClick={onClose}
@@ -109,7 +107,6 @@ function EnterpriseUpgradeModal({ onClose }: { onClose: () => void }) {
               Upgrade Now
             </button>
           </div>
-
           <p className="text-[8px] font-mono text-zinc-600 uppercase tracking-wider mt-2">
             Contact sales for custom enterprise pricing
           </p>
@@ -122,11 +119,7 @@ function EnterpriseUpgradeModal({ onClose }: { onClose: () => void }) {
 // ─── Template Card ────────────────────────────────────────────────────────────
 
 function TemplateCard({
-  template,
-  isSelected,
-  isLocked = false,
-  onClick,
-  onUpgradeClick,
+  template, isSelected, isLocked = false, onClick, onUpgradeClick,
 }: {
   template: PresetTemplate;
   isSelected: boolean;
@@ -137,14 +130,9 @@ function TemplateCard({
   const Icon     = TYPE_ICONS[template.measurementType] ?? TYPE_ICONS.default;
   const thumbSrc = getCategoryImage(template.category);
 
-  const handleClick = () => {
-    if (isLocked && onUpgradeClick) onUpgradeClick();
-    else onClick();
-  };
-
   return (
     <button
-      onClick={handleClick}
+      onClick={isLocked ? onUpgradeClick : onClick}
       disabled={isLocked}
       className={cn(
         'group bg-[#161616] border relative flex flex-col text-left transition-all duration-150',
@@ -163,7 +151,6 @@ function TemplateCard({
         </div>
       )}
 
-      {/* Thumbnail + badge */}
       <div className="flex items-start justify-between px-4 pt-4 pb-2 gap-3">
         <div className="w-[60px] h-[60px] bg-[#0d0d0d] border border-[#222] overflow-hidden shrink-0">
           <img
@@ -191,7 +178,6 @@ function TemplateCard({
         </div>
       </div>
 
-      {/* Name + description */}
       <div className="px-4 pb-4 flex flex-col flex-1">
         <h3 className={cn(
           'text-[13px] font-black tracking-tight uppercase leading-tight mb-0.5 transition-colors',
@@ -202,19 +188,16 @@ function TemplateCard({
         <p className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold mb-3">
           {template.measurementType}
         </p>
-
         <div className="flex-1 border-t border-[#1e1e1e] pt-3 mb-3">
           <p className="text-[9px] text-zinc-600 leading-relaxed line-clamp-2">
             {template.description}
           </p>
         </div>
-
         <div className="flex items-center gap-1 text-[8px] text-zinc-700 uppercase tracking-widest font-bold mt-auto">
-          {isLocked ? (
-            <><Lock className="w-2.5 h-2.5" /><span>Enterprise only</span></>
-          ) : (
-            <><Copy className="w-2.5 h-2.5" /><span>Click to configure</span></>
-          )}
+          {isLocked
+            ? <><Lock className="w-2.5 h-2.5" /><span>Enterprise only</span></>
+            : <><Copy className="w-2.5 h-2.5" /><span>Click to configure</span></>
+          }
         </div>
       </div>
     </button>
@@ -224,6 +207,16 @@ function TemplateCard({
 // ─── Preset Drawer ────────────────────────────────────────────────────────────
 
 export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerProps) {
+  const router = useRouter();
+
+  // ── Shared context — used to hand off state to the full presets page ─────────
+  const {
+    setSelectedTemplate: setContextTemplate,
+    setFormField,
+    resetForm,
+  } = usePresetContext();
+
+  // ── Local drawer state (independent from context until handoff) ──────────────
   const [selectedTemplate, setSelectedTemplate]       = useState<PresetTemplate | null>(null);
   const [fieldValues, setFieldValues]                 = useState<Record<string, any>>({});
   const [drawerHeight, setDrawerHeight]               = useState<'collapsed' | 'half' | 'full'>('half');
@@ -231,12 +224,9 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
   const [activeCategory, setActiveCategory]           = useState<string | null>(null);
   const [showEnterpriseModal, setShowEnterpriseModal] = useState(false);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-
-  // Lock the last 3 templates
+  const scrollRef    = useRef<HTMLDivElement>(null);
   const LOCKED_COUNT = 3;
-
-  const categories = Array.from(new Set(ELEMENT_PRESETS.map(p => p.category)));
+  const categories   = Array.from(new Set(ELEMENT_PRESETS.map(p => p.category)));
 
   const filteredTemplates = ELEMENT_PRESETS.filter(t => {
     const matchSearch =
@@ -247,7 +237,6 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
     return matchSearch && matchCat;
   });
 
-  // Reset state when drawer opens
   useEffect(() => {
     if (isOpen) {
       setSelectedTemplate(null);
@@ -259,13 +248,10 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
     }
   }, [isOpen]);
 
-  // Clear form data when template changes
-  useEffect(() => {
-    setFieldValues({});
-  }, [selectedTemplate]);
+  useEffect(() => { setFieldValues({}); }, [selectedTemplate]);
 
-  const handleChange = (key: string, value: any) =>
-    setFieldValues(prev => ({ ...prev, [key]: value }));
+  const handleChange  = (key: string, value: any) => setFieldValues(prev => ({ ...prev, [key]: value }));
+  const handleReset   = () => setFieldValues({});
 
   const handleConfirm = () => {
     if (!selectedTemplate) return;
@@ -274,18 +260,30 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
     onClose();
   };
 
-  const handleReset = () => setFieldValues({});
+  // ── Hand off local drawer state → shared PresetContext → navigate ────────────
+  const handleOpenFullPage = () => {
+    if (selectedTemplate) {
+      // Sync selected template into shared context so full page picks it up
+      setContextTemplate(selectedTemplate);
+      // Sync form values: reset first to avoid stale keys, then write each field
+      resetForm(selectedTemplate.id);
+      Object.entries(fieldValues).forEach(([key, value]) => {
+        setFormField(selectedTemplate.id, key, value);
+      });
+    } else {
+      // No template — open gallery view with nothing pre-selected
+      setContextTemplate(null);
+    }
+
+    onClose();
+    router.push('/presets');
+  };
 
   const cycleHeight = () =>
     setDrawerHeight(h => h === 'half' ? 'full' : h === 'full' ? 'collapsed' : 'half');
 
-  const heightClass = {
-    collapsed: 'h-12',
-    half:      'h-[420px]',
-    full:      'h-[80vh]',
-  }[drawerHeight];
+  const heightClass = { collapsed: 'h-12', half: 'h-[420px]', full: 'h-[80vh]' }[drawerHeight];
 
-  // Resolve the form component for the selected template
   const FormComponent: React.ComponentType<PresetFormComponentProps> | null =
     selectedTemplate ? (PRESET_FORM_MAP[selectedTemplate.id] ?? null) : null;
 
@@ -304,18 +302,17 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
               heightClass,
             )}
           >
-            {/* ── Header ─────────────────────────────────────────────────── */}
+            {/* ── Header ──────────────────────────────────────────────────── */}
             <div className="h-12 flex-shrink-0 flex items-center justify-between px-4 border-b border-[#1e1e1e] bg-[#0d0d0d]">
-              {/* Left: breadcrumb */}
+
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-2 h-2 bg-amber-500 shrink-0" />
-                <span className="text-[10px] font-mono font-black uppercase tracking-widest text-zinc-300 shrink-0">
-                    <button
-                      onClick={() => setSelectedTemplate(null)}
-                      >                  
-                      PRESET TEMPLATES
-                    </button>
-                </span>
+                <button
+                  onClick={() => setSelectedTemplate(null)}
+                  className="text-[10px] font-mono font-black uppercase tracking-widest text-zinc-300 hover:text-amber-400 transition-colors shrink-0"
+                >
+                  PRESET TEMPLATES
+                </button>
 
                 {selectedTemplate ? (
                   <>
@@ -331,8 +328,20 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                 )}
               </div>
 
-              {/* Right: search + controls */}
               <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleOpenFullPage}
+                  className={cn(
+                    'flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest',
+                    'px-2.5 py-1 border border-amber-500/40 text-amber-500',
+                    'hover:bg-amber-500 hover:text-black transition-all',
+                  )}
+                  title={selectedTemplate ? 'Continue configuring in full page' : 'Open full preset library'}
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  {selectedTemplate ? 'Continue in Full Page' : 'Full Library'}
+                </button>
+
                 {!selectedTemplate && (
                   <div className="relative flex items-center">
                     <Search className="w-3 h-3 absolute left-2 text-zinc-600 pointer-events-none" />
@@ -348,44 +357,30 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                   </div>
                 )}
 
-                <button
-                  onClick={cycleHeight}
-                  className="p-1.5 text-zinc-600 hover:text-zinc-300 transition-colors"
-                  title={drawerHeight === 'full' ? 'Shrink' : 'Expand'}
-                >
-                  {drawerHeight === 'full'
-                    ? <ChevronDown className="w-4 h-4" />
-                    : <ChevronUp className="w-4 h-4" />
-                  }
+                <button onClick={cycleHeight} className="p-1.5 text-zinc-600 hover:text-zinc-300 transition-colors">
+                  {drawerHeight === 'full' ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
                 </button>
 
-                <button
-                  onClick={onClose}
-                  className="p-1.5 text-zinc-600 hover:text-red-500 transition-colors"
-                  title="Close"
-                >
+                <button onClick={onClose} className="p-1.5 text-zinc-600 hover:text-red-500 transition-colors">
                   <X className="w-4 h-4" />
                 </button>
               </div>
             </div>
 
-            {/* ── Body ───────────────────────────────────────────────────── */}
+            {/* ── Body ────────────────────────────────────────────────────── */}
             {drawerHeight !== 'collapsed' && (
               <div className="flex flex-1 overflow-hidden">
 
-                {/* ════ Gallery View ════ */}
                 {!selectedTemplate ? (
                   <div className="flex flex-col flex-1 overflow-hidden">
 
-                    {/* Category filter pills */}
+                    {/* Category pills */}
                     <div className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2 border-b border-[#1e1e1e] overflow-x-auto">
                       <button
                         onClick={() => setActiveCategory(null)}
                         className={cn(
                           'px-2.5 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
-                          !activeCategory
-                            ? 'bg-amber-500 text-black border-amber-500'
-                            : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
+                          !activeCategory ? 'bg-amber-500 text-black border-amber-500' : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
                         )}
                       >
                         ALL
@@ -396,9 +391,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                           onClick={() => setActiveCategory(cat)}
                           className={cn(
                             'px-2.5 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
-                            activeCategory === cat
-                              ? 'bg-amber-500 text-black border-amber-500'
-                              : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
+                            activeCategory === cat ? 'bg-amber-500 text-black border-amber-500' : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
                           )}
                         >
                           {cat}
@@ -406,25 +399,18 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       ))}
                     </div>
 
-                    {/* Template grid */}
-                    <div
-                      ref={scrollRef}
-                      className="flex-1 overflow-y-auto p-4"
-                      style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}
-                    >
+                    {/* Grid */}
+                    <div ref={scrollRef} className="flex-1 overflow-y-auto p-4" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
                       {filteredTemplates.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
                           <Lock className="w-8 h-8 text-zinc-700" />
-                          <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">
-                            No templates match your filters
-                          </span>
+                          <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No templates match your filters</span>
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                           {filteredTemplates.map(template => {
                             const originalIndex = ELEMENT_PRESETS.findIndex(t => t.id === template.id);
                             const isLocked      = originalIndex >= ELEMENT_PRESETS.length - LOCKED_COUNT;
-
                             return (
                               <TemplateCard
                                 key={template.id}
@@ -439,13 +425,19 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                         </div>
                       )}
                     </div>
+
+                    {/* Footer CTA */}
+                    <div className="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-[#1e1e1e] bg-[#0d0d0d]">
+                      <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">Want more space to configure?</span>
+                      <button onClick={handleOpenFullPage} className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-500 hover:text-amber-400 transition-colors">
+                        <ExternalLink className="w-3 h-3" />
+                        Open Full Preset Library
+                      </button>
+                    </div>
                   </div>
 
                 ) : (
-                  <div
-                    className="flex-1 overflow-y-auto"
-                    style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}
-                  >
+                  <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
                     <div className="flex flex-col h-full">
 
                       {/* Form header */}
@@ -455,44 +447,26 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                             {selectedTemplate.name}
                           </h3>
                           {selectedTemplate.description && (
-                            <p className="text-[10px] font-mono text-zinc-500 mt-1 leading-relaxed">
-                              {selectedTemplate.description}
-                            </p>
+                            <p className="text-[10px] font-mono text-zinc-500 mt-1 leading-relaxed">{selectedTemplate.description}</p>
                           )}
                           <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">
-                              {selectedTemplate.category}
-                            </span>
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">
-                              {selectedTemplate.measurementType}
-                            </span>
+                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.category}</span>
+                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.measurementType}</span>
                           </div>
                         </div>
-
-                        <button
-                          onClick={handleReset}
-                          className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest
-                                     px-3 py-1.5 border border-[#2a2a2a] text-zinc-500
-                                     hover:border-zinc-500 hover:text-zinc-300 transition-all shrink-0"
-                        >
+                        <button onClick={handleReset} className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest px-3 py-1.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all shrink-0">
                           <RotateCcw className="w-2.5 h-2.5" />
                           Reset
                         </button>
                       </div>
 
-                      {/* Form body — rendered by PRESET_FORM_MAP */}
+                      {/* Form body */}
                       <div className="flex-1 px-5 py-5">
                         {FormComponent ? (
-                          <FormComponent
-                            formData={fieldValues}
-                            onChange={handleChange}
-                            template={selectedTemplate}
-                          />
+                          <FormComponent formData={fieldValues} onChange={handleChange} template={selectedTemplate} />
                         ) : (
                           <div className="flex items-center justify-center h-full border border-dashed border-[#2a2a2a]">
-                            <p className="text-[10px] font-mono text-zinc-600 italic">
-                              No form configured for "{selectedTemplate.id}".
-                            </p>
+                            <p className="text-[10px] font-mono text-zinc-600 italic">No form configured for "{selectedTemplate.id}".</p>
                           </div>
                         )}
                       </div>
@@ -501,9 +475,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       <div className="flex items-center gap-3 px-5 py-4 border-t border-[#1e1e1e] shrink-0 bg-[#0d0d0d]">
                         <button
                           onClick={handleConfirm}
-                          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black
-                                     font-mono font-black text-[10px] uppercase tracking-widest
-                                     px-5 py-2.5 transition-all active:scale-95"
+                          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black font-mono font-black text-[10px] uppercase tracking-widest px-5 py-2.5 transition-all active:scale-95"
                         >
                           <Check className="w-3 h-3" />
                           ADD MEASUREMENT
@@ -511,22 +483,25 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
 
                         <button
                           onClick={() => setSelectedTemplate(null)}
-                          className="text-[10px] font-mono font-black uppercase tracking-widest px-4 py-2.5
-                                     border border-[#2a2a2a] text-zinc-500
-                                     hover:border-zinc-500 hover:text-zinc-300 transition-all"
+                          className="text-[10px] font-mono font-black uppercase tracking-widest px-4 py-2.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all"
                         >
                           ← BACK TO GALLERY
                         </button>
 
-                        <span className="text-[8px] font-mono text-zinc-700 ml-auto uppercase tracking-wider">
-                          TYPE: {selectedTemplate.measurementType?.toUpperCase()}
-                        </span>
+                        {/* Carries template + all filled values to full page */}
+                        <button
+                          onClick={handleOpenFullPage}
+                          className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest text-amber-500/70 hover:text-amber-400 transition-colors ml-auto border border-amber-500/20 px-2.5 py-1.5 hover:border-amber-500/50"
+                          title="Continue configuring in full preset page — your values will be preserved"
+                        >
+                          <ExternalLink className="w-3 h-3" />
+                          Continue in Full Page
+                        </button>
                       </div>
 
                     </div>
                   </div>
                 )}
-
               </div>
             )}
           </motion.div>
