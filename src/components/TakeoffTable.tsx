@@ -1,6 +1,6 @@
 // components/TakeoffTable.tsx
 import React, { useState } from 'react';
-import { Trash2, Plus, Pencil, Check, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package } from 'lucide-react';
+import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { TakeoffRow, MaterialSpec } from '../types';
 
@@ -11,9 +11,10 @@ interface TakeoffTableProps {
   onDelete: (id: string) => void;
   onAddManual: () => void;
   onToggleVisibility: (id?: string) => void;
+  onExpand?: () => void; // ← new optional prop
 }
 
-export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAddManual, onToggleVisibility }: TakeoffTableProps) {
+export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAddManual, onToggleVisibility, onExpand }: TakeoffTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
@@ -141,13 +142,15 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
 
   return (
     <aside className="w-96 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
-      <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center">
+
+      {/* ── Single header — title + visibility + add + expand ───────────────── */}
+      <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center flex-shrink-0">
         <span className="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
         <div className="flex items-center gap-3">
           <button 
             onClick={() => onToggleVisibility()}
             className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold"
-            title={allVisible ? "Hide All" : "Show All"}
+            title={allVisible ? 'Hide All' : 'Show All'}
           >
             {allVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
           </button>
@@ -158,6 +161,19 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
             <Plus className="w-3 h-3" />
             ADD ROW
           </button>
+          {onExpand && (
+            <>
+              <div className="w-px h-3 bg-zinc-700" />
+              <button
+                onClick={onExpand}
+                className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[10px] font-bold"
+                title="Open full-page takeoff view"
+              >
+                <ExternalLink className="w-3 h-3" />
+                EXPAND
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -221,7 +237,7 @@ export function TakeoffTable({ measurements, materials, onUpdate, onDelete, onAd
                     <td className="p-2 text-center">
                       <div className="flex items-center justify-center gap-2">
                         <button 
-                          onClick={() => onDelete(header.id)}
+                          onClick={(e) => { e.stopPropagation(); onDelete(header.id); }}
                           className="text-zinc-700 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
                         >
                           <Trash2 className="w-3 h-3" />

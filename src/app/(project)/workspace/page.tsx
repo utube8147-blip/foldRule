@@ -15,7 +15,6 @@ import { exportToExcel } from '@/lib/excelExport';
 import {
   PanelRightClose,
   Sidebar as SidebarIcon,
-  ExternalLink,
   ZoomIn,
   ZoomOut,
   Maximize,
@@ -293,7 +292,6 @@ export default function Workspace() {
     }
   };
 
-  // ── Derive toolbar state for the lifted toolbar ───────────────────────────────
   const api = toolbarAPI;
 
   return (
@@ -308,8 +306,6 @@ export default function Workspace() {
       />
 
       {/* ── 2. Content row — Sidebar | [Toolbar + Viewer + TakeoffPanel] ─────── */}
-      {/*    mt-14 clears the fixed navbar. Sidebar sits on the left.            */}
-      {/*    Everything to the right of the sidebar is in a flex-col column.     */}
       <div className="flex flex-1 overflow-hidden mt-14">
 
         {/* Left sidebar */}
@@ -338,7 +334,7 @@ export default function Workspace() {
         {/* ── Right column: toolbar on top, then viewer + takeoff panel below ── */}
         <div className="flex flex-col flex-1 overflow-hidden">
 
-          {/* ── Viewer toolbar — only spans the area to the right of sidebar ─── */}
+          {/* ── Viewer toolbar — only spans right of sidebar ─────────────────── */}
           <div className="flex-shrink-0 h-12 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-4 z-30 shadow-sm">
 
             {/* Tool buttons */}
@@ -363,7 +359,7 @@ export default function Workspace() {
               ))}
             </div>
 
-            {/* Middle: analysis status + snap + scale + calibration buttons */}
+            {/* Middle: analysis status + snap + scale + calibration */}
             <div className="flex items-center gap-2 flex-1 justify-center flex-wrap mx-4">
 
               {api?.analysisStatus === 'analyzing' && api.analysisPage && (
@@ -460,7 +456,7 @@ export default function Workspace() {
           {/* ── Viewer canvas + TakeoffPanel row ─────────────────────────────── */}
           <div className="flex flex-1 overflow-hidden relative">
 
-            {/* Viewer — hideToolbar=true so the toolbar doesn't render inside */}
+            {/* Viewer */}
             <Viewer
               activeTool={activeTool}
               setActiveTool={setActiveTool}
@@ -478,32 +474,18 @@ export default function Workspace() {
               onToolbarReady={setToolbarAPI}
             />
 
-            {/* Right panel — Takeoff Table */}
+            {/* Right panel — TakeoffTable owns its own header now */}
             <div className={cn(
-              'flex flex-col h-full overflow-hidden transition-all duration-300 border-l border-industrial-border',
+              'flex flex-col h-full overflow-hidden transition-all duration-300',
               rightCollapsed ? 'w-0' : 'w-96',
             )}>
-              {!rightCollapsed && (
-                <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-950 border-b border-industrial-border flex-shrink-0">
-                  <span className="text-[9px] font-mono font-bold uppercase tracking-widest text-zinc-600">
-                    Takeoff Data
-                  </span>
-                  <button
-                    onClick={() => router.push('/takeoff-full')}
-                    className="flex items-center gap-1.5 text-[9px] font-mono font-bold uppercase tracking-widest text-zinc-500 hover:text-amber-400 border border-transparent hover:border-zinc-700 px-2 py-1 transition-all"
-                    title="Open full-page takeoff view"
-                  >
-                    <ExternalLink className="w-3 h-3" />
-                    Expand
-                  </button>
-                </div>
-              )}
               <TakeoffTable
                 measurements={ps.measurements}
                 materials={ps.materials}
                 onUpdate={updateMeasurement}
                 onDelete={deleteMeasurement}
                 onToggleVisibility={toggleVisibility}
+                onExpand={() => router.push('/takeoff-full')}
                 onAddManual={() => handleAddMeasurement({
                   id: `${activeDrawing?.id || 'manual'}-${Date.now()}`,
                   drawingId: activeDrawing?.id || '',
@@ -561,22 +543,88 @@ export default function Workspace() {
       />
 
       {/* ── Status bar ────────────────────────────────────────────────────────── */}
-      <footer className="h-6 bg-industrial-black border-t border-industrial-border flex items-center justify-between px-4 z-50 flex-shrink-0 font-mono">
+      <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
+
+        {/* Left */}
         <div className="flex items-center gap-6">
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
             Workspace: LOGISTICS_HUB_P2
           </span>
-          <div className="w-gutter h-3 bg-zinc-800" />
+          <div className="w-px h-3 bg-zinc-800" />
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
             Objects: {ps.measurements.length}
           </span>
         </div>
-        <div className="flex items-center gap-4">
+
+        {/* Center — Preset trigger */}
+        <div className="relative flex items-center justify-center group">
+
+          {/* Popover */}
+          <div className={cn(
+            'absolute bottom-7 left-1/2 -translate-x-1/2 z-[100]',
+            'bg-[#111] border border-amber-400/60 px-4 py-2.5 min-w-[160px]',
+            'transition-all duration-150 pointer-events-none opacity-0 translate-y-1',
+            'group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto',
+          )}>
+            <p className="text-[8px] text-zinc-600 uppercase tracking-[0.2em] font-bold text-center mb-2">
+              — Presets —
+            </p>
+            {[
+              'Carcass Cabinet',
+              'Door Assembly',
+              'Roof Framing',
+              'Pipe Run',
+              'Window Unit',
+            ].map(label => (
+              <button
+                key={label}
+                onClick={() => setShowPresetDrawer(true)}
+                className="flex items-center gap-1.5 w-full text-left text-[9px] text-zinc-500 uppercase tracking-widest font-bold py-0.5 hover:text-amber-400 transition-colors"
+              >
+                <span className="text-[8px]">▸</span>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Button */}
+          <button
+            onClick={() => setShowPresetDrawer(prev => !prev)}
+            className={cn(
+              'relative flex items-center gap-1.5 px-3 h-[22px] overflow-hidden',
+              'border text-[9px] uppercase tracking-widest font-bold',
+              'transition-all duration-150',
+              'group/btn',
+              showPresetDrawer
+                ? 'bg-amber-400 text-black border-amber-400'        // active state
+                : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black', // idle
+            )}
+          >
+            {/* Shimmer */}
+            <span className="absolute top-0 left-[-60%] w-[40%] h-full bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none group-hover/btn:animate-[shimmer_0.45s_linear_forwards]" />
+
+            {/* Double bouncing chevrons */}
+            <span className="flex flex-col items-center gap-[1px] animate-[bounceUp_1.4s_ease-in-out_infinite]">
+              <svg width="8" height="5" viewBox="0 0 8 5" fill="none">
+                <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <svg width="8" height="5" viewBox="0 0 8 5" fill="none" opacity={0.4}>
+                <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </span>
+
+            PRESETS
+          </button>
+        </div>
+
+        {/* Right */}
+        <div className="flex items-center gap-4 justify-end">
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
             LAT: 34.0522 N / LON: 118.2437 W
           </span>
           <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
         </div>
+
       </footer>
     </div>
   );

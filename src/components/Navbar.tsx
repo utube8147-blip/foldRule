@@ -35,7 +35,7 @@ export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPrese
           <span className="text-[10px] font-mono font-bold text-zinc-400">SYNCED</span>
         </div>
         
-        {onOpenPresets && (
+        {/* {onOpenPresets && (
           <button
             onClick={onOpenPresets}
             className="bg-slate-700 hover:bg-slate-600 text-amber-400 font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 border border-amber-500"
@@ -44,7 +44,7 @@ export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPrese
             PRESETS
           </button>
         )}
-        
+         */}
         <button
           onClick={onExport}
           className="bg-amber-accent hover:bg-amber-400 text-black font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-amber-accent/10"
