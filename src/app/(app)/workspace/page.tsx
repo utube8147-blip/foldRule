@@ -1,4 +1,9 @@
-// app/workspace/page.tsx (updated sections)
+// FILE: src/app/(app)/workspace/page.tsx
+// UPDATED — Identical to your existing workspace with ONE change:
+//   useTakeoff()        →   useTakeoffContext()
+// Everything else (grouping logic, preset handler, keyboard shortcuts) is untouched.
+// Also adds an "Expand" button in the takeoff panel header that navigates to /takeoff-full.
+
 'use client';
 
 import React, { useState, useEffect } from 'react';
@@ -11,15 +16,17 @@ import { MaterialLibrary } from '@/components/MaterialLibrary';
 import { ExportModal } from '@/components/ExportModal';
 import { ToastContainer } from '@/components/Toast';
 import { PresetTemplate } from '@/components/presets/PresetTemplates';
-import { useTakeoff } from '@/hooks/useTakeoff';
+import { useTakeoffContext } from '@/context/TakeoffContext'; // ← only change from your original
 import { exportToExcel } from '@/lib/excelExport';
-import { PanelRightClose, Sidebar as SidebarIcon } from 'lucide-react';
+import { PanelRightClose, Sidebar as SidebarIcon, ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
 import { TakeoffRow } from '@/types';
 
 export default function Workspace() {
   const router = useRouter();
+
+  // ── Shared state (same instance as TakeoffFullPage via TakeoffProvider) ─────
   const {
     projectState: ps,
     setProjectState,
@@ -35,8 +42,9 @@ export default function Workspace() {
     deleteMeasurement,
     clearAll,
     toggleVisibility,
-  } = useTakeoff();
+  } = useTakeoffContext();
 
+  // ── Local UI state (not shared — each page manages its own panels) ───────────
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
@@ -54,10 +62,10 @@ export default function Workspace() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
-  // Generate unique group ID
+  // ── Group ID helper ───────────────────────────────────────────────────────────
   const generateGroupId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-  // Generate grouped measurements for carcass
+  // ── Carcass grouped measurement generator (unchanged from your original) ──────
   const generateGroupedCarcassMeasurements = (
     data: Record<string, any>,
     template: PresetTemplate,
@@ -65,20 +73,19 @@ export default function Workspace() {
     groupId: string
   ): { measurements: Partial<TakeoffRow>[]; groupName: string } => {
     const measurements: Partial<TakeoffRow>[] = [];
-    
+
     const W = parseFloat(data.width ?? 600) / 1000;
     const H = parseFloat(data.height ?? 720) / 1000;
     const D = parseFloat(data.depth ?? 550) / 1000;
     const T = parseFloat(data.panelThickness ?? 18) / 1000;
     const shelves = parseInt(data.shelfCount ?? 2);
     const doorCount = parseInt(data.doorCount ?? 1);
-    
+
     const iW = W - 2 * T;
     const iH = H - 2 * T;
-    
+
     const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
-    
-    // Board Materials
+
     if (data.hasBack !== false) {
       measurements.push({
         description: 'Back Panel',
@@ -87,10 +94,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
         category: 'Board Materials',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
+
     if (data.hasTop !== false) {
       measurements.push({
         description: 'Top Panel',
@@ -99,10 +106,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
         category: 'Board Materials',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
+
     if (data.hasBottom !== false) {
       measurements.push({
         description: 'Bottom Panel',
@@ -111,10 +118,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
         category: 'Board Materials',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
+
     if (data.hasLeftSide !== false) {
       measurements.push({
         description: 'Left Side Panel',
@@ -123,10 +130,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
         category: 'Board Materials',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
+
     if (data.hasRightSide !== false) {
       measurements.push({
         description: 'Right Side Panel',
@@ -135,11 +142,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.boardMaterial || '18mm MDF'}`,
         category: 'Board Materials',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
-    // Shelves
+
     if (shelves > 0) {
       measurements.push({
         description: `Shelves (${shelves} pcs)`,
@@ -148,11 +154,10 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`,
         category: 'Shelves',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
-    // Doors
+
     if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
       measurements.push({
@@ -162,9 +167,8 @@ export default function Workspace() {
         unit: 'm²',
         notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`,
         category: 'Doors',
-        isOverridden: true
+        isOverridden: true,
       });
-      
       measurements.push({
         description: 'Door Hardware',
         type: 'Count',
@@ -172,11 +176,10 @@ export default function Workspace() {
         unit: 'sets',
         notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,
         category: 'Hardware',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
-    // Drawers
+
     if (data.hasDrawers) {
       const drawerCount = parseInt(data.drawerCount ?? 2);
       measurements.push({
@@ -186,9 +189,8 @@ export default function Workspace() {
         unit: 'pcs',
         notes: `Material: ${data.drawerMaterial || 'Match doors'}`,
         category: 'Drawers',
-        isOverridden: true
+        isOverridden: true,
       });
-      
       measurements.push({
         description: 'Drawer Hardware',
         type: 'Count',
@@ -196,18 +198,17 @@ export default function Workspace() {
         unit: 'sets',
         notes: `Drawer slides (1 pair per drawer), handles`,
         category: 'Hardware',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
-    // Edge Banding
+
     let edgeBanding = 0;
     if (data.hasTop !== false) edgeBanding += 2 * (iW + D);
     if (data.hasBottom !== false) edgeBanding += 2 * (iW + D);
     if (data.hasLeftSide !== false) edgeBanding += 2 * (D + H);
     if (data.hasRightSide !== false) edgeBanding += 2 * (D + H);
     if (shelves > 0) edgeBanding += (2 * iW + D) * shelves;
-    
+
     if (edgeBanding > 0) {
       measurements.push({
         description: 'Edge Banding',
@@ -216,11 +217,10 @@ export default function Workspace() {
         unit: 'm',
         notes: `Material: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges +10% waste`,
         category: 'Finishing',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
-    // Assembly
+
     measurements.push({
       description: 'Assembly & Installation',
       type: 'Count',
@@ -228,10 +228,9 @@ export default function Workspace() {
       unit: 'each',
       notes: `Labor, cam locks, fixing brackets, assembly hardware`,
       category: 'Labor',
-      isOverridden: true
+      isOverridden: true,
     });
-    
-    // Toe Kick
+
     if (data.hasToeKick) {
       measurements.push({
         description: 'Toe Kick / Plinth',
@@ -240,14 +239,14 @@ export default function Workspace() {
         unit: 'm',
         notes: `Material: ${data.kickboardMaterial || 'Same as carcass'} | Height: ${data.kickboardHeight || '100mm'}`,
         category: 'Finishing',
-        isOverridden: true
+        isOverridden: true,
       });
     }
-    
+
     return { measurements, groupName };
   };
 
-  // Enhanced preset handler with grouping
+  // ── Preset handler (unchanged from your original) ─────────────────────────────
   const handlePresetSelect = (data: Record<string, any>, template: PresetTemplate) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -255,17 +254,15 @@ export default function Workspace() {
     }
 
     const groupId = generateGroupId();
-    
-    // Handle Carcass as grouped takeoff
+
     if (template.id === 'carcass') {
       const { measurements, groupName } = generateGroupedCarcassMeasurements(
-        data, 
-        template, 
+        data,
+        template,
         activeDrawing.id,
         groupId
       );
-      
-      // Add group header
+
       const headerRow: TakeoffRow = {
         id: `${groupId}-header`,
         drawingId: activeDrawing.id,
@@ -286,12 +283,11 @@ export default function Workspace() {
         presetData: data,
         category: 'Group Header',
         color: '#EF9F27',
-        isVisible: true
+        isVisible: true,
       };
-      
+
       addMeasurement(headerRow);
-      
-      // Add all component measurements
+
       measurements.forEach(measurement => {
         addMeasurement({
           id: `${groupId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
@@ -302,25 +298,25 @@ export default function Workspace() {
           presetData: data,
           presetId: template.id,
           color: '#85B7EB',
-          isVisible: true
+          isVisible: true,
         } as TakeoffRow);
       });
-      
+
       addToast(`${groupName} ADDED (${measurements.length} components)`, 'success');
-      
     } else {
-      // Simple preset - single line item
       let quantity = 0;
       let unit = 'm';
-      
+
       switch (template.measurementType) {
         case 'linear':
           quantity = parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
           unit = 'm';
           break;
         case 'area':
-          quantity = parseFloat(data.area ?? data.roofArea ?? 0) || 
-                    (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0) / 1e6) || 0;
+          quantity =
+            parseFloat(data.area ?? data.roofArea ?? 0) ||
+            (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0)) / 1e6 ||
+            0;
           unit = 'm²';
           break;
         case 'count':
@@ -330,13 +326,17 @@ export default function Workspace() {
         default:
           quantity = 0;
       }
-      
+
       addMeasurement({
         id: `${activeDrawing.id}-${Date.now()}`,
         drawingId: activeDrawing.id,
         description: template.name,
-        type: template.measurementType === 'linear' ? 'Length' : 
-              template.measurementType === 'area' ? 'Area' : 'Count',
+        type:
+          template.measurementType === 'linear'
+            ? 'Length'
+            : template.measurementType === 'area'
+            ? 'Area'
+            : 'Count',
         quantity: quantity,
         unit: unit,
         unitRate: 0,
@@ -346,14 +346,14 @@ export default function Workspace() {
         presetData: data,
         presetId: template.id,
         color: '#EF9F27',
-        isVisible: true
+        isVisible: true,
       } as TakeoffRow);
-      
+
       addToast(`${template.name.toUpperCase()} ADDED`, 'success');
     }
   };
 
-  // Keyboard shortcuts
+  // ── Keyboard shortcuts (unchanged) ────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
@@ -370,13 +370,13 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool]);
 
+  // ── Canvas measurement handler (unchanged) ────────────────────────────────────
   const handleAddMeasurement = (m: any) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
       return;
     }
-    
-    // Ensure the measurement has all required fields
+
     const safeMeasurement = {
       description: m.description || 'Untitled Measurement',
       type: m.type || 'Length',
@@ -395,7 +395,7 @@ export default function Workspace() {
       isGroupHeader: m.isGroupHeader || false,
       category: m.category,
     };
-    
+
     addMeasurement(safeMeasurement);
     addToast(`MEASUREMENT ADDED: ${safeMeasurement.description}`, 'success');
   };
@@ -461,10 +461,27 @@ export default function Workspace() {
           onSelectPreset={handlePresetSelect}
         />
 
+        {/* ── Right panel — Takeoff Table ────────────────────────────────────── */}
         <div className={cn(
           'flex flex-col h-full overflow-hidden transition-all duration-300',
           rightCollapsed ? 'w-0' : 'w-96',
         )}>
+          {/* Expand-to-full-page button */}
+          {!rightCollapsed && (
+            <div className="flex items-center justify-between px-3 py-1.5 bg-zinc-950 border-b border-industrial-border flex-shrink-0">
+              <span className="text-[9px] font-mono font-bold uppercase tracking-widest text-zinc-600">
+                Takeoff Data
+              </span>
+              <button
+                onClick={() => router.push('/takeoff-full')}
+                className="flex items-center gap-1.5 text-[9px] font-mono font-bold uppercase tracking-widest text-zinc-500 hover:text-amber-400 border border-transparent hover:border-zinc-700 px-2 py-1 transition-all"
+                title="Open full-page takeoff view"
+              >
+                <ExternalLink className="w-3 h-3" />
+                Expand
+              </button>
+            </div>
+          )}
           <TakeoffTable
             measurements={ps.measurements}
             materials={ps.materials}
@@ -483,7 +500,7 @@ export default function Workspace() {
               points: [],
               isOverridden: true,
               color: '#EF9F27',
-              isVisible: true
+              isVisible: true,
             } as TakeoffRow)}
           />
         </div>
