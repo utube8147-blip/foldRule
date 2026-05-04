@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
 import { PresetTemplate } from './presets/PresetTemplates';
 import { PresetDrawer } from './presets/PresetDrawer';
-import { Minimap } from './Minimap';   // ← extracted component
+import { Minimap } from './Minimap';
 
 const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -196,7 +196,6 @@ export function Viewer({
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   // ── Measurements Engine ─────────────────────────────────────────────────────
-  // Create a wrapper for setActiveTool that accepts string
   const setActiveToolString = useCallback((tool: string) => {
     setActiveTool(tool as ToolType);
   }, [setActiveTool]);
@@ -411,7 +410,7 @@ export function Viewer({
   // ── PDF Rendering ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!pdf) return;
-    let active     = true;
+    let active = true;
     let renderTask: any = null;
 
     const renderPage = async () => {
@@ -420,11 +419,11 @@ export function Viewer({
         if (!active) return;
 
         const MAX_CANVAS_PIXELS = 16_000_000;
-        const rawDpr     = window.devicePixelRatio || 1;
-        const logicalVP  = page.getViewport({ scale });
-        const logicalPx  = logicalVP.width * logicalVP.height;
-        const safeDpr    = Math.sqrt(MAX_CANVAS_PIXELS / logicalPx);
-        const dpr        = Math.min(rawDpr, safeDpr, 3);
+        const rawDpr = window.devicePixelRatio || 1;
+        const logicalVP = page.getViewport({ scale });
+        const logicalPx = logicalVP.width * logicalVP.height;
+        const safeDpr = Math.sqrt(MAX_CANVAS_PIXELS / logicalPx);
+        const dpr = Math.min(rawDpr, safeDpr, 3);
         const physicalVP = page.getViewport({ scale: scale * dpr });
 
         const cssW = logicalVP.width;
@@ -432,34 +431,40 @@ export function Viewer({
         const phyW = physicalVP.width;
         const phyH = physicalVP.height;
 
-        const canvas  = pdfCanvasRef.current;
+        const canvas = pdfCanvasRef.current;
         if (!canvas) return;
         const context = canvas.getContext('2d');
         if (!context) return;
-        canvas.width        = phyW;
-        canvas.height       = phyH;
-        canvas.style.width  = `${cssW}px`;
+        
+        canvas.width = phyW;
+        canvas.height = phyH;
+        canvas.style.width = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
 
         if (drawingCanvasRef.current) {
           const dc = drawingCanvasRef.current;
-          dc.width        = cssW;
-          dc.height       = cssH;
-          dc.style.width  = `${cssW}px`;
+          dc.width = cssW;
+          dc.height = cssH;
+          dc.style.width = `${cssW}px`;
           dc.style.height = `${cssH}px`;
         }
 
         if (pinCanvasRef.current) {
           const pc = pinCanvasRef.current;
-          pc.width        = cssW;
-          pc.height       = cssH;
-          pc.style.width  = `${cssW}px`;
+          pc.width = cssW;
+          pc.height = cssH;
+          pc.style.width = `${cssW}px`;
           pc.style.height = `${cssH}px`;
         }
 
         setPdfDimensions({ w: cssW, h: cssH });
 
-        renderTask = page.render({ canvasContext: context, viewport: physicalVP });
+        // FIX: Use 'canvas' property instead of 'canvasContext' for newer pdf.js versions
+        renderTask = page.render({ 
+          canvasContext: context, 
+          viewport: physicalVP,
+          canvas: canvas as any // Add canvas property for compatibility
+        } as any);
         await renderTask.promise;
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') console.error('Render error:', err);
@@ -484,13 +489,13 @@ export function Viewer({
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
 
-      const delta         = e.deltaY > 0 ? -ZOOM_SENSITIVITY : ZOOM_SENSITIVITY;
-      const momentum      = Math.min(Math.abs(e.deltaY) / 100, 1);
+      const delta = e.deltaY > 0 ? -ZOOM_SENSITIVITY : ZOOM_SENSITIVITY;
+      const momentum = Math.min(Math.abs(e.deltaY) / 100, 1);
       const adjustedDelta = delta * (1 + momentum * 0.5);
 
       const containerRect = container.getBoundingClientRect();
       const cursorX = e.clientX - containerRect.left + container.scrollLeft;
-      const cursorY = e.clientY - containerRect.top  + container.scrollTop;
+      const cursorY = e.clientY - containerRect.top + container.scrollTop;
 
       setScale(prevScale => {
         const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prevScale + adjustedDelta));
@@ -503,7 +508,7 @@ export function Viewer({
             const d = pdfDimensionsRef.current;
             if (!c || !d) return;
             c.scrollLeft = cursorX * ratio - (e.clientX - containerRect.left);
-            c.scrollTop  = cursorY * ratio - (e.clientY - containerRect.top);
+            c.scrollTop = cursorY * ratio - (e.clientY - containerRect.top);
           });
         });
 
@@ -534,20 +539,12 @@ export function Viewer({
   }, [fitToScreen]);
 
   // ── Space bar — pan mode (FIX: prevent browser scroll) ────────────────────
-  //
-  //  The browser's default behaviour for Space is to scroll the focused
-  //  scrollable element down.  We must call e.preventDefault() in the
-  //  *window* keydown listener (which fires before the container's onKeyDown)
-  //  so the scroll never happens.  We also need { capture: true } so the
-  //  listener fires before any bubbling handlers that might stop propagation.
-  //
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
 
-      // Always prevent the native scroll — even on repeat events
       e.preventDefault();
 
       if (!e.repeat) {
@@ -564,12 +561,11 @@ export function Viewer({
       if (containerRef.current) containerRef.current.style.cursor = '';
     };
 
-    // Use capture so we intercept Space before any scroll handler
     window.addEventListener('keydown', onKeyDown, { capture: true });
-    window.addEventListener('keyup',   onKeyUp,   { capture: true });
+    window.addEventListener('keyup', onKeyUp, { capture: true });
     return () => {
       window.removeEventListener('keydown', onKeyDown, { capture: true });
-      window.removeEventListener('keyup',   onKeyUp,   { capture: true });
+      window.removeEventListener('keyup', onKeyUp, { capture: true });
     };
   }, []);
 
@@ -585,8 +581,8 @@ export function Viewer({
   // ── Panning with pointer capture ───────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent) => {
     const isMiddleMouse = e.button === 1;
-    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
-    const isSelectPan   = e.button === 0 && activeTool === 'select';
+    const isSpacePan = e.button === 0 && spaceHeldRef.current;
+    const isSelectPan = e.button === 0 && activeTool === 'select';
     if (isMiddleMouse || isSpacePan || isSelectPan) {
       startPan(e, e.currentTarget as HTMLElement);
     }
@@ -600,14 +596,14 @@ export function Viewer({
   const handleContainerPointerMove = (e: React.PointerEvent) => {
     if (isPanning && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
-      containerRef.current.scrollTop  -= e.movementY;
+      containerRef.current.scrollTop -= e.movementY;
     }
   };
 
   // ── Drawing canvas — intercept middle mouse & space pan ────────────────────
   const handleDrawingCanvasPointerDown = (e: React.PointerEvent) => {
     const isMiddleMouse = e.button === 1;
-    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
+    const isSpacePan = e.button === 0 && spaceHeldRef.current;
     if (isMiddleMouse || isSpacePan) {
       e.stopPropagation();
       if (containerRef.current) startPan(e, containerRef.current);
@@ -615,7 +611,7 @@ export function Viewer({
   };
 
   const currentPageData = pageData.get(pageNumber - 1);
-  const isAnalyzing     = analysisStatus === 'analyzing';
+  const isAnalyzing = analysisStatus === 'analyzing';
 
   // ── Cursor class for the drawing canvas ───────────────────────────────────
   const drawingCanvasCursor = spaceHeld
@@ -781,7 +777,6 @@ export function Viewer({
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
         onKeyDown={e => {
-          // Prevent Space from scrolling this container
           if (e.code === 'Space') e.preventDefault();
 
           if (e.key === 'Escape') {
@@ -798,7 +793,7 @@ export function Viewer({
         <div
           className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
           style={pdf && pdfDimensions ? (() => {
-            const vw = containerRef.current?.clientWidth  ?? 0;
+            const vw = containerRef.current?.clientWidth ?? 0;
             const vh = containerRef.current?.clientHeight ?? 0;
             const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
             const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
@@ -847,12 +842,12 @@ export function Viewer({
                 const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
                 const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
                 const left = Math.round((wrapW - pdfDimensions.w) / 2);
-                const top  = Math.round((wrapH - pdfDimensions.h) / 2);
+                const top = Math.round((wrapH - pdfDimensions.h) / 2);
                 return {
                   position: 'absolute' as const,
                   left,
                   top,
-                  width:  pdfDimensions.w,
+                  width: pdfDimensions.w,
                   height: pdfDimensions.h,
                 };
               })() : {}}
