@@ -4,7 +4,18 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
-import { Viewer, ViewerToolbarAPI } from '@/components/Viewer';
+// ── FIX: dynamic import with ssr:false AND no loading component to prevent hydration issues
+import dynamic from 'next/dynamic';
+import type { ViewerToolbarAPI } from '@/components/Viewer';
+
+// Import with no loading component - let it render nothing on server
+const Viewer = dynamic(
+  () => import('@/components/Viewer').then(m => m.Viewer),
+  { 
+    ssr: false,
+  }
+);
+
 import { TakeoffTable } from '@/components/TakeoffTable';
 import { MaterialLibrary } from '@/components/MaterialLibrary';
 import { ExportModal } from '@/components/ExportModal';
@@ -54,9 +65,15 @@ export default function Workspace() {
   const [showExportModal, setShowExportModal]   = useState(false);
   const [showPresetDrawer, setShowPresetDrawer] = useState(false);
   const [toasts, setToasts]                     = useState<any[]>([]);
+  const [isMounted, setIsMounted]               = useState(false);
 
   // ── Toolbar API surfaced from Viewer via onToolbarReady ───────────────────────
   const [toolbarAPI, setToolbarAPI] = useState<ViewerToolbarAPI | null>(null);
+
+  // Handle client-side mounting to prevent hydration mismatches
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const activeDrawing       = ps.drawings.find(d => d.id === ps.activeDrawingId) || null;
   const currentScaleFactor  = activeDrawing ? activeDrawing.scaleFactor : 1;
@@ -294,8 +311,30 @@ export default function Workspace() {
 
   const api = toolbarAPI;
 
+  // Show loading state while mounting to prevent hydration mismatch
+  if (!isMounted) {
+    return (
+      <div className="flex flex-col h-screen bg-industrial-black">
+        <Navbar
+          projectName={ps.projectName}
+          onProjectNameChange={() => {}}
+          onExport={() => {}}
+          onOpenPresets={() => {}}
+        />
+        <div className="flex-1 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
+            <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
+              LOADING WORKSPACE...
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="flex flex-col h-screen overflow-hidden bg-industrial-black">
 
       {/* ── 1. Top navbar (fixed, h-14) ──────────────────────────────────────── */}
       <Navbar
@@ -332,7 +371,7 @@ export default function Workspace() {
         </div>
 
         {/* ── Right column: toolbar on top, then viewer + takeoff panel below ── */}
-        <div className="flex flex-col flex-1 overflow-hidden">
+        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
           {/* ── Viewer toolbar — only spans right of sidebar ─────────────────── */}
           <div className="flex-shrink-0 h-12 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-4 z-30 shadow-sm">
@@ -454,29 +493,33 @@ export default function Workspace() {
           </div>
 
           {/* ── Viewer canvas + TakeoffPanel row ─────────────────────────────── */}
-          <div className="flex flex-1 overflow-hidden relative">
+          <div className="flex flex-1 overflow-hidden relative min-h-0">
 
-            {/* Viewer */}
-            <Viewer
-              activeTool={activeTool}
-              setActiveTool={setActiveTool}
-              measurements={activeMeasurements}
-              onAddMeasurement={handleAddMeasurement}
-              onUpdateMeasurement={updateMeasurement}
-              scaleFactor={currentScaleFactor}
-              onScaleSet={handleScaleSet}
-              activeDrawing={activeDrawing}
-              onDrawingAdded={addDrawing}
-              showPresetDrawer={showPresetDrawer}
-              onClosePresetDrawer={() => setShowPresetDrawer(false)}
-              onSelectPreset={handlePresetSelect}
-              hideToolbar={true}
-              onToolbarReady={setToolbarAPI}
-            />
+            {/* Viewer - with min-width to prevent collapse */}
+            <div className="flex-1 min-w-0 relative">
+              <Viewer
+                activeTool={activeTool}
+                setActiveTool={setActiveTool}
+                measurements={activeMeasurements}
+                onAddMeasurement={handleAddMeasurement}
+                onUpdateMeasurement={updateMeasurement}
+                scaleFactor={currentScaleFactor}
+                onScaleSet={handleScaleSet}
+                activeDrawing={activeDrawing}
+                onDrawingAdded={addDrawing}
+                showPresetDrawer={showPresetDrawer}
+                onClosePresetDrawer={() => setShowPresetDrawer(false)}
+                onSelectPreset={handlePresetSelect}
+                hideToolbar={true}
+                onToolbarReady={(api) => {
+                  setToolbarAPI(api);
+                }}
+              />
+            </div>
 
-            {/* Right panel — TakeoffTable owns its own header now */}
+            {/* Right panel — TakeoffTable */}
             <div className={cn(
-              'flex flex-col h-full overflow-hidden transition-all duration-300',
+              'flex flex-col h-full overflow-hidden transition-all duration-300 flex-shrink-0',
               rightCollapsed ? 'w-0' : 'w-96',
             )}>
               <TakeoffTable
@@ -596,8 +639,8 @@ export default function Workspace() {
               'transition-all duration-150',
               'group/btn',
               showPresetDrawer
-                ? 'bg-amber-400 text-black border-amber-400'        // active state
-                : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black', // idle
+                ? 'bg-amber-400 text-black border-amber-400'
+                : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black',
             )}
           >
             {/* Shimmer */}

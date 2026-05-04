@@ -71,17 +71,13 @@ interface ViewerProps {
   onScaleSet: (factor: number) => void;
   activeDrawing: Drawing | null;
   onDrawingAdded: (name: string, fileUrl: string, file?: File) => void;
-  // Preset drawer
   showPresetDrawer: boolean;
   onClosePresetDrawer: () => void;
   onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
-  // NEW: when true the internal toolbar strip is hidden — parent renders it instead
   hideToolbar?: boolean;
-  // NEW: expose snap/zoom state so parent toolbar can render controls
   onToolbarReady?: (api: ViewerToolbarAPI) => void;
 }
 
-// API object passed up to the parent so workspace can render the toolbar controls
 export interface ViewerToolbarAPI {
   tools: { id: string; icon: React.ElementType; label: string; shortcut: string }[];
   activeTool: ToolType;
@@ -138,6 +134,20 @@ export function Viewer({
   const scaleRef = useRef(scale);
   useEffect(() => { scaleRef.current = scale; }, [scale]);
 
+  const pdfRef = useRef<pdfjsLib.PDFDocumentProxy | null>(pdf);
+  useEffect(() => { pdfRef.current = pdf; }, [pdf]);
+
+  const onScaleSetRef = useRef(onScaleSet);
+  useEffect(() => { onScaleSetRef.current = onScaleSet; }, [onScaleSet]);
+
+  const activeDrawingId  = activeDrawing?.id     ?? null;
+  const activeDrawingUrl = activeDrawing?.fileUrl ?? null;
+
+  const activeDrawingFileRef = useRef<File | undefined>(activeDrawing?.file);
+  useEffect(() => { activeDrawingFileRef.current = activeDrawing?.file; }, [activeDrawing?.file]);
+
+  const startExtractionRef = useRef<((...args: any[]) => void) | null>(null);
+
   // ── Snap Settings ───────────────────────────────────────────────────────────
   const [snapEnabled, setSnapEnabled]           = useState(true);
   const [showPins, setShowPins]                 = useState(true);
@@ -168,6 +178,8 @@ export function Viewer({
     redrawPinCanvas,
     cursorPointRef,
   } = snapEngine;
+
+  useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   // ── Measurements Engine ─────────────────────────────────────────────────────
   const measureEngine = useMeasurements({
@@ -206,7 +218,7 @@ export function Viewer({
     (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
   }, [onScaleSet]);
 
-  // ── Tools list (shared between internal toolbar and parent toolbar) ──────────
+  // ── Tools list ───────────────────────────────────────────────────────────────
   const tools = [
     { id: 'select', icon: MousePointer2, label: 'Select (Pan)', shortcut: 'V' },
     { id: 'point',  icon: CircleDot,     label: 'Point',        shortcut: 'P' },
@@ -216,23 +228,61 @@ export function Viewer({
     { id: 'scale',  icon: Scaling,       label: 'Calibrate',    shortcut: 'S' },
   ];
 
-  // ── Fit to screen ─────────────────────────────────────────────────────────────
-  const fitToScreen = useCallback(async (pdfDoc?: pdfjsLib.PDFDocumentProxy, pageNum?: number) => {
-    const doc  = pdfDoc  ?? pdf;
-    const page = pageNum ?? pageNumber;
-    if (!doc) return;
+  // Padding constant kept in sync between centering logic, fitToScreen, and CSS class.
+  // p-6 = 24px in Tailwind.
+  const CANVAS_PADDING = 24;
+
+  // ── Center the document in the viewport ─────────────────────────────────────
+  // When the document fits inside the viewport we center it both axes.
+  // When the document is TALLER than the viewport we pin scrollTop=0 so the
+  // top of the document is always visible — this was the clipping bug.
+  const centerDocumentInViewport = useCallback(() => {
+    const container = containerRef.current;
+    const canvas    = pdfCanvasRef.current;
+    if (!container || !canvas) return;
+
+    requestAnimationFrame(() => {
+      const docW  = canvas.offsetWidth  + CANVAS_PADDING * 2;
+      const docH  = canvas.offsetHeight + CANVAS_PADDING * 2;
+      const viewW = container.clientWidth;
+      const viewH = container.clientHeight;
+
+      // Horizontal: always center
+      container.scrollLeft = Math.max(0, (docW - viewW) / 2);
+
+      // Vertical: center only if the document fits; otherwise start at top
+      container.scrollTop = docH > viewH
+        ? 0
+        : Math.max(0, (docH - viewH) / 2);
+    });
+  }, []);
+
+  // ── Fit to screen ──────────────────────────────────────────────────────────
+  const fitToScreen = useCallback(async (
+    pdfDoc?: pdfjsLib.PDFDocumentProxy,
+    pageNum?: number,
+  ) => {
+    const doc  = pdfDoc ?? pdfRef.current;
+    const page = pageNum ?? pageNumberRef.current;
+    if (!doc || !containerRef.current) return;
+
     try {
       const p        = await doc.getPage(page);
       const viewport = p.getViewport({ scale: 1 });
-      if (containerRef.current) {
-        const { width, height } = containerRef.current.getBoundingClientRect();
-        const fitScale = Math.min((width - 64) / viewport.width, (height - 64) / viewport.height);
-        setScale(Math.max(0.1, fitScale));
-      }
-    } catch (err) { console.error('Fit error', err); }
-  }, [pdf, pageNumber]);
 
-  // ── Manual Scale ──────────────────────────────────────────────────────────────
+      // Subtract padding from both axes so the fitted doc never touches edges
+      const vW = containerRef.current.clientWidth  - CANVAS_PADDING * 2;
+      const vH = containerRef.current.clientHeight - CANVAS_PADDING * 2;
+
+      const newScale = Math.max(0.1, Math.min(5, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
+      setScale(newScale);
+      setTimeout(() => centerDocumentInViewport(), 150);
+    } catch (err) {
+      console.error('Fit error', err);
+    }
+  }, [centerDocumentInViewport]);
+
+  // ── Manual Scale ─────────────────────────────────────────────────────────
   const handleManualScale = useCallback(() => {
     const ratioStr = window.prompt('Enter scale ratio (e.g. 1:100) or pixels per unit (e.g. 0.05):');
     if (!ratioStr) return;
@@ -240,15 +290,15 @@ export function Viewer({
       const [paper, real] = ratioStr.split(':').map(parseFloat);
       if (!isNaN(paper) && !isNaN(real) && real > 0) {
         alert('Ratio parsing applied. Use Draw Calibration for pixel-accurate mapping.');
-        onScaleSet(real / paper);
+        onScaleSetRef.current(real / paper);
       }
     } else {
       const factor = parseFloat(ratioStr);
-      if (!isNaN(factor) && factor > 0) onScaleSet(factor);
+      if (!isNaN(factor) && factor > 0) onScaleSetRef.current(factor);
     }
-  }, [onScaleSet]);
+  }, []);
 
-  // ── Expose toolbar API to parent ──────────────────────────────────────────────
+  // ── Expose toolbar API to parent ──────────────────────────────────────────
   useEffect(() => {
     if (!onToolbarReady) return;
     const currentPageData = pageData.get(pageNumber - 1);
@@ -283,7 +333,7 @@ export function Viewer({
     pageData, pageNumber, pdf, fitToScreen, handleManualScale,
   ]);
 
-  // ── File Upload ───────────────────────────────────────────────────────────────
+  // ── File Upload ──────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -293,43 +343,73 @@ export function Viewer({
     });
   };
 
-  // ── PDF Load ──────────────────────────────────────────────────────────────────
+  // ── PDF Load ──────────────────────────────────────────────────────────────
   useEffect(() => {
     let isMounted = true;
-    if (!activeDrawing?.fileUrl) { setPdf(null); return; }
+    if (!activeDrawingUrl) {
+      setPdf(null);
+      setPdfDimensions(null);
+      return;
+    }
     setLoading(true);
 
-    const handlePdfLoad = (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
+    const handlePdfLoad = async (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
       if (!isMounted) return;
+
+      const page     = await pdfDoc.getPage(1);
+      const viewport = page.getViewport({ scale: 1 });
+
+      let fitScale = 1.5;
+      if (containerRef.current) {
+        const vW = (containerRef.current.clientWidth  || containerRef.current.offsetWidth)  - CANVAS_PADDING * 2;
+        const vH = (containerRef.current.clientHeight || containerRef.current.offsetHeight) - CANVAS_PADDING * 2;
+        if (vW > 0 && vH > 0) {
+          fitScale = Math.max(0.3, Math.min(5, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
+        }
+      }
+
       setPdf(pdfDoc);
       setPageNumber(1);
-      fitToScreen(pdfDoc, 1);
-      setLoading(false);
-      startExtraction(pdfDoc, activeDrawing.file);
+      setScale(fitScale);
+
+      setTimeout(() => {
+        if (!isMounted) return;
+        startExtractionRef.current?.(pdfDoc, activeDrawingFileRef.current);
+        setTimeout(() => {
+          if (isMounted) {
+            centerDocumentInViewport();
+            setLoading(false);
+          }
+        }, 150);
+      }, 50);
     };
 
-    if (activeDrawing.file) {
+    const file = activeDrawingFileRef.current;
+    if (file) {
       const reader = new FileReader();
       reader.onload = () => {
         if (!isMounted) return;
-        pdfjsLib.getDocument({ data: new Uint8Array(reader.result as ArrayBuffer) }).promise
-          .then(handlePdfLoad)
+        pdfjsLib
+          .getDocument({ data: new Uint8Array(reader.result as ArrayBuffer) })
+          .promise.then(handlePdfLoad)
           .catch(err => { console.error(err); if (isMounted) setLoading(false); });
       };
-      reader.readAsArrayBuffer(activeDrawing.file);
+      reader.readAsArrayBuffer(file);
     } else {
-      pdfjsLib.getDocument(activeDrawing.fileUrl).promise
-        .then(handlePdfLoad)
+      pdfjsLib
+        .getDocument(activeDrawingUrl)
+        .promise.then(handlePdfLoad)
         .catch(err => { console.error(err); if (isMounted) setLoading(false); });
     }
 
     return () => { isMounted = false; };
-  }, [activeDrawing, fitToScreen, startExtraction]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDrawingId, activeDrawingUrl]);
 
-  // ── PDF Rendering ─────────────────────────────────────────────────────────────
+  // ── PDF Rendering ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!pdf) return;
-    let active = true;
+    let active     = true;
     let renderTask: any = null;
 
     const renderPage = async () => {
@@ -363,24 +443,34 @@ export function Viewer({
     return () => { active = false; if (renderTask) renderTask.cancel(); };
   }, [pdf, pageNumber, scale]);
 
-  // ── Wheel Zoom ────────────────────────────────────────────────────────────────
+  // ── Re-center whenever page or dimensions change ──────────────────────────
+  useEffect(() => {
+    if (pdf && pdfDimensions) {
+      centerDocumentInViewport();
+    }
+  }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
+
+  // ── Wheel Zoom (zoom toward cursor) ──────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+
     const handleWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const delta = e.deltaY > 0 ? -0.1 : 0.1;
         setScale(s => {
-          const newScale = Math.max(0.1, s + delta);
+          const newScale = Math.max(0.1, Math.min(5, s + delta));
           if (newScale !== s) {
-            const ratio      = newScale / s;
-            const canvasRect = drawingCanvasRef.current?.getBoundingClientRect();
-            if (canvasRect) {
+            const rect = drawingCanvasRef.current?.getBoundingClientRect();
+            if (rect) {
+              const mouseX = e.clientX - rect.left;
+              const mouseY = e.clientY - rect.top;
+              const ratio  = newScale / s;
               setTimeout(() => {
                 if (containerRef.current) {
-                  containerRef.current.scrollLeft += (e.clientX - canvasRect.left) * (ratio - 1);
-                  containerRef.current.scrollTop  += (e.clientY - canvasRect.top)  * (ratio - 1);
+                  containerRef.current.scrollLeft += mouseX * (ratio - 1);
+                  containerRef.current.scrollTop  += mouseY * (ratio - 1);
                 }
               }, 0);
             }
@@ -389,11 +479,12 @@ export function Viewer({
         });
       }
     };
+
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // ── Panning ───────────────────────────────────────────────────────────────────
+  // ── Panning ───────────────────────────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button === 1 || (e.button === 0 && activeTool === 'select')) {
       e.preventDefault();
@@ -415,10 +506,9 @@ export function Viewer({
   const currentPageData = pageData.get(pageNumber - 1);
   const isAnalyzing     = analysisStatus === 'analyzing';
 
-  // ── Toolbar JSX (reused in both internal and via parent) ──────────────────────
+  // ── Toolbar JSX ───────────────────────────────────────────────────────────
   const ToolbarContent = (
     <>
-      {/* Tool buttons */}
       <div className="flex gap-1">
         {tools.map(tool => (
           <button
@@ -440,7 +530,6 @@ export function Viewer({
         ))}
       </div>
 
-      {/* Middle controls */}
       <div className="flex flex-row items-center gap-2 flex-1 justify-center flex-wrap">
         {isAnalyzing && analysisPage && (
           <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
@@ -514,7 +603,6 @@ export function Viewer({
         </button>
       </div>
 
-      {/* Zoom controls */}
       <div className="flex items-center gap-2 flex-shrink-0">
         <button onClick={() => setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
           <ZoomOut className="w-4 h-4" />
@@ -531,17 +619,16 @@ export function Viewer({
     </>
   );
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden">
+    <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full">
 
-      {/* ── Internal toolbar — only rendered when hideToolbar is false ──────── */}
       {!hideToolbar && (
         <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-20 shadow-sm relative">
           {ToolbarContent}
         </div>
       )}
 
-      {/* ── Snap Settings Panel ──────────────────────────────────────────────── */}
       {showSnapSettings && (
         <SnapSettingsPanel
           showPins={showPins}
@@ -555,7 +642,26 @@ export function Viewer({
         />
       )}
 
-      {/* ── Canvas Scroll Area ───────────────────────────────────────────────── */}
+      {/*
+        THE SCROLL CONTAINER
+        ─────────────────────
+        flex-1 → fills all remaining vertical space between toolbar and footer.
+        overflow-auto → scrollbars appear only when the document overflows.
+
+        THE INNER WRAPPER (p-6)
+        ────────────────────────
+        - min-h-full + min-w-full → always at least as large as the viewport,
+          so flex centering works even for small documents.
+        - flex items-center justify-center → centres document when it fits.
+        - p-6 (24 px) padding on ALL sides → guarantees the document top is
+          never hidden under the toolbar, and provides breathing room on every
+          edge when the document is larger than the viewport and you scroll.
+
+        Previously the wrapper used `items-center` with no padding, so when
+        a tall document was centered its top half was scrolled out of view
+        above the toolbar. Now we detect that case in centerDocumentInViewport
+        and set scrollTop=0 instead of trying to center vertically.
+      */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
@@ -572,10 +678,9 @@ export function Viewer({
         tabIndex={0}
       >
         <div className={cn(
-          'min-h-full min-w-full flex w-max h-max',
-          !pdf ? 'items-center justify-center p-8' : 'p-[50vh] xl:p-[100vh]',
+          'flex items-center justify-center min-h-full min-w-full',
+          !pdf ? 'p-8' : 'p-6',
         )}>
-          {/* Empty state */}
           {!pdf && !loading && (
             <div className="flex flex-col items-center gap-6 p-12 border-2 border-dashed border-industrial-border bg-industrial-panel/50 backdrop-blur-sm max-w-xl w-full text-center">
               <FolderOpen className="w-12 h-12 text-zinc-700" />
@@ -600,9 +705,8 @@ export function Viewer({
             </div>
           )}
 
-          {/* Loading spinner */}
           {loading && (
-            <div className="flex flex-col items-center gap-4 m-auto">
+            <div className="flex flex-col items-center gap-4">
               <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
               <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
                 Processing Vector Data...
@@ -610,10 +714,9 @@ export function Viewer({
             </div>
           )}
 
-          {/* PDF canvas stack */}
           {pdf && (
             <div
-              className="relative shadow-2xl border border-industrial-border bg-white transition-all flex-shrink-0 m-auto"
+              className="relative shadow-2xl border border-industrial-border bg-white flex-shrink-0"
               style={pdfDimensions ? { width: pdfDimensions.w, height: pdfDimensions.h } : {}}
             >
               <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
@@ -681,7 +784,6 @@ export function Viewer({
           )}
         </div>
 
-        {/* Snap correction dialog */}
         {pendingSnapCandidates && pendingSnapCandidates.length > 0 && (
           <SnapCandidateDialog
             count={pendingSnapCandidates.length}
@@ -713,7 +815,7 @@ export function Viewer({
         )}
       </div>
 
-      {/* ── Page Footer ─────────────────────────────────────────────────────── */}
+      {/* Footer — flex-shrink-0 pins it to the bottom of the flex column always */}
       {pdf && (
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
@@ -749,7 +851,6 @@ export function Viewer({
         </div>
       )}
 
-      {/* ── Preset Drawer ────────────────────────────────────────────────────── */}
       <PresetDrawer
         isOpen={showPresetDrawer}
         onClose={onClosePresetDrawer}
