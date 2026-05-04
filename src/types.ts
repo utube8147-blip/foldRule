@@ -10,6 +10,16 @@ export interface Point {
 export interface TakeoffRow {
   id: string;
   drawingId: string;
+  
+  // Grouping fields
+  groupId?: string;
+  groupName?: string;
+  groupType?: string;
+  parentId?: string;
+  isGroupHeader?: boolean;
+  isExpanded?: boolean;
+
+  // Regular fields
   description: string;
   type: MeasurementType;
   quantity: number;
@@ -18,6 +28,9 @@ export interface TakeoffRow {
   notes: string;
   points: Point[];
   isOverridden: boolean;
+  presetData?: any;
+  presetId?: string;
+  category?: string;
   color: string;
   isVisible: boolean;
 }
