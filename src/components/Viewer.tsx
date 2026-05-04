@@ -232,22 +232,17 @@ export function Viewer({
   // p-6 = 24px in Tailwind.
   const CANVAS_PADDING = 24;
 
+  // Zoom sensitivity configuration
+  const ZOOM_SENSITIVITY = 0.25; // Increased from 0.1 to 0.25 for faster zoom
+  const MIN_ZOOM = 0.05;  // Allow zooming out to 5%
+  const MAX_ZOOM = 10;    // Allow zooming in to 1000%
+
   // ── Center the document in the viewport ─────────────────────────────────────
-  // The inner wrapper is now a plain block with padding (not flex-centered).
-  // margin:auto on the document div handles centering when it fits the viewport.
-  // When the document is LARGER than the viewport we still want to start centered
-  // (not at the top-left corner) so we set scrollLeft/scrollTop explicitly.
-  // scrollWidth/scrollHeight are used (not canvas.offsetWidth) because they
-  // always reflect the true scrollable area including padding.
   const centerDocumentInViewport = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
 
     requestAnimationFrame(() => {
-      // The wrapper is always large (max(doc+padding, viewport*3)).
-      // Scrolling to (scrollWidth-viewWidth)/2 and (scrollHeight-viewHeight)/2
-      // lands us exactly at the center of the wrapper, which is where the
-      // document is positioned (both small and large docs).
       const viewW = container.clientWidth;
       const viewH = container.clientHeight;
       container.scrollLeft = Math.round((container.scrollWidth  - viewW) / 2);
@@ -272,7 +267,7 @@ export function Viewer({
       const vW = containerRef.current.clientWidth  - CANVAS_PADDING * 2;
       const vH = containerRef.current.clientHeight - CANVAS_PADDING * 2;
 
-      const newScale = Math.max(0.1, Math.min(5, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
+      const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
       setScale(newScale);
       setTimeout(() => centerDocumentInViewport(), 150);
     } catch (err) {
@@ -362,7 +357,7 @@ export function Viewer({
         const vW = (containerRef.current.clientWidth  || containerRef.current.offsetWidth)  - CANVAS_PADDING * 2;
         const vH = (containerRef.current.clientHeight || containerRef.current.offsetHeight) - CANVAS_PADDING * 2;
         if (vW > 0 && vH > 0) {
-          fitScale = Math.max(0.3, Math.min(5, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
+          fitScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
         }
       }
 
@@ -405,18 +400,6 @@ export function Viewer({
   }, [activeDrawingId, activeDrawingUrl]);
 
   // ── PDF Rendering ─────────────────────────────────────────────────────────
-  // DPR-aware rendering: we render the PDF canvas at physical pixel resolution
-  // (scale × devicePixelRatio, adaptively capped so canvas never exceeds 16M physical pixels)
-  // but set CSS width/height to the logical size so the document div stays the
-  // correct size for layout, mouse events, and coordinate math.
-  //
-  // drawingCanvasRef and pinCanvasRef are also sized at physical pixels and their
-  // 2D contexts are pre-scaled by DPR so all measurement/snap drawing code
-  // continues to use logical CSS-pixel coordinates unchanged.
-  //
-  // setPdfDimensions always stores LOGICAL (CSS) pixel sizes — this is what
-  // the document wrapper div, centerDocumentInViewport, and the snap/measure
-  // hooks all depend on. Never store physical pixel sizes there.
   useEffect(() => {
     if (!pdf) return;
     let active     = true;
@@ -427,28 +410,19 @@ export function Viewer({
         const page = await pdf.getPage(pageNumber);
         if (!active) return;
 
-        // Adaptive DPR — scales with canvas size to protect memory.
-        // Never let any single canvas exceed 16M physical pixels.
-        // At low zoom (small canvas) → full screen DPR sharpness (up to 3×).
-        // At high zoom (large canvas) → DPR is automatically reduced.
-        //
-        // Why this matters on your laptop:
-        //   DPR 3, 200% zoom, A1 PDF → ~147M px × 3 canvases ≈ 1.7 GB → crash
-        //   With adaptive cap       → ~16M px × 3 canvases ≈ 185 MB  → safe
         const MAX_CANVAS_PIXELS = 16_000_000;
         const rawDpr     = window.devicePixelRatio || 1;
         const logicalVP  = page.getViewport({ scale });
         const logicalPx  = logicalVP.width * logicalVP.height;
         const safeDpr    = Math.sqrt(MAX_CANVAS_PIXELS / logicalPx);
-        const dpr        = Math.min(rawDpr, safeDpr, 3); // never exceed screen DPR or 3×
-        const physicalVP = page.getViewport({ scale: scale * dpr }); // physical pixels
+        const dpr        = Math.min(rawDpr, safeDpr, 3);
+        const physicalVP = page.getViewport({ scale: scale * dpr });
 
         const cssW = logicalVP.width;
         const cssH = logicalVP.height;
         const phyW = physicalVP.width;
         const phyH = physicalVP.height;
 
-        // ── PDF canvas: render at physical resolution, display at CSS size ──
         const canvas  = pdfCanvasRef.current;
         if (!canvas) return;
         const context = canvas.getContext('2d');
@@ -458,13 +432,6 @@ export function Viewer({
         canvas.style.width  = `${cssW}px`;
         canvas.style.height = `${cssH}px`;
 
-        // ── Drawing canvas: CSS pixel size only — NOT scaled by DPR ──
-        // The useMeasurements and useSnapEngine hooks do all their coordinate
-        // math in CSS pixels (based on getBoundingClientRect + clientX/Y).
-        // If we size this canvas at physical pixels, every click lands at the
-        // wrong position (offset by the DPR factor). Keep it at logical size
-        // so coordinate math stays correct. The measurement overlay lines are
-        // thin enough that DPR sharpness here is not noticeable.
         if (drawingCanvasRef.current) {
           const dc = drawingCanvasRef.current;
           dc.width        = cssW;
@@ -473,7 +440,6 @@ export function Viewer({
           dc.style.height = `${cssH}px`;
         }
 
-        // ── Pin canvas: same — CSS pixel size, no DPR scaling ──
         if (pinCanvasRef.current) {
           const pc = pinCanvasRef.current;
           pc.width        = cssW;
@@ -482,7 +448,6 @@ export function Viewer({
           pc.style.height = `${cssH}px`;
         }
 
-        // Store LOGICAL dimensions — everything else (layout, events, snap) uses CSS px
         setPdfDimensions({ w: cssW, h: cssH });
 
         renderTask = page.render({ canvasContext: context, viewport: physicalVP });
@@ -503,51 +468,91 @@ export function Viewer({
     }
   }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
-  // ── Wheel Zoom (zoom toward cursor) ──────────────────────────────────────
+  // ── Wheel Zoom (cursor-anchored) ──────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
     const handleWheel = (e: WheelEvent) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -0.1 : 0.1;
-        setScale(s => {
-          const newScale = Math.max(0.1, Math.min(5, s + delta));
-          if (newScale !== s) {
-            const rect = drawingCanvasRef.current?.getBoundingClientRect();
-            if (rect) {
-              const mouseX = e.clientX - rect.left;
-              const mouseY = e.clientY - rect.top;
-              const ratio  = newScale / s;
-              setTimeout(() => {
-                if (containerRef.current) {
-                  containerRef.current.scrollLeft += mouseX * (ratio - 1);
-                  containerRef.current.scrollTop  += mouseY * (ratio - 1);
-                }
-              }, 0);
-            }
-          }
-          return newScale;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+
+      const delta       = e.deltaY > 0 ? -ZOOM_SENSITIVITY : ZOOM_SENSITIVITY;
+      const momentum    = Math.min(Math.abs(e.deltaY) / 100, 1);
+      const adjustedDelta = delta * (1 + momentum * 0.5);
+
+      // Capture cursor position relative to the CONTAINER (scroll-space), not the canvas
+      const containerRect = container.getBoundingClientRect();
+      const cursorX = e.clientX - containerRect.left + container.scrollLeft;
+      const cursorY = e.clientY - containerRect.top  + container.scrollTop;
+
+      setScale(prevScale => {
+        const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prevScale + adjustedDelta));
+        if (newScale === prevScale) return prevScale;
+
+        // Use ref so the rAF closure always sees fresh dimensions
+        const dims = pdfDimensionsRef.current;
+        if (!dims) return newScale;
+
+        // The ratio the cursor is at in the current scroll space
+        const ratio = newScale / prevScale;
+
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            const c = containerRef.current;
+            const d = pdfDimensionsRef.current; // fresh after re-render
+            if (!c || !d) return;
+
+            // New wrapper size (mirrors the inline style calculation)
+            const wrapW = Math.max(d.w + CANVAS_PADDING * 2, c.clientWidth  * 3);
+            const wrapH = Math.max(d.h + CANVAS_PADDING * 2, c.clientHeight * 3);
+
+            // Keep the document centered in the new wrapper
+            // (old wrapper used old dims; new wrapper uses new dims — they're equal
+            //  since only scale changes, so centering is stable)
+            const newScrollLeft = cursorX * ratio - (e.clientX - containerRect.left);
+            const newScrollTop  = cursorY * ratio - (e.clientY - containerRect.top);
+
+            c.scrollLeft = newScrollLeft;
+            c.scrollTop  = newScrollTop;
+          });
         });
-      }
+
+        return newScale;
+      });
     };
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, []);
+  }, []); // ← empty deps: cursorX/Y captured at event time, dims via ref
 
-  // ── FIX 3: Panning with pointer capture ───────────────────────────────────
-  // setPointerCapture ensures movementX/Y events keep firing even when the
-  // pointer drifts outside the container boundary mid-pan.
-  //
-  // IMPORTANT: we only preventDefault + capture when a PDF is actually loaded.
-  // Calling preventDefault on the empty-state upload UI blocks the browser's
-  // label→input activation, which prevents the file picker dialog from opening.
+  // ── Keyboard Zoom Shortcuts ────────────────────────────────────────────────
+  useEffect(() => {
+    const handleKeyZoom = (e: KeyboardEvent) => {
+      // Ctrl/Cmd + Plus or Equals
+      if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
+        e.preventDefault();
+        setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY));
+      }
+      // Ctrl/Cmd + Minus
+      else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        e.preventDefault();
+        setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY));
+      }
+      // Ctrl/Cmd + 0 to reset to fit
+      else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        e.preventDefault();
+        fitToScreen();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyZoom);
+    return () => window.removeEventListener('keydown', handleKeyZoom);
+  }, [fitToScreen]);
+
+  // ── Panning with pointer capture ───────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button === 1 || (e.button === 0 && activeTool === 'select')) {
-      // Only intercept if there is a PDF loaded — otherwise let clicks on the
-      // upload label/input fall through to the browser's native file dialog.
       if (!pdfRef.current) return;
       e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
@@ -555,10 +560,12 @@ export function Viewer({
       if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
     }
   };
+  
   const handlePointerUp = (e: React.PointerEvent) => {
     setIsPanning(false);
     if (containerRef.current) containerRef.current.style.cursor = '';
   };
+  
   const handleContainerPointerMove = (e: React.PointerEvent) => {
     if (isPanning && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
@@ -569,7 +576,7 @@ export function Viewer({
   const currentPageData = pageData.get(pageNumber - 1);
   const isAnalyzing     = analysisStatus === 'analyzing';
 
-  // ── Toolbar JSX ───────────────────────────────────────────────────────────
+  // ── Toolbar JSX with improved zoom buttons ─────────────────────────────────
   const ToolbarContent = (
     <>
       <div className="flex gap-1">
@@ -667,15 +674,29 @@ export function Viewer({
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0">
-        <button onClick={() => setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+        <button 
+          onClick={() => setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY))} 
+          className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
+          title="Zoom Out (Ctrl/Cmd + -)"
+        >
           <ZoomOut className="w-4 h-4" />
         </button>
-        <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(scale * 100)}%</span>
-        <button onClick={() => setScale(s => s + 0.1)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+        <span className="text-[10px] font-mono text-zinc-400 w-12 text-center font-bold">
+          {Math.round(scale * 100)}%
+        </span>
+        <button 
+          onClick={() => setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY))} 
+          className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
+          title="Zoom In (Ctrl/Cmd + +)"
+        >
           <ZoomIn className="w-4 h-4" />
         </button>
         <div className="w-px h-4 bg-industrial-border mx-1" />
-        <button onClick={() => fitToScreen()} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+        <button 
+          onClick={() => fitToScreen()} 
+          className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
+          title="Fit to Screen (Ctrl/Cmd + 0)"
+        >
           <Maximize className="w-4 h-4" />
         </button>
       </div>
@@ -705,25 +726,6 @@ export function Viewer({
         />
       )}
 
-      {/*
-        THE SCROLL CONTAINER
-        ─────────────────────
-        flex-1 → fills all remaining vertical space between toolbar and footer.
-        overflow-auto → scrollbars appear only when the document overflows.
-
-        THE INNER WRAPPER
-        ──────────────────
-        FIX 2: When a PDF is loaded we use `items-start` instead of
-        `items-center`. flex `items-center` on an overflow container pushes the
-        excess content equally above AND below the viewport — the top of the
-        document ends up above scrollTop=0 and is unreachable. `items-start`
-        anchors the document to the top of the scroll area so scrollTop=0 always
-        shows the beginning of the document. Centering is then handled explicitly
-        by centerDocumentInViewport() via scrollLeft/scrollTop arithmetic.
-
-        The empty-state (no PDF) keeps `items-center justify-center` because the
-        upload prompt always fits the viewport and looks better centered.
-      */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
@@ -739,23 +741,9 @@ export function Viewer({
         onPointerLeave={handlePointerUp}
         tabIndex={0}
       >
-        {/*
-          Empty state → flex centered (upload prompt always fits viewport).
-          PDF loaded  → plain block with padding. The document div inside uses
-          margin:auto which centers it when it fits and does nothing when it
-          overflows — overflow goes right/down and is always scrollable.
-          flex justify-center must NOT be used here: it places half the
-          horizontal overflow to the LEFT of scrollLeft=0, making that half
-          permanently unreachable.
-        */}
         <div
           className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
           style={pdf && pdfDimensions ? (() => {
-            // Always give the wrapper a large canvas around the document so:
-            // 1. When doc > viewport: both sides are scrollable (no clipping).
-            // 2. When doc < viewport: user can still pan/drag in all directions.
-            // We use max(docSize + 2*padding, viewportSize * 3) so the doc is
-            // always centered with plenty of scrollable space on every edge.
             const vw = containerRef.current?.clientWidth  ?? 0;
             const vh = containerRef.current?.clientHeight ?? 0;
             const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
@@ -800,10 +788,6 @@ export function Viewer({
             <div
               className="relative shadow-2xl border border-industrial-border bg-white"
               style={pdfDimensions && containerRef.current ? (() => {
-                // Position the document in the absolute center of the large wrapper.
-                // This ensures the doc is centered on load and the user can pan equally
-                // in all directions regardless of whether the doc is smaller or larger
-                // than the viewport.
                 const vw = containerRef.current.clientWidth;
                 const vh = containerRef.current.clientHeight;
                 const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
@@ -915,7 +899,7 @@ export function Viewer({
         )}
       </div>
 
-      {/* Footer — flex-shrink-0 pins it to the bottom of the flex column always */}
+      {/* Footer */}
       {pdf && (
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
@@ -946,6 +930,8 @@ export function Viewer({
                 <div className="w-px h-3 bg-industrial-border" />
               </>
             )}
+            {/* <span>ZOOM SENSITIVITY: {ZOOM_SENSITIVITY}x</span> */}
+            {/* <div className="w-px h-3 bg-industrial-border" /> */}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>
