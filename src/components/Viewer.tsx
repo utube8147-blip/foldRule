@@ -1,3 +1,12 @@
+// ─── Viewer.tsx — Key changes from previous version ──────────────────────────
+//
+//  1. Minimap extracted → import { Minimap } from './Minimap'
+//  2. Space-bar bug fixed: preventDefault() in keydown blocks browser scroll,
+//     and the scroll container's onKeyDown also calls e.preventDefault() on Space.
+//  3. Lock/unlock logic lives in Minimap itself (no props needed here).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
@@ -9,6 +18,7 @@ import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
 import { PresetTemplate } from './presets/PresetTemplates';
 import { PresetDrawer } from './presets/PresetDrawer';
+import { Minimap } from './Minimap';   // ← extracted component
 
 const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -124,6 +134,10 @@ export function Viewer({
   const [loading, setLoading]       = useState(false);
   const [isPanning, setIsPanning]   = useState(false);
 
+  // ── Space bar pan state ─────────────────────────────────────────────────────
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const spaceHeldRef = useRef(false);
+
   const [pdfDimensions, setPdfDimensions] = useState<PdfDimensions | null>(null);
   const pdfDimensionsRef = useRef<PdfDimensions | null>(null);
   useEffect(() => { pdfDimensionsRef.current = pdfDimensions; }, [pdfDimensions]);
@@ -228,20 +242,15 @@ export function Viewer({
     { id: 'scale',  icon: Scaling,       label: 'Calibrate',    shortcut: 'S' },
   ];
 
-  // Padding constant kept in sync between centering logic, fitToScreen, and CSS class.
-  // p-6 = 24px in Tailwind.
-  const CANVAS_PADDING = 24;
-
-  // Zoom sensitivity configuration
-  const ZOOM_SENSITIVITY = 0.25; // Increased from 0.1 to 0.25 for faster zoom
-  const MIN_ZOOM = 0.05;  // Allow zooming out to 5%
-  const MAX_ZOOM = 10;    // Allow zooming in to 1000%
+  const CANVAS_PADDING  = 24;
+  const ZOOM_SENSITIVITY = 0.25;
+  const MIN_ZOOM = 0.05;
+  const MAX_ZOOM = 10;
 
   // ── Center the document in the viewport ─────────────────────────────────────
   const centerDocumentInViewport = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
-
     requestAnimationFrame(() => {
       const viewW = container.clientWidth;
       const viewH = container.clientHeight;
@@ -258,15 +267,11 @@ export function Viewer({
     const doc  = pdfDoc ?? pdfRef.current;
     const page = pageNum ?? pageNumberRef.current;
     if (!doc || !containerRef.current) return;
-
     try {
       const p        = await doc.getPage(page);
       const viewport = p.getViewport({ scale: 1 });
-
-      // Subtract padding from both axes so the fitted doc never touches edges
       const vW = containerRef.current.clientWidth  - CANVAS_PADDING * 2;
       const vH = containerRef.current.clientHeight - CANVAS_PADDING * 2;
-
       const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(vW / viewport.width, vH / viewport.height) * 0.97));
       setScale(newScale);
       setTimeout(() => centerDocumentInViewport(), 150);
@@ -348,7 +353,6 @@ export function Viewer({
 
     const handlePdfLoad = async (pdfDoc: pdfjsLib.PDFDocumentProxy) => {
       if (!isMounted) return;
-
       const page     = await pdfDoc.getPage(1);
       const viewport = page.getViewport({ scale: 1 });
 
@@ -463,9 +467,7 @@ export function Viewer({
 
   // ── Re-center whenever page or dimensions change ──────────────────────────
   useEffect(() => {
-    if (pdf && pdfDimensions) {
-      centerDocumentInViewport();
-    }
+    if (pdf && pdfDimensions) centerDocumentInViewport();
   }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
   // ── Wheel Zoom (cursor-anchored) ──────────────────────────────────────────
@@ -477,11 +479,10 @@ export function Viewer({
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
 
-      const delta       = e.deltaY > 0 ? -ZOOM_SENSITIVITY : ZOOM_SENSITIVITY;
-      const momentum    = Math.min(Math.abs(e.deltaY) / 100, 1);
+      const delta         = e.deltaY > 0 ? -ZOOM_SENSITIVITY : ZOOM_SENSITIVITY;
+      const momentum      = Math.min(Math.abs(e.deltaY) / 100, 1);
       const adjustedDelta = delta * (1 + momentum * 0.5);
 
-      // Capture cursor position relative to the CONTAINER (scroll-space), not the canvas
       const containerRect = container.getBoundingClientRect();
       const cursorX = e.clientX - containerRect.left + container.scrollLeft;
       const cursorY = e.clientY - containerRect.top  + container.scrollTop;
@@ -490,31 +491,14 @@ export function Viewer({
         const newScale = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prevScale + adjustedDelta));
         if (newScale === prevScale) return prevScale;
 
-        // Use ref so the rAF closure always sees fresh dimensions
-        const dims = pdfDimensionsRef.current;
-        if (!dims) return newScale;
-
-        // The ratio the cursor is at in the current scroll space
         const ratio = newScale / prevScale;
-
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {
             const c = containerRef.current;
-            const d = pdfDimensionsRef.current; // fresh after re-render
+            const d = pdfDimensionsRef.current;
             if (!c || !d) return;
-
-            // New wrapper size (mirrors the inline style calculation)
-            const wrapW = Math.max(d.w + CANVAS_PADDING * 2, c.clientWidth  * 3);
-            const wrapH = Math.max(d.h + CANVAS_PADDING * 2, c.clientHeight * 3);
-
-            // Keep the document centered in the new wrapper
-            // (old wrapper used old dims; new wrapper uses new dims — they're equal
-            //  since only scale changes, so centering is stable)
-            const newScrollLeft = cursorX * ratio - (e.clientX - containerRect.left);
-            const newScrollTop  = cursorY * ratio - (e.clientY - containerRect.top);
-
-            c.scrollLeft = newScrollLeft;
-            c.scrollTop  = newScrollTop;
+            c.scrollLeft = cursorX * ratio - (e.clientX - containerRect.left);
+            c.scrollTop  = cursorY * ratio - (e.clientY - containerRect.top);
           });
         });
 
@@ -524,48 +508,90 @@ export function Viewer({
 
     container.addEventListener('wheel', handleWheel, { passive: false });
     return () => container.removeEventListener('wheel', handleWheel);
-  }, []); // ← empty deps: cursorX/Y captured at event time, dims via ref
+  }, []);
 
   // ── Keyboard Zoom Shortcuts ────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyZoom = (e: KeyboardEvent) => {
-      // Ctrl/Cmd + Plus or Equals
       if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
         e.preventDefault();
         setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY));
-      }
-      // Ctrl/Cmd + Minus
-      else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
         e.preventDefault();
         setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY));
-      }
-      // Ctrl/Cmd + 0 to reset to fit
-      else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+      } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
         e.preventDefault();
         fitToScreen();
       }
     };
-
     window.addEventListener('keydown', handleKeyZoom);
     return () => window.removeEventListener('keydown', handleKeyZoom);
   }, [fitToScreen]);
 
+  // ── Space bar — pan mode (FIX: prevent browser scroll) ────────────────────
+  //
+  //  The browser's default behaviour for Space is to scroll the focused
+  //  scrollable element down.  We must call e.preventDefault() in the
+  //  *window* keydown listener (which fires before the container's onKeyDown)
+  //  so the scroll never happens.  We also need { capture: true } so the
+  //  listener fires before any bubbling handlers that might stop propagation.
+  //
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      const tag = (e.target as HTMLElement).tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      // Always prevent the native scroll — even on repeat events
+      e.preventDefault();
+
+      if (!e.repeat) {
+        spaceHeldRef.current = true;
+        setSpaceHeld(true);
+      }
+    };
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      spaceHeldRef.current = false;
+      setSpaceHeld(false);
+      setIsPanning(false);
+      if (containerRef.current) containerRef.current.style.cursor = '';
+    };
+
+    // Use capture so we intercept Space before any scroll handler
+    window.addEventListener('keydown', onKeyDown, { capture: true });
+    window.addEventListener('keyup',   onKeyUp,   { capture: true });
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, { capture: true });
+      window.removeEventListener('keyup',   onKeyUp,   { capture: true });
+    };
+  }, []);
+
+  // ── Shared pan initiator ───────────────────────────────────────────────────
+  const startPan = useCallback((e: React.PointerEvent, targetElement: HTMLElement) => {
+    if (!pdfRef.current) return;
+    e.preventDefault();
+    targetElement.setPointerCapture(e.pointerId);
+    setIsPanning(true);
+    if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
+  }, []);
+
   // ── Panning with pointer capture ───────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (e.button === 1 || (e.button === 0 && activeTool === 'select')) {
-      if (!pdfRef.current) return;
-      e.preventDefault();
-      e.currentTarget.setPointerCapture(e.pointerId);
-      setIsPanning(true);
-      if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
+    const isMiddleMouse = e.button === 1;
+    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
+    const isSelectPan   = e.button === 0 && activeTool === 'select';
+    if (isMiddleMouse || isSpacePan || isSelectPan) {
+      startPan(e, e.currentTarget as HTMLElement);
     }
   };
-  
-  const handlePointerUp = (e: React.PointerEvent) => {
+
+  const handlePointerUp = (_e: React.PointerEvent) => {
     setIsPanning(false);
     if (containerRef.current) containerRef.current.style.cursor = '';
   };
-  
+
   const handleContainerPointerMove = (e: React.PointerEvent) => {
     if (isPanning && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
@@ -573,10 +599,29 @@ export function Viewer({
     }
   };
 
+  // ── Drawing canvas — intercept middle mouse & space pan ────────────────────
+  const handleDrawingCanvasPointerDown = (e: React.PointerEvent) => {
+    const isMiddleMouse = e.button === 1;
+    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
+    if (isMiddleMouse || isSpacePan) {
+      e.stopPropagation();
+      if (containerRef.current) startPan(e, containerRef.current);
+    }
+  };
+
   const currentPageData = pageData.get(pageNumber - 1);
   const isAnalyzing     = analysisStatus === 'analyzing';
 
-  // ── Toolbar JSX with improved zoom buttons ─────────────────────────────────
+  // ── Cursor class for the drawing canvas ───────────────────────────────────
+  const drawingCanvasCursor = spaceHeld
+    ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
+    : activeTool !== 'select' && !isPanning
+    ? 'cursor-crosshair'
+    : isPanning
+    ? 'cursor-grabbing'
+    : 'cursor-grab';
+
+  // ── Toolbar JSX ────────────────────────────────────────────────────────────
   const ToolbarContent = (
     <>
       <div className="flex gap-1">
@@ -674,8 +719,8 @@ export function Viewer({
       </div>
 
       <div className="flex items-center gap-2 flex-shrink-0">
-        <button 
-          onClick={() => setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY))} 
+        <button
+          onClick={() => setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY))}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
           title="Zoom Out (Ctrl/Cmd + -)"
         >
@@ -684,16 +729,16 @@ export function Viewer({
         <span className="text-[10px] font-mono text-zinc-400 w-12 text-center font-bold">
           {Math.round(scale * 100)}%
         </span>
-        <button 
-          onClick={() => setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY))} 
+        <button
+          onClick={() => setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY))}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
           title="Zoom In (Ctrl/Cmd + +)"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
         <div className="w-px h-4 bg-industrial-border mx-1" />
-        <button 
-          onClick={() => fitToScreen()} 
+        <button
+          onClick={() => fitToScreen()}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
           title="Fit to Screen (Ctrl/Cmd + 0)"
         >
@@ -726,10 +771,14 @@ export function Viewer({
         />
       )}
 
+      {/* ── Scroll container ───────────────────────────────────────────────── */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
         onKeyDown={e => {
+          // Prevent Space from scrolling this container
+          if (e.code === 'Space') e.preventDefault();
+
           if (e.key === 'Escape') {
             if (tempPoints.length > 0) finishMeasurement();
             else setActiveTool('select');
@@ -810,6 +859,7 @@ export function Viewer({
                 onClick={handleCanvasClick}
                 onContextMenu={handleContextMenu}
                 onPointerMove={handleCanvasPointerMove}
+                onPointerDown={handleDrawingCanvasPointerDown}
                 onPointerLeave={() => {
                   measureEngine.setCursorPoint(null);
                   cursorPointRef.current = null;
@@ -817,11 +867,7 @@ export function Viewer({
                 }}
                 className={cn(
                   'absolute inset-0 z-10 w-full h-full mix-blend-multiply',
-                  activeTool !== 'select' && !isPanning
-                    ? 'cursor-crosshair'
-                    : isPanning
-                    ? 'cursor-grabbing'
-                    : 'cursor-grab',
+                  drawingCanvasCursor,
                 )}
               />
 
@@ -897,6 +943,21 @@ export function Viewer({
             onDismiss={() => setPendingSnapCandidates(null)}
           />
         )}
+
+        {/* ── Minimap — sticky to bottom-left of scroll viewport ───────────── */}
+        {pdf && pdfDimensions && (
+          <div className="sticky bottom-2 left-2 z-40 w-0 h-0 pointer-events-none">
+            <div className="pointer-events-auto">
+              <Minimap
+                pdf={pdf}
+                pageNumber={pageNumber}
+                containerRef={containerRef}
+                pdfDimensions={pdfDimensions}
+                canvasPadding={CANVAS_PADDING}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Footer */}
@@ -922,7 +983,7 @@ export function Viewer({
             </button>
           </div>
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
-            <span>Right-click to finish · ESC to cancel</span>
+            <span>Right-click to finish · ESC to cancel · Space+drag or middle-mouse to pan</span>
             <div className="w-px h-3 bg-industrial-border" />
             {snapEnabled && (
               <>
@@ -930,8 +991,6 @@ export function Viewer({
                 <div className="w-px h-3 bg-industrial-border" />
               </>
             )}
-            {/* <span>ZOOM SENSITIVITY: {ZOOM_SENSITIVITY}x</span> */}
-            {/* <div className="w-px h-3 bg-industrial-border" /> */}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>
