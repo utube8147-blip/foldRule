@@ -233,27 +233,31 @@ export function Viewer({
   const CANVAS_PADDING = 24;
 
   // ── Center the document in the viewport ─────────────────────────────────────
-  // When the document fits inside the viewport we center it both axes.
-  // When the document is TALLER than the viewport we pin scrollTop=0 so the
-  // top of the document is always visible — this was the clipping bug.
+  // The inner wrapper is now a plain block with padding (not flex-centered).
+  // margin:auto on the document div handles centering when it fits the viewport.
+  // When the document is LARGER than the viewport we still want to start centered
+  // (not at the top-left corner) so we set scrollLeft/scrollTop explicitly.
+  // scrollWidth/scrollHeight are used (not canvas.offsetWidth) because they
+  // always reflect the true scrollable area including padding.
   const centerDocumentInViewport = useCallback(() => {
     const container = containerRef.current;
-    const canvas    = pdfCanvasRef.current;
-    if (!container || !canvas) return;
+    if (!container) return;
 
     requestAnimationFrame(() => {
-      const docW  = canvas.offsetWidth  + CANVAS_PADDING * 2;
-      const docH  = canvas.offsetHeight + CANVAS_PADDING * 2;
-      const viewW = container.clientWidth;
-      const viewH = container.clientHeight;
+      const scrollW = container.scrollWidth;
+      const scrollH = container.scrollHeight;
+      const viewW   = container.clientWidth;
+      const viewH   = container.clientHeight;
 
-      // Horizontal: always center
-      container.scrollLeft = Math.max(0, (docW - viewW) / 2);
+      // Always center horizontally — overflow goes equally left and right,
+      // both sides fully reachable via scrollLeft.
+      container.scrollLeft = Math.max(0, (scrollW - viewW) / 2);
 
-      // Vertical: center only if the document fits; otherwise start at top
-      container.scrollTop = docH > viewH
+      // Vertical: center when it fits, pin to top when it overflows so the
+      // top of the document is always visible first.
+      container.scrollTop = scrollH > viewH
         ? 0
-        : Math.max(0, (docH - viewH) / 2);
+        : Math.max(0, (scrollH - viewH) / 2);
     });
   }, []);
 
@@ -484,15 +488,25 @@ export function Viewer({
     return () => container.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // ── Panning ───────────────────────────────────────────────────────────────
+  // ── FIX 3: Panning with pointer capture ───────────────────────────────────
+  // setPointerCapture ensures movementX/Y events keep firing even when the
+  // pointer drifts outside the container boundary mid-pan.
+  //
+  // IMPORTANT: we only preventDefault + capture when a PDF is actually loaded.
+  // Calling preventDefault on the empty-state upload UI blocks the browser's
+  // label→input activation, which prevents the file picker dialog from opening.
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.button === 1 || (e.button === 0 && activeTool === 'select')) {
+      // Only intercept if there is a PDF loaded — otherwise let clicks on the
+      // upload label/input fall through to the browser's native file dialog.
+      if (!pdfRef.current) return;
       e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
       setIsPanning(true);
       if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
     }
   };
-  const handlePointerUp = () => {
+  const handlePointerUp = (e: React.PointerEvent) => {
     setIsPanning(false);
     if (containerRef.current) containerRef.current.style.cursor = '';
   };
@@ -648,19 +662,18 @@ export function Viewer({
         flex-1 → fills all remaining vertical space between toolbar and footer.
         overflow-auto → scrollbars appear only when the document overflows.
 
-        THE INNER WRAPPER (p-6)
-        ────────────────────────
-        - min-h-full + min-w-full → always at least as large as the viewport,
-          so flex centering works even for small documents.
-        - flex items-center justify-center → centres document when it fits.
-        - p-6 (24 px) padding on ALL sides → guarantees the document top is
-          never hidden under the toolbar, and provides breathing room on every
-          edge when the document is larger than the viewport and you scroll.
+        THE INNER WRAPPER
+        ──────────────────
+        FIX 2: When a PDF is loaded we use `items-start` instead of
+        `items-center`. flex `items-center` on an overflow container pushes the
+        excess content equally above AND below the viewport — the top of the
+        document ends up above scrollTop=0 and is unreachable. `items-start`
+        anchors the document to the top of the scroll area so scrollTop=0 always
+        shows the beginning of the document. Centering is then handled explicitly
+        by centerDocumentInViewport() via scrollLeft/scrollTop arithmetic.
 
-        Previously the wrapper used `items-center` with no padding, so when
-        a tall document was centered its top half was scrolled out of view
-        above the toolbar. Now we detect that case in centerDocumentInViewport
-        and set scrollTop=0 instead of trying to center vertically.
+        The empty-state (no PDF) keeps `items-center justify-center` because the
+        upload prompt always fits the viewport and looks better centered.
       */}
       <div
         ref={containerRef}
@@ -677,10 +690,29 @@ export function Viewer({
         onPointerLeave={handlePointerUp}
         tabIndex={0}
       >
-        <div className={cn(
-          'flex items-center justify-center min-h-full min-w-full',
-          !pdf ? 'p-8' : 'p-6',
-        )}>
+        {/*
+          Empty state → flex centered (upload prompt always fits viewport).
+          PDF loaded  → plain block with padding. The document div inside uses
+          margin:auto which centers it when it fits and does nothing when it
+          overflows — overflow goes right/down and is always scrollable.
+          flex justify-center must NOT be used here: it places half the
+          horizontal overflow to the LEFT of scrollLeft=0, making that half
+          permanently unreachable.
+        */}
+        <div
+          className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : undefined)}
+          style={pdf ? {
+            // Force the wrapper to always be wider/taller than the document + padding.
+            // Without explicit minWidth/minHeight the wrapper collapses to the viewport
+            // size, margin:auto centers within the viewport, and the overflow on both
+            // left and right sides is unreachable (scrollLeft can't access it).
+            // With these set, the scroll container's scrollable area always covers
+            // doc + padding on every edge.
+            minWidth:  pdfDimensions ? pdfDimensions.w + CANVAS_PADDING * 2 : undefined,
+            minHeight: pdfDimensions ? pdfDimensions.h + CANVAS_PADDING * 2 : undefined,
+            padding: CANVAS_PADDING,
+          } : undefined}
+        >
           {!pdf && !loading && (
             <div className="flex flex-col items-center gap-6 p-12 border-2 border-dashed border-industrial-border bg-industrial-panel/50 backdrop-blur-sm max-w-xl w-full text-center">
               <FolderOpen className="w-12 h-12 text-zinc-700" />
@@ -716,8 +748,8 @@ export function Viewer({
 
           {pdf && (
             <div
-              className="relative shadow-2xl border border-industrial-border bg-white flex-shrink-0"
-              style={pdfDimensions ? { width: pdfDimensions.w, height: pdfDimensions.h } : {}}
+              className="relative shadow-2xl border border-industrial-border bg-white"
+              style={pdfDimensions ? { width: pdfDimensions.w, height: pdfDimensions.h, marginLeft: 'auto', marginRight: 'auto' } : { marginLeft: 'auto', marginRight: 'auto' }}
             >
               <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
