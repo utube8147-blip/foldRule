@@ -75,6 +75,37 @@ interface ViewerProps {
   showPresetDrawer: boolean;
   onClosePresetDrawer: () => void;
   onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
+  // NEW: when true the internal toolbar strip is hidden — parent renders it instead
+  hideToolbar?: boolean;
+  // NEW: expose snap/zoom state so parent toolbar can render controls
+  onToolbarReady?: (api: ViewerToolbarAPI) => void;
+}
+
+// API object passed up to the parent so workspace can render the toolbar controls
+export interface ViewerToolbarAPI {
+  tools: { id: string; icon: React.ElementType; label: string; shortcut: string }[];
+  activeTool: ToolType;
+  setActiveTool: (t: ToolType) => void;
+  scale: number;
+  setScale: React.Dispatch<React.SetStateAction<number>>;
+  scaleFactor: number;
+  snapEnabled: boolean;
+  setSnapEnabled: React.Dispatch<React.SetStateAction<boolean>>;
+  showSnapSettings: boolean;
+  setShowSnapSettings: React.Dispatch<React.SetStateAction<boolean>>;
+  showPins: boolean;
+  setShowPins: React.Dispatch<React.SetStateAction<boolean>>;
+  snapThreshold: number;
+  setSnapThreshold: React.Dispatch<React.SetStateAction<number>>;
+  confidenceFilter: number;
+  setConfidenceFilter: React.Dispatch<React.SetStateAction<number>>;
+  analysisStatus: string;
+  analysisPage: { current: number; total: number } | null;
+  currentPageCorners: number;
+  pdf: pdfjsLib.PDFDocumentProxy | null;
+  pageNumber: number;
+  fitToScreen: () => void;
+  handleManualScale: () => void;
 }
 
 // ─── Main Viewer Component ────────────────────────────────────────────────────
@@ -83,6 +114,8 @@ export function Viewer({
   activeTool, setActiveTool, measurements, onAddMeasurement,
   onUpdateMeasurement, scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
   showPresetDrawer, onClosePresetDrawer, onSelectPreset,
+  hideToolbar = false,
+  onToolbarReady,
 }: ViewerProps) {
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -173,7 +206,7 @@ export function Viewer({
     (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
   }, [onScaleSet]);
 
-  // ── Tools ───────────────────────────────────────────────────────────────────
+  // ── Tools list (shared between internal toolbar and parent toolbar) ──────────
   const tools = [
     { id: 'select', icon: MousePointer2, label: 'Select (Pan)', shortcut: 'V' },
     { id: 'point',  icon: CircleDot,     label: 'Point',        shortcut: 'P' },
@@ -184,17 +217,71 @@ export function Viewer({
   ];
 
   // ── Fit to screen ─────────────────────────────────────────────────────────────
-  const fitToScreen = useCallback(async (pdfDoc: pdfjsLib.PDFDocumentProxy, pageNum: number) => {
+  const fitToScreen = useCallback(async (pdfDoc?: pdfjsLib.PDFDocumentProxy, pageNum?: number) => {
+    const doc  = pdfDoc  ?? pdf;
+    const page = pageNum ?? pageNumber;
+    if (!doc) return;
     try {
-      const page     = await pdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1 });
+      const p        = await doc.getPage(page);
+      const viewport = p.getViewport({ scale: 1 });
       if (containerRef.current) {
         const { width, height } = containerRef.current.getBoundingClientRect();
         const fitScale = Math.min((width - 64) / viewport.width, (height - 64) / viewport.height);
         setScale(Math.max(0.1, fitScale));
       }
     } catch (err) { console.error('Fit error', err); }
-  }, []);
+  }, [pdf, pageNumber]);
+
+  // ── Manual Scale ──────────────────────────────────────────────────────────────
+  const handleManualScale = useCallback(() => {
+    const ratioStr = window.prompt('Enter scale ratio (e.g. 1:100) or pixels per unit (e.g. 0.05):');
+    if (!ratioStr) return;
+    if (ratioStr.includes(':')) {
+      const [paper, real] = ratioStr.split(':').map(parseFloat);
+      if (!isNaN(paper) && !isNaN(real) && real > 0) {
+        alert('Ratio parsing applied. Use Draw Calibration for pixel-accurate mapping.');
+        onScaleSet(real / paper);
+      }
+    } else {
+      const factor = parseFloat(ratioStr);
+      if (!isNaN(factor) && factor > 0) onScaleSet(factor);
+    }
+  }, [onScaleSet]);
+
+  // ── Expose toolbar API to parent ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!onToolbarReady) return;
+    const currentPageData = pageData.get(pageNumber - 1);
+    onToolbarReady({
+      tools,
+      activeTool,
+      setActiveTool,
+      scale,
+      setScale,
+      scaleFactor,
+      snapEnabled,
+      setSnapEnabled,
+      showSnapSettings,
+      setShowSnapSettings,
+      showPins,
+      setShowPins,
+      snapThreshold,
+      setSnapThreshold,
+      confidenceFilter,
+      setConfidenceFilter,
+      analysisStatus,
+      analysisPage: analysisPage ?? null,
+      currentPageCorners: currentPageData?.corners.length ?? 0,
+      pdf,
+      pageNumber,
+      fitToScreen: () => fitToScreen(),
+      handleManualScale,
+    });
+  }, [
+    activeTool, scale, scaleFactor, snapEnabled, showSnapSettings,
+    showPins, snapThreshold, confidenceFilter, analysisStatus, analysisPage,
+    pageData, pageNumber, pdf, fitToScreen, handleManualScale,
+  ]);
 
   // ── File Upload ───────────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -325,136 +412,134 @@ export function Viewer({
     }
   };
 
-  // ── Manual Scale ──────────────────────────────────────────────────────────────
-  const handleManualScale = () => {
-    const ratioStr = window.prompt('Enter scale ratio (e.g. 1:100) or pixels per unit (e.g. 0.05):');
-    if (!ratioStr) return;
-    if (ratioStr.includes(':')) {
-      const [paper, real] = ratioStr.split(':').map(parseFloat);
-      if (!isNaN(paper) && !isNaN(real) && real > 0) {
-        alert('Ratio parsing applied. Use Draw Calibration for pixel-accurate mapping.');
-        onScaleSet(real / paper);
-      }
-    } else {
-      const factor = parseFloat(ratioStr);
-      if (!isNaN(factor) && factor > 0) onScaleSet(factor);
-    }
-  };
-
   const currentPageData = pageData.get(pageNumber - 1);
   const isAnalyzing     = analysisStatus === 'analyzing';
+
+  // ── Toolbar JSX (reused in both internal and via parent) ──────────────────────
+  const ToolbarContent = (
+    <>
+      {/* Tool buttons */}
+      <div className="flex gap-1">
+        {tools.map(tool => (
+          <button
+            key={tool.id}
+            onClick={() => setActiveTool(tool.id as ToolType)}
+            className={cn(
+              'w-9 h-9 flex items-center justify-center transition-all relative group border',
+              activeTool === tool.id
+                ? 'bg-zinc-800 border-amber-400 text-amber-400'
+                : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
+            )}
+            title={`${tool.label} (${tool.shortcut})`}
+          >
+            <tool.icon className="w-4 h-4" />
+            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+              {tool.label} [{tool.shortcut}]
+            </div>
+          </button>
+        ))}
+      </div>
+
+      {/* Middle controls */}
+      <div className="flex flex-row items-center gap-2 flex-1 justify-center flex-wrap">
+        {isAnalyzing && analysisPage && (
+          <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
+              Analyzing plan… {analysisPage.current}/{analysisPage.total}
+            </span>
+          </div>
+        )}
+        {analysisStatus === 'done' && (
+          <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
+            <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
+              {currentPageData?.corners.length ?? 0} corners detected
+            </span>
+          </div>
+        )}
+
+        <button
+          onClick={() => setSnapEnabled(s => !s)}
+          className={cn(
+            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
+            snapEnabled
+              ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
+              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+          )}
+          title="Toggle corner snapping"
+        >
+          <Target className="w-3 h-3" />
+          {snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
+        </button>
+
+        <button
+          onClick={() => setShowSnapSettings(s => !s)}
+          className={cn(
+            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
+            showSnapSettings
+              ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
+              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+          )}
+          title="Snap settings"
+        >
+          <Settings2 className="w-3 h-3" />
+          SNAP
+        </button>
+
+        <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
+          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
+          <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
+            {scaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${scaleFactor.toFixed(4)}m`}
+          </span>
+        </div>
+
+        <button
+          onClick={() => setActiveTool('scale')}
+          className={cn(
+            'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
+            activeTool === 'scale'
+              ? 'bg-amber-400 text-black border-amber-400'
+              : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
+          )}
+        >
+          DRAW CALIBRATION
+        </button>
+
+        <button
+          onClick={handleManualScale}
+          className="text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black"
+        >
+          MANUAL SCALE
+        </button>
+      </div>
+
+      {/* Zoom controls */}
+      <div className="flex items-center gap-2 flex-shrink-0">
+        <button onClick={() => setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+          <ZoomOut className="w-4 h-4" />
+        </button>
+        <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(scale * 100)}%</span>
+        <button onClick={() => setScale(s => s + 0.1)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+          <ZoomIn className="w-4 h-4" />
+        </button>
+        <div className="w-px h-4 bg-industrial-border mx-1" />
+        <button onClick={() => fitToScreen()} className="p-1.5 text-zinc-500 hover:text-zinc-200">
+          <Maximize className="w-4 h-4" />
+        </button>
+      </div>
+    </>
+  );
 
   return (
     <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden">
 
-      {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
-      <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-20 shadow-sm relative">
-        <div className="flex gap-1">
-          {tools.map(tool => (
-            <button
-              key={tool.id}
-              onClick={() => setActiveTool(tool.id as ToolType)}
-              className={cn(
-                'w-9 h-9 flex items-center justify-center transition-all relative group border',
-                activeTool === tool.id
-                  ? 'bg-zinc-800 border-amber-400 text-amber-400'
-                  : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
-              )}
-              title={`${tool.label} (${tool.shortcut})`}
-            >
-              <tool.icon className="w-4 h-4" />
-              <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-                {tool.label} [{tool.shortcut}]
-              </div>
-            </button>
-          ))}
+      {/* ── Internal toolbar — only rendered when hideToolbar is false ──────── */}
+      {!hideToolbar && (
+        <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-20 shadow-sm relative">
+          {ToolbarContent}
         </div>
-
-        <div className="flex flex-col md:flex-row items-center gap-2">
-          {isAnalyzing && analysisPage && (
-            <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-              <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
-                Analyzing plan… {analysisPage.current}/{analysisPage.total}
-              </span>
-            </div>
-          )}
-          {analysisStatus === 'done' && (
-            <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
-              <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-              <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
-                {currentPageData?.corners.length ?? 0} corners detected
-              </span>
-            </div>
-          )}
-
-          <button
-            onClick={() => setSnapEnabled(s => !s)}
-            className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-              snapEnabled
-                ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
-                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-            )}
-            title="Toggle corner snapping"
-          >
-            <Target className="w-3 h-3" />
-            {snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
-          </button>
-
-          <button
-            onClick={() => setShowSnapSettings(s => !s)}
-            className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-              showSnapSettings
-                ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
-                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-            )}
-            title="Snap settings"
-          >
-            <Settings2 className="w-3 h-3" />
-            SNAP
-          </button>
-
-          <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
-            <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
-            <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
-              {scaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${scaleFactor.toFixed(4)}m`}
-            </span>
-          </div>
-          <button
-            onClick={() => setActiveTool('scale')}
-            className={cn(
-              'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
-              activeTool === 'scale'
-                ? 'bg-amber-400 text-black border-amber-400'
-                : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
-            )}
-          >
-            DRAW CALIBRATION
-          </button>
-          <button
-            onClick={handleManualScale}
-            className="text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black"
-          >
-            MANUAL SCALE
-          </button>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button onClick={() => setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-            <ZoomOut className="w-4 h-4" />
-          </button>
-          <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">{Math.round(scale * 100)}%</span>
-          <button onClick={() => setScale(s => s + 0.1)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-            <ZoomIn className="w-4 h-4" />
-          </button>
-          <div className="w-px h-4 bg-industrial-border mx-1" />
-          <button onClick={() => pdf && fitToScreen(pdf, pageNumber)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-            <Maximize className="w-4 h-4" />
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* ── Snap Settings Panel ──────────────────────────────────────────────── */}
       {showSnapSettings && (
@@ -664,7 +749,7 @@ export function Viewer({
         </div>
       )}
 
-      {/* ── Preset Drawer (Moved OUTSIDE the scrollable container) ── */}
+      {/* ── Preset Drawer ────────────────────────────────────────────────────── */}
       <PresetDrawer
         isOpen={showPresetDrawer}
         onClose={onClosePresetDrawer}
