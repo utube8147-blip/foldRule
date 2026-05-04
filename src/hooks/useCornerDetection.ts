@@ -58,7 +58,7 @@ export interface UseCornerDetectionReturn {
 
   // Pin canvas: hook owns all drawing. Consumer mounts the ref and calls the
   // two notify callbacks whenever Viewer's dimensions or page number change.
-  pinCanvasRef: RefObject<HTMLCanvasElement>;
+  pinCanvasRef: RefObject<HTMLCanvasElement | null>;
   onPdfDimensionsChanged: (w: number, h: number) => void;
   onPageChanged: (pageNumber: number) => void;
 }
