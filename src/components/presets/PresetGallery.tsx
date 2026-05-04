@@ -19,8 +19,7 @@ import {
   Lock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { ELEMENT_PRESETS, PresetTemplate, PresetForm } from './PresetTemplates';
-
+import { ELEMENT_PRESETS, PresetTemplate, PRESET_FORM_MAP } from './PresetTemplates';
 interface PresetGalleryProps {
   onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
   /** FIX: which top-nav tab should appear active when the gallery is opened.
