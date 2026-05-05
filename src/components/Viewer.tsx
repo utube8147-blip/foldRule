@@ -985,12 +985,12 @@ export function Viewer({
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
             <span>Right-click to finish · ESC to cancel · Space+drag or middle-mouse to pan</span>
             <div className="w-px h-3 bg-industrial-border" />
-            {snapEnabled && (
+            {/* {snapEnabled && (
               <>
                 <span className="text-green-500">⦿ SNAP ACTIVE {snapThreshold}px</span>
                 <div className="w-px h-3 bg-industrial-border" />
               </>
-            )}
+            )} */}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>
