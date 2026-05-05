@@ -1,382 +1,476 @@
-/**
- * boqExport.ts
- * ─────────────────────────────────────────────────────────────────────────────
- * Professional-grade BOQ / Quantity Take-Off Excel export.
- * Modelled on Al-Waha / Hopkins Architects QS standard.
- *
- * Improvements over v1:
- *   • Quantities rounded to user-defined precision (no raw floats)
- *   • Section-letter item numbering  (A1, A2 … B1, B2 …)
- *   • Colour-key legend row on every sheet
- *   • Complete header block (project, contractor, consultant, drawing ref)
- *   • Grand Total → VAT → Total incl. VAT cascade
- *   • Notes & Assumptions sheet auto-generated
- *   • Formula type set correctly so cells recalculate in Excel/LibreOffice
- *   • Spacer rows are genuinely empty (no stray fills)
- *   • `spec` sub-line printed in italic below description
- *   • `remarks` column replaces the flat Notes field
- * ─────────────────────────────────────────────────────────────────────────────
- */
-
-import * as XLSX from 'xlsx';
+// boqExportExcelJS.ts
+import * as ExcelJS from 'exceljs';
 
 // ═══════════════════════════════════════════════════════════════════
 // PUBLIC TYPES
 // ═══════════════════════════════════════════════════════════════════
 
 export interface ProjectMeta {
-  projectName:    string;
-  client?:        string;
-  location?:      string;
-  refNo?:         string;
-  drawingRefs?:   string;         // e.g. "FO-6000001 / 6000003 / 6000004"
-  mainContractor?:string;
-  consultant?:    string;
-  preparedBy?:    string;
-  revision?:      string;         // defaults to "P01"
-  vatRate?:       number;         // 0–1, defaults to 0.05
-  currency?:      string;         // defaults to "AED"
-  notes?:         NoteItem[];     // extra project-specific notes for the Notes sheet
+  projectName: string;
+  client?: string;
+  location?: string;
+  refNo?: string;
+  drawingRefs?: string;
+  mainContractor?: string;
+  consultant?: string;
+  preparedBy?: string;
+  revision?: string;
+  vatRate?: number;
+  currency?: string;
+  notes?: NoteItem[];
 }
 
 export interface NoteItem {
-  category: string;   // e.g. "Material Notes"
-  text:     string;
+  category: string;
+  text: string;
 }
 
 export interface Measurement {
   description: string;
-  spec?:       string;    // italic sub-line, e.g. "18mm MR MDF melamine + PVC lipping"
-  type?:       string;    // sub-group label within a sheet, e.g. "Base Cabinets"
-  group?:      string;    // which Takeoff sheet this item belongs to
-  unit:        string;
-  quantity:    number;
-  unitRate:    number;
-  times?:      number;    // defaults to 1
-  L?:          number | null;
-  W?:          number | null;
-  H?:          number | null;
-  remarks?:    string;    // drawing ref / site note
-  qtyPrecision?: number; // decimal places for this item's qty (default 3)
+  spec?: string;
+  type?: string;
+  group?: string;
+  unit: string;
+  quantity: number;
+  unitRate: number;
+  times?: number;
+  L?: number | null;
+  W?: number | null;
+  H?: number | null;
+  remarks?: string;
+  qtyPrecision?: number;
 }
 
 export interface ProjectState {
-  projectName:  string;
-  meta?:        ProjectMeta;
+  projectName: string;
+  meta?: ProjectMeta;
   measurements: Measurement[];
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// COLOUR PALETTE  (Al-Waha QS standard)
+// COLOR PALETTE - Professional Al-Waha Standard
 // ═══════════════════════════════════════════════════════════════════
 
-const C = {
-  HEADER_BG:     'FF1F3864',   // dark navy
-  HEADER_FG:     'FFFFFFFF',
-  BAND_BG:       'FF2E75B6',   // medium blue  (sub-headers, meta row)
-  BAND_FG:       'FFFFFFFF',
-  COL_HDR_BG:    'FF2E75B6',
-  COL_HDR_FG:    'FFFFFFFF',
-  GROUP_BG:      'FFD6DCE4',   // light blue-grey  (section divider)
-  GROUP_FG:      'FF1F3864',
-  SUBTOTAL_BG:   'FFDAE3F3',   // pale blue
-  SUBTOTAL_FG:   'FF1F3864',
-  GRAND_BG:      'FF1F3864',   // dark navy  (grand total)
-  GRAND_FG:      'FFFFFFFF',
-  VAT_BG:        'FFDAE3F3',
-  VAT_FG:        'FF1F3864',
-  TOTAL_INC_BG:  'FF1F3864',
-  TOTAL_INC_FG:  'FFFFFFFF',
-  ROW_ODD:       'FFF2F6FC',   // alternating rows
-  ROW_EVEN:      'FFFFFFFF',
-  KEY_YELLOW:    'FFFFFF00',   // colour-key swatch: fill-in cells
-  KEY_BLUE:      'FF2E75B6',   // section header
-  KEY_GREY:      'FFD6DCE4',   // subtotal
-  KEY_RED:       'FFFF0000',   // grand total accent
-  NOTE_LABEL_BG: 'FFDAE3F3',
-  NOTE_LABEL_FG: 'FF1F3864',
-} as const;
+const Colors = {
+  // Primary brand colors
+  PRIMARY_DARK: 'FF1F3864',      // Deep navy blue
+  PRIMARY_MEDIUM: 'FF2E75B6',    // Medium corporate blue
+  PRIMARY_LIGHT: 'FFD6DCE4',     // Light blue-grey
+  
+  // Accent colors
+  ACCENT_GOLD: 'FFC5A059',        // Gold accent for headers
+  ACCENT_RED: 'FFC00000',         // Warning/alert red
+  
+  // Backgrounds
+  BG_HEADER: 'FF1F3864',
+  BG_SUBHEADER: 'FF2E75B6',
+  BG_SECTION: 'FFE8EDF4',         // Soft blue-grey for section headers
+  BG_SUBTOTAL: 'FFE2E8F0',        // Subtle grey-blue
+  BG_GRAND: 'FF1F3864',
+  BG_VAT: 'FFE8EDF4',
+  BG_TOTAL_INC: 'FF1F3864',
+  
+  // Row alternation
+  ROW_ODD: 'FFFFFFFF',            // White
+  ROW_EVEN: 'FFF7F9FC',           // Very light blue-grey
+  
+  // Input cells (yellow highlight)
+  INPUT_HIGHLIGHT: 'FFFFFFCC',    // Soft yellow for editable cells
+  
+  // Text colors
+  TEXT_DARK: 'FF1A1A2E',
+  TEXT_MEDIUM: 'FF4A4A6A',
+  TEXT_LIGHT: 'FF6B6B8D',
+  TEXT_WHITE: 'FFFFFFFF',
+  TEXT_GOLD: 'FFC5A059',
+  
+  // Borders
+  BORDER_LIGHT: 'FFD0D5E0',
+  BORDER_MEDIUM: 'FF2E75B6',
+  BORDER_DARK: 'FF1F3864',
+};
 
 // ═══════════════════════════════════════════════════════════════════
-// BORDER HELPERS
+// STYLE FACTORIES
 // ═══════════════════════════════════════════════════════════════════
 
-const thinBorder = () => ({
-  top:    { style: 'thin'   as const, color: { rgb: 'FFBDD7EE' } },
-  bottom: { style: 'thin'   as const, color: { rgb: 'FFBDD7EE' } },
-  left:   { style: 'thin'   as const, color: { rgb: 'FFBDD7EE' } },
-  right:  { style: 'thin'   as const, color: { rgb: 'FFBDD7EE' } },
-});
-
-const mediumBorder = () => ({
-  top:    { style: 'medium' as const, color: { rgb: 'FF1F3864' } },
-  bottom: { style: 'medium' as const, color: { rgb: 'FF1F3864' } },
-  left:   { style: 'medium' as const, color: { rgb: 'FF1F3864' } },
-  right:  { style: 'medium' as const, color: { rgb: 'FF1F3864' } },
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// NUMBER FORMATS
-// ═══════════════════════════════════════════════════════════════════
-
-const FMT_CCY  = '#,##0.00';
-const FMT_QTY3 = '#,##0.000';
-const FMT_QTY2 = '#,##0.00';
-const FMT_PCT  = '0.00%';
-
-// ═══════════════════════════════════════════════════════════════════
-// LOW-LEVEL CELL / RANGE HELPERS
-// ═══════════════════════════════════════════════════════════════════
-
-type CellStyle = Partial<XLSX.CellStyle>;
-
-function addr(row: number, col: number): string {
-  return XLSX.utils.encode_cell({ r: row - 1, c: col - 1 });
+function createTitleStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 16, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_HEADER } },
+    alignment: { horizontal: 'center', vertical: 'middle' },
+    border: {
+      top: { style: 'medium', color: { argb: Colors.BORDER_MEDIUM } },
+      bottom: { style: 'medium', color: { argb: Colors.BORDER_MEDIUM } },
+      left: { style: 'medium', color: { argb: Colors.BORDER_MEDIUM } },
+      right: { style: 'medium', color: { argb: Colors.BORDER_MEDIUM } },
+    },
+  };
 }
 
-function setCell(
-  ws: XLSX.WorkSheet,
-  row: number,
-  col: number,
-  value: XLSX.CellObject['v'],
-  type: XLSX.CellObject['t'],
-  style: CellStyle,
-  numFmt?: string,
-): void {
-  const a = addr(row, col);
-  ws[a] = { t: type, v: value, s: style, ...(numFmt ? { z: numFmt } : {}) };
+function createSubtitleStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 11, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SUBHEADER } },
+    alignment: { horizontal: 'center', vertical: 'middle' },
+  };
 }
 
-function setFormula(
-  ws: XLSX.WorkSheet,
-  row: number,
-  col: number,
-  formula: string,          // without leading =
-  computedValue: number,    // pre-computed so the file opens correctly without recalc
-  style: CellStyle,
-  numFmt?: string,
-): void {
-  const a = addr(row, col);
-  ws[a] = { t: 'n', v: computedValue, f: formula, s: style, ...(numFmt ? { z: numFmt } : {}) };
+function createHeaderStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SUBHEADER } },
+    alignment: { horizontal: 'center', vertical: 'middle', wrapText: true },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
 }
 
-function merge(ws: XLSX.WorkSheet, r1: number, c1: number, r2: number, c2: number): void {
-  if (!ws['!merges']) ws['!merges'] = [];
-  ws['!merges'].push({ s: { r: r1 - 1, c: c1 - 1 }, e: { r: r2 - 1, c: c2 - 1 } });
+function createSectionHeaderStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 11, bold: true, color: { argb: Colors.PRIMARY_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SECTION } },
+    alignment: { horizontal: 'left', vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+    },
+  };
 }
 
-function setRowHeight(ws: XLSX.WorkSheet, row: number, hpt: number): void {
-  if (!ws['!rows']) ws['!rows'] = [];
-  ws['!rows'][row - 1] = { hpt };
+function createDataStyle(isOdd: boolean, isInput: boolean = false): Partial<ExcelJS.Style> {
+  const baseStyle: Partial<ExcelJS.Style> = {
+    font: { name: 'Segoe UI', size: 10, color: { argb: Colors.TEXT_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: isInput ? Colors.INPUT_HIGHLIGHT : (isOdd ? Colors.ROW_ODD : Colors.ROW_EVEN) } },
+    alignment: { vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+  return baseStyle;
 }
 
-/** Write an empty spacer row – completely unstyled so no fills bleed through */
-function spacer(ws: XLSX.WorkSheet, row: number, lastCol: number): void {
-  setRowHeight(ws, row, 6);
-  for (let c = 1; c <= lastCol; c++) {
-    const a = addr(row, c);
-    ws[a] = { t: 'z', v: undefined, s: {} };
-  }
+function createSpecStyle(isOdd: boolean): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 9, italic: true, color: { argb: Colors.TEXT_LIGHT } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: isOdd ? Colors.ROW_ODD : Colors.ROW_EVEN } },
+    alignment: { horizontal: 'left', vertical: 'middle', indent: 2 },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
 }
 
-/** Round a number to `dp` decimal places (avoids floating-point display artifacts) */
+function createSubtotalStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, bold: true, color: { argb: Colors.PRIMARY_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SUBTOTAL } },
+    alignment: { horizontal: 'right', vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_MEDIUM } },
+    },
+  };
+}
+
+function createGrandTotalStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 11, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_GRAND } },
+    alignment: { horizontal: 'right', vertical: 'middle' },
+    border: {
+      top: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      bottom: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      left: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      right: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+    },
+  };
+}
+
+function createVatStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, bold: true, color: { argb: Colors.PRIMARY_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_VAT } },
+    alignment: { horizontal: 'right', vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+}
+
+function createTotalIncStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 12, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_TOTAL_INC } },
+    alignment: { horizontal: 'right', vertical: 'middle' },
+    border: {
+      top: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      bottom: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      left: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+      right: { style: 'medium', color: { argb: Colors.BORDER_DARK } },
+    },
+  };
+}
+
+function createInfoLabelStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, bold: true, color: { argb: Colors.PRIMARY_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SECTION } },
+    alignment: { horizontal: 'left', vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+}
+
+function createInfoValueStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, color: { argb: Colors.TEXT_MEDIUM } },
+    alignment: { horizontal: 'left', vertical: 'middle' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+}
+
+function createNoteCategoryStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 11, bold: true, color: { argb: Colors.TEXT_WHITE } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SUBHEADER } },
+    alignment: { horizontal: 'left', vertical: 'middle' },
+  };
+}
+
+function createNoteLabelStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, bold: true, color: { argb: Colors.PRIMARY_DARK } },
+    fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: Colors.BG_SUBTOTAL } },
+    alignment: { horizontal: 'left', vertical: 'top' },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+}
+
+function createNoteTextStyle(): Partial<ExcelJS.Style> {
+  return {
+    font: { name: 'Segoe UI', size: 10, color: { argb: Colors.TEXT_MEDIUM } },
+    alignment: { horizontal: 'left', vertical: 'top', wrapText: true },
+    border: {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    },
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// UTILITY FUNCTIONS
+// ═══════════════════════════════════════════════════════════════════
+
 function rnd(value: number, dp: number): number {
   const factor = Math.pow(10, dp);
   return Math.round(value * factor) / factor;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// COLOUR-KEY LEGEND  (one compact row, like Al-Waha colour key)
-// ═══════════════════════════════════════════════════════════════════
-
-function writeColourKey(ws: XLSX.WorkSheet, row: number, lastCol: number): void {
-  // Label
-  setCell(ws, row, 1, 'COLOUR KEY:', 's', {
-    font: { bold: true, sz: 8, name: 'Arial', color: { rgb: 'FF1F3864' } },
-    alignment: { horizontal: 'right', vertical: 'center' },
-  });
-
-  const keys: [string, string, string][] = [
-    [C.KEY_YELLOW, 'FF000000', 'Yellow = cells to fill in (take-off / rate)'],
-    [C.KEY_BLUE,   'FFFFFFFF', 'Blue header = section'],
-    [C.KEY_GREY,   'FF1F3864', 'Grey = sub-total'],
-    [C.KEY_RED,    'FFFFFFFF', 'Red = grand total / alert'],
-  ];
-
-  let col = 2;
-  for (const [bg, fg, label] of keys) {
-    setCell(ws, row, col, `■ ${label}`, 's', {
-      font: { sz: 8, name: 'Arial', color: { rgb: fg }, bold: false },
-      fill: { patternType: 'solid', fgColor: { rgb: bg } },
-      alignment: { horizontal: 'left', vertical: 'center' },
-      border: thinBorder(),
-    });
-    col++;
-  }
-  // fill remaining cols
-  for (let c = col; c <= lastCol; c++) {
-    const a = addr(row, c);
-    ws[a] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: 'FFFFFFFF' } } } };
-  }
-  setRowHeight(ws, row, 14);
+function setColumnWidths(worksheet: ExcelJS.Worksheet, widths: number[]): void {
+  worksheet.columns = widths.map(w => ({ width: w }));
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// COLUMN LAYOUT DEFINITIONS
-// ═══════════════════════════════════════════════════════════════════
-
-// ── Summary sheet ──────────────────────────────────────────────────
-const SUM_COLS = { NUM: 1, DESC: 2, TYPE: 3, QTY: 4, UNIT: 5, RATE: 6, COST: 7, REMARKS: 8 };
-const SUM_LAST = 8;
-const SUM_WIDTHS = [5, 36, 14, 12, 8, 13, 15, 28];
-
-// ── Takeoff sheet ──────────────────────────────────────────────────
-const TK_COLS = { NUM: 1, DESC: 2, UNIT: 3, TIMES: 4, L: 5, W: 6, H: 7, QTY: 8, RATE: 9, COST: 10, REMARKS: 11 };
-const TK_LAST = 11;
-const TK_WIDTHS = [6, 40, 8, 7, 10, 10, 10, 13, 13, 14, 30];
-
-// ── Material summary sheet ─────────────────────────────────────────
-const MAT_COLS = { NUM: 1, DESC: 2, UNIT: 3, QTY: 4, RATE: 5, COST: 6 };
-const MAT_LAST = 6;
-const MAT_WIDTHS = [6, 44, 10, 14, 14, 14];
+async function createColorKeyRow(worksheet: ExcelJS.Worksheet, rowIndex: number): Promise<number> {
+  const row = worksheet.getRow(rowIndex);
+  row.height = 16;
+  
+  const keys = [
+    { color: Colors.INPUT_HIGHLIGHT, text: '■ Yellow = cells to fill in (take-off / rate)' },
+    { color: Colors.BG_SUBHEADER, text: '■ Blue header = section', textColor: Colors.TEXT_WHITE },
+    { color: Colors.BG_SECTION, text: '■ Grey = sub-total', textColor: Colors.PRIMARY_DARK },
+    { color: Colors.ACCENT_RED, text: '■ Red = grand total / alert', textColor: Colors.TEXT_WHITE },
+  ];
+  
+  let colIndex = 1;
+  for (const key of keys) {
+    const cell = row.getCell(colIndex);
+    cell.value = key.text;
+    cell.font = { name: 'Segoe UI', size: 8, color: { argb: key.textColor || Colors.TEXT_DARK } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: key.color } };
+    cell.alignment = { horizontal: 'left', vertical: 'middle' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+      right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } },
+    };
+    colIndex++;
+  }
+  
+  return rowIndex + 1;
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // MAIN EXPORT FUNCTION
 // ═══════════════════════════════════════════════════════════════════
 
-export function exportToExcel(state: ProjectState): void {
-  const meta     = state.meta ?? { projectName: state.projectName };
-  const dateStr  = new Date().toISOString().split('T')[0];
+export async function exportToExcel(state: ProjectState): Promise<void> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'BOQ Export System';
+  workbook.lastModifiedBy = state.meta?.preparedBy || 'Quantity Surveyor';
+  workbook.created = new Date();
+  workbook.modified = new Date();
+  workbook.properties.date1904 = false;
+  
+  const meta = state.meta ?? { projectName: state.projectName };
+  const dateStr = new Date().toISOString().split('T')[0];
   const safeName = state.projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
   const filename = `takeoff-${safeName}-${dateStr}.xlsx`;
-
-  const wb = XLSX.utils.book_new();
-
-  buildSummarySheet(wb, state, meta, dateStr);
-
-  // Group measurements into sheets
+  
+  // Build sheets
+  await buildSummarySheet(workbook, state, meta);
+  
+  // Group measurements by group
   const groups = new Map<string, Measurement[]>();
   for (const m of state.measurements) {
     const key = m.group ?? 'Takeoff';
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(m);
   }
+  
   for (const [groupName, measurements] of groups.entries()) {
-    buildTakeoffSheet(wb, state, meta, groupName, measurements);
+    await buildTakeoffSheet(workbook, state, meta, groupName, measurements);
   }
-
-  buildMaterialSummarySheet(wb, state, meta);
-  buildNotesSheet(wb, meta, dateStr);
-
-  XLSX.writeFile(wb, filename);
+  
+  await buildMaterialSummarySheet(workbook, state, meta);
+  await buildNotesSheet(workbook, meta);
+  
+  // Write file
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SHEET 1 · Cover / Project Summary
+// SUMMARY SHEET
 // ═══════════════════════════════════════════════════════════════════
 
-function buildSummarySheet(
-  wb: XLSX.WorkBook,
-  state: ProjectState,
-  meta: ProjectMeta,
-  dateStr: string,
-): void {
-  const ws: XLSX.WorkSheet = {};
-  ws['!merges'] = [];
-  ws['!rows']   = [];
-  ws['!cols']   = SUM_WIDTHS.map(w => ({ wch: w }));
-
+async function buildSummarySheet(workbook: ExcelJS.Workbook, state: ProjectState, meta: ProjectMeta): Promise<void> {
+  const sheet = workbook.addWorksheet('Summary');
+  setColumnWidths(sheet, [5, 40, 15, 12, 8, 13, 15, 28]);
+  
   const vatRate = meta.vatRate ?? 0.05;
   const currency = meta.currency ?? 'AED';
-  let row = 1;
-
-  // ── Title banner ──────────────────────────────────────────────────
-  merge(ws, row, 1, row, SUM_LAST);
-  setCell(ws, row, 1, meta.projectName.toUpperCase(), 's', {
-    font: { bold: true, sz: 18, name: 'Arial', color: { rgb: C.HEADER_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.HEADER_BG } },
-    alignment: { horizontal: 'center', vertical: 'center' },
-    border: mediumBorder(),
-  });
-  setRowHeight(ws, row, 32);
-  row++;
-
-  // ── Sub-title ─────────────────────────────────────────────────────
-  merge(ws, row, 1, row, SUM_LAST);
-  setCell(ws, row, 1, 'QUANTITY TAKE-OFF SUMMARY', 's', {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.BAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.BAND_BG } },
-    alignment: { horizontal: 'center', vertical: 'center' },
-  });
-  setRowHeight(ws, row, 18);
-  row++;
-
-  // ── Project info block ────────────────────────────────────────────
+  let rowIndex = 1;
+  
+  // Title
+  const titleRow = sheet.getRow(rowIndex);
+  titleRow.height = 32;
+  const titleCell = titleRow.getCell(1);
+  titleCell.value = meta.projectName.toUpperCase();
+  titleCell.style = createTitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 8);
+  rowIndex++;
+  
+  // Subtitle
+  const subtitleRow = sheet.getRow(rowIndex);
+  subtitleRow.height = 22;
+  const subtitleCell = subtitleRow.getCell(1);
+  subtitleCell.value = 'BILL OF QUANTITIES - QUANTITY TAKE-OFF SUMMARY';
+  subtitleCell.style = createSubtitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 8);
+  rowIndex++;
+  
+  // Spacer
+  rowIndex++;
+  
+  // Project Info Block
   const infoItems: [string, string][] = [
-    ['Project',           meta.projectName],
-    ['Client',            meta.client            ?? '—'],
-    ['Location',          meta.location          ?? '—'],
-    ['Ref No',            meta.refNo             ?? '—'],
-    ['Drawing Ref',       meta.drawingRefs       ?? '—'],
-    ['Main Contractor',   meta.mainContractor    ?? '—'],
-    ['Consultant',        meta.consultant        ?? '—'],
-    ['Prepared by',       meta.preparedBy        ?? '—'],
-    ['Date',              dateStr],
-    ['Rev',               meta.revision          ?? 'P01'],
-    ['Currency',          currency],
-    [`VAT Rate`,          `${(vatRate * 100).toFixed(0)}%`],
+    ['PROJECT', meta.projectName],
+    ['CLIENT', meta.client ?? '—'],
+    ['LOCATION', meta.location ?? '—'],
+    ['REFERENCE NO', meta.refNo ?? '—'],
+    ['DRAWING REF', meta.drawingRefs ?? '—'],
+    ['MAIN CONTRACTOR', meta.mainContractor ?? '—'],
+    ['DESIGN CONSULTANT', meta.consultant ?? '—'],
+    ['PREPARED BY', meta.preparedBy ?? '—'],
+    ['DATE', new Date().toLocaleDateString('en-GB')],
+    ['REVISION', meta.revision ?? 'P01'],
+    ['CURRENCY', currency],
+    ['VAT RATE', `${(vatRate * 100).toFixed(0)}%`],
   ];
-
+  
   for (const [label, value] of infoItems) {
-    setCell(ws, row, 1, label, 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.GROUP_BG } },
-      border: thinBorder(),
-      alignment: { horizontal: 'left', vertical: 'center' },
-    });
-    merge(ws, row, 2, row, 4);
-    setCell(ws, row, 2, value, 's', {
-      font: { sz: 10, name: 'Arial' },
-      border: thinBorder(),
-      alignment: { horizontal: 'left', vertical: 'center' },
-    });
-    // fill remaining cols
-    for (let c = 5; c <= SUM_LAST; c++) {
-      const a = addr(row, c);
-      ws[a] = { t: 'z', v: undefined, s: { border: thinBorder() } };
+    const labelCell = sheet.getCell(rowIndex, 1);
+    labelCell.value = label;
+    labelCell.style = createInfoLabelStyle();
+    
+    const valueCell = sheet.getCell(rowIndex, 2);
+    valueCell.value = value;
+    valueCell.style = createInfoValueStyle();
+    sheet.mergeCells(rowIndex, 2, rowIndex, 4);
+    
+    // Fill remaining cells
+    for (let c = 5; c <= 8; c++) {
+      const cell = sheet.getCell(rowIndex, c);
+      cell.value = '';
+      cell.style = { border: { top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } } } };
     }
-    setRowHeight(ws, row, 15);
-    row++;
+    
+    sheet.getRow(rowIndex).height = 16;
+    rowIndex++;
   }
-
-  spacer(ws, row, SUM_LAST); row++;
-
-  // ── Colour key ────────────────────────────────────────────────────
-  writeColourKey(ws, row, SUM_LAST); row++;
-
-  spacer(ws, row, SUM_LAST); row++;
-
-  // ── Column headers ────────────────────────────────────────────────
-  const hdrs = ['#', 'Description', 'Type', 'Quantity', 'Unit', `Unit Rate (${currency})`, `Total Cost (${currency})`, 'Remarks / Drawing Ref'];
-  for (let c = 0; c < hdrs.length; c++) {
-    setCell(ws, row, c + 1, hdrs[c], 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.COL_HDR_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.COL_HDR_BG } },
-      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-      border: thinBorder(),
-    });
+  
+  rowIndex++;
+  rowIndex = await createColorKeyRow(sheet, rowIndex);
+  rowIndex++;
+  
+  // Column Headers
+  const headers = ['#', 'Description', 'Type', 'Quantity', 'Unit', `Unit Rate (${currency})`, `Total Cost (${currency})`, 'Remarks / Drawing Ref'];
+  const headerRow = sheet.getRow(rowIndex);
+  headerRow.height = 30;
+  for (let c = 0; c < headers.length; c++) {
+    const cell = headerRow.getCell(c + 1);
+    cell.value = headers[c];
+    cell.style = createHeaderStyle();
   }
-  setRowHeight(ws, row, 30);
-  row++;
-
-  // ── Measurement rows ──────────────────────────────────────────────
+  rowIndex++;
+  
+  // Measurement rows
   let grandTotal = 0;
   const sectionLetters = new Map<string, string>();
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let letterIdx = 0;
   const sectionCounters = new Map<string, number>();
-
-  // Build section-letter mapping
+  
   for (const m of state.measurements) {
     const type = m.type ?? 'General';
     if (!sectionLetters.has(type)) {
@@ -385,172 +479,185 @@ function buildSummarySheet(
       sectionCounters.set(type, 0);
     }
   }
-
-  state.measurements.forEach((m, _idx) => {
-    const type     = m.type ?? 'General';
-    const letter   = sectionLetters.get(type)!;
-    const counter  = (sectionCounters.get(type) ?? 0) + 1;
+  
+  for (const m of state.measurements) {
+    const type = m.type ?? 'General';
+    const letter = sectionLetters.get(type)!;
+    const counter = (sectionCounters.get(type) ?? 0) + 1;
     sectionCounters.set(type, counter);
-    const itemNo   = `${letter}${counter}`;
-
-    const dp       = m.qtyPrecision ?? 3;
-    const qty      = rnd(m.quantity, dp);
-    const rate     = rnd(m.unitRate, 2);
-    const cost     = rnd(qty * rate, 2);
-    grandTotal    += cost;
-
-    const isOdd    = counter % 2 === 1;
-    const bg       = isOdd ? C.ROW_ODD : C.ROW_EVEN;
-
-    const baseStyle = (align: string): CellStyle => ({
-      font: { sz: 10, name: 'Arial' },
-      fill: { patternType: 'solid', fgColor: { rgb: bg } },
-      alignment: { horizontal: align as any, vertical: 'center' },
-      border: thinBorder(),
-    });
-
-    setCell(ws, row, SUM_COLS.NUM,     itemNo,          's', baseStyle('center'));
-    setCell(ws, row, SUM_COLS.DESC,    m.description,   's', { ...baseStyle('left'), alignment: { horizontal: 'left', vertical: 'center', wrapText: true } });
-    setCell(ws, row, SUM_COLS.TYPE,    type,            's', baseStyle('center'));
-    setCell(ws, row, SUM_COLS.QTY,     qty,             'n', baseStyle('right'), FMT_QTY3);
-    setCell(ws, row, SUM_COLS.UNIT,    m.unit,          's', baseStyle('center'));
-    setCell(ws, row, SUM_COLS.RATE,    rate,            'n', baseStyle('right'), FMT_CCY);
-    setCell(ws, row, SUM_COLS.COST,    cost,            'n', baseStyle('right'), FMT_CCY);
-    setCell(ws, row, SUM_COLS.REMARKS, m.remarks ?? '', 's', baseStyle('left'));
-    setRowHeight(ws, row, 15);
-    row++;
-
-    // If spec exists, add italic sub-line
+    const itemNo = `${letter}${counter}`;
+    
+    const dp = m.qtyPrecision ?? 3;
+    const qty = rnd(m.quantity, dp);
+    const rate = rnd(m.unitRate, 2);
+    const cost = rnd(qty * rate, 2);
+    grandTotal += cost;
+    
+    const isOdd = counter % 2 === 1;
+    
+    const row = sheet.getRow(rowIndex);
+    row.height = 16;
+    
+    row.getCell(1).value = itemNo;
+    row.getCell(1).style = createDataStyle(isOdd, false);
+    row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    row.getCell(2).value = m.description;
+    row.getCell(2).style = createDataStyle(isOdd, false);
+    row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+    
+    row.getCell(3).value = type;
+    row.getCell(3).style = createDataStyle(isOdd, false);
+    row.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    row.getCell(4).value = qty;
+    row.getCell(4).style = createDataStyle(isOdd, false);
+    row.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(4).numFmt = '#,##0.000';
+    
+    row.getCell(5).value = m.unit;
+    row.getCell(5).style = createDataStyle(isOdd, false);
+    row.getCell(5).alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    row.getCell(6).value = rate;
+    row.getCell(6).style = createDataStyle(isOdd, false);
+    row.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(6).numFmt = '#,##0.00';
+    
+    row.getCell(7).value = cost;
+    row.getCell(7).style = createDataStyle(isOdd, false);
+    row.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(7).numFmt = '#,##0.00';
+    
+    row.getCell(8).value = m.remarks ?? '';
+    row.getCell(8).style = createDataStyle(isOdd, false);
+    row.getCell(8).alignment = { horizontal: 'left', vertical: 'middle' };
+    
+    rowIndex++;
+    
+    // Spec sub-line
     if (m.spec) {
-      merge(ws, row, SUM_COLS.DESC, row, SUM_COLS.REMARKS);
-      setCell(ws, row, SUM_COLS.DESC, m.spec, 's', {
-        font: { sz: 9, italic: true, name: 'Arial', color: { rgb: '555555' } },
-        fill: { patternType: 'solid', fgColor: { rgb: bg } },
-        alignment: { horizontal: 'left', vertical: 'center', indent: 2 },
-        border: thinBorder(),
-      });
-      for (let c = SUM_COLS.NUM; c <= SUM_LAST; c++) {
-        if (c === SUM_COLS.DESC) continue;
-        const a = addr(row, c);
-        ws[a] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: bg } }, border: thinBorder() } };
+      const specRow = sheet.getRow(rowIndex);
+      specRow.height = 14;
+      const specCell = specRow.getCell(2);
+      specCell.value = m.spec;
+      specCell.style = createSpecStyle(isOdd);
+      sheet.mergeCells(rowIndex, 2, rowIndex, 8);
+      
+      // Clear other cells in this row
+      for (let c = 1; c <= 8; c++) {
+        if (c === 2) continue;
+        const cell = specRow.getCell(c);
+        cell.value = '';
+        cell.style = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: isOdd ? Colors.ROW_ODD : Colors.ROW_EVEN } }, border: { top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } } } };
       }
-      setRowHeight(ws, row, 12);
-      row++;
+      rowIndex++;
     }
-  });
-
-  // ── Totals block ──────────────────────────────────────────────────
-  const vat       = rnd(grandTotal * vatRate, 2);
-  const totalIncl = rnd(grandTotal + vat, 2);
-
-  const totalsRows: [string, number, CellStyle][] = [
-    ['GRAND TOTAL  (excl. VAT)',  grandTotal, {
-      font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-      alignment: { horizontal: 'right' }, border: mediumBorder(),
-    }],
-    [`VAT @ ${(vatRate * 100).toFixed(0)}%`, vat, {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.VAT_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.VAT_BG } },
-      alignment: { horizontal: 'right' }, border: thinBorder(),
-    }],
-    [`TOTAL  (incl. VAT)`, totalIncl, {
-      font: { bold: true, sz: 12, name: 'Arial', color: { rgb: C.TOTAL_INC_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.TOTAL_INC_BG } },
-      alignment: { horizontal: 'right' }, border: mediumBorder(),
-    }],
-  ];
-
-  spacer(ws, row, SUM_LAST); row++;
-
-  for (const [label, value, style] of totalsRows) {
-    merge(ws, row, 1, row, SUM_COLS.RATE);
-    setCell(ws, row, 1, label, 's', style);
-    setCell(ws, row, SUM_COLS.COST, value, 'n', style, FMT_CCY);
-    setCell(ws, row, SUM_COLS.REMARKS, '', 's', {
-      fill: (style.fill as any), border: (style.border as any)
-    });
-    setRowHeight(ws, row, 20);
-    row++;
   }
-
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: row, c: SUM_LAST } });
-  XLSX.utils.book_append_sheet(wb, ws, 'Summary');
+  
+  // Totals block
+  rowIndex++;
+  
+  const vat = rnd(grandTotal * vatRate, 2);
+  const totalIncl = rnd(grandTotal + vat, 2);
+  
+  // Grand Total
+  const grandRow = sheet.getRow(rowIndex);
+  grandRow.height = 22;
+  const grandLabelCell = grandRow.getCell(1);
+  grandLabelCell.value = 'GRAND TOTAL (excl. VAT)';
+  grandLabelCell.style = createGrandTotalStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 6);
+  const grandValueCell = grandRow.getCell(7);
+  grandValueCell.value = grandTotal;
+  grandValueCell.style = createGrandTotalStyle();
+  grandValueCell.numFmt = '#,##0.00';
+  rowIndex++;
+  
+  // VAT
+  const vatRow = sheet.getRow(rowIndex);
+  vatRow.height = 18;
+  const vatLabelCell = vatRow.getCell(1);
+  vatLabelCell.value = `VAT @ ${(vatRate * 100).toFixed(0)}%`;
+  vatLabelCell.style = createVatStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 6);
+  const vatValueCell = vatRow.getCell(7);
+  vatValueCell.value = vat;
+  vatValueCell.style = createVatStyle();
+  vatValueCell.numFmt = '#,##0.00';
+  rowIndex++;
+  
+  // Total Incl VAT
+  const totalRow = sheet.getRow(rowIndex);
+  totalRow.height = 24;
+  const totalLabelCell = totalRow.getCell(1);
+  totalLabelCell.value = 'TOTAL (incl. VAT)';
+  totalLabelCell.style = createTotalIncStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 6);
+  const totalValueCell = totalRow.getCell(7);
+  totalValueCell.value = totalIncl;
+  totalValueCell.style = createTotalIncStyle();
+  totalValueCell.numFmt = '#,##0.00';
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SHEET 2 · Takeoff Detail  (one sheet per group)
+// TAKEOFF SHEET
 // ═══════════════════════════════════════════════════════════════════
 
-function buildTakeoffSheet(
-  wb: XLSX.WorkBook,
+async function buildTakeoffSheet(
+  workbook: ExcelJS.Workbook,
   state: ProjectState,
   meta: ProjectMeta,
   sheetName: string,
   measurements: Measurement[],
-): void {
-  const ws: XLSX.WorkSheet = {};
-  ws['!merges'] = [];
-  ws['!rows']   = [];
-  ws['!cols']   = TK_WIDTHS.map(w => ({ wch: w }));
-
+): Promise<void> {
+  const sheet = workbook.addWorksheet(sheetName.substring(0, 31));
+  setColumnWidths(sheet, [6, 42, 8, 7, 10, 10, 10, 13, 13, 15, 32]);
+  
   const currency = meta.currency ?? 'AED';
-  let row = 1;
-
-  // ── Title ─────────────────────────────────────────────────────────
-  merge(ws, row, 1, row, TK_LAST);
-  setCell(ws, row, 1, `${meta.projectName.toUpperCase()}  ·  ${sheetName.toUpperCase()}`, 's', {
-    font: { bold: true, sz: 14, name: 'Arial', color: { rgb: C.HEADER_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.HEADER_BG } },
-    alignment: { horizontal: 'center', vertical: 'center' },
-    border: mediumBorder(),
-  });
-  setRowHeight(ws, row, 28);
-  row++;
-
-  // ── Meta row ──────────────────────────────────────────────────────
-  merge(ws, row, 1, row, TK_LAST);
-  setCell(ws, row, 1,
-    [
-      `Rev: ${meta.revision ?? 'P01'}`,
-      `Date: ${new Date().toLocaleDateString('en-GB')}`,
-      `Prepared by: ${meta.preparedBy ?? '—'}`,
-      ...(meta.drawingRefs ? [`Dwg Ref: ${meta.drawingRefs}`] : []),
-    ].join('   |   '),
-    's', {
-    font: { sz: 9, name: 'Arial', italic: true, color: { rgb: C.BAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.BAND_BG } },
-    alignment: { horizontal: 'right', vertical: 'center' },
-  });
-  setRowHeight(ws, row, 14);
-  row++;
-
-  // ── Colour key ────────────────────────────────────────────────────
-  writeColourKey(ws, row, TK_LAST); row++;
-  spacer(ws, row, TK_LAST); row++;
-
-  // ── Column headers ────────────────────────────────────────────────
-  const hdrs = ['#', 'Description', 'Unit', 'Times', 'L', 'W', 'H', 'Total QTY', `Rate (${currency})`, `Cost (${currency})`, 'Remarks / Dwg Ref'];
-  for (let c = 0; c < hdrs.length; c++) {
-    setCell(ws, row, c + 1, hdrs[c], 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.COL_HDR_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.COL_HDR_BG } },
-      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-      border: thinBorder(),
-    });
+  let rowIndex = 1;
+  
+  // Title
+  const titleRow = sheet.getRow(rowIndex);
+  titleRow.height = 32;
+  const titleCell = titleRow.getCell(1);
+  titleCell.value = `${meta.projectName.toUpperCase()} · ${sheetName.toUpperCase()}`;
+  titleCell.style = createTitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 11);
+  rowIndex++;
+  
+  // Meta row
+  const metaRow = sheet.getRow(rowIndex);
+  metaRow.height = 18;
+  const metaCell = metaRow.getCell(1);
+  metaCell.value = `Rev: ${meta.revision ?? 'P01'} | Date: ${new Date().toLocaleDateString('en-GB')} | Prepared by: ${meta.preparedBy ?? '—'}${meta.drawingRefs ? ` | Dwg Ref: ${meta.drawingRefs}` : ''}`;
+  metaCell.style = createSubtitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 11);
+  rowIndex++;
+  
+  // Color key
+  rowIndex = await createColorKeyRow(sheet, rowIndex);
+  rowIndex++;
+  
+  // Column Headers
+  const headers = ['#', 'Description', 'Unit', 'Times', 'L (m)', 'W (m)', 'H (m)', 'Total QTY', `Rate (${currency})`, `Cost (${currency})`, 'Remarks / Dwg Ref'];
+  const headerRow = sheet.getRow(rowIndex);
+  headerRow.height = 32;
+  for (let c = 0; c < headers.length; c++) {
+    const cell = headerRow.getCell(c + 1);
+    cell.value = headers[c];
+    cell.style = createHeaderStyle();
   }
-  setRowHeight(ws, row, 30);
-  row++;
-
-  // ── Group measurements by type ────────────────────────────────────
+  rowIndex++;
+  
+  // Group measurements by type
   const subgroups = new Map<string, Measurement[]>();
   for (const m of measurements) {
     const key = m.type ?? 'General';
     if (!subgroups.has(key)) subgroups.set(key, []);
     subgroups.get(key)!.push(m);
   }
-
-  // Assign section letters
+  
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   const sectionLetters = new Map<string, string>();
   let li = 0;
@@ -558,448 +665,347 @@ function buildTakeoffSheet(
     sectionLetters.set(key, alphabet[li % 26]);
     li++;
   }
-
-  let sectionGrandQty  = 0;
-  let sectionGrandCost = 0;
-
+  
   for (const [typeName, items] of subgroups.entries()) {
     const letter = sectionLetters.get(typeName)!;
-
+    
     // Section header
-    merge(ws, row, 1, row, TK_LAST);
-    setCell(ws, row, 1, `  ${letter}   ${typeName.toUpperCase()}`, 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.GROUP_BG } },
-      alignment: { horizontal: 'left', vertical: 'center' },
-      border: thinBorder(),
-    });
-    setRowHeight(ws, row, 18);
-    row++;
-
-    const groupDataStart = row;
-    let   groupQty  = 0;
-    let   groupCost = 0;
-    let   itemNo    = 1;
-
+    const sectionRow = sheet.getRow(rowIndex);
+    sectionRow.height = 22;
+    const sectionCell = sectionRow.getCell(1);
+    sectionCell.value = `  ${letter}   ${typeName.toUpperCase()}`;
+    sectionCell.style = createSectionHeaderStyle();
+    sheet.mergeCells(rowIndex, 1, rowIndex, 11);
+    rowIndex++;
+    
+    let itemNo = 1;
+    
     for (const m of items) {
-      const dp   = m.qtyPrecision ?? 3;
-      const qty  = rnd(m.quantity,  dp);
-      const rate = rnd(m.unitRate,  2);
-      const cost = rnd(qty * rate,  2);
-      groupQty  += qty;
-      groupCost += cost;
-
+      const dp = m.qtyPrecision ?? 3;
+      const qty = rnd(m.quantity, dp);
+      const rate = rnd(m.unitRate, 2);
+      const cost = rnd(qty * rate, 2);
       const times = m.times ?? 1;
-      const bg    = itemNo % 2 === 1 ? C.ROW_ODD : C.ROW_EVEN;
+      const isOdd = itemNo % 2 === 1;
       const itemRef = `${letter}${itemNo}`;
-
-      const base = (align: string): CellStyle => ({
-        font: { sz: 10, name: 'Arial' },
-        fill: { patternType: 'solid', fgColor: { rgb: bg } },
-        alignment: { horizontal: align as any, vertical: 'center' },
-        border: thinBorder(),
-      });
-
-      setCell(ws, row, TK_COLS.NUM,     itemRef,          's', base('center'));
-      setCell(ws, row, TK_COLS.DESC,    m.description,    's', { ...base('left'), alignment: { horizontal: 'left', vertical: 'center', wrapText: true } });
-      setCell(ws, row, TK_COLS.UNIT,    m.unit,           's', base('center'));
-      setCell(ws, row, TK_COLS.TIMES,   times,            'n', base('center'));
-      setCell(ws, row, TK_COLS.L,       m.L  ?? '',       m.L  != null ? 'n' : 's', base('right'), FMT_QTY2);
-      setCell(ws, row, TK_COLS.W,       m.W  ?? '',       m.W  != null ? 'n' : 's', base('right'), FMT_QTY2);
-      setCell(ws, row, TK_COLS.H,       m.H  ?? '',       m.H  != null ? 'n' : 's', base('right'), FMT_QTY2);
-      setCell(ws, row, TK_COLS.QTY,     qty,              'n', base('right'), FMT_QTY3);
-      setCell(ws, row, TK_COLS.RATE,    rate,             'n', {
-        ...base('right'),
-        fill: { patternType: 'solid', fgColor: { rgb: C.KEY_YELLOW } }, // yellow = fill-in
-      }, FMT_CCY);
-      setCell(ws, row, TK_COLS.COST,    cost,             'n', base('right'), FMT_CCY);
-      setCell(ws, row, TK_COLS.REMARKS, m.remarks ?? '',  's', base('left'));
-      setRowHeight(ws, row, 15);
-      row++;
-
+      
+      const row = sheet.getRow(rowIndex);
+      row.height = 18;
+      
+      row.getCell(1).value = itemRef;
+      row.getCell(1).style = createDataStyle(isOdd, false);
+      row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      row.getCell(2).value = m.description;
+      row.getCell(2).style = createDataStyle(isOdd, false);
+      row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+      
+      row.getCell(3).value = m.unit;
+      row.getCell(3).style = createDataStyle(isOdd, false);
+      row.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      row.getCell(4).value = times;
+      row.getCell(4).style = createDataStyle(isOdd, false);
+      row.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
+      
+      row.getCell(5).value = m.L ?? '';
+      row.getCell(5).style = createDataStyle(isOdd, false);
+      row.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+      if (m.L !== null) row.getCell(5).numFmt = '#,##0.00';
+      
+      row.getCell(6).value = m.W ?? '';
+      row.getCell(6).style = createDataStyle(isOdd, false);
+      row.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+      if (m.W !== null) row.getCell(6).numFmt = '#,##0.00';
+      
+      row.getCell(7).value = m.H ?? '';
+      row.getCell(7).style = createDataStyle(isOdd, false);
+      row.getCell(7).alignment = { horizontal: 'right', vertical: 'middle' };
+      if (m.H !== null) row.getCell(7).numFmt = '#,##0.00';
+      
+      row.getCell(8).value = qty;
+      row.getCell(8).style = createDataStyle(isOdd, false);
+      row.getCell(8).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(8).numFmt = '#,##0.000';
+      
+      row.getCell(9).value = rate;
+      row.getCell(9).style = createDataStyle(isOdd, true);
+      row.getCell(9).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(9).numFmt = '#,##0.00';
+      
+      row.getCell(10).value = cost;
+      row.getCell(10).style = createDataStyle(isOdd, false);
+      row.getCell(10).alignment = { horizontal: 'right', vertical: 'middle' };
+      row.getCell(10).numFmt = '#,##0.00';
+      
+      row.getCell(11).value = m.remarks ?? '';
+      row.getCell(11).style = createDataStyle(isOdd, false);
+      row.getCell(11).alignment = { horizontal: 'left', vertical: 'middle' };
+      
+      rowIndex++;
+      
       // Spec sub-line
       if (m.spec) {
-        merge(ws, row, TK_COLS.DESC, row, TK_COLS.REMARKS);
-        setCell(ws, row, TK_COLS.DESC, m.spec, 's', {
-          font: { sz: 9, italic: true, name: 'Arial', color: { rgb: '555555' } },
-          fill: { patternType: 'solid', fgColor: { rgb: bg } },
-          alignment: { horizontal: 'left', vertical: 'center', indent: 2 },
-          border: thinBorder(),
-        });
-        for (let c = 1; c <= TK_LAST; c++) {
-          if (c === TK_COLS.DESC) continue;
-          const a = addr(row, c);
-          ws[a] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: bg } }, border: thinBorder() } };
+        const specRow = sheet.getRow(rowIndex);
+        specRow.height = 14;
+        const specCell = specRow.getCell(2);
+        specCell.value = m.spec;
+        specCell.style = createSpecStyle(isOdd);
+        sheet.mergeCells(rowIndex, 2, rowIndex, 11);
+        
+        for (let c = 1; c <= 11; c++) {
+          if (c === 2) continue;
+          const cell = specRow.getCell(c);
+          cell.value = '';
+          cell.style = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: isOdd ? Colors.ROW_ODD : Colors.ROW_EVEN } }, border: { top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } } } };
         }
-        setRowHeight(ws, row, 12);
-        row++;
+        rowIndex++;
       }
-
+      
       itemNo++;
     }
-
+    
     // Subtotal row
-    merge(ws, row, 1, row, TK_COLS.QTY - 1);
-    setCell(ws, row, 1, `Sub-total  ${letter}  —  ${typeName}`, 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.SUBTOTAL_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.SUBTOTAL_BG } },
-      alignment: { horizontal: 'right' }, border: thinBorder(),
-    });
-    const subtotalQtyRange  = `H${groupDataStart}:H${row - 1}`;
-    const subtotalCostRange = `J${groupDataStart}:J${row - 1}`;
-    setFormula(ws, row, TK_COLS.QTY,  `SUM(${subtotalQtyRange})`,  rnd(groupQty, 3),  {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.SUBTOTAL_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.SUBTOTAL_BG } },
-      alignment: { horizontal: 'right' }, border: thinBorder(),
-    }, FMT_QTY3);
-    // blank filler for Rate column
-    const a = addr(row, TK_COLS.RATE);
-    ws[a] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: C.SUBTOTAL_BG } }, border: thinBorder() } };
-    setFormula(ws, row, TK_COLS.COST, `SUM(${subtotalCostRange})`, rnd(groupCost, 2), {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.SUBTOTAL_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.SUBTOTAL_BG } },
-      alignment: { horizontal: 'right' }, border: thinBorder(),
-    }, FMT_CCY);
-    const b = addr(row, TK_COLS.REMARKS);
-    ws[b] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: C.SUBTOTAL_BG } }, border: thinBorder() } };
-    setRowHeight(ws, row, 16);
-    row++;
-
-    sectionGrandQty  += groupQty;
-    sectionGrandCost += groupCost;
-
-    spacer(ws, row, TK_LAST); row++;
+    const subtotalRow = sheet.getRow(rowIndex);
+    subtotalRow.height = 18;
+    const subtotalCell = subtotalRow.getCell(1);
+    subtotalCell.value = `Sub-total ${letter} — ${typeName}`;
+    subtotalCell.style = createSubtotalStyle();
+    sheet.mergeCells(rowIndex, 1, rowIndex, 7);
+    rowIndex++;
   }
-
-  // ── Grand Total row ───────────────────────────────────────────────
-  merge(ws, row, 1, row, TK_COLS.QTY - 1);
-  setCell(ws, row, 1, `TOTAL  —  ${sheetName.toUpperCase()}`, 's', {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-    alignment: { horizontal: 'right' }, border: mediumBorder(),
-  });
-  setCell(ws, row, TK_COLS.QTY, rnd(sectionGrandQty, 3), 'n', {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-    alignment: { horizontal: 'right' }, border: mediumBorder(),
-  }, FMT_QTY3);
-  const gr = addr(row, TK_COLS.RATE);
-  ws[gr] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } }, border: mediumBorder() } };
-  setCell(ws, row, TK_COLS.COST, rnd(sectionGrandCost, 2), 'n', {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-    alignment: { horizontal: 'right' }, border: mediumBorder(),
-  }, FMT_CCY);
-  const gn = addr(row, TK_COLS.REMARKS);
-  ws[gn] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } }, border: mediumBorder() } };
-  setRowHeight(ws, row, 22);
-
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: row, c: TK_LAST } });
-  const safeName = sheetName.replace(/[\\/:*?[\]]/g, '').substring(0, 31);
-  XLSX.utils.book_append_sheet(wb, ws, safeName);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SHEET 3 · Material Summary  (consolidated by description + unit)
+// MATERIAL SUMMARY SHEET
 // ═══════════════════════════════════════════════════════════════════
 
-function buildMaterialSummarySheet(
-  wb: XLSX.WorkBook,
-  state: ProjectState,
-  meta: ProjectMeta,
-): void {
-  const ws: XLSX.WorkSheet = {};
-  ws['!merges'] = [];
-  ws['!rows']   = [];
-  ws['!cols']   = MAT_WIDTHS.map(w => ({ wch: w }));
-
+async function buildMaterialSummarySheet(workbook: ExcelJS.Workbook, state: ProjectState, meta: ProjectMeta): Promise<void> {
+  const sheet = workbook.addWorksheet('Material Summary');
+  setColumnWidths(sheet, [6, 46, 10, 14, 14, 14]);
+  
   const currency = meta.currency ?? 'AED';
-  let row = 1;
-
+  let rowIndex = 1;
+  
   // Title
-  merge(ws, row, 1, row, MAT_LAST);
-  setCell(ws, row, 1, 'MATERIAL SUMMARY', 's', {
-    font: { bold: true, sz: 14, name: 'Arial', color: { rgb: C.HEADER_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.HEADER_BG } },
-    alignment: { horizontal: 'center', vertical: 'center' },
-    border: mediumBorder(),
-  });
-  setRowHeight(ws, row, 28);
-  row++;
-
+  const titleRow = sheet.getRow(rowIndex);
+  titleRow.height = 32;
+  const titleCell = titleRow.getCell(1);
+  titleCell.value = 'MATERIAL SUMMARY';
+  titleCell.style = createTitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 6);
+  rowIndex++;
+  
   // Meta row
-  merge(ws, row, 1, row, MAT_LAST);
-  setCell(ws, row, 1,
-    `Project: ${meta.projectName}   |   Rev: ${meta.revision ?? 'P01'}   |   Date: ${new Date().toLocaleDateString('en-GB')}`,
-    's', {
-    font: { sz: 9, italic: true, name: 'Arial', color: { rgb: C.BAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.BAND_BG } },
-    alignment: { horizontal: 'right', vertical: 'center' },
-  });
-  setRowHeight(ws, row, 14);
-  row++;
-
-  spacer(ws, row, MAT_LAST); row++;
-
+  const metaRow = sheet.getRow(rowIndex);
+  metaRow.height = 18;
+  const metaCell = metaRow.getCell(1);
+  metaCell.value = `Project: ${meta.projectName} | Rev: ${meta.revision ?? 'P01'} | Date: ${new Date().toLocaleDateString('en-GB')}`;
+  metaCell.style = createSubtitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 6);
+  rowIndex++;
+  
+  rowIndex++;
+  
   // Headers
-  const hdrs = ['#', 'Material / Description', 'Unit', 'Total Qty', `Unit Rate (${currency})`, `Total Cost (${currency})`];
-  for (let c = 0; c < hdrs.length; c++) {
-    setCell(ws, row, c + 1, hdrs[c], 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.COL_HDR_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.COL_HDR_BG } },
-      alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
-      border: thinBorder(),
-    });
+  const headers = ['#', 'Material / Description', 'Unit', 'Total Qty', `Unit Rate (${currency})`, `Total Cost (${currency})`];
+  const headerRow = sheet.getRow(rowIndex);
+  headerRow.height = 28;
+  for (let c = 0; c < headers.length; c++) {
+    const cell = headerRow.getCell(c + 1);
+    cell.value = headers[c];
+    cell.style = createHeaderStyle();
   }
-  setRowHeight(ws, row, 28);
-  row++;
-
-  // Aggregate by description + unit
-  const map = new Map<string, { qty: number; rate: number; unit: string; spec?: string }>();
+  rowIndex++;
+  
+  // Aggregate materials
+  const materialMap = new Map<string, { qty: number; rate: number; unit: string; spec?: string }>();
   for (const m of state.measurements) {
     const key = `${m.description}||${m.unit}`;
-    if (map.has(key)) {
-      map.get(key)!.qty = rnd(map.get(key)!.qty + m.quantity, m.qtyPrecision ?? 3);
+    if (materialMap.has(key)) {
+      const existing = materialMap.get(key)!;
+      existing.qty = rnd(existing.qty + m.quantity, m.qtyPrecision ?? 3);
     } else {
-      map.set(key, { qty: m.quantity, rate: m.unitRate, unit: m.unit, spec: m.spec });
+      materialMap.set(key, { qty: m.quantity, rate: m.unitRate, unit: m.unit, spec: m.spec });
     }
   }
-
+  
   let i = 1;
-  const dataStart = row;
   let runningTotal = 0;
-  for (const [key, { qty, rate, unit, spec }] of map.entries()) {
-    const desc  = key.split('||')[0];
-    const bg    = i % 2 === 1 ? C.ROW_ODD : C.ROW_EVEN;
-    const cost  = rnd(qty * rate, 2);
+  
+  for (const [key, { qty, rate, unit, spec }] of materialMap.entries()) {
+    const desc = key.split('||')[0];
+    const isOdd = i % 2 === 1;
+    const cost = rnd(qty * rate, 2);
     runningTotal += cost;
-
-    const base = (align: string): CellStyle => ({
-      font: { sz: 10, name: 'Arial' },
-      fill: { patternType: 'solid', fgColor: { rgb: bg } },
-      alignment: { horizontal: align as any, vertical: 'center' },
-      border: thinBorder(),
-    });
-
-    setCell(ws, row, MAT_COLS.NUM,  String(i).padStart(2, '0'), 's', base('center'));
-    setCell(ws, row, MAT_COLS.DESC, desc,  's', { ...base('left'), alignment: { horizontal: 'left', vertical: 'center', wrapText: true } });
-    setCell(ws, row, MAT_COLS.UNIT, unit,  's', base('center'));
-    setCell(ws, row, MAT_COLS.QTY,  rnd(qty, 3),  'n', base('right'), FMT_QTY3);
-    setCell(ws, row, MAT_COLS.RATE, rate,  'n', {
-      ...base('right'),
-      fill: { patternType: 'solid', fgColor: { rgb: C.KEY_YELLOW } }, // yellow = fill-in
-    }, FMT_CCY);
-    setCell(ws, row, MAT_COLS.COST, cost,  'n', base('right'), FMT_CCY);
-    setRowHeight(ws, row, 15);
-    row++;
-
+    
+    const row = sheet.getRow(rowIndex);
+    row.height = 18;
+    
+    row.getCell(1).value = String(i).padStart(2, '0');
+    row.getCell(1).style = createDataStyle(isOdd, false);
+    row.getCell(1).alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    row.getCell(2).value = desc;
+    row.getCell(2).style = createDataStyle(isOdd, false);
+    row.getCell(2).alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+    
+    row.getCell(3).value = unit;
+    row.getCell(3).style = createDataStyle(isOdd, false);
+    row.getCell(3).alignment = { horizontal: 'center', vertical: 'middle' };
+    
+    row.getCell(4).value = rnd(qty, 3);
+    row.getCell(4).style = createDataStyle(isOdd, false);
+    row.getCell(4).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(4).numFmt = '#,##0.000';
+    
+    row.getCell(5).value = rate;
+    row.getCell(5).style = createDataStyle(isOdd, true);
+    row.getCell(5).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(5).numFmt = '#,##0.00';
+    
+    row.getCell(6).value = cost;
+    row.getCell(6).style = createDataStyle(isOdd, false);
+    row.getCell(6).alignment = { horizontal: 'right', vertical: 'middle' };
+    row.getCell(6).numFmt = '#,##0.00';
+    
+    rowIndex++;
+    
+    // Spec sub-line
     if (spec) {
-      merge(ws, row, MAT_COLS.DESC, row, MAT_LAST);
-      setCell(ws, row, MAT_COLS.DESC, spec, 's', {
-        font: { sz: 9, italic: true, name: 'Arial', color: { rgb: '555555' } },
-        fill: { patternType: 'solid', fgColor: { rgb: bg } },
-        alignment: { horizontal: 'left', indent: 2 },
-        border: thinBorder(),
-      });
-      for (let c = MAT_COLS.NUM; c <= MAT_LAST; c++) {
-        if (c === MAT_COLS.DESC) continue;
-        const a = addr(row, c);
-        ws[a] = { t: 'z', v: undefined, s: { fill: { patternType: 'solid', fgColor: { rgb: bg } }, border: thinBorder() } };
+      const specRow = sheet.getRow(rowIndex);
+      specRow.height = 14;
+      const specCell = specRow.getCell(2);
+      specCell.value = spec;
+      specCell.style = createSpecStyle(isOdd);
+      sheet.mergeCells(rowIndex, 2, rowIndex, 6);
+      
+      for (let c = 1; c <= 6; c++) {
+        if (c === 2) continue;
+        const cell = specRow.getCell(c);
+        cell.value = '';
+        cell.style = { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: isOdd ? Colors.ROW_ODD : Colors.ROW_EVEN } }, border: { top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } } } };
       }
-      setRowHeight(ws, row, 12);
-      row++;
+      rowIndex++;
     }
+    
     i++;
   }
-
+  
   // Total row
-  merge(ws, row, 1, row, MAT_COLS.RATE);
-  setCell(ws, row, 1, 'TOTAL', 's', {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-    alignment: { horizontal: 'right' }, border: mediumBorder(),
-  });
-  setFormula(ws, row, MAT_COLS.COST, `SUM(F${dataStart}:F${row - 1})`, rnd(runningTotal, 2), {
-    font: { bold: true, sz: 11, name: 'Arial', color: { rgb: C.GRAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.GRAND_BG } },
-    alignment: { horizontal: 'right' }, border: mediumBorder(),
-  }, FMT_CCY);
-  setRowHeight(ws, row, 22);
-
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: row, c: MAT_LAST } });
-  XLSX.utils.book_append_sheet(wb, ws, 'Material Summary');
+  const totalRow = sheet.getRow(rowIndex);
+  totalRow.height = 24;
+  const totalLabelCell = totalRow.getCell(1);
+  totalLabelCell.value = 'TOTAL';
+  totalLabelCell.style = createGrandTotalStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 5);
+  const totalValueCell = totalRow.getCell(6);
+  totalValueCell.value = runningTotal;
+  totalValueCell.style = createGrandTotalStyle();
+  totalValueCell.numFmt = '#,##0.00';
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SHEET 4 · Notes & Assumptions  (auto-generated)
+// NOTES & ASSUMPTIONS SHEET
 // ═══════════════════════════════════════════════════════════════════
 
-function buildNotesSheet(wb: XLSX.WorkBook, meta: ProjectMeta, dateStr: string): void {
-  const ws: XLSX.WorkSheet = {};
-  ws['!merges'] = [];
-  ws['!rows']   = [];
-  ws['!cols']   = [{ wch: 5 }, { wch: 28 }, { wch: 72 }];
-
-  let row = 1;
-
+async function buildNotesSheet(workbook: ExcelJS.Workbook, meta: ProjectMeta): Promise<void> {
+  const sheet = workbook.addWorksheet('Notes & Assumptions');
+  sheet.columns = [{ width: 6 }, { width: 28 }, { width: 72 }];
+  
+  let rowIndex = 1;
+  
   // Title
-  merge(ws, row, 1, row, 3);
-  setCell(ws, row, 1, 'NOTES, ASSUMPTIONS & EXCLUSIONS', 's', {
-    font: { bold: true, sz: 14, name: 'Arial', color: { rgb: C.HEADER_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.HEADER_BG } },
-    alignment: { horizontal: 'center', vertical: 'center' },
-    border: mediumBorder(),
-  });
-  setRowHeight(ws, row, 28);
-  row++;
-
-  merge(ws, row, 1, row, 3);
-  setCell(ws, row, 1, `Project: ${meta.projectName}   |   Rev: ${meta.revision ?? 'P01'}   |   Date: ${dateStr}`, 's', {
-    font: { sz: 9, italic: true, name: 'Arial', color: { rgb: C.BAND_FG } },
-    fill: { patternType: 'solid', fgColor: { rgb: C.BAND_BG } },
-    alignment: { horizontal: 'right', vertical: 'center' },
-  });
-  setRowHeight(ws, row, 14);
-  row++;
-  spacer(ws, row, 3); row++;
-
-  // Standard notes grouped by category
+  const titleRow = sheet.getRow(rowIndex);
+  titleRow.height = 32;
+  const titleCell = titleRow.getCell(1);
+  titleCell.value = 'NOTES, ASSUMPTIONS & EXCLUSIONS';
+  titleCell.style = createTitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 3);
+  rowIndex++;
+  
+  // Meta row
+  const metaRow = sheet.getRow(rowIndex);
+  metaRow.height = 18;
+  const metaCell = metaRow.getCell(1);
+  metaCell.value = `Project: ${meta.projectName} | Rev: ${meta.revision ?? 'P01'} | Date: ${new Date().toLocaleDateString('en-GB')}`;
+  metaCell.style = createSubtitleStyle();
+  sheet.mergeCells(rowIndex, 1, rowIndex, 3);
+  rowIndex++;
+  
+  rowIndex++;
+  
+  // Standard notes
   const standardNotes: { category: string; items: [string, string][] }[] = [
     {
       category: 'GENERAL NOTES',
       items: [
-        ['Drawing Basis',    'BOQ derived from issued-for-construction or shop drawings. All dimensions taken from drawing annotations only. Do not scale.'],
-        ['Field Measurement','Field measurement required prior to fabrication and installation. Contractor to verify all quantities against latest approved drawings.'],
+        ['Drawing Basis', 'BOQ derived from issued-for-construction or shop drawings. All dimensions taken from drawing annotations only. Do not scale.'],
+        ['Field Measurement', 'Field measurement required prior to fabrication and installation. Contractor to verify all quantities against latest approved drawings.'],
         ['Approved Samples', 'All finishes and hardware / ironmongery subject to formal client / LORJ approval before procurement.'],
-        ['Coordination',     'All works to be in full coordination with MEP, structural, and other relevant IFC drawings and shop drawing approvals.'],
+        ['Coordination', 'All works to be in full coordination with MEP, structural, and other relevant IFC drawings and shop drawing approvals.'],
       ],
     },
     {
       category: 'MATERIAL NOTES',
       items: [
-        ['MDF Grade',        'All MDF to be Moisture Resistant (MR) grade, minimum E1 formaldehyde emission class. No standard MDF permitted.'],
-        ['Edge Treatment',   'PVC lipping to all exposed MDF edges. Colour and finish to match approved laminate sample. Minimum 0.4 mm thickness.'],
-        ['No Sharp Edges',   'All corners and edges to be filleted 1–3 mm. No sharp corners or edges permitted on any cabinet or panel.'],
+        ['MDF Grade', 'All MDF to be Moisture Resistant (MR) grade, minimum E1 formaldehyde emission class. No standard MDF permitted.'],
+        ['Edge Treatment', 'PVC lipping to all exposed MDF edges. Colour and finish to match approved laminate sample. Minimum 0.4 mm thickness.'],
+        ['No Sharp Edges', 'All corners and edges to be filleted 1–3 mm. No sharp corners or edges permitted on any cabinet or panel.'],
+        ['Back Panel Specification', '6mm back panel is NOT acceptable. 9mm melamine MR MDF to be used as per drawing review notes.'],
       ],
     },
     {
       category: 'EXCLUSIONS',
       items: [
-        ['MEP Works',        'Electrical connections, gas supply, plumbing (water supply and drainage) are EXCLUDED. By MEP contractor.'],
-        ['LED Lighting',     'Under-cabinet LED lighting noted as "By Others". EXCLUDED from this BOQ. Confirm with MEP contractor.'],
-        ['Civil / Wall',     'Wall chasing, floor preparation, plastering, and wall tiling outside the joinery zone are EXCLUDED.'],
-        ['Ceiling Works',    'All ceiling works are EXCLUDED from this BOQ.'],
-        ['Preliminaries',    'Site preliminaries, scaffolding, hoisting, and general contractor overheads not included. Add separately.'],
+        ['MEP Works', 'Electrical connections, gas supply, plumbing (water supply and drainage) are EXCLUDED. By MEP contractor.'],
+        ['LED Lighting', 'Under-cabinet LED lighting noted as "By Others". EXCLUDED from this BOQ. Confirm with MEP contractor.'],
+        ['Civil / Wall Works', 'Wall chasing, floor preparation, plastering, and wall tiling outside the joinery zone are EXCLUDED.'],
+        ['Ceiling Works', 'All ceiling works are EXCLUDED from this BOQ.'],
+        ['Preliminaries', 'Site preliminaries, scaffolding, hoisting, and general contractor overheads not included. Add separately.'],
       ],
     },
     {
       category: 'FINANCIAL NOTES',
       items: [
-        ['Currency',         `All rates and amounts in ${meta.currency ?? 'AED'}.`],
-        ['VAT',              `UAE Value Added Tax (VAT) at ${(((meta.vatRate ?? 0.05) * 100).toFixed(0))}% applied to the grand total.`],
+        ['Currency', `All rates and amounts in ${meta.currency ?? 'AED'}.`],
+        ['VAT', `UAE Value Added Tax (VAT) at ${((meta.vatRate ?? 0.05) * 100).toFixed(0)}% applied to the grand total.`],
         ['Provisional Sums', 'Items marked as provisional sums should be adjusted based on actual scope at final account stage.'],
-        ['Rate Entry',       'All yellow-highlighted cells in the BOQ sheet are to be filled by the contractor / QS. Do not alter formulae in other cells.'],
+        ['Rate Entry', 'All yellow-highlighted cells in the BOQ sheet are to be filled by the contractor / QS. Do not alter formulae in other cells.'],
       ],
     },
   ];
-
-  // Merge with user-supplied notes
-  const userNotesByCategory = new Map<string, string[]>();
-  for (const n of (meta.notes ?? [])) {
-    if (!userNotesByCategory.has(n.category)) userNotesByCategory.set(n.category, []);
-    userNotesByCategory.get(n.category)!.push(n.text);
-  }
-
-  let globalIdx = 1;
-
+  
+  let noteIndex = 1;
+  
   for (const group of standardNotes) {
     // Category header
-    merge(ws, row, 1, row, 3);
-    setCell(ws, row, 1, `  ${group.category}`, 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.GROUP_BG } },
-      alignment: { horizontal: 'left', vertical: 'center' },
-      border: thinBorder(),
-    });
-    setRowHeight(ws, row, 18);
-    row++;
-
+    const catRow = sheet.getRow(rowIndex);
+    catRow.height = 22;
+    const catCell = catRow.getCell(1);
+    catCell.value = `  ${group.category}`;
+    catCell.style = createNoteCategoryStyle();
+    sheet.mergeCells(rowIndex, 1, rowIndex, 3);
+    rowIndex++;
+    
     for (const [label, text] of group.items) {
-      setCell(ws, row, 1, String(globalIdx), 's', {
-        font: { sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-        fill: { patternType: 'solid', fgColor: { rgb: C.ROW_ODD } },
-        alignment: { horizontal: 'center', vertical: 'top' },
-        border: thinBorder(),
-      });
-      setCell(ws, row, 2, label, 's', {
-        font: { bold: true, sz: 10, name: 'Arial' },
-        fill: { patternType: 'solid', fgColor: { rgb: C.NOTE_LABEL_BG } },
-        alignment: { horizontal: 'left', vertical: 'top' },
-        border: thinBorder(),
-      });
-      setCell(ws, row, 3, text, 's', {
-        font: { sz: 10, name: 'Arial' },
-        fill: { patternType: 'solid', fgColor: { rgb: C.ROW_EVEN } },
-        alignment: { horizontal: 'left', vertical: 'top', wrapText: true },
-        border: thinBorder(),
-      });
-      setRowHeight(ws, row, 28);
-      row++;
-      globalIdx++;
+      const indexCell = sheet.getCell(rowIndex, 1);
+      indexCell.value = noteIndex;
+      indexCell.style = { font: { size: 10, color: { argb: Colors.PRIMARY_DARK } }, alignment: { horizontal: 'center', vertical: 'top' }, border: { top: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, bottom: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, left: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } }, right: { style: 'thin', color: { argb: Colors.BORDER_LIGHT } } } };
+      
+      const labelCell = sheet.getCell(rowIndex, 2);
+      labelCell.value = label;
+      labelCell.style = createNoteLabelStyle();
+      
+      const textCell = sheet.getCell(rowIndex, 3);
+      textCell.value = text;
+      textCell.style = createNoteTextStyle();
+      
+      sheet.getRow(rowIndex).height = 28;
+      rowIndex++;
+      noteIndex++;
     }
-
-    // User-supplied notes for this category (if any match)
-    const extras = userNotesByCategory.get(group.category) ?? [];
-    for (const text of extras) {
-      setCell(ws, row, 1, String(globalIdx), 's', {
-        font: { sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-        fill: { patternType: 'solid', fgColor: { rgb: C.ROW_ODD } },
-        alignment: { horizontal: 'center', vertical: 'top' },
-        border: thinBorder(),
-      });
-      setCell(ws, row, 2, 'Additional Note', 's', {
-        font: { bold: true, sz: 10, name: 'Arial' },
-        fill: { patternType: 'solid', fgColor: { rgb: C.NOTE_LABEL_BG } },
-        alignment: { horizontal: 'left', vertical: 'top' },
-        border: thinBorder(),
-      });
-      setCell(ws, row, 3, text, 's', {
-        font: { sz: 10, name: 'Arial' },
-        fill: { patternType: 'solid', fgColor: { rgb: C.ROW_EVEN } },
-        alignment: { horizontal: 'left', vertical: 'top', wrapText: true },
-        border: thinBorder(),
-      });
-      setRowHeight(ws, row, 28);
-      row++;
-      globalIdx++;
-    }
-
-    spacer(ws, row, 3); row++;
+    
+    rowIndex++;
   }
-
-  // Any user categories not matching standard ones
-  for (const [cat, texts] of userNotesByCategory.entries()) {
-    if (standardNotes.some(g => g.category === cat)) continue; // already handled
-    merge(ws, row, 1, row, 3);
-    setCell(ws, row, 1, `  ${cat.toUpperCase()}`, 's', {
-      font: { bold: true, sz: 10, name: 'Arial', color: { rgb: C.GROUP_FG } },
-      fill: { patternType: 'solid', fgColor: { rgb: C.GROUP_BG } },
-      alignment: { horizontal: 'left', vertical: 'center' },
-      border: thinBorder(),
-    });
-    setRowHeight(ws, row, 18);
-    row++;
-    for (const text of texts) {
-      setCell(ws, row, 1, String(globalIdx), 's', { font: { sz: 10, name: 'Arial' }, alignment: { horizontal: 'center' }, border: thinBorder() });
-      setCell(ws, row, 2, 'Note', 's', { font: { bold: true, sz: 10, name: 'Arial' }, fill: { patternType: 'solid', fgColor: { rgb: C.NOTE_LABEL_BG } }, alignment: { horizontal: 'left' }, border: thinBorder() });
-      setCell(ws, row, 3, text, 's', { font: { sz: 10, name: 'Arial' }, alignment: { horizontal: 'left', wrapText: true }, border: thinBorder() });
-      setRowHeight(ws, row, 28);
-      row++;
-      globalIdx++;
-    }
-    spacer(ws, row, 3); row++;
-  }
-
-  ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: row, c: 3 } });
-  XLSX.utils.book_append_sheet(wb, ws, 'Notes & Assumptions');
 }

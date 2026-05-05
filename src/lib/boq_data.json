@@ -1,0 +1,170 @@
+{
+  "document": {
+    "title": "BILL OF QUANTITIES – KITCHEN FITOUT (TYPE C1)",
+    "project": "AL WAHA RESIDENCE 01",
+    "location": "EXPO CITY DUBAI",
+    "phase": "Phase-01 – Mobility District",
+    "main_contractor": "ARCO GROUP",
+    "design_consultant": "HOPKINS ARCHITECTS",
+    "supervision": "DEWAN ARCHITECTS + ENGINEERS",
+    "drawing_references": [
+      "C5128-SDW-2TR5600-FO-6000001",
+      "C5128-SDW-2TR5600-FO-6000003",
+      "C5128-SDW-2TR5600-FO-6000004",
+      "C5128-SDW-2TR5600-FO-6000093"
+    ],
+    "date": "2026-03-21",
+    "revision": "Rev 1 – First Issue",
+    "currency": "AED",
+    "vat_rate_percent": 5,
+    "total_units": 58,
+    "kitchen_type": "C01"
+  },
+  "sections": [
+    {
+      "section_id": "A",
+      "section_title": "Wall Cabinets – Top Unit (ELV-E)",
+      "reference_code": "ELV-E",
+      "note": "Unit overall dimensions: L 2.07m × W 0.38m × H 1.00m",
+      "items": [
+        {"item_no":"A1","description":"Carcass-A – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel to carcass section A","unit":"M²","length_m":2.07,"width_m":null,"height_thk_m":1.0,"no_of_units":1,"remarks":""},
+        {"item_no":"A2","description":"Carcass-A – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of carcass A","unit":"M²","length_m":2.07,"width_m":0.38,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"A3","description":"Carcass-A – 18mm MDF top panel","specification":"18mm both-face Melamine MR MDF sheet; top of carcass A","unit":"M²","length_m":2.07,"width_m":0.38,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"A4","description":"Carcass-A – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of carcass A","unit":"M²","length_m":null,"width_m":0.38,"height_thk_m":1.0,"no_of_units":2,"remarks":""},
+        {"item_no":"A5","description":"Carcass-A – 18mm MDF internal dividers","specification":"18mm both-face Melamine MR MDF sheet; internal dividers carcass A","unit":"M²","length_m":null,"width_m":0.38,"height_thk_m":1.0,"no_of_units":8,"remarks":""},
+        {"item_no":"A6","description":"Carcass-A – 18mm MDF fixed shelves","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves carcass A","unit":"M²","length_m":0.60,"width_m":0.38,"height_thk_m":null,"no_of_units":9,"remarks":""},
+        {"item_no":"A7","description":"Carcass-A – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine finish; all exposed MDF edges of carcass A","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total lipping per unit: 14.14 lm"},
+        {"item_no":"A8","description":"Shutter-A – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; shutter for carcass A; 5 bays","unit":"M²","length_m":2.07,"width_m":null,"height_thk_m":1.0,"no_of_units":1,"remarks":"5 shutter doors; laminate PL-01 both faces = 4.14 m²"},
+        {"item_no":"A9","description":"Shutter-A – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges carcass A","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total lipping per unit: 14.14 lm"},
+        {"item_no":"A10","description":"Carcass-B – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel carcass B return section","unit":"M²","length_m":0.44,"width_m":null,"height_thk_m":1.45,"no_of_units":1,"remarks":"Carcass-B dims: L 0.44m × W 0.38m × H 1.45m"},
+        {"item_no":"A11","description":"Carcass-B – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of carcass B","unit":"M²","length_m":0.44,"width_m":0.38,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"A12","description":"Carcass-B – 18mm MDF top panel","specification":"18mm both-face Melamine MR MDF sheet; top of carcass B","unit":"M²","length_m":0.44,"width_m":0.38,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"A13","description":"Carcass-B – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of carcass B","unit":"M²","length_m":null,"width_m":0.38,"height_thk_m":1.45,"no_of_units":2,"remarks":""},
+        {"item_no":"A14","description":"Carcass-B – 18mm MDF internal dividers","specification":"18mm both-face Melamine MR MDF sheet; internal dividers carcass B","unit":"M²","length_m":null,"width_m":0.38,"height_thk_m":1.45,"no_of_units":8,"remarks":""},
+        {"item_no":"A15","description":"Carcass-B – 18mm MDF fixed shelves","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves carcass B","unit":"M²","length_m":0.44,"width_m":0.38,"height_thk_m":null,"no_of_units":3,"remarks":""},
+        {"item_no":"A16","description":"Carcass-B – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine; all exposed MDF edges of carcass B","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total lipping per unit: 24.72 lm"},
+        {"item_no":"A17","description":"Shutter-B – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; shutter for carcass B; 1 bay","unit":"M²","length_m":0.44,"width_m":null,"height_thk_m":1.45,"no_of_units":1,"remarks":"1 shutter door; laminate PL-01 both faces = 1.276 m²"},
+        {"item_no":"A18","description":"Shutter-B – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges carcass B","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total lipping per unit: 3.78 lm"},
+        {"item_no":"A19","description":"Side panel – 25mm MDF exposed end panel","specification":"25mm Plain MR MDF sheet; exposed side panel with PL-01 laminate face","unit":"M²","length_m":0.65,"width_m":null,"height_thk_m":2.70,"no_of_units":null,"remarks":"25mm MDF = 1.755 m²; laminate coverage = 1.855 m²"},
+        {"item_no":"A20","description":"Side panel – PVC lipping 25mm exposed edge","specification":"PVC lipping 25mm profile to match finish; all exposed edges of side panel","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 3.35 lm"},
+        {"item_no":"A21","description":"Ironmongery – Full overlay soft-close hinges","specification":"Full overlay concealed soft-close hinges; as per LORJ approved sample; approx. 2 per door","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":12,"remarks":"12 hinges per unit"}
+      ]
+    },
+    {
+      "section_id": "B",
+      "section_title": "Wall Cabinets – Top Unit (ELV-F)",
+      "reference_code": "ELV-F",
+      "note": "Unit overall dimensions: L 1.18m × W 0.62m × H 1.75m. Shelf layout depicted incorrectly on drawing – should follow ELV-E (DWG C5128-SDW-2TR5600-FO-6000093); design confirmation required. Fridge unit considered separately.",
+      "items": [
+        {"item_no":"B1","description":"Carcass – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel to main carcass","unit":"M²","length_m":1.18,"width_m":null,"height_thk_m":1.75,"no_of_units":1,"remarks":""},
+        {"item_no":"B2","description":"Carcass – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of carcass","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"B3","description":"Carcass – 18mm MDF top panel","specification":"18mm both-face Melamine MR MDF sheet; top of carcass","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"B4","description":"Carcass – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of carcass","unit":"M²","length_m":null,"width_m":0.62,"height_thk_m":1.75,"no_of_units":2,"remarks":""},
+        {"item_no":"B5","description":"Carcass – 18mm MDF internal dividers","specification":"18mm both-face Melamine MR MDF sheet; internal dividers","unit":"M²","length_m":null,"width_m":0.62,"height_thk_m":1.75,"no_of_units":2,"remarks":""},
+        {"item_no":"B6","description":"Carcass – 18mm MDF fixed shelves","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves","unit":"M²","length_m":0.59,"width_m":0.62,"height_thk_m":null,"no_of_units":4,"remarks":""},
+        {"item_no":"B7","description":"Carcass – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine; all exposed MDF edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 25.02 lm"},
+        {"item_no":"B8","description":"Shutter – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; shutter; 2 doors","unit":"M²","length_m":1.18,"width_m":null,"height_thk_m":1.75,"no_of_units":1,"remarks":"2 shutter doors; laminate PL-01 both faces = 4.13 m²"},
+        {"item_no":"B9","description":"Shutter – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 9.36 lm"},
+        {"item_no":"B10","description":"Side panel – 25mm MDF exposed end panel","specification":"25mm Plain MR MDF sheet with PL-01 laminate face; exposed side panel","unit":"M²","length_m":0.35,"width_m":null,"height_thk_m":2.70,"no_of_units":null,"remarks":"25mm MDF = 0.945 m²; laminate coverage = 1.045 m²"},
+        {"item_no":"B11","description":"Side panel – PVC lipping 25mm exposed edge","specification":"PVC lipping 25mm profile; all exposed edges of side panel","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 3.05 lm"},
+        {"item_no":"B12","description":"Ironmongery – Full overlay soft-close hinges","specification":"Full overlay concealed soft-close hinges; as per LORJ approved sample","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":4,"remarks":"4 hinges per unit"}
+      ]
+    },
+    {
+      "section_id": "C",
+      "section_title": "Base Cabinets – Bottom Unit (ELV-E)",
+      "reference_code": "ELV-E",
+      "note": "Unit overall dimensions: L 1.45m × W 0.63m × H 0.77m",
+      "items": [
+        {"item_no":"C1","description":"Carcass – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel to base carcass","unit":"M²","length_m":1.45,"width_m":null,"height_thk_m":0.77,"no_of_units":1,"remarks":""},
+        {"item_no":"C2","description":"Carcass – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of base carcass","unit":"M²","length_m":1.45,"width_m":0.63,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"C3","description":"Carcass – 18mm MDF top panel (open top)","specification":"18mm both-face Melamine MR MDF sheet; top of base carcass (qty 0 – open top)","unit":"M²","length_m":1.45,"width_m":0.63,"height_thk_m":null,"no_of_units":0,"remarks":"Open-top configuration; qty = 0"},
+        {"item_no":"C4","description":"Carcass – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of base carcass","unit":"M²","length_m":null,"width_m":0.63,"height_thk_m":0.77,"no_of_units":2,"remarks":""},
+        {"item_no":"C5","description":"Carcass – 18mm MDF internal dividers","specification":"18mm both-face Melamine MR MDF sheet; internal dividers","unit":"M²","length_m":null,"width_m":0.63,"height_thk_m":0.77,"no_of_units":3,"remarks":""},
+        {"item_no":"C6","description":"Carcass – 18mm MDF fixed shelves (nil)","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves (qty 0)","unit":"M²","length_m":1.45,"width_m":0.63,"height_thk_m":null,"no_of_units":0,"remarks":"No fixed shelves in base unit"},
+        {"item_no":"C7","description":"Carcass – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine; all exposed MDF edges of carcass","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 10.81 lm"},
+        {"item_no":"C8","description":"Drawer unit – 18mm MDF drawer front","specification":"18mm both-face Melamine MR MDF sheet; drawer front panel; 1 drawer (L 0.54m × W 0.50m × H 0.14m)","unit":"M²","length_m":0.54,"width_m":null,"height_thk_m":0.14,"no_of_units":1,"remarks":""},
+        {"item_no":"C9","description":"Drawer unit – 12mm MDF drawer sides","specification":"12mm both-face Melamine MR MDF sheet; drawer side panels","unit":"M²","length_m":0.54,"width_m":null,"height_thk_m":0.14,"no_of_units":4,"remarks":""},
+        {"item_no":"C10","description":"Drawer unit – 6mm MDF drawer bottom","specification":"6mm both-face Melamine MR MDF sheet; drawer bottom panel","unit":"M²","length_m":0.54,"width_m":0.50,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"C11","description":"Drawer unit – PVC lipping 18mm drawer front edges","specification":"PVC lipping 18mm profile; exposed edges of 18mm drawer front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.36 lm"},
+        {"item_no":"C12","description":"Drawer unit – PVC lipping 12mm drawer box edges","specification":"PVC lipping 12mm profile; exposed edges of 12mm drawer sides","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 2.08 lm"},
+        {"item_no":"C13","description":"Shutter – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; main door shutter of base unit; 1 door","unit":"M²","length_m":1.45,"width_m":null,"height_thk_m":0.77,"no_of_units":1,"remarks":"Laminate PL-01 both faces = 2.233 m²"},
+        {"item_no":"C14","description":"Shutter – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 4.44 lm"},
+        {"item_no":"C15","description":"Counter substrate – plywood base to countertop","specification":"Plywood sheet; substrate under countertop surface","unit":"M²","length_m":1.45,"width_m":0.63,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"C16","description":"Ironmongery – Full overlay soft-close hinges","specification":"Full overlay concealed soft-close hinges; as per LORJ approved sample","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"C17","description":"Ironmongery – Soft-close full-extension drawer runners","specification":"Soft-close full-extension drawer runner pair; as per LORJ approved sample","unit":"Pr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"C18","description":"Skirting – aluminium skirting to base of unit","specification":"Aluminium skirting profile; full length of base unit front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.45 lm"}
+      ]
+    },
+    {
+      "section_id": "D",
+      "section_title": "Base Cabinets – Bottom Unit (ELV-F)",
+      "reference_code": "ELV-F",
+      "note": "Unit overall dimensions: L 1.18m × W 0.62m × H 0.76m",
+      "items": [
+        {"item_no":"D1","description":"Carcass – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel to base carcass","unit":"M²","length_m":1.18,"width_m":null,"height_thk_m":0.76,"no_of_units":1,"remarks":""},
+        {"item_no":"D2","description":"Carcass – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of base carcass","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"D3","description":"Carcass – 18mm MDF top panel (open top)","specification":"18mm both-face Melamine MR MDF sheet; top of base carcass (open top)","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":0,"remarks":"Open-top configuration; qty = 0"},
+        {"item_no":"D4","description":"Carcass – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of base carcass","unit":"M²","length_m":null,"width_m":0.62,"height_thk_m":0.76,"no_of_units":2,"remarks":""},
+        {"item_no":"D5","description":"Carcass – 18mm MDF internal dividers","specification":"18mm both-face Melamine MR MDF sheet; internal dividers","unit":"M²","length_m":null,"width_m":0.62,"height_thk_m":0.76,"no_of_units":2,"remarks":""},
+        {"item_no":"D6","description":"Carcass – 18mm MDF fixed shelves (nil)","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves (qty 0)","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":0,"remarks":"No fixed shelves"},
+        {"item_no":"D7","description":"Carcass – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine; all exposed MDF edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 9.40 lm"},
+        {"item_no":"D8","description":"Drawer-A – 18mm MDF drawer front (shallow)","specification":"18mm both-face Melamine MR MDF sheet; shallow drawer front (H 0.175m); 1 drawer","unit":"M²","length_m":0.59,"width_m":null,"height_thk_m":0.175,"no_of_units":1,"remarks":"Drawer-A dims: L 0.59m × W 0.50m × H 0.175m"},
+        {"item_no":"D9","description":"Drawer-A – 12mm MDF drawer sides","specification":"12mm both-face Melamine MR MDF sheet; drawer sides","unit":"M²","length_m":0.59,"width_m":null,"height_thk_m":0.175,"no_of_units":4,"remarks":""},
+        {"item_no":"D10","description":"Drawer-A – 6mm MDF drawer bottom","specification":"6mm both-face Melamine MR MDF sheet; drawer bottom","unit":"M²","length_m":0.59,"width_m":0.50,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"D11","description":"Drawer-A – PVC lipping 18mm to drawer front","specification":"PVC lipping 18mm profile; exposed edges of 18mm drawer front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.53 lm"},
+        {"item_no":"D12","description":"Drawer-A – PVC lipping 12mm to drawer box","specification":"PVC lipping 12mm profile; exposed edges of 12mm drawer sides","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 2.18 lm"},
+        {"item_no":"D13","description":"Drawer-B – 18mm MDF drawer front (deep)","specification":"18mm both-face Melamine MR MDF sheet; deep drawer front (H 0.375m); 1 drawer","unit":"M²","length_m":0.59,"width_m":null,"height_thk_m":0.375,"no_of_units":1,"remarks":"Drawer-B dims: L 0.59m × W 0.50m × H 0.375m"},
+        {"item_no":"D14","description":"Drawer-B – 12mm MDF drawer sides","specification":"12mm both-face Melamine MR MDF sheet; drawer sides","unit":"M²","length_m":0.59,"width_m":null,"height_thk_m":0.375,"no_of_units":4,"remarks":""},
+        {"item_no":"D15","description":"Drawer-B – 6mm MDF drawer bottom","specification":"6mm both-face Melamine MR MDF sheet; drawer bottom","unit":"M²","length_m":0.59,"width_m":0.50,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"D16","description":"Drawer-B – PVC lipping 18mm to drawer front","specification":"PVC lipping 18mm profile; exposed edges of 18mm drawer front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.93 lm"},
+        {"item_no":"D17","description":"Drawer-B – PVC lipping 12mm to drawer box","specification":"PVC lipping 12mm profile; exposed edges of 12mm drawer sides","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 2.18 lm"},
+        {"item_no":"D18","description":"Shutter – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; main door shutter; 1 door","unit":"M²","length_m":1.18,"width_m":null,"height_thk_m":0.76,"no_of_units":1,"remarks":"Laminate PL-01 both faces = 1.794 m²"},
+        {"item_no":"D19","description":"Shutter – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 3.88 lm"},
+        {"item_no":"D20","description":"Counter substrate – plywood base to countertop","specification":"Plywood sheet; substrate under countertop","unit":"M²","length_m":1.18,"width_m":0.62,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"D21","description":"Ironmongery – Full overlay soft-close hinges","specification":"Full overlay concealed soft-close hinges; as per LORJ approved sample","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"D22","description":"Ironmongery – Soft-close full-extension drawer runners","specification":"Soft-close full-extension drawer runner pair; as per LORJ approved sample","unit":"Pr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"D23","description":"Ironmongery – Ball catcher / magnetic catch","specification":"Ball catcher / magnetic catch; as per LORJ approved sample","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"D24","description":"Skirting – aluminium skirting to base of unit","specification":"Aluminium skirting profile; full length of base unit front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.18 lm"}
+      ]
+    },
+    {
+      "section_id": "E",
+      "section_title": "Island Counter (ELV-G1)",
+      "reference_code": "ELV-G1",
+      "note": "Unit overall dimensions: L 1.15m × W 0.57m × H 0.80m. No drawers in this unit.",
+      "items": [
+        {"item_no":"E1","description":"Carcass – 9mm MDF wall back panel","specification":"9mm both-face Melamine MR MDF sheet; back panel to island carcass","unit":"M²","length_m":1.15,"width_m":null,"height_thk_m":0.80,"no_of_units":1,"remarks":""},
+        {"item_no":"E2","description":"Carcass – 18mm MDF bottom panel","specification":"18mm both-face Melamine MR MDF sheet; bottom of island carcass","unit":"M²","length_m":1.15,"width_m":0.57,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"E3","description":"Carcass – 18mm MDF top panel","specification":"18mm both-face Melamine MR MDF sheet; top of island carcass","unit":"M²","length_m":1.15,"width_m":0.57,"height_thk_m":null,"no_of_units":null,"remarks":"Qty not entered in takeoff – confirm with design"},
+        {"item_no":"E4","description":"Carcass – 18mm MDF side panels","specification":"18mm both-face Melamine MR MDF sheet; sides of island carcass","unit":"M²","length_m":null,"width_m":0.57,"height_thk_m":0.80,"no_of_units":2,"remarks":""},
+        {"item_no":"E5","description":"Carcass – 18mm MDF internal dividers (nil)","specification":"18mm both-face Melamine MR MDF sheet; internal dividers (qty 0)","unit":"M²","length_m":null,"width_m":0.57,"height_thk_m":0.80,"no_of_units":0,"remarks":""},
+        {"item_no":"E6","description":"Carcass – 18mm MDF fixed shelves (nil)","specification":"18mm both-face Melamine MR MDF sheet; fixed shelves (qty 0)","unit":"M²","length_m":1.15,"width_m":0.57,"height_thk_m":null,"no_of_units":0,"remarks":""},
+        {"item_no":"E7","description":"Carcass – PVC lipping to all exposed edges","specification":"PVC lipping to match grey melamine; all exposed MDF edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 7.78 lm"},
+        {"item_no":"E8","description":"Shutter – 18mm MDF plain shutter panel","specification":"18mm Plain MR MDF sheet; island door shutter; 1 door","unit":"M²","length_m":1.15,"width_m":null,"height_thk_m":0.80,"no_of_units":1,"remarks":"Laminate PL-01 both faces = 1.84 m²"},
+        {"item_no":"E9","description":"Shutter – PVC lipping to shutter edges","specification":"PVC lipping to match grey melamine; all exposed shutter edges","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 3.90 lm"},
+        {"item_no":"E10","description":"Counter substrate – plywood base to countertop","specification":"Plywood sheet; substrate under island countertop","unit":"M²","length_m":1.15,"width_m":0.57,"height_thk_m":null,"no_of_units":1,"remarks":""},
+        {"item_no":"E11","description":"End panel – 12mm MR MDF side panel","specification":"12mm MR MDF sheet; exposed end panel of island counter","unit":"M²","length_m":1.05,"width_m":null,"height_thk_m":0.95,"no_of_units":null,"remarks":"12mm MR MDF = 0.998 m²"},
+        {"item_no":"E12","description":"End panel – solid timber framing","specification":"Solid timber framing behind 12mm MR MDF end panel","unit":"M³","length_m":1.05,"width_m":0.026,"height_thk_m":0.95,"no_of_units":null,"remarks":"Timber volume per unit: 0.026 m³"},
+        {"item_no":"E13","description":"Ironmongery – Full overlay soft-close hinges","specification":"Full overlay concealed soft-close hinges; as per LORJ approved sample","unit":"Nr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":2,"remarks":""},
+        {"item_no":"E14","description":"Ironmongery – Drawer runners (nil – no drawers)","specification":"Soft-close full-extension drawer runner pairs qty = 0; no drawers in island","unit":"Pr","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":0,"remarks":"No drawers"},
+        {"item_no":"E15","description":"Skirting – aluminium skirting to base of island","specification":"Aluminium skirting profile; full length of island front","unit":"LM","length_m":null,"width_m":null,"height_thk_m":null,"no_of_units":null,"remarks":"Total per unit: 1.15 lm"}
+      ]
+    }
+  ],
+  "notes_and_assumptions": {
+    "general_notes": [
+      {"id":1,"topic":"Total unit count","note":"Total of 58 kitchen units across the project. All per-unit quantities in the takeoff must be multiplied by 58 to obtain project totals."},
+      {"id":2,"topic":"Drawing basis","note":"Takeoff derived from elevation drawings ELV-E, ELV-F, and ELV-G1. Cross-reference shop drawings C5128-SDW-2TR5600-FO-6000001, 6000003, 6000004, and 6000093."},
+      {"id":3,"topic":"Fridge unit","note":"Built-in refrigerator housing unit (ELV-F top unit) is considered separately and is NOT included in the quantities above."},
+      {"id":4,"topic":"Field measurement","note":"All dimensions taken from drawing annotations only. Field measurement required prior to fabrication."},
+      {"id":5,"topic":"Approved samples","note":"All finishes (PL-01 laminate, grey melamine) and all hardware/ironmongery are subject to LORJ formal approval before procurement."}
+    ],
+    "exclusions": [
+      {"id":1,"topic":"Countertop finish","note":"Porcelain tile countertop (FIN-102) and splashback are EXCLUDED from this takeoff."},
+      {"id":2,"topic":"Sinks and fixtures","note":"Kitchen sink (SW-101), mixer tap (SW-106), and all plumbing connections EXCLUDED."},
+      {"id":3,"topic":"MEP works","note":"All electrical, gas, and plumbing connection works EXCLUDED. By MEP contractor."},
+      {"id":4,"topic":"LED lighting","note":"Under-cabinet LED lighting EXCLUDED. By Others per drawing notes."}
+    ]
+  }
+}
