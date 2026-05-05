@@ -3,7 +3,7 @@
 //   • Fixed top nav bar with project breadcrumb + stat chips + Share / Export BOQ
 //   • Icon-only left sidebar (Files, Layers, Snap, Tools, History, Team)
 //   • Configurator strip (Wall Type, Stud Spacing, Track Depth + Recalculate)
-//   • High-density takeoff table (Code, Description, Quantity, Unit, Rate, Total)
+//   • High-density takeoff table (Code, Description, Material, Quantity, Unit, Rate, Total)
 //     with amber "flagged" rows for items with unitRate changes
 //   • Right panel: Sync Status — Change Detection card, Impacted Line Items,
 //     Visual Reference placeholder, Accept / Discard footer
@@ -25,51 +25,19 @@ import {
 import { cn, formatCurrency } from '@/lib/utils';
 import { TakeoffRow, MaterialSpec } from '@/types';
 
-// ─── Inline editable cell (unchanged logic) ───────────────────────────────────
+// ─── Editable cell for text/number ────────────────────────────────────────────
 function EditableCell({
-  row, field, type = 'text', materials = [], onUpdate,
+  row, field, type = 'text', onUpdate,
 }: {
   row: TakeoffRow;
   field: keyof TakeoffRow;
-  type?: 'text' | 'number' | 'material';
-  materials?: MaterialSpec[];
+  type?: 'text' | 'number';
   onUpdate: (id: string, updates: Partial<TakeoffRow>) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const value = row[field];
 
   if (editing) {
-    if (type === 'material') {
-      return (
-        <select
-          autoFocus
-          defaultValue={value as string}
-          onBlur={e => {
-            const val = e.target.value;
-            const mat = materials.find(m => m.name === val);
-            if (mat) {
-              onUpdate(row.id, {
-                description: mat.name,
-                unitRate: mat.materialCost + mat.laborCost + mat.equipmentCost,
-                unit: mat.unit,
-              });
-            } else {
-              onUpdate(row.id, { description: val });
-            }
-            setEditing(false);
-          }}
-          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-          className="w-full bg-zinc-950 border border-amber-500 text-[11px] font-mono p-1 outline-none text-zinc-200 rounded-none"
-        >
-          <option value={value as string}>{value}</option>
-          {materials.map(m => (
-            <option key={m.id} value={m.name}>
-              {m.code} - {m.name} ({formatCurrency(m.materialCost + m.laborCost + m.equipmentCost)}/{m.unit})
-            </option>
-          ))}
-        </select>
-      );
-    }
     return (
       <input
         autoFocus
@@ -95,6 +63,68 @@ function EditableCell({
       )}
     >
       {type === 'number' && typeof value === 'number' ? value.toFixed(2) : value as string}
+    </div>
+  );
+}
+
+// ─── Material cell (dropdown, separate from description) ──────────────────────
+function MaterialCell({
+  row, materials, onUpdate,
+}: {
+  row: TakeoffRow;
+  materials: MaterialSpec[];
+  onUpdate: (id: string, updates: Partial<TakeoffRow>) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const matched = materials.find(m => m.id === row.materialId);
+
+  if (editing) {
+    return (
+      <select
+        autoFocus
+        defaultValue={row.materialId || ''}
+        onBlur={e => {
+          const selectedId = e.target.value;
+          const mat = materials.find(m => m.id === selectedId);
+          if (mat) {
+            const total = mat.materialCost + mat.laborCost + mat.equipmentCost;
+            onUpdate(row.id, {
+              materialId: mat.id,
+              unitRate: total,
+              unit: mat.unit,
+              // description is NOT updated here
+            });
+          } else {
+            onUpdate(row.id, { materialId: undefined });
+          }
+          setEditing(false);
+        }}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+        className="w-full bg-zinc-950 border border-amber-500 text-[11px] font-mono p-1 outline-none text-zinc-200 rounded-none"
+      >
+        <option value="">— None —</option>
+        {materials.map(m => (
+          <option key={m.id} value={m.id}>
+            {m.code} – {m.name} ({formatCurrency(m.materialCost + m.laborCost + m.equipmentCost)}/{m.unit})
+          </option>
+        ))}
+      </select>
+    );
+  }
+
+  return (
+    <div
+      onClick={() => !row.isGroupHeader && setEditing(true)}
+      className="cursor-pointer hover:text-amber-400 transition-colors min-h-[16px] w-full"
+    >
+      {matched ? (
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[10px] text-zinc-300 font-mono">{matched.code}</span>
+          <span className="text-[8px] text-zinc-500 truncate leading-tight">{matched.name}</span>
+        </div>
+      ) : (
+        <span className="text-[10px] text-zinc-600 italic">— assign —</span>
+      )}
     </div>
   );
 }
@@ -150,7 +180,6 @@ export default function TakeoffFullPage() {
   const all = ps.measurements;
 
   // Determine "flagged" rows: items that have a unitRate > 0 (i.e. configured/changed)
-  // You can refine this to real change-detection logic later
   const isFlagged = (row: TakeoffRow) => row.unitRate > 0 && row.isOverridden;
 
   const filtered = useMemo(() => all.filter(m => {
@@ -435,12 +464,13 @@ export default function TakeoffFullPage() {
             {/* ── Takeoff table ───────────────────────────────────────────────── */}
             <div className="flex-1 overflow-auto bg-[#0d0d0d]"
                  style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
-              <table className="w-full text-left border-collapse min-w-[700px]">
+              <table className="w-full text-left border-collapse min-w-[800px]">
                 <thead className="sticky top-0 bg-zinc-900 z-10">
                   <tr className="border-b border-zinc-700">
                     <th className="w-10 p-2 border-r border-zinc-800" />
                     <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800">Code</th>
                     <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800">Description</th>
+                    <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800">Material</th>
                     <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800 text-right">Quantity</th>
                     <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800 text-center">Unit</th>
                     <th className="p-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest border-r border-zinc-800 text-right">Rate</th>
@@ -465,7 +495,7 @@ export default function TakeoffFullPage() {
                             <FolderOpenDot className="w-3.5 h-3.5 text-amber-500 mx-auto" />
                           </td>
                           <td className="p-2 border-r border-zinc-800 text-amber-500 font-bold">{gCode}</td>
-                          <td className="p-2 border-r border-zinc-800" colSpan={1}>
+                          <td className="p-2 border-r border-zinc-800" colSpan={2}>
                             <div className="flex items-center gap-2">
                               {expanded
                                 ? <ChevronDown className="w-3 h-3 text-amber-500 flex-shrink-0" />
@@ -489,8 +519,8 @@ export default function TakeoffFullPage() {
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>
-                          </td>
-                        </tr>
+                           </td>
+                         </tr>
 
                         {/* Group items */}
                         {expanded && items.map((item, iIdx) => {
@@ -510,34 +540,36 @@ export default function TakeoffFullPage() {
                                 {flagged
                                   ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" style={{ fill: 'currentColor', opacity: 0.9 }} />
                                   : <span className="w-2 h-2 inline-block bg-zinc-700 mx-auto" />}
-                              </td>
+                               </td>
                               <td className={cn('p-2 border-r border-zinc-800 font-bold pl-6', flagged ? 'text-amber-500' : 'text-zinc-400')}>
                                 {code}
-                              </td>
+                               </td>
+                              {/* Description — free text, not affected by material */}
                               <td className="p-2 border-r border-zinc-800">
                                 <div className="flex items-center gap-2 pl-4">
                                   <Package className="w-3 h-3 text-zinc-700 flex-shrink-0" />
-                                  <EditableCell row={item} field="description" type="material"
-                                    materials={ps.materials} onUpdate={updateMeasurement} />
+                                  <EditableCell row={item} field="description" type="text" onUpdate={updateMeasurement} />
                                 </div>
-                              </td>
+                               </td>
+                              {/* Material — separate dropdown */}
+                              <td className="p-2 border-r border-zinc-800">
+                                <MaterialCell row={item} materials={ps.materials} onUpdate={updateMeasurement} />
+                               </td>
                               <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
                                 <div className="flex justify-end items-center gap-1">
-                                  <EditableCell row={item} field="quantity" type="number"
-                                    materials={ps.materials} onUpdate={updateMeasurement} />
+                                  <EditableCell row={item} field="quantity" type="number" onUpdate={updateMeasurement} />
                                   {item.isOverridden && <Pencil className="w-2 h-2 text-amber-500/50 flex-shrink-0" />}
                                 </div>
-                              </td>
+                               </td>
                               <td className="p-2 border-r border-zinc-800 text-center text-zinc-400">
-                                <EditableCell row={item} field="unit" materials={ps.materials} onUpdate={updateMeasurement} />
-                              </td>
+                                <EditableCell row={item} field="unit" onUpdate={updateMeasurement} />
+                               </td>
                               <td className="p-2 border-r border-zinc-800 text-right text-zinc-400">
-                                <EditableCell row={item} field="unitRate" type="number"
-                                  materials={ps.materials} onUpdate={updateMeasurement} />
-                              </td>
+                                <EditableCell row={item} field="unitRate" type="number" onUpdate={updateMeasurement} />
+                               </td>
                               <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-200')}>
                                 {formatCurrency(item.quantity * item.unitRate)}
-                              </td>
+                               </td>
                               <td className="p-2 text-center border-l border-zinc-800">
                                 <div className="flex items-center justify-center gap-1.5">
                                   <button onClick={() => toggleVisibility(item.id)}
@@ -549,15 +581,15 @@ export default function TakeoffFullPage() {
                                     <Trash2 className="w-3 h-3" />
                                   </button>
                                 </div>
-                              </td>
-                            </tr>
+                               </td>
+                             </tr>
                           );
                         })}
 
                         {/* Group subtotal row */}
                         {expanded && items.length > 0 && (
                           <tr className="bg-zinc-950 border-b border-zinc-900">
-                            <td colSpan={8} className="p-1.5 px-4 text-right">
+                            <td colSpan={9} className="p-1.5 px-4 text-right">
                               <div className="flex items-center justify-end gap-4 text-[9px] text-zinc-600">
                                 <span>Subtotal: {formatCurrency(groupCost(items))}</span>
                                 <span className="w-px h-2 bg-zinc-800" />
@@ -565,8 +597,8 @@ export default function TakeoffFullPage() {
                                 <span className="w-px h-2 bg-zinc-800" />
                                 <span className="text-amber-500 font-bold">Total: {formatCurrency(groupCost(items) * 1.1)}</span>
                               </div>
-                            </td>
-                          </tr>
+                             </td>
+                           </tr>
                         )}
                       </React.Fragment>
                     );
@@ -590,36 +622,38 @@ export default function TakeoffFullPage() {
                           {flagged
                             ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" style={{ fill: 'currentColor', opacity: 0.9 }} />
                             : <span className="w-2 h-2 inline-block bg-zinc-700 mx-auto" />}
-                        </td>
+                         </td>
                         <td className={cn('p-2 border-r border-zinc-800 font-bold', flagged ? 'text-amber-500' : 'text-zinc-400')}>
                           {code}
-                        </td>
+                         </td>
+                        {/* Description — free text */}
                         <td className="p-2 border-r border-zinc-800 text-zinc-200">
                           <div className="flex flex-col">
-                            <EditableCell row={row} field="description" type="material"
-                              materials={ps.materials} onUpdate={updateMeasurement} />
+                            <EditableCell row={row} field="description" type="text" onUpdate={updateMeasurement} />
                             {row.notes && (
                               <span className="text-[9px] text-zinc-600 mt-0.5 truncate">{row.notes}</span>
                             )}
                           </div>
-                        </td>
+                         </td>
+                        {/* Material — separate dropdown */}
+                        <td className="p-2 border-r border-zinc-800">
+                          <MaterialCell row={row} materials={ps.materials} onUpdate={updateMeasurement} />
+                         </td>
                         <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
                           <div className="flex justify-end items-center gap-1">
-                            <EditableCell row={row} field="quantity" type="number"
-                              materials={ps.materials} onUpdate={updateMeasurement} />
+                            <EditableCell row={row} field="quantity" type="number" onUpdate={updateMeasurement} />
                             {row.isOverridden && <Pencil className="w-2.5 h-2.5 text-amber-500/50 flex-shrink-0" />}
                           </div>
-                        </td>
+                         </td>
                         <td className="p-2 border-r border-zinc-800 text-center text-zinc-400">
-                          <EditableCell row={row} field="unit" materials={ps.materials} onUpdate={updateMeasurement} />
-                        </td>
+                          <EditableCell row={row} field="unit" onUpdate={updateMeasurement} />
+                         </td>
                         <td className="p-2 border-r border-zinc-800 text-right text-zinc-400">
-                          <EditableCell row={row} field="unitRate" type="number"
-                            materials={ps.materials} onUpdate={updateMeasurement} />
-                        </td>
+                          <EditableCell row={row} field="unitRate" type="number" onUpdate={updateMeasurement} />
+                         </td>
                         <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-200')}>
                           {formatCurrency(row.quantity * row.unitRate)}
-                        </td>
+                         </td>
                         <td className="p-2 text-center border-l border-zinc-800">
                           <div className="flex items-center justify-center gap-1.5">
                             <label className="cursor-pointer" title="Change colour">
@@ -638,15 +672,15 @@ export default function TakeoffFullPage() {
                               <Trash2 className="w-3 h-3" />
                             </button>
                           </div>
-                        </td>
-                      </tr>
+                         </td>
+                       </tr>
                     );
                   })}
 
                   {/* Empty state */}
                   {filtered.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="p-16 text-center text-zinc-700 uppercase tracking-widest text-[10px]">
+                      <td colSpan={9} className="p-16 text-center text-zinc-700 uppercase tracking-widest text-[10px]">
                         {search
                           ? 'No rows match your search.'
                           : 'No measurements yet. Return to Workspace and start measuring.'}
