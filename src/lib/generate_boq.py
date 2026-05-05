@@ -2,14 +2,8 @@
 BOQ Material Matrix Generator – Al Waha Residence 01
 Generates the same material-matrix takeoff format as the original Excel:
   rows = line items   |   columns = individual materials / hardware
-Usage:  python generate_boq_matrix.py [boq_data.json] [output.xlsx]
-
-── Configurable options (top of file) ───────────────────────────────────────
-  FREEZE_PANES   : "D3" to freeze header+first cols, None = fully scrollable
-  PADDING_RIGHT  : blank white columns added to right of data  (default 2)
-  PADDING_BOTTOM : blank white rows added below data           (default 20)
-  PADDING_BORDER : True = thin border on padding cells, False = no border
-─────────────────────────────────────────────────────────────────────────────
+  
+Now fully configurable via JSON input file.
 """
 
 import json, sys, re
@@ -17,13 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-# ══ USER-CONFIGURABLE ════════════════════════════════════════════════════════
-FREEZE_PANES   = None    # None = fully scrollable both directions
-PADDING_RIGHT  = 2       # blank white columns on the RIGHT side only
-PADDING_BOTTOM = 10      # blank white rows at the BOTTOM only
-PADDING_BORDER = True    # thin border on padding cells?
-# ═════════════════════════════════════════════════════════════════════════════
-
+# ══ COLOR CONSTANTS ════════════════════════════════════════════════════════
 NAVY       = "0D1B2A"
 GOLD       = "B8962E"
 GOLD_LIGHT = "C8A84B"
@@ -42,34 +30,8 @@ SEC_ACCENT = "B8962E"
 SEC_TAG_BG = "1A3A5C"
 SEC_TAG_FG = "C8A84B"
 FONT_FACE  = "Calibri"
-BASE_H     = 16   # row height per text line (px equivalent)
+BASE_H     = 16
 WARM_GREY  = "F4F3F1"
-
-MATERIAL_COLS = [
-    ("6mm_mdf",      "6mm both\nMelamine MR MDF Sheet"),
-    ("9mm_mdf",      "9mm both Melamine\nMR MDF Sheet"),
-    ("12mm_mdf",     "12mm both Melamine\nMR MDF Sheet"),
-    ("18mm_mdf",     "18mm both Melamine\nMR MDF Sheet"),
-    ("18mm_plain",   "18mm Plain\nMR MDF Sheet"),
-    ("plywood",      "Plywood"),
-    ("_blank1",      ""),
-    ("25mm_mdf",     "25mm Plain MR MDF"),
-    ("laminate",     "PL-01\nLaminate (0.8mm)"),
-    ("_blank2",      ""),
-    ("hinges",       "Full overlay\nHinges"),
-    ("drawer_run",   "Drawer Runner\n(0.5m)"),
-    ("lipping_grey", "PVC Lipping\nGray Melamine"),
-    ("lipping_25",   "PVC Lipping\n25mm"),
-    ("lipping_18",   "PVC Lipping\n18mm"),
-    ("skirting",     "Aluminium\nSkirting"),
-    ("lipping_12",   "PVC Lipping\n12mm"),
-    ("12mm_mrmdf",   "12mm MR MDF"),
-    ("timber",       "Timber"),
-]
-
-LEFT_COLS_COUNT = 9
-MAT_INTERNAL_START = 10
-REM_INTERNAL       = MAT_INTERNAL_START + len(MATERIAL_COLS)
 
 
 def _S(s="thin", c="BBBBBB"): return Side(border_style=s, color=c)
@@ -83,6 +45,7 @@ def _al(h="left", v="center", wrap=False):
 
 
 def _calc_qty(item):
+    """Calculate quantity based on dimensions and unit type"""
     L,W,H = item.get("length_m"), item.get("width_m"), item.get("height_thk_m")
     nu, u = item.get("no_of_units"), item.get("unit","")
     if u in ("M²","m2"):
@@ -97,53 +60,89 @@ def _calc_qty(item):
     return None
 
 
-def _detect_mat(item):
+def _detect_mat(item, material_rules):
+    """
+    Detect materials based on JSON configuration rules
+    """
     spec = (item.get("specification") or "").lower()
     desc = (item.get("description") or "").lower()
+    remarks = (item.get("remarks") or "").lower()
     r = []
-    if   "6mm" in spec and "mdf" in spec:  r.append("6mm_mdf")
-    elif "9mm" in spec and "mdf" in spec:  r.append("9mm_mdf")
-    elif "12mm" in spec and ("mdf" in spec or "mrmdf" in spec.replace(" ","")):
-        r.append("12mm_mrmdf" if ("end panel" in desc or "side panel" in desc) else "12mm_mdf")
-    elif "18mm" in spec:
-        r.append("18mm_plain" if "plain" in spec else "18mm_mdf")
-    elif "25mm" in spec and "mdf" in spec: r.append("25mm_mdf")
-    elif "plywood" in spec: r.append("plywood")
-    elif "timber"  in spec: r.append("timber")
-    if any(k in spec for k in ("laminate","pl - 01","pl-01","pl_01")): r.append("laminate")
-    if "lipping" in desc or "lipping" in spec:
-        if   "25mm" in spec or "25mm" in desc: r.append("lipping_25")
-        elif "18mm" in spec or "18mm" in desc: r.append("lipping_18")
-        elif "12mm" in spec or "12mm" in desc: r.append("lipping_12")
-        else: r.append("lipping_grey")
-    if "hinge"  in desc or "hinge"  in spec: r.append("hinges")
-    if "drawer runner" in desc or "runner" in spec: r.append("drawer_run")
-    if "skirting" in desc or "skirting" in spec: r.append("skirting")
-    return r
+    
+    # Board material detection
+    for rule in material_rules.get("board_rules", []):
+        thickness = rule.get("thickness")
+        material = rule.get("material")
+        context = rule.get("context")
+        
+        # Check thickness
+        thickness_match = (thickness is None or thickness.lower() in spec)
+        # Check material
+        material_match = (material is None or material in spec)
+        # Check context if specified
+        context_match = True
+        if context:
+            context_match = any(ctx in desc for ctx in context)
+        
+        if thickness_match and material_match and context_match:
+            r.append(rule["key"])
+            break  # Only one board material per item
+    
+    # Add-on materials detection
+    for rule in material_rules.get("addon_rules", []):
+        trigger_spec = rule.get("trigger_spec", [])
+        trigger_desc = rule.get("trigger_desc", [])
+        size_filter = rule.get("size_filter")
+        
+        # Check if triggers match
+        spec_match = any(t.lower() in spec for t in trigger_spec) if trigger_spec else False
+        desc_match = any(t.lower() in desc for t in trigger_desc) if trigger_desc else False
+        
+        if spec_match or desc_match:
+            # Check size filter
+            if size_filter:
+                if size_filter in spec or size_filter in desc:
+                    r.append(rule["key"])
+            else:
+                r.append(rule["key"])
+    
+    return list(dict.fromkeys(r))  # Remove duplicates while preserving order
 
 
-SECTION_MAP = {
-    "A": ("ELV - E","Top Unit"),
-    "B": ("ELV - F","Top Unit"),
-    "C": ("ELV - E","Bottom Unit"),
-    "D": ("ELV - F","Bottom Unit"),
-    "E": ("ELV - G1","Island Counter"),
-}
+def _extract_lipping_from_remarks(remarks, regex_pattern):
+    """Extract lipping length from remarks using regex"""
+    if not remarks:
+        return None
+    match = re.search(regex_pattern, remarks.lower())
+    if match:
+        return float(match.group(1))
+    return None
 
 
-def build_summary_sheet(wb, doc, sections):
+def _extract_laminate_from_remarks(remarks, regex_pattern):
+    """Extract laminate area from remarks using regex"""
+    if not remarks:
+        return None
+    match = re.search(regex_pattern, remarks.lower())
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def build_summary_sheet(wb, doc, sections, section_map):
+    """Create a professional Summary worksheet dynamically from JSON data"""
     ws = wb.create_sheet("Summary", 0)
     ws.sheet_view.showGridLines = False
 
-    # ── Column widths ──────────────────────────────────────────────────────
-    ws.column_dimensions['A'].width = 3.5   # left gutter
+    # Column widths
+    ws.column_dimensions['A'].width = 3.5
     ws.column_dimensions['B'].width = 22
     ws.column_dimensions['C'].width = 36
     ws.column_dimensions['D'].width = 16
     ws.column_dimensions['E'].width = 16
-    ws.column_dimensions['F'].width = 3.5   # right gutter
+    ws.column_dimensions['F'].width = 3.5
 
-    COLS = 6   # A–F total
+    COLS = 6
     SPAN = "A{r}:F{r}"
 
     def _gold_stripe(r, h=4):
@@ -155,12 +154,8 @@ def build_summary_sheet(wb, doc, sections):
         ws.row_dimensions[r].height = h
         for ci in range(1, COLS + 1):
             ws.cell(r, ci).fill = _F(NAVY)
-            ws.cell(r, ci).border = Border(
-                bottom=Side("medium", color=GOLD)
-            )
-        # Gold left accent in col A
+            ws.cell(r, ci).border = Border(bottom=Side("medium", color=GOLD))
         ws.cell(r, 1).fill = _F(GOLD)
-        # Text in B:E merged
         ws.merge_cells(f"B{r}:E{r}")
         c = ws.cell(r, 2)
         c.value = text
@@ -177,7 +172,7 @@ def build_summary_sheet(wb, doc, sections):
                 top=Side("medium", color=GOLD),
                 bottom=Side("thin", color=GOLD_LIGHT)
             )
-        ws.cell(r, 1).fill = _F(GOLD)   # accent stripe
+        ws.cell(r, 1).fill = _F(GOLD)
         ws.merge_cells(f"B{r}:E{r}")
         c = ws.cell(r, 2)
         c.value = label.upper()
@@ -195,7 +190,7 @@ def build_summary_sheet(wb, doc, sections):
         thin = Side("thin", color="DDEEFF" if alt else "E8E8E8")
         gold_l = Side("medium", color=GOLD)
 
-        ws.cell(r, 1).fill = _F(GOLD)  # gold left accent
+        ws.cell(r, 1).fill = _F(GOLD)
         ws.cell(r, 1).border = Border(bottom=thin)
 
         c = ws.cell(r, 2)
@@ -217,7 +212,6 @@ def build_summary_sheet(wb, doc, sections):
         ws.cell(r, 6).border = Border(bottom=thin)
 
     def _col_hdr_row(r, labels):
-        """labels: list of (col_idx, text) pairs, 1-based"""
         ws.row_dimensions[r].height = 26
         for ci in range(1, COLS + 1):
             c = ws.cell(r, ci)
@@ -259,11 +253,10 @@ def build_summary_sheet(wb, doc, sections):
         ws.cell(r, 6).fill = _F(bg)
         ws.cell(r, 6).border = Border(bottom=thin)
 
-    # ── Layout ──────────────────────────────────────────────────────────────
+    # Build the sheet
     r = 1
     _gold_stripe(r, 4); r += 1
 
-    # Title block
     _navy_bar(r, f"BILL OF QUANTITIES  ·  KITCHEN FITOUT  ·  TYPE {doc['kitchen_type']}", size=13, h=36); r += 1
 
     ws.row_dimensions[r].height = 20
@@ -280,7 +273,7 @@ def build_summary_sheet(wb, doc, sections):
 
     _gold_stripe(r, 3); r += 1
 
-    # ── Project Information ──────────────────────────────────────────────────
+    # Project Information
     _section_hdr(r, "Project Information"); r += 1
 
     details = [
@@ -296,31 +289,33 @@ def build_summary_sheet(wb, doc, sections):
     for i, (lbl, val) in enumerate(details):
         _detail_row(r, lbl, val, alt=(i % 2 == 0)); r += 1
 
-    # ── Drawing References ───────────────────────────────────────────────────
-    ws.row_dimensions[r].height = 8; r += 1   # spacer
+    # Drawing References
+    ws.row_dimensions[r].height = 8; r += 1
     _section_hdr(r, "Drawing References"); r += 1
 
-    for i, ref in enumerate(doc["drawing_references"]):
+    for i, ref in enumerate(doc.get("drawing_references", [])):
         _detail_row(r, f"Ref {i+1:02d}", ref, alt=(i % 2 == 0)); r += 1
 
-    # ── Section Summary ──────────────────────────────────────────────────────
-    ws.row_dimensions[r].height = 8; r += 1   # spacer
+    # Section Summary
+    ws.row_dimensions[r].height = 8; r += 1
     _section_hdr(r, "Section Summary"); r += 1
 
     _col_hdr_row(r, [(2, "Section"), (3, "Reference"), (4, "Description"), (5, "Items")]); r += 1
 
     for i, sec in enumerate(sections):
-        elv, unit_type = SECTION_MAP.get(sec["section_id"], ("–", "–"))
+        sec_info = section_map.get(sec["section_id"], {})
+        elv_label = sec_info.get("elevation", "–")
+        unit_type = sec_info.get("unit_type", "–")
         _tbl_row(
             r,
             sec["section_id"],
-            elv,
+            elv_label,
             unit_type,
-            len(sec["items"]),
+            len(sec.get("items", [])),
             alt=(i % 2 == 0)
         ); r += 1
 
-    # ── Footer ───────────────────────────────────────────────────────────────
+    # Footer
     ws.row_dimensions[r].height = 8; r += 1
     _gold_stripe(r, 3); r += 1
 
@@ -335,27 +330,35 @@ def build_summary_sheet(wb, doc, sections):
     return ws
 
 
-def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
+def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_area_m2, output_options):
+    """Build the BOQ Matrix sheet dynamically from JSON data"""
     ws = wb.create_sheet("BOQ_Matrix")
     ws.sheet_view.showGridLines = False
 
-    PR = PADDING_RIGHT
-    PB = PADDING_BOTTOM
+    # Get output options from JSON
+    PR = output_options.get("padding_right", 2)
+    PB = output_options.get("padding_bottom", 10)
+
+    # Build material columns list from JSON
+    MATERIAL_COLS = [(col["key"], col["label"]) for col in material_cols]
+    
+    # Create mapping for count_only materials
+    count_only_keys = {col["key"] for col in material_cols if col.get("count_only", False)}
+    
+    # Get material widths from JSON
+    mat_widths = {col["key"]: col.get("width", 14) for col in material_cols}
 
     def sc(internal_col):
         return internal_col
 
+    LEFT_COLS_COUNT = 9
+    MAT_INTERNAL_START = 10
+    REM_INTERNAL = MAT_INTERNAL_START + len(MATERIAL_COLS)
     rem_actual = sc(REM_INTERNAL)
     total_actual = rem_actual + PR
 
     # Column widths
     base_widths = {1:4, 2:10, 3:46, 4:9, 5:9, 6:9, 7:9, 8:9, 9:17}
-    mat_widths = {
-        "6mm_mdf":16, "9mm_mdf":18, "12mm_mdf":18, "18mm_mdf":18, "18mm_plain":17,
-        "plywood":13, "_blank1":3.5, "25mm_mdf":17, "laminate":16, "_blank2":3.5,
-        "hinges":16, "drawer_run":17, "lipping_grey":18, "lipping_25":16,
-        "lipping_18":16, "skirting":18, "lipping_12":16, "12mm_mrmdf":16, "timber":13,
-    }
     col_max = {}
     for ic in range(1, LEFT_COLS_COUNT+1):
         col_max[sc(ic)] = base_widths.get(ic, 10)
@@ -383,16 +386,17 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
 
     def pad_bottom_row(row, height=8):
         ws.row_dimensions[row].height = height
-        brd = _B() if PADDING_BORDER else Border()
+        brd = _B() if output_options.get("padding_border", True) else Border()
         for ci in range(1, total_actual+1):
             c = ws.cell(row, ci); c.fill = _F(WHITE); c.border = brd
 
     def apply_right_pad_cols(r1, r2):
-        brd = _B() if PADDING_BORDER else Border()
+        brd = _B() if output_options.get("padding_border", True) else Border()
         for r in range(r1, r2+1):
             for ci in range(rem_actual+1, total_actual+1):
                 c = ws.cell(r, ci); c.fill = _F(WHITE); c.border = brd
 
+    # Start writing
     current_row = 1
     first_data_row = 1
 
@@ -407,7 +411,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
     c.alignment = _al("center", "center")
     current_row += 1
 
-    # Info Bar
+    # Info Bar (blank with hidden total units)
     ws.row_dimensions[current_row].height = 24
     for ci in range(1, total_actual+1):
         cell = ws.cell(current_row, ci)
@@ -427,6 +431,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
     ws.cell(info_bar_row, sc(8)).fill = _F(MID_BLUE)
     current_row += 1
 
+    # Section Header Writer
     def write_sec_hdr(row, elv_label, unit_type, note=""):
         bar = row
         ws.row_dimensions[bar].height = 30
@@ -470,6 +475,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         track_h(bar, 2)
         return row + 1
 
+    # Column Headers Writer
     def write_col_hdrs(row):
         ws.row_dimensions[row].height = 60
         hf = _F(MID_BLUE)
@@ -506,6 +512,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         c.alignment = fa
         c.border = fb
 
+    # Sub-group header writer
     def write_subgrp(row, label):
         ws.row_dimensions[row].height = 16
         c = ws.cell(row, sc(3))
@@ -521,6 +528,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         
         track_w(sc(3), label)
 
+    # Item row writer
     def write_item(row, s_no, desc, unit, times, L, W, H, qty_f, mat_a, remarks="", alt=False):
         ws.row_dimensions[row].height = 16
         bg = _F(ITEM_ALT) if alt else _F(WHITE)
@@ -574,6 +582,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         track_w(rem_actual, remarks)
         track_w(sc(3), desc)
 
+    # Summary rows writer
     def write_summary(pu_row, tot_row, i_start, i_end):
         ws.row_dimensions[pu_row].height = 20
         c = ws.cell(pu_row, sc(9))
@@ -608,18 +617,15 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         c.alignment = _al("center")
         c.border = _B()
         
-        count_keys = {"hinges", "drawer_run", "skirting", "lipping_grey", "lipping_25",
-                      "lipping_18", "lipping_12", "timber", "12mm_mrmdf"}
-        
         for mi, (key, _) in enumerate(MATERIAL_COLS):
             ci = sc(MAT_INTERNAL_START + mi)
             col_l = get_column_letter(ci)
             cell = ws.cell(tot_row, ci)
             if not key.startswith("_blank"):
-                if key in count_keys:
+                if key in count_only_keys:
                     cell.value = f"={col_l}{pu_row}*H2"
                 else:
-                    cell.value = f"={col_l}{pu_row}*H2/2.88"
+                    cell.value = f"={col_l}{pu_row}*H2/{sheet_area_m2}"
                 cell.font = _ft(11)
                 cell.fill = _F(PEACH_HL)
                 cell.number_format = "0.000"
@@ -628,13 +634,21 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
             else:
                 cell.fill = _F(PEACH_HL)
 
+    # Get material detection rules and subgroup keywords from JSON
+    material_rules = doc.get("material_detection_rules", {})
+    subgroup_keywords = material_rules.get("subgroup_keywords", [])
+    desc_strip_prefixes = material_rules.get("desc_strip_prefixes", [])
+    
     total_unit_rows = []
 
+    # Process Sections
     for sec in sections:
         sid = sec["section_id"]
-        elv_label, unit_type = SECTION_MAP.get(sid, ("", ""))
+        sec_info = section_map.get(sid, {})
+        elv_label = sec_info.get("elevation", "")
+        unit_type = sec_info.get("unit_type", "")
         note = sec.get("note", "")
-        items = sec["items"]
+        items = sec.get("items", [])
 
         current_row = write_sec_hdr(current_row, elv_label, unit_type, note)
         write_col_hdrs(current_row)
@@ -650,7 +664,6 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
 
         for item in items:
             desc = item.get("description", "")
-            spec = item.get("specification", "")
             item_no = item.get("item_no", "")
             unit = item.get("unit", "")
             remarks = item.get("remarks", "")
@@ -660,31 +673,19 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
             times = item.get("no_of_units")
             dl = desc.lower()
             
-            if "carcass-a" in dl or "carcass - a" in dl:
-                sg = "Carcass - A"; current_L, current_W, current_H = L, W, H
-            elif "carcass-b" in dl or "carcass - b" in dl:
-                sg = "Carcass - B"; current_L, current_W, current_H = L, W, H
-            elif "carcass" in dl:
-                sg = "Carcass"; current_L, current_W, current_H = L, W, H
-            elif "shutter-a" in dl or "shutter - a" in dl:
-                sg = "Shutter - A"; current_L, current_W, current_H = L, W, H
-            elif "shutter-b" in dl or "shutter - b" in dl:
-                sg = "Shutter - B"; current_L, current_W, current_H = L, W, H
-            elif "shutter" in dl:
-                sg = "Shutter"; current_L, current_W, current_H = L, W, H
-            elif "drawer-a" in dl or "drawer - a" in dl:
-                sg = "Drawer - A"; current_L, current_W, current_H = L, W, H
-            elif "drawer-b" in dl or "drawer - b" in dl:
-                sg = "Drawer - B"; current_L, current_W, current_H = L, W, H
-            elif "drawer" in dl:
-                sg = "Drawer"; current_L, current_W, current_H = L, W, H
-            elif "side panel" in dl:
-                sg = "Side panel"; current_L, current_W, current_H = L, W, H
-            elif "end panel" in dl:
-                sg = "End panel"; current_L, current_W, current_H = L, W, H
-            elif any(k in dl for k in ("ironmongery", "hinge", "runner", "catcher", "skirting")):
-                sg = "Ironmongary"; current_L, current_W, current_H = None, None, None
-            else:
+            # Detect sub-group using JSON keywords
+            sg = None
+            for kw_rule in subgroup_keywords:
+                keywords = kw_rule.get("keywords", [])
+                if any(kw in dl for kw in keywords):
+                    sg = kw_rule.get("label")
+                    if kw_rule.get("has_dims", True):
+                        current_L, current_W, current_H = L, W, H
+                    else:
+                        current_L, current_W, current_H = None, None, None
+                    break
+            
+            if not sg:
                 sg = cur_sg
 
             if sg and sg != cur_sg:
@@ -728,26 +729,24 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
             else:
                 qf = qty_v
 
-            mat_k = _detect_mat(item)
+            mat_k = _detect_mat(item, material_rules)
             mat_a = {}
+            
             for mk in mat_k:
-                if mk in ("hinges", "drawer_run"):
+                if mk in count_only_keys:
                     mat_a[mk] = f"={qc}{r}" if qf is not None else (times or 0)
                 elif mk == "laminate":
-                    m = re.search(r"([\d.]+)\s*m²", remarks)
-                    mat_a[mk] = float(m.group(1)) if m else f"={qc}{r}"
-                elif mk == "skirting":
-                    mat_a[mk] = f"={qc}{r}"
+                    laminate_area = _extract_laminate_from_remarks(remarks, r"([\d.]+)\s*m²")
+                    mat_a[mk] = laminate_area if laminate_area else f"={qc}{r}"
                 elif mk in ("lipping_grey", "lipping_25", "lipping_18", "lipping_12"):
-                    m = re.search(r"([\d.]+)\s*lm", remarks.lower())
-                    mat_a[mk] = float(m.group(1)) if m else f"={qc}{r}"
+                    lipping_len = _extract_lipping_from_remarks(remarks, r"([\d.]+)\s*lm")
+                    mat_a[mk] = lipping_len if lipping_len else f"={qc}{r}"
                 else:
                     mat_a[mk] = f"={qc}{r}"
 
+            # Strip prefixes from description
             dd = desc
-            for pfx in ["Carcass-A – ", "Carcass-B – ", "Carcass – ", "Shutter-A – ",
-                        "Shutter-B – ", "Shutter – ", "Drawer-A – ", "Drawer-B – ",
-                        "Drawer – ", "Side panel – ", "End panel – ", "Ironmongery – "]:
+            for pfx in desc_strip_prefixes:
                 if dd.startswith(pfx):
                     dd = dd[len(pfx):]
                     break
@@ -806,6 +805,7 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
         else:
             cell.fill = _F(NAVY)
 
+    # Bottom label mirror row
     current_row += 1
     max_lines = max((hdr.count("\n")+1) for key, hdr in MATERIAL_COLS if not key.startswith("_blank"))
     label_h = max(max_lines * BASE_H + 10, 56)
@@ -822,29 +822,49 @@ def _build_matrix_sheet(wb, doc, sections, total_units_ref="Summary!E5"):
 
     last_data_row = current_row
 
+    # Bottom padding
     for _ in range(PADDING_BOTTOM):
         current_row += 1
         pad_bottom_row(current_row)
 
+    # Right padding
     apply_right_pad_cols(first_data_row, last_data_row)
 
     apply_widths()
     apply_heights()
 
-    if FREEZE_PANES:
-        ws.freeze_panes = FREEZE_PANES
+    freeze_panes = output_options.get("freeze_panes")
+    if freeze_panes:
+        ws.freeze_panes = freeze_panes
 
 
 def generate(json_path, out_path):
+    """Main generation function"""
     with open(json_path) as f:
         data = json.load(f)
+    
+    doc = data["document"]
+    sections = data["sections"]
+    
+    # Extract configuration from JSON
+    section_map = doc.get("section_map", {})
+    material_cols = doc.get("material_columns", [])
+    sheet_area_m2 = doc.get("sheet_area_m2", 2.88)
+    output_options = doc.get("output_options", {})
+    
+    # Override script config with JSON values
+    global PADDING_RIGHT, PADDING_BOTTOM, PADDING_BORDER, FREEZE_PANES
+    PADDING_RIGHT = output_options.get("padding_right", 2)
+    PADDING_BOTTOM = output_options.get("padding_bottom", 10)
+    PADDING_BORDER = output_options.get("padding_border", True)
+    FREEZE_PANES = output_options.get("freeze_panes", None)
     
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
     
-    build_summary_sheet(wb, data["document"], data["sections"])
-    _build_matrix_sheet(wb, data["document"], data["sections"], total_units_ref="Summary!E5")
+    build_summary_sheet(wb, doc, sections, section_map)
+    _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_area_m2, output_options)
     
     wb.save(out_path)
     print(f"✓  Saved: {out_path}")
