@@ -3,7 +3,7 @@ BOQ Material Matrix Generator – Al Waha Residence 01
 Generates the same material-matrix takeoff format as the original Excel:
   rows = line items   |   columns = individual materials / hardware
   
-Now fully configurable via JSON input file.
+Now fully configurable via JSON input file with new data structure.
 """
 
 import json, sys, re
@@ -44,84 +44,170 @@ def _al(h="left", v="center", wrap=False):
     return Alignment(horizontal=h, vertical=v, wrap_text=wrap)
 
 
-def _calc_qty(item):
+def get_calculation_type(unit, unit_categories):
+    """Determine calculation type based on unit and category mapping"""
+    unit_upper = unit.upper() if unit else ""
+    
+    for calc_type, units in unit_categories.items():
+        if unit_upper in units:
+            return calc_type
+    
+    # Default fallbacks
+    if unit_upper in ("NR", "NOS", "PC", "PCS", "EACH"):
+        return "count_based"
+    elif unit_upper in ("PR", "PAIR"):
+        return "pair_based"
+    elif unit_upper in ("SET", "KIT", "BOX"):
+        return "set_based"
+    elif unit_upper in ("M²", "M2", "SQ M", "SQM"):
+        return "area_based"
+    elif unit_upper in ("M³", "M3", "CU M"):
+        return "volume_based"
+    elif unit_upper in ("LM", "L M", "M"):
+        return "linear_based"
+    
+    return "count_based"
+
+
+def calculate_quantity(item, unit_categories):
     """Calculate quantity based on dimensions and unit type"""
-    L,W,H = item.get("length_m"), item.get("width_m"), item.get("height_thk_m")
-    nu, u = item.get("no_of_units"), item.get("unit","")
-    if u in ("M²","m2"):
-        dims = [d for d in [L,W,H] if d is not None]
-        if len(dims)==2:
-            base = dims[0]*dims[1]
-            return round(base*nu,4) if nu else round(base,4)
-    if u in ("M³","m3"):
-        dims = [d for d in [L,W,H] if d is not None]
-        if len(dims)==3: return round(dims[0]*dims[1]*dims[2],6)
-    if u in ("LM","lm","Nr","nos","Pr","Pair","Item","m"): return nu
-    return None
+    dims = item.get("dimensions", {})
+    L = dims.get("length_meters") or dims.get("length_m")
+    W = dims.get("width_meters") or dims.get("width_m")
+    H = dims.get("height_meters") or dims.get("height_m") or dims.get("height_thk_m")
+    
+    qty = item.get("quantity_per_unit") or item.get("no_of_units") or item.get("quantity", 1)
+    if qty is None:
+        qty = 1
+    
+    unit = item.get("measurement_unit") or item.get("unit", "")
+    calc_type = get_calculation_type(unit, unit_categories)
+    
+    if calc_type == "area_based":
+        dims_list = [d for d in [L, W, H] if d is not None]
+        if len(dims_list) >= 2:
+            area = dims_list[0] * dims_list[1]
+            return round(area * qty, 4)
+        return None
+    elif calc_type == "volume_based":
+        if L is not None and W is not None and H is not None:
+            return round(L * W * H * qty, 6)
+        return None
+    elif calc_type in ("linear_based", "lm", "m"):
+        for dim in [L, H, W]:
+            if dim is not None:
+                return round(dim * qty, 4)
+        return qty if qty != 1 else None
+    else:
+        return qty if qty != 1 else None
 
 
-def _detect_mat(item, material_rules):
-    """
-    Detect materials based on JSON configuration rules
-    """
+def build_quantity_formula(item, row_num, col_map, unit_categories):
+    """Build Excel formula for quantity based on category"""
+    dims = item.get("dimensions", {})
+    L = dims.get("length_meters") or dims.get("length_m")
+    W = dims.get("width_meters") or dims.get("width_m")
+    H = dims.get("height_meters") or dims.get("height_m") or dims.get("height_thk_m")
+    
+    qty = item.get("quantity_per_unit") or item.get("no_of_units") or item.get("quantity", 1)
+    if qty is None:
+        qty = 1
+    
+    unit = item.get("measurement_unit") or item.get("unit", "")
+    remarks = item.get("remarks", "")
+    calc_type = get_calculation_type(unit, unit_categories)
+    
+    col_times = get_column_letter(col_map["times"])
+    col_L = get_column_letter(col_map["L"])
+    col_W = get_column_letter(col_map["W"])
+    col_H = get_column_letter(col_map["H"])
+    
+    # Extract from remarks
+    lm_match = re.search(r"([\d.]+)\s*lm", remarks.lower())
+    area_match = re.search(r"([\d.]+)\s*m²", remarks.lower())
+    if lm_match:
+        return float(lm_match.group(1))
+    if area_match and calc_type == "area_based":
+        return float(area_match.group(1))
+    
+    if calc_type == "area_based":
+        dim_cols = []
+        if L is not None: dim_cols.append(col_L)
+        if W is not None: dim_cols.append(col_W)
+        if H is not None: dim_cols.append(col_H)
+        
+        if len(dim_cols) >= 2:
+            formula = f"={dim_cols[0]}{row_num}*{dim_cols[1]}{row_num}"
+            if qty != 1:
+                formula = f"={formula}*{col_times}{row_num}"
+            return formula
+        return None
+    elif calc_type == "volume_based":
+        if L is not None and W is not None and H is not None:
+            formula = f"={col_L}{row_num}*{col_W}{row_num}*{col_H}{row_num}"
+            if qty != 1:
+                formula = f"={formula}*{col_times}{row_num}"
+            return formula
+        return None
+    elif calc_type in ("linear_based", "lm", "m"):
+        for dim_col, dim_val in [(col_L, L), (col_H, H), (col_W, W)]:
+            if dim_val is not None:
+                formula = f"={dim_col}{row_num}"
+                if qty != 1:
+                    formula = f"={formula}*{col_times}{row_num}"
+                return formula
+        return qty if qty != 1 else None
+    else:
+        if qty != 1:
+            return f"={col_times}{row_num}"
+        return qty if qty != 1 else None
+
+
+def detect_materials(item, material_rules):
+    """Detect materials based on JSON configuration rules"""
     spec = (item.get("specification") or "").lower()
     desc = (item.get("description") or "").lower()
     remarks = (item.get("remarks") or "").lower()
-    r = []
+    detected = []
     
-    # Board material detection
+    # Sheet/board material detection
     for rule in material_rules.get("board_rules", []):
         thickness = rule.get("thickness")
         material = rule.get("material")
         context = rule.get("context")
         
-        # Check thickness
         thickness_match = (thickness is None or thickness.lower() in spec)
-        # Check material
         material_match = (material is None or material in spec)
-        # Check context if specified
         context_match = True
         if context:
-            context_match = any(ctx in desc for ctx in context)
+            context_match = any(ctx.lower() in desc for ctx in context) if isinstance(context, list) else context.lower() in desc
         
         if thickness_match and material_match and context_match:
-            r.append(rule["key"])
-            break  # Only one board material per item
+            detected.append(rule.get("key"))
+            break
     
-    # Add-on materials detection
+    # Additional materials detection
     for rule in material_rules.get("addon_rules", []):
-        trigger_spec = rule.get("trigger_spec", [])
-        trigger_desc = rule.get("trigger_desc", [])
+        triggers_spec = rule.get("trigger_spec", [])
+        triggers_desc = rule.get("trigger_desc", [])
         size_filter = rule.get("size_filter")
         
-        # Check if triggers match
-        spec_match = any(t.lower() in spec for t in trigger_spec) if trigger_spec else False
-        desc_match = any(t.lower() in desc for t in trigger_desc) if trigger_desc else False
+        spec_match = any(t.lower() in spec for t in triggers_spec) if triggers_spec else False
+        desc_match = any(t.lower() in desc for t in triggers_desc) if triggers_desc else False
         
         if spec_match or desc_match:
-            # Check size filter
             if size_filter:
-                if size_filter in spec or size_filter in desc:
-                    r.append(rule["key"])
+                if size_filter.lower() in spec or size_filter.lower() in desc:
+                    detected.append(rule.get("key"))
             else:
-                r.append(rule["key"])
+                detected.append(rule.get("key"))
     
-    return list(dict.fromkeys(r))  # Remove duplicates while preserving order
+    return list(dict.fromkeys(detected))
 
 
-def _extract_lipping_from_remarks(remarks, regex_pattern):
-    """Extract lipping length from remarks using regex"""
-    if not remarks:
-        return None
-    match = re.search(regex_pattern, remarks.lower())
-    if match:
-        return float(match.group(1))
-    return None
-
-
-def _extract_laminate_from_remarks(remarks, regex_pattern):
-    """Extract laminate area from remarks using regex"""
-    if not remarks:
+def extract_from_remarks(remarks, regex_pattern):
+    """Extract value from remarks using regex pattern"""
+    if not remarks or not regex_pattern:
         return None
     match = re.search(regex_pattern, remarks.lower())
     if match:
@@ -143,7 +229,6 @@ def build_summary_sheet(wb, doc, sections, section_map):
     ws.column_dimensions['F'].width = 3.5
 
     COLS = 6
-    SPAN = "A{r}:F{r}"
 
     def _gold_stripe(r, h=4):
         ws.row_dimensions[r].height = h
@@ -257,7 +342,7 @@ def build_summary_sheet(wb, doc, sections, section_map):
     r = 1
     _gold_stripe(r, 4); r += 1
 
-    _navy_bar(r, f"BILL OF QUANTITIES  ·  KITCHEN FITOUT  ·  TYPE {doc['kitchen_type']}", size=13, h=36); r += 1
+    _navy_bar(r, f"BILL OF QUANTITIES  ·  KITCHEN FITOUT  ·  TYPE {doc.get('kitchen_type', 'N/A')}", size=13, h=36); r += 1
 
     ws.row_dimensions[r].height = 20
     for ci in range(1, COLS+1):
@@ -265,7 +350,7 @@ def build_summary_sheet(wb, doc, sections, section_map):
     ws.cell(r, 1).fill = _F(GOLD)
     ws.merge_cells(f"B{r}:E{r}")
     c = ws.cell(r, 2)
-    c.value = f"{doc['project']}   ·   {doc['location']}   ·   {doc['phase']}"
+    c.value = f"{doc.get('project', doc.get('name', ''))}   ·   {doc.get('location', '')}   ·   {doc.get('phase', '')}"
     c.font = _ft(10, False, GOLD_LIGHT, italic=True)
     c.fill = _F(MID_BLUE)
     c.alignment = _al("left", "center")
@@ -277,14 +362,14 @@ def build_summary_sheet(wb, doc, sections, section_map):
     _section_hdr(r, "Project Information"); r += 1
 
     details = [
-        ("Main Contractor",    doc["main_contractor"]),
-        ("Design Consultant",  doc["design_consultant"]),
-        ("Supervision",        doc["supervision"]),
-        ("Kitchen Type",       doc["kitchen_type"]),
-        ("Total Units",        doc["total_units"]),
-        ("Date",               doc["date"]),
-        ("Revision",           doc["revision"]),
-        ("Currency / VAT",     f"{doc['currency']}  (VAT {doc['vat_rate_percent']}%)"),
+        ("Main Contractor", doc.get("main_contractor", "N/A")),
+        ("Design Consultant", doc.get("design_consultant", "N/A")),
+        ("Supervision", doc.get("supervision", "N/A")),
+        ("Kitchen Type", doc.get("kitchen_type", "N/A")),
+        ("Total Units", doc.get("total_units", 0)),
+        ("Date", doc.get("date", "N/A")),
+        ("Revision", doc.get("revision", "N/A")),
+        ("Currency / VAT", f"{doc.get('currency', 'AED')}  (VAT {doc.get('vat_rate_percent', 5)}%)"),
     ]
     for i, (lbl, val) in enumerate(details):
         _detail_row(r, lbl, val, alt=(i % 2 == 0)); r += 1
@@ -303,17 +388,12 @@ def build_summary_sheet(wb, doc, sections, section_map):
     _col_hdr_row(r, [(2, "Section"), (3, "Reference"), (4, "Description"), (5, "Items")]); r += 1
 
     for i, sec in enumerate(sections):
-        sec_info = section_map.get(sec["section_id"], {})
+        sec_id = sec.get("section_id", "")
+        sec_info = section_map.get(sec_id, {})
         elv_label = sec_info.get("elevation", "–")
-        unit_type = sec_info.get("unit_type", "–")
-        _tbl_row(
-            r,
-            sec["section_id"],
-            elv_label,
-            unit_type,
-            len(sec.get("items", [])),
-            alt=(i % 2 == 0)
-        ); r += 1
+        unit_type = sec_info.get("cabinet_type", sec_info.get("unit_type", "–"))
+        items_count = len(sec.get("components", sec.get("items", [])))
+        _tbl_row(r, sec_id, elv_label, unit_type, items_count, alt=(i % 2 == 0)); r += 1
 
     # Footer
     ws.row_dimensions[r].height = 8; r += 1
@@ -330,17 +410,18 @@ def build_summary_sheet(wb, doc, sections, section_map):
     return ws
 
 
-def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_area_m2, output_options):
-    """Build the BOQ Matrix sheet dynamically from JSON data"""
+def _build_matrix_sheet(wb, doc, sections, fixtures, section_map, material_cols, sheet_area_m2, output_options, unit_categories):
+    """Build the BOQ Matrix sheet with fixtures support and original styling"""
     ws = wb.create_sheet("BOQ_Matrix")
     ws.sheet_view.showGridLines = False
 
     # Get output options from JSON
-    PR = output_options.get("padding_right", 2)
-    PB = output_options.get("padding_bottom", 10)
+    PR = output_options.get("right_padding_columns", output_options.get("padding_right", 2))
+    PB = output_options.get("bottom_padding_rows", output_options.get("padding_bottom", 10))
 
     # Build material columns list from JSON
-    MATERIAL_COLS = [(col["key"], col["label"]) for col in material_cols]
+    MATERIAL_COLS = [(col["key"], col["label"]) for col in material_cols if not col["key"].startswith("_blank")]
+    SPACER_COLS = [col["key"] for col in material_cols if col["key"].startswith("_blank")]
     
     # Create mapping for count_only materials
     count_only_keys = {col["key"] for col in material_cols if col.get("count_only", False)}
@@ -353,7 +434,7 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
 
     LEFT_COLS_COUNT = 9
     MAT_INTERNAL_START = 10
-    REM_INTERNAL = MAT_INTERNAL_START + len(MATERIAL_COLS)
+    REM_INTERNAL = MAT_INTERNAL_START + len(MATERIAL_COLS) + len(SPACER_COLS)
     rem_actual = sc(REM_INTERNAL)
     total_actual = rem_actual + PR
 
@@ -362,8 +443,14 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
     col_max = {}
     for ic in range(1, LEFT_COLS_COUNT+1):
         col_max[sc(ic)] = base_widths.get(ic, 10)
+    
+    mat_idx = 0
     for mi, (key, _) in enumerate(MATERIAL_COLS):
-        col_max[sc(MAT_INTERNAL_START+mi)] = mat_widths.get(key, 14)
+        col_max[sc(MAT_INTERNAL_START + mi)] = mat_widths.get(key, 14)
+        mat_idx = mi + 1
+    for si, key in enumerate(SPACER_COLS):
+        col_max[sc(MAT_INTERNAL_START + mat_idx + si)] = mat_widths.get(key, 3.5)
+    
     col_max[rem_actual] = 34
 
     def track_w(actual_col, text):
@@ -386,12 +473,12 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
 
     def pad_bottom_row(row, height=8):
         ws.row_dimensions[row].height = height
-        brd = _B() if output_options.get("padding_border", True) else Border()
+        brd = _B() if output_options.get("border_padding_cells", output_options.get("padding_border", True)) else Border()
         for ci in range(1, total_actual+1):
             c = ws.cell(row, ci); c.fill = _F(WHITE); c.border = brd
 
     def apply_right_pad_cols(r1, r2):
-        brd = _B() if output_options.get("padding_border", True) else Border()
+        brd = _B() if output_options.get("border_padding_cells", output_options.get("padding_border", True)) else Border()
         for r in range(r1, r2+1):
             for ci in range(rem_actual+1, total_actual+1):
                 c = ws.cell(r, ci); c.fill = _F(WHITE); c.border = brd
@@ -404,14 +491,15 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
     ws.row_dimensions[current_row].height = 30
     ws.merge_cells(f"{get_column_letter(sc(1))}{current_row}:{get_column_letter(rem_actual)}{current_row}")
     c = ws.cell(current_row, sc(1))
-    c.value = (f"BILL OF QUANTITIES – KITCHEN FITOUT (TYPE {doc['kitchen_type']})   ·   "
-               f"{doc['project']}   ·   {doc['location']}   ·   {doc['phase']}")
+    doc_title = doc.get("document_metadata", {}).get("title", doc.get("title", "BILL OF QUANTITIES"))
+    c.value = (f"{doc_title} (TYPE {doc.get('kitchen_type', 'N/A')})   ·   "
+               f"{doc.get('project', doc.get('name', ''))}   ·   {doc.get('location', '')}   ·   {doc.get('phase', '')}")
     c.font = _ft(14, True, WHITE)
     c.fill = _F(NAVY)
     c.alignment = _al("center", "center")
     current_row += 1
 
-    # Info Bar (blank with hidden total units)
+    # Info Bar
     ws.row_dimensions[current_row].height = 24
     for ci in range(1, total_actual+1):
         cell = ws.cell(current_row, ci)
@@ -419,19 +507,13 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         cell.border = Border(bottom=Side("medium", color=GOLD))
         cell.value = None
     
-    c = ws.cell(current_row, sc(3))
-    c.value = ""
-    c.font = _ft(10, True, WHITE)
-    c.alignment = _al("left", "center")
-    
     total_units_value = doc.get('total_units', 0)
-    info_bar_row = current_row
-    ws.cell(info_bar_row, sc(8)).value = total_units_value
-    ws.cell(info_bar_row, sc(8)).font = _ft(11, True, MID_BLUE)
-    ws.cell(info_bar_row, sc(8)).fill = _F(MID_BLUE)
+    ws.cell(current_row, sc(8)).value = total_units_value
+    ws.cell(current_row, sc(8)).font = _ft(11, True, MID_BLUE)
+    ws.cell(current_row, sc(8)).fill = _F(MID_BLUE)
     current_row += 1
 
-    # Section Header Writer
+    # ========== SECTION HEADER WRITER ==========
     def write_sec_hdr(row, elv_label, unit_type, note=""):
         bar = row
         ws.row_dimensions[bar].height = 30
@@ -465,7 +547,7 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         
         if note:
             nc = ws.cell(bar, rem_actual)
-            nc.value = note
+            nc.value = note[:100]
             nc.font = _ft(10, False, SEC_ACCENT, True)
             nc.fill = _F(SEC_BAR_BG)
             nc.alignment = _al("right", "center", True)
@@ -475,7 +557,7 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         track_h(bar, 2)
         return row + 1
 
-    # Column Headers Writer
+    # ========== COLUMN HEADERS WRITER ==========
     def write_col_hdrs(row):
         ws.row_dimensions[row].height = 60
         hf = _F(MID_BLUE)
@@ -492,18 +574,24 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
             c.border = fb
             track_w(sc(ci), h)
         
+        # Material columns
         for mi, (key, hdr) in enumerate(MATERIAL_COLS):
             ci = sc(MAT_INTERNAL_START + mi)
             c = ws.cell(row, ci)
-            if key.startswith("_blank"):
-                c.fill = _F(CHARCOAL)
-            else:
-                c.value = hdr
-                c.font = ff
-                c.fill = hf
-                c.alignment = fa
-                c.border = fb
-                track_w(ci, hdr)
+            c.value = hdr
+            c.font = ff
+            c.fill = hf
+            c.alignment = fa
+            c.border = fb
+            track_w(ci, hdr)
+        
+        # Spacer columns
+        spacer_idx = len(MATERIAL_COLS)
+        for si, key in enumerate(SPACER_COLS):
+            ci = sc(MAT_INTERNAL_START + spacer_idx + si)
+            c = ws.cell(row, ci)
+            c.fill = _F(CHARCOAL)
+            c.border = fb
         
         c = ws.cell(row, rem_actual)
         c.value = "Remarks"
@@ -512,24 +600,68 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         c.alignment = fa
         c.border = fb
 
-    # Sub-group header writer
-    def write_subgrp(row, label):
-        ws.row_dimensions[row].height = 16
-        c = ws.cell(row, sc(3))
-        c.value = label
-        c.fill = _F(SUBGRP_BG)
-        c.font = _ft(11, True, MID_BLUE)
-        c.alignment = _al("left", "center")
+    # ========== SUBGROUP HEADER WITH COLORED DIMENSION BOXES ==========
+    def write_subgrp(row, label, L_val=None, W_val=None, H_val=None):
+        """Write subgroup header with colored dimension boxes on the same row"""
+        ws.row_dimensions[row].height = 28
         
+        # Fill background
         for ci in range(1, total_actual+1):
             cell = ws.cell(row, ci)
             if not cell.value:
                 cell.fill = _F(SUBGRP_BG)
         
+        # Write the label in Description column
+        c = ws.cell(row, sc(3))
+        c.value = label
+        c.fill = _F(SUBGRP_BG)
+        c.font = _ft(11, True, MID_BLUE)
+        c.alignment = _al("left", "center")
         track_w(sc(3), label)
+        
+        # ⭐ COLORED DIMENSION BOXES - ALL THREE ALWAYS COLORED ⭐
+        dim_border = Border(
+            left=Side("medium", color=GOLD),
+            right=Side("medium", color=GOLD),
+            top=Side("thin", color=GOLD),
+            bottom=Side("thin", color=GOLD)
+        )
+        
+        # L column (col 6) - always colored
+        dim_cell_L = ws.cell(row, sc(6))
+        dim_cell_L.border = dim_border
+        dim_cell_L.fill = _F(GOLD_LIGHT)
+        dim_cell_L.font = _ft(11, True, NAVY)
+        dim_cell_L.alignment = _al("center", "center")
+        if L_val is not None:
+            dim_cell_L.value = L_val
+        else:
+            dim_cell_L.value = ""
+        
+        # W column (col 7) - always colored
+        dim_cell_W = ws.cell(row, sc(7))
+        dim_cell_W.border = dim_border
+        dim_cell_W.fill = _F(GOLD_LIGHT)
+        dim_cell_W.font = _ft(11, True, NAVY)
+        dim_cell_W.alignment = _al("center", "center")
+        if W_val is not None:
+            dim_cell_W.value = W_val
+        else:
+            dim_cell_W.value = ""
+        
+        # H column (col 8) - always colored
+        dim_cell_H = ws.cell(row, sc(8))
+        dim_cell_H.border = dim_border
+        dim_cell_H.fill = _F(GOLD_LIGHT)
+        dim_cell_H.font = _ft(11, True, NAVY)
+        dim_cell_H.alignment = _al("center", "center")
+        if H_val is not None:
+            dim_cell_H.value = H_val
+        else:
+            dim_cell_H.value = ""
 
-    # Item row writer
-    def write_item(row, s_no, desc, unit, times, L, W, H, qty_f, mat_a, remarks="", alt=False):
+    # ========== ITEM ROW WRITER ==========
+    def write_item(row, s_no, desc, unit, times, L, W, H, qty_formula, mat_a, remarks="", alt=False):
         ws.row_dimensions[row].height = 16
         bg = _F(ITEM_ALT) if alt else _F(WHITE)
         brd = _B()
@@ -548,21 +680,19 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
             if val:
                 track_w(sc(ci), str(val))
         
-        if qty_f is not None:
+        if qty_formula is not None:
             c = ws.cell(row, sc(9))
-            c.value = qty_f
+            c.value = qty_formula
             c.fill = bg
             c.border = brd
             c.alignment = _al("center", "center")
             c.font = _ft(11)
             c.number_format = "0.000"
         
+        # Material columns
         for mi, (key, _) in enumerate(MATERIAL_COLS):
             ci = sc(MAT_INTERNAL_START + mi)
             c = ws.cell(row, ci)
-            if key.startswith("_blank"):
-                c.fill = _F("EEEEEE")
-                continue
             if key in mat_a:
                 c.value = mat_a[key]
                 c.fill = _F(PALE_BLUE)
@@ -573,6 +703,15 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
             c.alignment = _al("center", "center")
             c.font = _ft(11)
         
+        # Spacer columns - just fill
+        spacer_idx = len(MATERIAL_COLS)
+        for si, key in enumerate(SPACER_COLS):
+            ci = sc(MAT_INTERNAL_START + spacer_idx + si)
+            c = ws.cell(row, ci)
+            c.fill = bg
+            c.border = brd
+        
+        # Remarks column
         c = ws.cell(row, rem_actual)
         c.value = remarks
         c.fill = bg
@@ -582,7 +721,7 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         track_w(rem_actual, remarks)
         track_w(sc(3), desc)
 
-    # Summary rows writer
+    # ========== SUMMARY ROWS WRITER ==========
     def write_summary(pu_row, tot_row, i_start, i_end):
         ws.row_dimensions[pu_row].height = 20
         c = ws.cell(pu_row, sc(9))
@@ -594,15 +733,12 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         for mi, (key, _) in enumerate(MATERIAL_COLS):
             ci = sc(MAT_INTERNAL_START + mi)
             cell = ws.cell(pu_row, ci)
-            if not key.startswith("_blank"):
-                cell.value = f"=SUM({get_column_letter(ci)}{i_start}:{get_column_letter(ci)}{i_end})"
-                cell.font = _ft(11)
-                cell.fill = _F(LIME_HL)
-                cell.number_format = "0.000"
-                cell.alignment = _al("center")
-                cell.border = _B()
-            else:
-                cell.fill = _F(LIME_HL)
+            cell.value = f"=SUM({get_column_letter(ci)}{i_start}:{get_column_letter(ci)}{i_end})"
+            cell.font = _ft(11)
+            cell.fill = _F(LIME_HL)
+            cell.number_format = "0.000"
+            cell.alignment = _al("center")
+            cell.border = _B()
         
         ws.row_dimensions[tot_row].height = 22
         c = ws.cell(tot_row, sc(8))
@@ -621,36 +757,61 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
             ci = sc(MAT_INTERNAL_START + mi)
             col_l = get_column_letter(ci)
             cell = ws.cell(tot_row, ci)
-            if not key.startswith("_blank"):
-                if key in count_only_keys:
-                    cell.value = f"={col_l}{pu_row}*H2"
-                else:
-                    cell.value = f"={col_l}{pu_row}*H2/{sheet_area_m2}"
-                cell.font = _ft(11)
-                cell.fill = _F(PEACH_HL)
-                cell.number_format = "0.000"
-                cell.alignment = _al("center")
-                cell.border = _B()
+            if key in count_only_keys:
+                cell.value = f"={col_l}{pu_row}*H2"
             else:
-                cell.fill = _F(PEACH_HL)
+                cell.value = f"={col_l}{pu_row}*H2/{sheet_area_m2}"
+            cell.font = _ft(11)
+            cell.fill = _F(PEACH_HL)
+            cell.number_format = "0.000"
+            cell.alignment = _al("center")
+            cell.border = _B()
 
-    # Get material detection rules and subgroup keywords from JSON
+    # Get material detection rules
     material_rules = doc.get("material_detection_rules", {})
     subgroup_keywords = material_rules.get("subgroup_keywords", [])
     desc_strip_prefixes = material_rules.get("desc_strip_prefixes", [])
     
+    # Collect all items from sections and fixtures
+    all_items = []
+    for sec in sections:
+        sec_id = sec.get("section_id", "")
+        sec_note = sec.get("notes", sec.get("note", ""))
+        components = sec.get("components", sec.get("items", []))
+        for comp in components:
+            comp["_section_id"] = sec_id
+            comp["_section_note"] = sec_note
+            all_items.append(comp)
+    
+    for fixture in fixtures:
+        fixture["_section_id"] = "FIXTURES"
+        fixture["_section_note"] = ""
+        all_items.append(fixture)
+
+    # Group items by section
+    sections_dict = {}
+    for item in all_items:
+        sid = item.get("_section_id", "OTHER")
+        if sid not in sections_dict:
+            sections_dict[sid] = []
+        sections_dict[sid].append(item)
+
     total_unit_rows = []
 
-    # Process Sections
-    for sec in sections:
-        sid = sec["section_id"]
+    # Process each section
+    for sid, items in sections_dict.items():
         sec_info = section_map.get(sid, {})
-        elv_label = sec_info.get("elevation", "")
-        unit_type = sec_info.get("unit_type", "")
-        note = sec.get("note", "")
-        items = sec.get("items", [])
+        
+        if sid == "FIXTURES":
+            elv_label = "FIXTURES"
+            unit_type = "Kitchen Fixtures"
+        else:
+            elv_label = sec_info.get("elevation", sid)
+            unit_type = sec_info.get("cabinet_type", sec_info.get("unit_type", "Section"))
+        
+        section_note = items[0].get("_section_note", "") if items else ""
 
-        current_row = write_sec_hdr(current_row, elv_label, unit_type, note)
+        current_row = write_sec_hdr(current_row, elv_label, unit_type, section_note)
         write_col_hdrs(current_row)
         current_row += 1
 
@@ -664,20 +825,25 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
 
         for item in items:
             desc = item.get("description", "")
-            item_no = item.get("item_no", "")
-            unit = item.get("unit", "")
+            item_no = item.get("item_number", item.get("item_no", ""))
+            unit = item.get("measurement_unit", item.get("unit", ""))
             remarks = item.get("remarks", "")
-            L = item.get("length_m")
-            W = item.get("width_m")
-            H = item.get("height_thk_m")
-            times = item.get("no_of_units")
+            qty_val = item.get("quantity_per_unit", item.get("no_of_units", item.get("quantity", 1)))
+            if qty_val is None:
+                qty_val = 1
+            
+            dims = item.get("dimensions", {})
+            L = dims.get("length_meters") or dims.get("length_m")
+            W = dims.get("width_meters") or dims.get("width_m")
+            H = dims.get("height_meters") or dims.get("height_m") or dims.get("height_thk_m")
+            
             dl = desc.lower()
             
-            # Detect sub-group using JSON keywords
+            # Detect subgroup using keywords
             sg = None
             for kw_rule in subgroup_keywords:
                 keywords = kw_rule.get("keywords", [])
-                if any(kw in dl for kw in keywords):
+                if any(kw.lower() in dl for kw in keywords):
                     sg = kw_rule.get("label")
                     if kw_rule.get("has_dims", True):
                         current_L, current_W, current_H = L, W, H
@@ -685,64 +851,43 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
                         current_L, current_W, current_H = None, None, None
                     break
             
-            if not sg:
-                sg = cur_sg
-
             if sg and sg != cur_sg:
                 cur_sg = sg
-                write_subgrp(current_row, sg)
-                if current_L:
-                    ws.cell(current_row, sc(6)).value = current_L
-                if current_W:
-                    ws.cell(current_row, sc(7)).value = current_W
-                if current_H:
-                    ws.cell(current_row, sc(8)).value = current_H
-                
-                dim_border = Border(
-                    left=Side("medium", color=GOLD),
-                    right=Side("medium", color=GOLD),
-                    top=Side("thin", color=GOLD),
-                    bottom=Side("thin", color=GOLD)
-                )
-                for dim_col in [6, 7, 8]:
-                    dim_cell = ws.cell(current_row, sc(dim_col))
-                    dim_cell.border = dim_border
-                    dim_cell.fill = _F(GOLD_LIGHT)
-                    dim_cell.font = _ft(11, True, NAVY)
-                    if dim_cell.value is None:
-                        dim_cell.value = ""
-                
+                write_subgrp(current_row, sg, current_L, current_W, current_H)
                 current_row += 1
                 alt = False
 
-            qty_v = _calc_qty(item)
-            r = current_row
-            qc = get_column_letter(sc(9))
+            # Build quantity formula
+            col_map = {"times": sc(5), "L": sc(6), "W": sc(7), "H": sc(8)}
+            qty_formula = build_quantity_formula(item, current_row, col_map, unit_categories)
             
-            if unit in ("M²", "m2"):
-                qf = f"=PRODUCT({get_column_letter(sc(5))}{r}:{get_column_letter(sc(8))}{r})"
-            elif unit in ("M³", "m3"):
-                qf = (f"={get_column_letter(sc(6))}{r}*{get_column_letter(sc(7))}{r}*{get_column_letter(sc(8))}{r}"
-                      if all(x is not None for x in [L, W, H]) else qty_v)
-            elif unit in ("LM", "lm"):
-                qf = qty_v
+            # Check for directly assigned material (fixtures)
+            assigned_material = item.get("assigned_material")
+            if assigned_material:
+                mat_keys = [assigned_material]
             else:
-                qf = qty_v
-
-            mat_k = _detect_mat(item, material_rules)
-            mat_a = {}
+                mat_keys = detect_materials(item, material_rules)
             
-            for mk in mat_k:
-                if mk in count_only_keys:
-                    mat_a[mk] = f"={qc}{r}" if qf is not None else (times or 0)
-                elif mk == "laminate":
-                    laminate_area = _extract_laminate_from_remarks(remarks, r"([\d.]+)\s*m²")
-                    mat_a[mk] = laminate_area if laminate_area else f"={qc}{r}"
-                elif mk in ("lipping_grey", "lipping_25", "lipping_18", "lipping_12"):
-                    lipping_len = _extract_lipping_from_remarks(remarks, r"([\d.]+)\s*lm")
-                    mat_a[mk] = lipping_len if lipping_len else f"={qc}{r}"
+            # Build material assignments with extraction from remarks
+            mat_values = {}
+            for mk in mat_keys:
+                # Check if this material has a regex pattern for extraction
+                extraction_rule = None
+                for rule in material_rules.get("addon_rules", []):
+                    if rule.get("key") == mk and rule.get("extract_from_remarks"):
+                        extraction_rule = rule.get("regex_pattern")
+                        break
+                
+                if extraction_rule:
+                    extracted_val = extract_from_remarks(remarks, extraction_rule)
+                    if extracted_val:
+                        mat_values[mk] = extracted_val
+                    else:
+                        mat_values[mk] = f"={get_column_letter(sc(9))}{current_row}" if qty_formula is not None and not isinstance(qty_formula, (int, float)) else qty_val
+                elif mk in count_only_keys:
+                    mat_values[mk] = f"={get_column_letter(sc(9))}{current_row}" if qty_formula is not None and not isinstance(qty_formula, (int, float)) else qty_val
                 else:
-                    mat_a[mk] = f"={qc}{r}"
+                    mat_values[mk] = f"={get_column_letter(sc(9))}{current_row}" if qty_formula is not None and not isinstance(qty_formula, (int, float)) else qty_val
 
             # Strip prefixes from description
             dd = desc
@@ -751,7 +896,8 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
                     dd = dd[len(pfx):]
                     break
 
-            write_item(current_row, item_no, dd, unit, times, L, W, H, qf, mat_a, remarks, alt)
+            write_item(current_row, item_no, dd, unit, qty_val if qty_val != 1 else None, 
+                      L, W, H, qty_formula, mat_values, remarks, alt)
             alt = not alt
             current_row += 1
 
@@ -795,35 +941,31 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
         ci = sc(MAT_INTERNAL_START + mi)
         col_l = get_column_letter(ci)
         cell = ws.cell(gt, ci)
-        if not key.startswith("_blank"):
-            cell.value = "=" + "+".join(f"{col_l}{r}" for r in total_unit_rows)
-            cell.font = _ft(12, True, GOLD)
-            cell.fill = _F(NAVY)
-            cell.number_format = "0.000"
-            cell.alignment = _al("center")
-            cell.border = _thick()
-        else:
-            cell.fill = _F(NAVY)
+        cell.value = "=" + "+".join(f"{col_l}{r}" for r in total_unit_rows)
+        cell.font = _ft(12, True, GOLD)
+        cell.fill = _F(NAVY)
+        cell.number_format = "0.000"
+        cell.alignment = _al("center")
+        cell.border = _thick()
 
     # Bottom label mirror row
     current_row += 1
-    max_lines = max((hdr.count("\n")+1) for key, hdr in MATERIAL_COLS if not key.startswith("_blank"))
+    max_lines = max((hdr.count("\n")+1) for _, hdr in MATERIAL_COLS)
     label_h = max(max_lines * BASE_H + 10, 56)
     ws.row_dimensions[current_row].height = label_h
     for mi, (key, hdr) in enumerate(MATERIAL_COLS):
         ci = sc(MAT_INTERNAL_START + mi)
         c = ws.cell(current_row, ci)
-        if not key.startswith("_blank"):
-            c.value = hdr
-            c.font = _ft(11, True, WHITE)
-            c.fill = _F(MID_BLUE)
-            c.alignment = _al("center", "center", True)
-            c.border = _B()
+        c.value = hdr
+        c.font = _ft(11, True, WHITE)
+        c.fill = _F(MID_BLUE)
+        c.alignment = _al("center", "center", True)
+        c.border = _B()
 
     last_data_row = current_row
 
     # Bottom padding
-    for _ in range(PADDING_BOTTOM):
+    for _ in range(PB):
         current_row += 1
         pad_bottom_row(current_row)
 
@@ -839,35 +981,167 @@ def _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_are
 
 
 def generate(json_path, out_path):
-    """Main generation function"""
-    with open(json_path) as f:
+    """Main generation function supporting new JSON structure"""
+    with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     
-    doc = data["document"]
-    sections = data["sections"]
+    # Extract from new structure
+    doc = data.get("project_info", {})
+    sections = data.get("kitchen_sections", data.get("sections", []))
+    fixtures = data.get("installed_fixtures", [])
+    section_map = data.get("section_grouping", {})
+    material_columns = data.get("material_columns", [])
+    calculation_rules = data.get("calculation_rules", {})
+    material_identification = data.get("material_identification", {})
     
-    # Extract configuration from JSON
-    section_map = doc.get("section_map", {})
-    material_cols = doc.get("material_columns", [])
-    sheet_area_m2 = doc.get("sheet_area_m2", 2.88)
-    output_options = doc.get("output_options", {})
+    # Extract calculation parameters
+    sheet_area_m2 = calculation_rules.get("sheet_area_square_meters", 2.88)
+    output_options = calculation_rules.get("excel_formatting", {})
+    unit_categories = calculation_rules.get("unit_type_mapping", {})
     
-    # Override script config with JSON values
-    global PADDING_RIGHT, PADDING_BOTTOM, PADDING_BORDER, FREEZE_PANES
-    PADDING_RIGHT = output_options.get("padding_right", 2)
-    PADDING_BOTTOM = output_options.get("padding_bottom", 10)
-    PADDING_BORDER = output_options.get("padding_border", True)
-    FREEZE_PANES = output_options.get("freeze_panes", None)
+    # Default unit categories if not provided
+    if not unit_categories:
+        unit_categories = {
+            "area_based": ["M²", "m2", "SQ M", "SQM", "M2"],
+            "volume_based": ["M³", "m3", "CU M", "M3"],
+            "linear_based": ["LM", "lm", "L M", "M", "m"],
+            "count_based": ["Nr", "nos", "PC", "pcs", "Each", "each"],
+            "pair_based": ["Pr", "Pair"],
+            "set_based": ["Set", "Kit", "Box"]
+        }
+    
+    # Transform document structure for compatibility with existing functions
+    transformed_doc = {
+        "project": doc.get("name", ""),
+        "location": doc.get("location", ""),
+        "phase": doc.get("phase", ""),
+        "kitchen_type": doc.get("kitchen_type", "N/A"),
+        "total_units": doc.get("total_kitchen_units", 0),
+        "main_contractor": doc.get("stakeholders", {}).get("main_contractor", "N/A"),
+        "design_consultant": doc.get("stakeholders", {}).get("design_consultant", "N/A"),
+        "supervision": doc.get("stakeholders", {}).get("supervision", "N/A"),
+        "date": doc.get("document_metadata", {}).get("date", "N/A"),
+        "revision": doc.get("document_metadata", {}).get("revision", "N/A"),
+        "currency": doc.get("document_metadata", {}).get("currency", "AED"),
+        "vat_rate_percent": doc.get("document_metadata", {}).get("vat_percent", 5),
+        "drawing_references": doc.get("drawings", []),
+        "document_metadata": doc.get("document_metadata", {}),
+        "stakeholders": doc.get("stakeholders", {}),
+        "name": doc.get("name", ""),
+        "title": doc.get("document_metadata", {}).get("title", "BILL OF QUANTITIES")
+    }
+    
+    # Transform material columns format
+    transformed_material_cols = []
+    for col in material_columns:
+        transformed_col = {
+            "key": col.get("id"),
+            "label": col.get("display_name"),
+            "width": col.get("column_width", 14)
+        }
+        # Handle calculation type
+        calc_type = col.get("calculation_type", "area_based")
+        if calc_type in ("count_based", "pair_based", "set_based", "fixture_based"):
+            transformed_col["count_only"] = True
+        elif calc_type == "spacer":
+            transformed_col["key"] = f"_blank_{col.get('id')}"
+        transformed_material_cols.append(transformed_col)
+    
+    # Transform material identification rules
+    transformed_material_rules = {
+        "board_rules": [],
+        "addon_rules": [],
+        "subgroup_keywords": [],
+        "desc_strip_prefixes": []
+    }
+    
+    # Transform sheet materials to board_rules
+    for rule in material_identification.get("sheet_materials", []):
+        transformed_material_rules["board_rules"].append({
+            "key": rule.get("material_id"),
+            "thickness": rule.get("required_thickness"),
+            "material": rule.get("material_type"),
+            "context": rule.get("context_keywords")
+        })
+    
+    # Transform additional materials to addon_rules
+    for rule in material_identification.get("additional_materials", []):
+        addon_rule = {
+            "key": rule.get("material_id"),
+            "trigger_spec": rule.get("triggers_in_specification", []),
+            "trigger_desc": rule.get("triggers_in_description", []),
+            "size_filter": rule.get("size_filter")
+        }
+        if rule.get("extract_from_remarks"):
+            addon_rule["extract_from_remarks"] = True
+            addon_rule["regex_pattern"] = rule.get("regex_pattern")
+        transformed_material_rules["addon_rules"].append(addon_rule)
+    
+    # Transform subsection organization
+    for rule in material_identification.get("subsection_organization", []):
+        transformed_material_rules["subgroup_keywords"].append({
+            "label": rule.get("subsection_name"),
+            "keywords": rule.get("detection_keywords", []),
+            "has_dims": rule.get("has_dimensions", True)
+        })
+    
+    # Transform description prefixes to remove
+    transformed_material_rules["desc_strip_prefixes"] = material_identification.get("description_prefixes_to_remove", [])
+    
+    # Add to transformed document
+    transformed_doc["material_detection_rules"] = transformed_material_rules
+    transformed_doc["material_columns"] = transformed_material_cols
+    transformed_doc["sheet_area_m2"] = sheet_area_m2
+    
+    # Process items to add missing fields
+    for sec in sections:
+        components = sec.get("components", [])
+        for comp in components:
+            # Ensure spec field exists for material detection
+            if "specification" not in comp:
+                comp["specification"] = comp.get("description", "")
+            # Ensure unit field exists with correct case
+            if "unit" not in comp and "measurement_unit" in comp:
+                comp["unit"] = comp["measurement_unit"]
+            # Ensure no_of_units field exists
+            if "no_of_units" not in comp:
+                comp["no_of_units"] = comp.get("quantity_per_unit", 1)
+            # Ensure dimensions are properly nested
+            if "dimensions" in comp:
+                dims = comp["dimensions"]
+                if "length_meters" in dims:
+                    comp["length_m"] = dims["length_meters"]
+                if "width_meters" in dims:
+                    comp["width_m"] = dims["width_meters"]
+                if "height_meters" in dims:
+                    comp["height_thk_m"] = dims["height_meters"]
+    
+    # Process fixtures
+    for fixture in fixtures:
+        if "specification" not in fixture:
+            fixture["specification"] = fixture.get("description", "")
+        if "unit" not in fixture and "measurement_unit" in fixture:
+            fixture["unit"] = fixture["measurement_unit"]
+        if "no_of_units" not in fixture:
+            fixture["no_of_units"] = fixture.get("quantity_per_unit", 1)
     
     wb = Workbook()
     default_sheet = wb.active
     wb.remove(default_sheet)
     
-    build_summary_sheet(wb, doc, sections, section_map)
-    _build_matrix_sheet(wb, doc, sections, section_map, material_cols, sheet_area_m2, output_options)
+    # Build sheets with transformed document
+    build_summary_sheet(wb, transformed_doc, sections, section_map)
+    _build_matrix_sheet(wb, transformed_doc, sections, fixtures, section_map, 
+                       transformed_material_cols, sheet_area_m2, output_options, unit_categories)
     
     wb.save(out_path)
     print(f"✓  Saved: {out_path}")
+    print(f"   - Project: {doc.get('name', 'N/A')}")
+    print(f"   - Kitchen Type: {doc.get('kitchen_type', 'N/A')}")
+    print(f"   - Total Units: {doc.get('total_kitchen_units', 0)}")
+    print(f"   - Sections: {len(sections)}")
+    print(f"   - Fixtures: {len(fixtures)}")
+    print(f"   - Material columns: {len(material_columns)}")
 
 
 if __name__ == "__main__":
