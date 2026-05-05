@@ -660,34 +660,117 @@ def _build_matrix_sheet(wb, doc, sections, fixtures, section_map, material_cols,
         else:
             dim_cell_H.value = ""
 
-    # ========== ITEM ROW WRITER ==========
+    # ========== ENHANCED ITEM ROW WRITER WITH SLEEK DESIGN ==========
     def write_item(row, s_no, desc, unit, times, L, W, H, qty_formula, mat_a, remarks="", alt=False):
-        ws.row_dimensions[row].height = 16
-        bg = _F(ITEM_ALT) if alt else _F(WHITE)
-        brd = _B()
+        ws.row_dimensions[row].height = 18  # Slightly taller for better readability
         
-        vals = [None, s_no, desc, unit, times, L, W, H, None]
-        aligns = ["left", "center", "left", "center", "center", "center", "center", "center", "center"]
+        # Sleek alternating backgrounds with subtle gradients
+        if alt:
+            bg = _F("F8F9FC")  # Very light cool gray for alternate rows
+            border_color = "E8ECF1"
+        else:
+            bg = _F(WHITE)
+            border_color = "EEF2F7"
         
-        for ci, (val, ha) in enumerate(zip(vals, aligns), 1):
-            c = ws.cell(row, sc(ci))
-            if val is not None:
-                c.value = val
-            c.fill = bg
-            c.border = brd
-            c.font = _ft(11)
-            c.alignment = _al(ha, "center", wrap=(ci == 3))
-            if val:
-                track_w(sc(ci), str(val))
+        brd = Border(
+            left=Side(style="thin", color=border_color),
+            right=Side(style="thin", color=border_color),
+            top=Side(style="thin", color=border_color),
+            bottom=Side(style="thin", color=border_color)
+        )
         
+        # S.No column - subtle gray background
+        sno_cell = ws.cell(row, sc(1))
+        sno_cell.value = s_no
+        sno_cell.fill = _F("F0F2F5")
+        sno_cell.font = _ft(10, False, "6B7A8F")
+        sno_cell.alignment = _al("center", "center")
+        sno_cell.border = brd
+        
+        # Item number column
+        item_cell = ws.cell(row, sc(2))
+        item_cell.value = s_no
+        item_cell.fill = bg
+        item_cell.font = _ft(10, True, NAVY)
+        item_cell.alignment = _al("center", "center")
+        item_cell.border = brd
+        
+        # Description column - wrapped text with better spacing
+        desc_cell = ws.cell(row, sc(3))
+        desc_cell.value = desc
+        desc_cell.fill = bg
+        desc_cell.font = _ft(10, False, "2C3E50")
+        desc_cell.alignment = _al("left", "center", wrap=True)
+        desc_cell.border = brd
+        
+        # Unit column
+        unit_cell = ws.cell(row, sc(4))
+        unit_cell.value = unit
+        unit_cell.fill = bg
+        unit_cell.font = _ft(10, False, "5A6C7D")
+        unit_cell.alignment = _al("center", "center")
+        unit_cell.border = brd
+        
+        # Times column - subtle highlight
+        times_cell = ws.cell(row, sc(5))
+        if times is not None and times != 1 and times != "":
+            times_cell.value = times
+            times_cell.fill = _F("FFF8E7")  # Warm highlight
+            times_cell.font = _ft(10, True, GOLD)
+        else:
+            times_cell.value = ""
+            times_cell.fill = bg
+            times_cell.font = _ft(10, False, "A0AAB5")
+        times_cell.alignment = _al("center", "center")
+        times_cell.border = brd
+        
+        # L column - subtle numeric styling
+        L_cell = ws.cell(row, sc(6))
+        if L is not None:
+            L_cell.value = L
+            L_cell.font = _ft(10, False, "3A5C8A")
+        else:
+            L_cell.value = ""
+            L_cell.font = _ft(10, False, "B0B8C4")
+        L_cell.fill = bg
+        L_cell.alignment = _al("center", "center")
+        L_cell.border = brd
+        
+        # W column
+        W_cell = ws.cell(row, sc(7))
+        if W is not None:
+            W_cell.value = W
+            W_cell.font = _ft(10, False, "3A5C8A")
+        else:
+            W_cell.value = ""
+            W_cell.font = _ft(10, False, "B0B8C4")
+        W_cell.fill = bg
+        W_cell.alignment = _al("center", "center")
+        W_cell.border = brd
+        
+        # H column
+        H_cell = ws.cell(row, sc(8))
+        if H is not None:
+            H_cell.value = H
+            H_cell.font = _ft(10, False, "3A5C8A")
+        else:
+            H_cell.value = ""
+            H_cell.font = _ft(10, False, "B0B8C4")
+        H_cell.fill = bg
+        H_cell.alignment = _al("center", "center")
+        H_cell.border = brd
+        
+        # Total QTY column - bold with subtle background
+        qty_cell = ws.cell(row, sc(9))
         if qty_formula is not None:
-            c = ws.cell(row, sc(9))
-            c.value = qty_formula
-            c.fill = bg
-            c.border = brd
-            c.alignment = _al("center", "center")
-            c.font = _ft(11)
-            c.number_format = "0.000"
+            qty_cell.value = qty_formula
+            qty_cell.font = _ft(10, True, "1A5C3A")  # Dark green for quantities
+            qty_cell.fill = _F("E8F5E9")  # Very light green
+        else:
+            qty_cell.fill = bg
+        qty_cell.alignment = _al("center", "center")
+        qty_cell.border = brd
+        qty_cell.number_format = "0.000"
         
         # Material columns
         for mi, (key, _) in enumerate(MATERIAL_COLS):
@@ -695,15 +778,15 @@ def _build_matrix_sheet(wb, doc, sections, fixtures, section_map, material_cols,
             c = ws.cell(row, ci)
             if key in mat_a:
                 c.value = mat_a[key]
-                c.fill = _F(PALE_BLUE)
+                c.fill = _F("EBF3FA")  # Soft blue for material quantities
+                c.font = _ft(10, False, "2A6496")
                 c.number_format = "0.000"
             else:
                 c.fill = bg
             c.border = brd
             c.alignment = _al("center", "center")
-            c.font = _ft(11)
         
-        # Spacer columns - just fill
+        # Spacer columns - clean white
         spacer_idx = len(MATERIAL_COLS)
         for si, key in enumerate(SPACER_COLS):
             ci = sc(MAT_INTERNAL_START + spacer_idx + si)
@@ -711,13 +794,13 @@ def _build_matrix_sheet(wb, doc, sections, fixtures, section_map, material_cols,
             c.fill = bg
             c.border = brd
         
-        # Remarks column
-        c = ws.cell(row, rem_actual)
-        c.value = remarks
-        c.fill = bg
-        c.border = brd
-        c.font = _ft(10, False, MID_GREY, True)
-        c.alignment = _al("left", "center", True)
+        # Remarks column - italic with subtle gray
+        remarks_cell = ws.cell(row, rem_actual)
+        remarks_cell.value = remarks
+        remarks_cell.fill = bg
+        remarks_cell.font = _ft(9, False, "8A9BAE", italic=True)
+        remarks_cell.alignment = _al("left", "center", True)
+        remarks_cell.border = brd
         track_w(rem_actual, remarks)
         track_w(sc(3), desc)
 
