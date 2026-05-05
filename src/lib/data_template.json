@@ -1,225 +1,387 @@
 {
-  "document": {
-    "title": "BILL OF QUANTITIES – KITCHEN FITOUT (TYPE C1)",
-    "project": "AL WAHA RESIDENCE 01",
+  "project_info": {
+    "name": "AL WAHA RESIDENCE 01",
     "location": "EXPO CITY DUBAI",
     "phase": "Phase-01 – Mobility District",
-    "main_contractor": "ARCO GROUP",
-    "design_consultant": "HOPKINS ARCHITECTS",
-    "supervision": "DEWAN ARCHITECTS + ENGINEERS",
-    "drawing_references": [
+    "kitchen_type": "C01",
+    "total_kitchen_units": 58,
+    "document_metadata": {
+      "title": "BILL OF QUANTITIES – KITCHEN FITOUT",
+      "date": "2026-03-21",
+      "revision": "Rev 1 – First Issue",
+      "currency": "AED",
+      "vat_percent": 5
+    },
+    "stakeholders": {
+      "main_contractor": "ARCO GROUP",
+      "design_consultant": "HOPKINS ARCHITECTS",
+      "supervision": "DEWAN ARCHITECTS + ENGINEERS"
+    },
+    "drawings": [
       "C5128-SDW-2TR5600-FO-6000001",
       "C5128-SDW-2TR5600-FO-6000003"
-    ],
-    "date": "2026-03-21",
-    "revision": "Rev 1 – First Issue",
-    "currency": "AED",
-    "vat_rate_percent": 5,
-    "total_units": 58,
-    "kitchen_type": "C01",
-    
-    "sheet_area_m2": 2.88,
-    
-    "output_options": {
-      "freeze_panes": null,
-      "padding_right": 2,
-      "padding_bottom": 10,
-      "padding_border": true
-    },
-    
-    "material_columns": [
-      { "key": "6mm_mdf", "label": "6mm both\nMelamine MR MDF Sheet", "width": 16, "category": "area", "unit": "m2" },
-      { "key": "9mm_mdf", "label": "9mm both Melamine\nMR MDF Sheet", "width": 18, "category": "area", "unit": "m2" },
-      { "key": "12mm_mdf", "label": "12mm both Melamine\nMR MDF Sheet", "width": 18, "category": "area", "unit": "m2" },
-      { "key": "18mm_mdf", "label": "18mm both Melamine\nMR MDF Sheet", "width": 18, "category": "area", "unit": "m2" },
-      { "key": "18mm_plain", "label": "18mm Plain\nMR MDF Sheet", "width": 17, "category": "area", "unit": "m2" },
-      { "key": "plywood", "label": "Plywood", "width": 13, "category": "area", "unit": "m2" },
-      { "key": "_blank1", "label": "", "width": 3.5, "category": "spacer" },
-      { "key": "25mm_mdf", "label": "25mm Plain MR MDF", "width": 17, "category": "area", "unit": "m2" },
-      { "key": "laminate", "label": "PL-01\nLaminate (0.8mm)", "width": 16, "category": "area", "unit": "m2" },
-      { "key": "_blank2", "label": "", "width": 3.5, "category": "spacer" },
-      { "key": "hinges", "label": "Full overlay\nHinges", "width": 16, "category": "count", "unit": "each" },
-      { "key": "drawer_run", "label": "Drawer Runner\n(0.5m)", "width": 17, "category": "count", "unit": "pair" },
-      { "key": "lipping_grey", "label": "PVC Lipping\nGray Melamine", "width": 18, "category": "linear", "unit": "lm" },
-      { "key": "lipping_25", "label": "PVC Lipping\n25mm", "width": 16, "category": "linear", "unit": "lm" },
-      { "key": "lipping_18", "label": "PVC Lipping\n18mm", "width": 16, "category": "linear", "unit": "lm" },
-      { "key": "skirting", "label": "Aluminium\nSkirting", "width": 18, "category": "linear", "unit": "lm" },
-      { "key": "lipping_12", "label": "PVC Lipping\n12mm", "width": 16, "category": "linear", "unit": "lm" },
-      { "key": "12mm_mrmdf", "label": "12mm MR MDF", "width": 16, "category": "area", "unit": "m2" },
-      { "key": "timber", "label": "Timber (M³)", "width": 13, "category": "volume", "unit": "m3" },
-      { "key": "_blank3", "label": "", "width": 3.5, "category": "spacer" },
-      { "key": "kitchen_tap", "label": "Kitchen Mixer\nTap", "width": 14, "category": "fixture", "unit": "each" },
-      { "key": "exhaust_fan", "label": "Exhaust\nFan", "width": 12, "category": "fixture", "unit": "each" },
-      { "key": "hob", "label": "Gas Hob\n(4 Burner)", "width": 15, "category": "fixture", "unit": "each" },
-      { "key": "oven", "label": "Built-in\nOven", "width": 12, "category": "fixture", "unit": "each" },
-      { "key": "sink", "label": "Stainless\nSteel Sink", "width": 14, "category": "fixture", "unit": "each" },
-      { "key": "handle", "label": "Cabinet\nHandle", "width": 12, "category": "count", "unit": "each" }
-    ],
-    
-    "unit_categories": {
-      "area": ["M²", "m2", "SQ M", "SQM", "M2"],
-      "volume": ["M³", "m3", "CU M", "M3"],
-      "linear": ["LM", "lm", "L M", "M", "m"],
-      "count": ["Nr", "nos", "PC", "pcs", "Each"],
-      "pair": ["Pr", "Pair"],
-      "set": ["Set", "Kit", "Box"]
-    },
-    
-    "section_map": {
-      "A": { "elevation": "ELV - E", "unit_type": "Top Unit" },
-      "B": { "elevation": "ELV - F", "unit_type": "Top Unit" },
-      "C": { "elevation": "ELV - E", "unit_type": "Bottom Unit" },
-      "D": { "elevation": "ELV - F", "unit_type": "Bottom Unit" },
-      "E": { "elevation": "ELV - G1", "unit_type": "Island Counter" }
-    },
-    
-    "material_detection_rules": {
-      "board_rules": [
-        { "key": "6mm_mdf", "thickness": "6mm", "material": "mdf", "context": null },
-        { "key": "9mm_mdf", "thickness": "9mm", "material": "mdf", "context": null },
-        { "key": "12mm_mrmdf", "thickness": "12mm", "material": "mdf", "context": ["end panel", "side panel"] },
-        { "key": "12mm_mdf", "thickness": "12mm", "material": "mdf", "context": null },
-        { "key": "18mm_plain", "thickness": "18mm", "material": "plain", "context": null },
-        { "key": "18mm_mdf", "thickness": "18mm", "material": "mdf", "context": null },
-        { "key": "25mm_mdf", "thickness": "25mm", "material": "mdf", "context": null },
-        { "key": "plywood", "thickness": null, "material": "plywood", "context": null },
-        { "key": "timber", "thickness": null, "material": "timber", "context": null }
+    ]
+  },
+  "calculation_rules": {
+    "sheet_area_square_meters": 2.88,
+    "unit_type_mapping": {
+      "area_based": [
+        "M²", "m2", "SQ M", "SQM", "M2", "SQ.M", "SQUARE METER", "SQUARE METRE"
       ],
-      "addon_rules": [
-        { "key": "laminate", "trigger_spec": ["laminate", "pl - 01", "pl-01", "pl_01"], "trigger_desc": [], "size_filter": null, "value_from_remarks": true, "regex": "([\\d.]+)\\s*m²" },
-        { "key": "lipping_25", "trigger_spec": ["lipping"], "trigger_desc": ["lipping"], "size_filter": "25mm", "value_from_remarks": true, "regex": "([\\d.]+)\\s*lm" },
-        { "key": "lipping_18", "trigger_spec": ["lipping"], "trigger_desc": ["lipping"], "size_filter": "18mm", "value_from_remarks": true, "regex": "([\\d.]+)\\s*lm" },
-        { "key": "lipping_12", "trigger_spec": ["lipping"], "trigger_desc": ["lipping"], "size_filter": "12mm", "value_from_remarks": true, "regex": "([\\d.]+)\\s*lm" },
-        { "key": "lipping_grey", "trigger_spec": ["lipping"], "trigger_desc": ["lipping"], "size_filter": null, "value_from_remarks": true, "regex": "([\\d.]+)\\s*lm" },
-        { "key": "hinges", "trigger_spec": ["hinge"], "trigger_desc": ["hinge"], "size_filter": null, "value_from_remarks": false },
-        { "key": "drawer_run", "trigger_spec": ["runner"], "trigger_desc": ["drawer runner"], "size_filter": null, "value_from_remarks": false },
-        { "key": "skirting", "trigger_spec": ["skirting"], "trigger_desc": ["skirting"], "size_filter": null, "value_from_remarks": true, "regex": "([\\d.]+)\\s*lm" },
-        { "key": "kitchen_tap", "trigger_spec": ["tap", "mixer"], "trigger_desc": ["tap", "mixer"], "size_filter": null, "value_from_remarks": false },
-        { "key": "exhaust_fan", "trigger_spec": ["fan", "exhaust"], "trigger_desc": ["fan", "exhaust"], "size_filter": null, "value_from_remarks": false },
-        { "key": "hob", "trigger_spec": ["hob", "cooktop"], "trigger_desc": ["hob", "cooktop"], "size_filter": null, "value_from_remarks": false },
-        { "key": "oven", "trigger_spec": ["oven"], "trigger_desc": ["oven"], "size_filter": null, "value_from_remarks": false }
+      "volume_based": [
+        "M³", "m3", "CU M", "CUM", "M3", "CUBIC METER", "CUBIC METRE"
       ],
-      "subgroup_keywords": [
-        { "label": "Carcass - A", "keywords": ["carcass-a", "carcass - a"], "has_dims": true, "category": "structure" },
-        { "label": "Carcass - B", "keywords": ["carcass-b", "carcass - b"], "has_dims": true, "category": "structure" },
-        { "label": "Carcass", "keywords": ["carcass"], "has_dims": true, "category": "structure" },
-        { "label": "Shutter - A", "keywords": ["shutter-a", "shutter - a"], "has_dims": true, "category": "doors" },
-        { "label": "Shutter - B", "keywords": ["shutter-b", "shutter - b"], "has_dims": true, "category": "doors" },
-        { "label": "Shutter", "keywords": ["shutter"], "has_dims": true, "category": "doors" },
-        { "label": "Drawer - A", "keywords": ["drawer-a", "drawer - a"], "has_dims": true, "category": "drawers" },
-        { "label": "Drawer - B", "keywords": ["drawer-b", "drawer - b"], "has_dims": true, "category": "drawers" },
-        { "label": "Drawer", "keywords": ["drawer"], "has_dims": true, "category": "drawers" },
-        { "label": "Side panel", "keywords": ["side panel"], "has_dims": true, "category": "panels" },
-        { "label": "End panel", "keywords": ["end panel"], "has_dims": true, "category": "panels" },
-        { "label": "Ironmongery", "keywords": ["ironmongery", "hinge", "runner", "catcher"], "has_dims": false, "category": "hardware" },
-        { "label": "Fixtures", "keywords": ["tap", "fan", "hob", "oven", "sink", "handle"], "has_dims": false, "category": "fixtures" }
+      "linear_based": [
+        "LM", "lm", "L M", "M", "m", "LINEAR METER", "LINEAR METRE", "RUNNING METER"
       ],
-      "desc_strip_prefixes": [
-        "Carcass-A – ", "Carcass-B – ", "Carcass – ",
-        "Shutter-A – ", "Shutter-B – ", "Shutter – ",
-        "Drawer-A – ", "Drawer-B – ", "Drawer – ",
-        "Side panel – ", "End panel – ", "Ironmongery – ", "Fixtures – "
+      "count_based": [
+        "NR", "nos", "PC", "pcs", "Each", "each", "EACH", "PCS", "NOS", "PIECE", "PIECES"
+      ],
+      "pair_based": [
+        "PR", "Pair", "PAIR", "PRS"
+      ],
+      "set_based": [
+        "Set", "Kit", "Box", "SET", "KIT", "BOX", "PACK"
       ]
     }
   },
-  
+  "material_columns": [
+    {
+      "id": "6mm_mdf",
+      "display_name": "6mm Both-Face\nMelamine MR MDF Sheet",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 38.50,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "9mm_mdf",
+      "display_name": "9mm Both-Face\nMelamine MR MDF Sheet",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 45.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "12mm_mdf",
+      "display_name": "12mm Both-Face\nMelamine MR MDF Sheet",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 52.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "18mm_mdf",
+      "display_name": "18mm Both-Face\nMelamine MR MDF Sheet",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 62.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "18mm_plain_mdf",
+      "display_name": "18mm Plain\nMR MDF Sheet",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 55.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "plywood",
+      "display_name": "Plywood",
+      "calculation_type": "area_based",
+      "column_width": 14,
+      "unit_rate": 72.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "25mm_mdf",
+      "display_name": "25mm Plain MR MDF",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 78.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "pl01_laminate",
+      "display_name": "PL-01\nLaminate (0.8mm)",
+      "calculation_type": "area_based",
+      "column_width": 18,
+      "unit_rate": 95.00,
+      "remarks": "Per m² supplied & bonded"
+    },
+    {
+      "id": "12mm_mrmdf",
+      "display_name": "12mm MR MDF",
+      "calculation_type": "area_based",
+      "column_width": 16,
+      "unit_rate": 58.00,
+      "remarks": "Per m² supplied"
+    },
+    {
+      "id": "spacer_1",
+      "display_name": "",
+      "calculation_type": "spacer",
+      "column_width": 3
+    },
+    {
+      "id": "timber_volume",
+      "display_name": "Solid Timber (M³)",
+      "calculation_type": "volume_based",
+      "column_width": 14,
+      "unit_rate": 4500.00,
+      "remarks": "Per m³ supplied"
+    },
+    {
+      "id": "pvc_lipping_25mm",
+      "display_name": "PVC Lipping 25mm",
+      "calculation_type": "linear_based",
+      "column_width": 16,
+      "unit_rate": 12.00,
+      "remarks": "Per LM supplied & glued"
+    },
+    {
+      "id": "pvc_lipping_18mm",
+      "display_name": "PVC Lipping 18mm",
+      "calculation_type": "linear_based",
+      "column_width": 16,
+      "unit_rate": 9.50,
+      "remarks": "Per LM supplied & glued"
+    },
+    {
+      "id": "pvc_lipping_12mm",
+      "display_name": "PVC Lipping 12mm",
+      "calculation_type": "linear_based",
+      "column_width": 16,
+      "unit_rate": 7.50,
+      "remarks": "Per LM supplied & glued"
+    },
+    {
+      "id": "pvc_lipping_grey",
+      "display_name": "PVC Lipping Grey",
+      "calculation_type": "linear_based",
+      "column_width": 16,
+      "unit_rate": 9.50,
+      "remarks": "Per LM supplied & glued"
+    },
+    {
+      "id": "aluminium_skirting",
+      "display_name": "Aluminium Skirting",
+      "calculation_type": "linear_based",
+      "column_width": 16,
+      "unit_rate": 65.00,
+      "remarks": "Per LM supplied & fixed"
+    },
+    {
+      "id": "hinges",
+      "display_name": "Full Overlay\nHinges",
+      "calculation_type": "count_based",
+      "column_width": 16,
+      "unit_rate": 18.50,
+      "remarks": "Per hinge supplied & fixed"
+    },
+    {
+      "id": "cabinet_handles",
+      "display_name": "Cabinet\nHandles",
+      "calculation_type": "count_based",
+      "column_width": 16,
+      "unit_rate": 35.00,
+      "remarks": "Per handle supplied & fixed"
+    },
+    {
+      "id": "drawer_runners",
+      "display_name": "Drawer Runner\n(0.5m)",
+      "calculation_type": "pair_based",
+      "column_width": 16,
+      "unit_rate": 65.00,
+      "remarks": "Per pair supplied & fixed"
+    }
+  ],
   "sections": [
     {
       "section_id": "A",
-      "section_title": "Wall Cabinets – Top Unit (ELV-E)",
-      "reference_code": "ELV-E",
-      "note": "Unit overall dimensions: L 2.07m × W 0.38m × H 1.00m",
-      "items": [
+      "title": "Wall Cabinets – Top Unit (ELV-E)",
+      "drawing_reference": "ELV-E",
+      "notes": "Unit overall dimensions: L 2.07m × W 0.38m × H 1.00m",
+      "components": [
         {
-          "item_no": "A1",
-          "description": "Carcass-A – 9mm MDF wall back panel",
-          "specification": "9mm both-face Melamine MR MDF sheet",
-          "category": "area",
-          "unit": "M²",
+          "component_id": "A_CarcassA",
+          "component_name": "Carcass-A",
+          "component_type": "structure",
           "dimensions": {
-            "length_m": 2.07,
-            "width_m": null,
-            "height_m": 1.0
+            "L": {
+              "value": 2.07,
+              "unit": "m",
+              "label": "CarcassA_L"
+            },
+            "W": {
+              "value": 0.38,
+              "unit": "m",
+              "label": "CarcassA_W"
+            },
+            "H": {
+              "value": 1.00,
+              "unit": "m",
+              "label": "CarcassA_H"
+            }
           },
-          "quantity": 1,
-          "remarks": ""
+          "items": [
+            {
+              "item_number": "A1",
+              "description": "Back panel",
+              "specification": "9mm both-face Melamine MR MDF sheet",
+              "material": "9mm_mdf",
+              "measurement_unit": "M²",
+              "panel_count": 1,
+              "qty_formula": "CarcassA_L × CarcassA_H × 1",
+              "qty_per_unit": 2.07,
+              "remarks": ""
+            },
+            {
+              "item_number": "A2",
+              "description": "Bottom panel",
+              "specification": "18mm both-face Melamine MR MDF sheet",
+              "material": "18mm_mdf",
+              "measurement_unit": "M²",
+              "panel_count": 1,
+              "qty_formula": "CarcassA_L × CarcassA_W × 1",
+              "qty_per_unit": 0.787,
+              "remarks": ""
+            },
+            {
+              "item_number": "A7",
+              "description": "PVC lipping to all exposed edges",
+              "specification": "PVC lipping to match grey melamine finish",
+              "material": "pvc_lipping_grey",
+              "measurement_unit": "LM",
+              "panel_count": null,
+              "qty_formula": "Fixed total per unit (from edge schedule)",
+              "qty_per_unit": 14.14,
+              "remarks": "Total lipping per unit: 14.14 lm"
+            },
+            {
+              "item_number": "A21",
+              "description": "Full overlay soft-close hinges",
+              "specification": "Full overlay concealed soft-close hinges",
+              "material": "hinges",
+              "measurement_unit": "Nr",
+              "panel_count": null,
+              "qty_formula": "Fixed count per unit",
+              "qty_per_unit": 12,
+              "remarks": "12 hinges per unit"
+            }
+          ]
         },
         {
-          "item_no": "A2",
-          "description": "Carcass-A – 18mm MDF bottom panel",
-          "specification": "18mm both-face Melamine MR MDF sheet",
-          "category": "area",
-          "unit": "M²",
+          "component_id": "A_ShutterA",
+          "component_name": "Shutter-A",
+          "component_type": "doors",
           "dimensions": {
-            "length_m": 2.07,
-            "width_m": 0.38,
-            "height_m": null
+            "L": {
+              "value": 2.07,
+              "unit": "m",
+              "label": "ShutterA_L"
+            },
+            "W": null,
+            "H": {
+              "value": 1.00,
+              "unit": "m",
+              "label": "ShutterA_H"
+            }
           },
-          "quantity": 1,
-          "remarks": ""
-        },
-        {
-          "item_no": "A7",
-          "description": "Carcass-A – PVC lipping to all exposed edges",
-          "specification": "PVC lipping to match grey melamine finish",
-          "category": "linear",
-          "unit": "LM",
-          "dimensions": {},
-          "quantity": null,
-          "remarks": "Total lipping per unit: 14.14 lm"
-        },
-        {
-          "item_no": "A21",
-          "description": "Ironmongery – Full overlay soft-close hinges",
-          "specification": "Full overlay concealed soft-close hinges",
-          "category": "count",
-          "unit": "Nr",
-          "dimensions": {},
-          "quantity": 12,
-          "remarks": "12 hinges per unit"
+          "items": [
+            {
+              "item_number": "A8",
+              "description": "Plain shutter panel",
+              "specification": "18mm Plain MR MDF sheet; 5 bays",
+              "material": "18mm_plain_mdf",
+              "measurement_unit": "M²",
+              "panel_count": 1,
+              "qty_formula": "ShutterA_L × ShutterA_H × 1",
+              "qty_per_unit": 2.07,
+              "laminate_coverage_m2": 4.14,
+              "remarks": "5 shutter doors; laminate PL-01 both faces = 4.14 m²"
+            }
+          ]
         }
       ]
     }
   ],
-  
-  "fixtures": [
+  "installed_fixtures": [
     {
-      "item_no": "F1",
+      "item_number": "F1",
       "description": "Kitchen mixer tap with pull-out spray",
-      "specification": "Chrome finish; ceramic disc cartridge",
-      "category": "fixture",
-      "unit": "Each",
-      "dimensions": {},
-      "quantity": 1,
-      "material_key": "kitchen_tap",
-      "remarks": "Supply and install per kitchen unit"
+      "specification": "Chrome finish, ceramic disc cartridge, 360° swivel",
+      "measurement_unit": "Each",
+      "quantity_per_unit": 1,
+      "assigned_material": "kitchen_tap",
+      "unit_rate": 850.00,
+      "remarks": "Supply and installation per kitchen unit"
     },
     {
-      "item_no": "F2",
-      "description": "Exhaust fan 6\"",
-      "specification": "100 CFM; silent operation",
-      "category": "fixture",
-      "unit": "Each",
-      "dimensions": {},
-      "quantity": 1,
-      "material_key": "exhaust_fan",
-      "remarks": "Over cooktop"
+      "item_number": "F2",
+      "description": "Exhaust fan",
+      "specification": "6-inch, 100 CFM, silent operation",
+      "measurement_unit": "Each",
+      "quantity_per_unit": 1,
+      "assigned_material": "exhaust_fan",
+      "unit_rate": 420.00,
+      "remarks": "Over cooktop location"
+    },
+    {
+      "item_number": "F3",
+      "description": "Gas hob",
+      "specification": "4 burner, stainless steel, auto-ignition",
+      "measurement_unit": "Each",
+      "quantity_per_unit": 1,
+      "assigned_material": "gas_hob",
+      "unit_rate": 1200.00,
+      "remarks": "Built-in installation"
+    },
+    {
+      "item_number": "F6",
+      "description": "Cabinet handles",
+      "specification": "Stainless steel bar pull, 128mm centers",
+      "measurement_unit": "Each",
+      "quantity_per_unit": 15,
+      "assigned_material": "cabinet_handles",
+      "unit_rate": 35.00,
+      "remarks": "2 per drawer, 1 per door"
     }
   ],
-  
-  "notes_and_assumptions": {
-    "general_notes": [
+  "additional_notes": {
+    "general_assumptions": [
       {
         "id": 1,
-        "topic": "Total unit count",
-        "note": "Total of 58 kitchen units across the project"
+        "category": "Quantity Basis",
+        "content": "All quantities are per kitchen unit. Multiply by 58 for project total."
+      },
+      {
+        "id": 2,
+        "category": "Drawing Reference",
+        "content": "Takeoff based on elevations ELV-E, ELV-F, ELV-G1. Cross-reference shop drawings."
+      },
+      {
+        "id": 3,
+        "category": "Excluded Items",
+        "content": "Fridge housing unit not included in this BOQ."
       }
     ],
-    "exclusions": [
+    "excluded_from_scope": [
       {
         "id": 1,
-        "topic": "Countertop finish",
-        "note": "Porcelain tile countertop EXCLUDED"
+        "item": "Porcelain countertop",
+        "reason": "Finished by others (FIN-102)"
+      },
+      {
+        "id": 2,
+        "item": "Splashback",
+        "reason": "Finished by others"
+      },
+      {
+        "id": 3,
+        "item": "Plumbing connections",
+        "reason": "MEP contractor scope"
       }
     ]
   }
