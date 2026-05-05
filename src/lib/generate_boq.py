@@ -2,12 +2,11 @@
 BOQ Material Matrix Generator – Al Waha Residence 01
 4 sheets: Summary | BOQ_Matrix | Materials_List | Cost_Breakdown
 
-FIXES v2:
-  - Fixtures section in BOQ_Matrix: all material cols merged into one clean "INSTALLED FIXTURE" cell
-  - Materials_List now includes a fixtures section at the bottom
-  - max() on empty MATERIAL_COLS guarded everywhere
-  - _blank_ prefix only on calculation_type == "spacer"
-  - All write_summary / grand-total blocks skip when MATERIAL_COLS empty
+FIXES v3:
+  - Auto-fit column widths in Materials_List and Cost_Breakdown
+    (description/spec and notes columns expand to fit content)
+  - Removed trailing decorative column (col 10) in both sheets
+  - All other logic unchanged from v2
 """
 
 import json, sys, re
@@ -741,24 +740,45 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
                      if not c["key"].startswith("_blank")]
     count_only    = {c["key"] for c in material_cols if c.get("count_only",False)}
 
-    col_widths = {1:0, 2:8, 3:28, 4:32, 5:12, 6:18, 7:14, 8:14, 9:28, 10:0}
-    for ci,w in col_widths.items():
-        ws.column_dimensions[get_column_letter(ci)].width = w
+    # ── Auto-fit tracking ─────────────────────────────────────────────────
+    # col_content_max[ci] = max char length seen for that column index
+    col_content_max = {1:0, 2:4, 3:14, 4:36, 5:8, 6:12, 7:14, 8:14, 9:30}
+
+    def _track(ci, text):
+        if text:
+            for ln in str(text).split("\n"):
+                col_content_max[ci] = max(col_content_max.get(ci, 10), len(ln) + 3)
+
+    # Seed with header texts
+    for ci, hdr in enumerate(["","#","Material ID","Description / Specification",
+                               "Unit","Total\nQuantity","Sheet Size\n(m²)",
+                               "Sheets\nNeeded","Remarks"], 1):
+        _track(ci, hdr)
+
+    # ── FINAL column widths are applied after all rows written ─────────────
+    def _apply_col_widths():
+        minimums = {1:0, 2:5, 3:14, 4:36, 5:8, 6:14, 7:14, 8:12, 9:30}
+        for ci, min_w in minimums.items():
+            w = max(col_content_max.get(ci, min_w), min_w)
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        # col 10 completely hidden (no trailing decoration)
+        ws.column_dimensions[get_column_letter(10)].width = 0
+
+    # ── Use COLS=9 throughout (no col 10) ─────────────────────────────────
+    LAST_COL = 9   # Notes is the last visible column
 
     r = 1
 
     # ── header banner ──────────────────────────────────────────────────────
-    # CHANGED: all header/footer stripe rows now fill range(1,12) so every
-    # banner row has identical right edge → eliminates the staircase effect
     ws.row_dimensions[r].height = 5
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
     ws.row_dimensions[r].height = 36
     ws.merge_cells(f"B{r}:I{r}")
     c=ws.cell(r,2); c.value="MATERIALS LIST  ·  PROJECT TOTAL QUANTITIES"
     c.font=_ft(14,True,WHITE); c.fill=_F(NAVY); c.alignment=_al("left","center")
     c.border=Border(bottom=Side("medium",color=GOLD))
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(NAVY)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(NAVY)
     r+=1
     ws.row_dimensions[r].height = 22
     ws.merge_cells(f"B{r}:I{r}")
@@ -767,28 +787,29 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
              f"TYPE {doc.get('kitchen_type','N/A')}   ·   "
              f"{doc.get('total_units',0)} Units")
     c.font=_ft(10,False,GOLD_LIGHT,italic=True); c.fill=_F(MID_BLUE); c.alignment=_al("left","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(MID_BLUE)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(MID_BLUE)
     r+=1
     ws.row_dimensions[r].height = 4
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
     ws.row_dimensions[r].height = 20
     ws.merge_cells(f"B{r}:I{r}")
     c=ws.cell(r,2)
     c.value=f"★  All quantities are live-linked from BOQ_Matrix row {gt_row}. Edit dimensions in BOQ_Matrix; this sheet updates automatically."
     c.font=_ft(9,False,MID_GREY,italic=True); c.fill=_F(PALE_BLUE); c.alignment=_al("left","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(PALE_BLUE)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(PALE_BLUE)
     r+=1
     ws.row_dimensions[r].height = 8; r+=1
 
     # ── column headers ─────────────────────────────────────────────────────
     ws.row_dimensions[r].height = 50
     hdrs = ["","#","Material ID","Description / Specification",
-            "Unit","Total\nQuantity","Sheet Size\n(m²)","Sheets\nNeeded","Remarks",""]
+            "Unit","Total\nQuantity","Sheet Size\n(m²)","Sheets\nNeeded","Remarks"]
     for ci,h in enumerate(hdrs,1):
         c=ws.cell(r,ci); c.value=h if h else ""
         c.font=_ft(11,True,WHITE); c.fill=_F(MID_BLUE)
         c.alignment=_al("center","center",True); c.border=_thick()
+        _track(ci, h)
     r+=1
 
     boq_mat_cols = [(c["key"],c["label"],c) for c in material_cols
@@ -813,10 +834,13 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
 
         c=ws.cell(r,3); c.value=key; c.font=_ft(9,False,MID_GREY,italic=True)
         c.fill=_F(bg); c.alignment=_al("left","center"); c.border=brd
+        _track(3, key)
 
-        c=ws.cell(r,4); c.value=label.replace("\n"," ")
+        label_clean = label.replace("\n"," ")
+        c=ws.cell(r,4); c.value=label_clean
         c.font=_ft(10,False,DARK_TEXT); c.fill=_F(bg)
         c.alignment=_al("left","center",wrap=True); c.border=brd
+        _track(4, label_clean)
 
         is_count  = key in count_only
         is_linear = any(x in key.lower() for x in ("lipping","lm","skirting","runner"))
@@ -859,9 +883,11 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
         remarks_txt = col_cfg.get("remarks","")
         c=ws.cell(r,9); c.value=remarks_txt if remarks_txt else ""
         c.font=_ft(9,False,"8A9BAE",italic=True); c.fill=_F(bg)
-        c.alignment=_al("left","center",True); c.border=Border(right=gl,bottom=brd.bottom)
+        c.alignment=_al("left","center",True)
+        c.border=Border(right=gl, bottom=brd.bottom,
+                        left=brd.left, top=brd.top)
+        _track(9, remarks_txt)
 
-        ws.cell(r,10).fill=_F(bg); ws.cell(r,10).border=Border(bottom=brd.bottom)
         r+=1
 
     # ── FIXTURES SECTION in Materials_List ─────────────────────────────────
@@ -869,7 +895,7 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
         ws.row_dimensions[r].height = 8; r+=1
 
         ws.row_dimensions[r].height = 30
-        for ci in range(1,12):
+        for ci in range(1, LAST_COL+1):
             ws.cell(r,ci).fill=_F(CHARCOAL)
             ws.cell(r,ci).border=Border(top=Side("medium",color=GOLD),
                                         bottom=Side("medium",color=GOLD))
@@ -881,13 +907,14 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
 
         ws.row_dimensions[r].height = 40
         fx_hdrs = ["","#","Item No","Description","Unit",
-                   "Qty / Unit","Total Qty\n(Project)","—","Remarks",""]
+                   "Qty / Unit","Total Qty\n(Project)","—","Remarks"]
         for ci,h in enumerate(fx_hdrs,1):
             c=ws.cell(r,ci); c.value=h if h else ""
             c.font=_ft(10,True,WHITE); c.fill=_F(MID_BLUE)
             c.alignment=_al("center","center",True)
             c.border=Border(top=Side("medium",color=GOLD),bottom=Side("medium",color=GOLD),
                             left=Side("thin",color=GOLD_LIGHT),right=Side("thin",color=GOLD_LIGHT))
+            _track(ci, h)
         r+=1
 
         alt = False
@@ -914,9 +941,11 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
 
             c=ws.cell(r,3); c.value=ino; c.font=_ft(9,False,MID_GREY,italic=True)
             c.fill=_F(bg); c.alignment=_al("left","center"); c.border=brd
+            _track(3, ino)
 
             c=ws.cell(r,4); c.value=desc; c.font=_ft(10,False,DARK_TEXT)
             c.fill=_F(bg); c.alignment=_al("left","center",wrap=True); c.border=brd
+            _track(4, desc)
 
             c=ws.cell(r,5); c.value=unit; c.font=_ft(10,False,"5A6C7D")
             c.fill=_F(bg); c.alignment=_al("center","center"); c.border=brd
@@ -934,15 +963,16 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
 
             c=ws.cell(r,9); c.value=remarks; c.font=_ft(9,False,"8A9BAE",italic=True)
             c.fill=_F(bg); c.alignment=_al("left","center",True)
-            c.border=Border(right=gl,bottom=brd.bottom)
+            c.border=Border(right=gl, bottom=brd.bottom,
+                            left=brd.left, top=brd.top)
+            _track(9, remarks)
 
-            ws.cell(r,10).fill=_F(bg); ws.cell(r,10).border=Border(bottom=brd.bottom)
             alt = not alt
             r+=1
 
     # ── footer ─────────────────────────────────────────────────────────────
     ws.row_dimensions[r].height=5
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
     ws.row_dimensions[r].height=20
     ws.merge_cells(f"B{r}:I{r}")
@@ -952,7 +982,10 @@ def build_materials_sheet(wb, doc, material_cols, gt_row, sheet_area_m2, fixture
              "Sheets Needed rounds UP to whole boards  ·  "
              "Count/Linear/Volume items show actual quantities.")
     c.font=_ft(8,False,MID_GREY,italic=True); c.fill=_F(NAVY); c.alignment=_al("center","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(NAVY)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(NAVY)
+
+    # ── Apply auto-fit widths ──────────────────────────────────────────────
+    _apply_col_widths()
     return ws
 
 
@@ -972,14 +1005,31 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
     vat_rate      = doc.get("vat_rate_percent",5) / 100.0
     vat_pct_label = f"{doc.get('vat_rate_percent',5)}%"
 
-    col_widths = {1:0, 2:8, 3:28, 4:34, 5:12, 6:16, 7:18, 8:18, 9:28, 10:0}
-    for ci,w in col_widths.items():
-        ws.column_dimensions[get_column_letter(ci)].width = w
+    # ── Auto-fit tracking ─────────────────────────────────────────────────
+    col_content_max = {1:0, 2:4, 3:14, 4:36, 5:8, 6:14, 7:18, 8:18, 9:30}
+
+    def _track(ci, text):
+        if text:
+            for ln in str(text).split("\n"):
+                col_content_max[ci] = max(col_content_max.get(ci, 10), len(ln) + 3)
+
+    for ci, hdr in enumerate(["","#","Material ID","Description / Specification","Unit",
+                               "Total Qty","Unit Rate\n(AED / unit)","Amount\n(AED)","Notes"], 1):
+        _track(ci, hdr)
+
+    def _apply_col_widths():
+        minimums = {1:0, 2:5, 3:14, 4:36, 5:8, 6:14, 7:18, 8:18, 9:30}
+        for ci, min_w in minimums.items():
+            w = max(col_content_max.get(ci, min_w), min_w)
+            ws.column_dimensions[get_column_letter(ci)].width = w
+        # col 10 completely hidden
+        ws.column_dimensions[get_column_letter(10)].width = 0
+
+    LAST_COL = 9   # Notes is the last visible column
 
     r=1
-    # CHANGED: all stripe/banner rows use range(1,12) for consistent right edge
     ws.row_dimensions[r].height=5
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
 
     ws.row_dimensions[r].height=36
@@ -987,7 +1037,7 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
     c=ws.cell(r,2); c.value="COST BREAKDOWN  ·  MATERIAL QUANTITIES × UNIT RATES"
     c.font=_ft(14,True,WHITE); c.fill=_F(NAVY); c.alignment=_al("left","center")
     c.border=Border(bottom=Side("medium",color=GOLD))
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(NAVY)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(NAVY)
     r+=1
 
     ws.row_dimensions[r].height=22
@@ -997,11 +1047,11 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
              f"TYPE {doc.get('kitchen_type','N/A')}   ·   "
              f"{doc.get('total_units',0)} Units   ·   Currency: {currency}   ·   VAT: {vat_pct_label}")
     c.font=_ft(10,False,GOLD_LIGHT,italic=True); c.fill=_F(MID_BLUE); c.alignment=_al("left","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(MID_BLUE)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(MID_BLUE)
     r+=1
 
     ws.row_dimensions[r].height=4
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
 
     ws.row_dimensions[r].height=20
@@ -1010,17 +1060,18 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
     c.value=(f"★  Unit rates in column G are pre-filled where cost data exists in the source JSON. "
              f"Amber cells = contractor to fill. Green cells = rate from data. Amount = Total Qty × Unit Rate.")
     c.font=_ft(9,False,MID_GREY,italic=True); c.fill=_F(PALE_BLUE); c.alignment=_al("left","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(PALE_BLUE)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(PALE_BLUE)
     r+=1
     ws.row_dimensions[r].height=8; r+=1
 
     ws.row_dimensions[r].height=50
     hdrs=["","#","Material ID","Description / Specification","Unit",
-          "Total Qty","Unit Rate\n(AED / unit)","Amount\n(AED)","Notes",""]
+          "Total Qty","Unit Rate\n(AED / unit)","Amount\n(AED)","Notes"]
     for ci,h in enumerate(hdrs,1):
         c=ws.cell(r,ci); c.value=h if h else ""
         c.font=_ft(11,True,WHITE); c.fill=_F(MID_BLUE)
         c.alignment=_al("center","center",True); c.border=_thick()
+        _track(ci, h)
     r+=1
 
     first_data=r
@@ -1043,10 +1094,13 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
 
         c=ws.cell(r,3); c.value=key; c.font=_ft(9,False,MID_GREY,italic=True)
         c.fill=_F(bg); c.alignment=_al("left","center"); c.border=brd
+        _track(3, key)
 
-        c=ws.cell(r,4); c.value=label.replace("\n"," ")
+        label_clean = label.replace("\n"," ")
+        c=ws.cell(r,4); c.value=label_clean
         c.font=_ft(10,False,DARK_TEXT); c.fill=_F(bg)
         c.alignment=_al("left","center",wrap=True); c.border=brd
+        _track(4, label_clean)
 
         is_count  = key in count_only
         is_linear = any(x in key.lower() for x in ("lipping","lm","skirting","runner"))
@@ -1085,11 +1139,14 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
         c.number_format=f'"{currency} "#,##0.00'
         amount_rows.append(r)
 
-        c=ws.cell(r,9); c.value=col_cfg.get("remarks","")
+        remarks_text = col_cfg.get("remarks","")
+        c=ws.cell(r,9); c.value=remarks_text
         c.font=_ft(9,False,"8A9BAE",italic=True); c.fill=_F(bg)
-        c.alignment=_al("left","center",True); c.border=Border(right=gl,bottom=brd.bottom)
+        c.alignment=_al("left","center",True)
+        c.border=Border(right=gl, bottom=brd.bottom,
+                        left=brd.left, top=brd.top)
+        _track(9, remarks_text)
 
-        ws.cell(r,10).fill=_F(bg); ws.cell(r,10).border=Border(bottom=brd.bottom)
         r+=1
 
     ws.row_dimensions[r].height=8; r+=1
@@ -1098,7 +1155,7 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
     fixture_amount_rows = []
     if fixtures:
         ws.row_dimensions[r].height = 30
-        for ci in range(1,12):
+        for ci in range(1, LAST_COL+1):
             ws.cell(r,ci).fill=_F(CHARCOAL)
             ws.cell(r,ci).border=Border(top=Side("medium",color=GOLD),
                                         bottom=Side("medium",color=GOLD))
@@ -1110,13 +1167,14 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
 
         ws.row_dimensions[r].height = 48
         fx_cb_hdrs = ["","#","Item No","Description","Unit",
-                      "Total Qty","Unit Rate\n(AED / unit)","Amount\n(AED)","Notes",""]
+                      "Total Qty","Unit Rate\n(AED / unit)","Amount\n(AED)","Notes"]
         for ci,h in enumerate(fx_cb_hdrs,1):
             c=ws.cell(r,ci); c.value=h if h else ""
             c.font=_ft(10,True,WHITE); c.fill=_F(MID_BLUE)
             c.alignment=_al("center","center",True)
             c.border=Border(top=Side("medium",color=GOLD),bottom=Side("medium",color=GOLD),
                             left=Side("thin",color=GOLD_LIGHT),right=Side("thin",color=GOLD_LIGHT))
+            _track(ci, h)
         r+=1
 
         fx_mat_list_start = mat_list_data_start_row + len(MATERIAL_COLS) + 3
@@ -1144,9 +1202,11 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
 
             c=ws.cell(r,3); c.value=ino; c.font=_ft(9,False,MID_GREY,italic=True)
             c.fill=_F(bg); c.alignment=_al("left","center"); c.border=brd
+            _track(3, ino)
 
             c=ws.cell(r,4); c.value=desc; c.font=_ft(10,False,DARK_TEXT)
             c.fill=_F(bg); c.alignment=_al("left","center",wrap=True); c.border=brd
+            _track(4, desc)
 
             c=ws.cell(r,5); c.value=unit; c.font=_ft(10,False,"5A6C7D")
             c.fill=_F(bg); c.alignment=_al("center","center"); c.border=brd
@@ -1181,9 +1241,10 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
             c=ws.cell(r,9); c.value=remarks
             c.font=_ft(9,False,"8A9BAE",italic=True); c.fill=_F(bg)
             c.alignment=_al("left","center",True)
-            c.border=Border(right=gl,bottom=brd.bottom)
+            c.border=Border(right=gl, bottom=brd.bottom,
+                            left=brd.left, top=brd.top)
+            _track(9, remarks)
 
-            ws.cell(r,10).fill=_F(bg); ws.cell(r,10).border=Border(bottom=brd.bottom)
             alt = not alt
             r+=1
 
@@ -1191,7 +1252,7 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
 
     def _summary_row(row,label,formula,height=28,bg=CHARCOAL,fc=WHITE,bold=True,num=""):
         ws.row_dimensions[row].height=height
-        for ci in range(1,12): ws.cell(row,ci).fill=_F(bg)
+        for ci in range(1, LAST_COL+1): ws.cell(row,ci).fill=_F(bg)
         ws.merge_cells(f"C{row}:G{row}")
         c=ws.cell(row,3); c.value=label
         c.font=_ft(12,bold,fc); c.fill=_F(bg); c.alignment=_al("right","center")
@@ -1214,7 +1275,7 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
                      height=34,bg=NAVY,fc=WHITE); r+=1
 
     ws.row_dimensions[r].height=5
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(GOLD)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(GOLD)
     r+=1
 
     ws.row_dimensions[r].height=20
@@ -1224,7 +1285,10 @@ def build_cost_breakdown_sheet(wb, doc, material_cols, mat_list_data_start_row,
              "All quantities are indicative and subject to field verification.  "
              f"Currency: {currency}  ·  VAT @ {vat_pct_label}")
     c.font=_ft(8,False,MID_GREY,italic=True); c.fill=_F(NAVY); c.alignment=_al("center","center")
-    for ci in range(1,12): ws.cell(r,ci).fill=_F(NAVY)
+    for ci in range(1, LAST_COL+1): ws.cell(r,ci).fill=_F(NAVY)
+
+    # ── Apply auto-fit widths ──────────────────────────────────────────────
+    _apply_col_widths()
     return ws
 
 
