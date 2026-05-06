@@ -316,6 +316,8 @@ export function Viewer({
     handleCanvasClick,
     handleContextMenu,
     handleCanvasPointerMove,
+    handleCanvasPointerDown, // ADD THIS
+    handleCanvasPointerUp, // ADD THIS LINE
     toCanvas,
     setCursorPoint,
   } = measureEngine;
@@ -1071,7 +1073,14 @@ export function Viewer({
                 onClick={handleCanvasClick}
                 onContextMenu={handleContextMenu}
                 onPointerMove={handleCanvasPointerMove}
-                onPointerDown={handleDrawingCanvasPointerDown}
+                onPointerDown={(e) => {
+                  // First try point relocation, if not handled then handle drawing
+                  const handled = handleCanvasPointerDown(e);
+                  if (!handled) {
+                    handleDrawingCanvasPointerDown(e);
+                  }
+                }}
+                onPointerUp={handleCanvasPointerUp} // ADD THIS for drag end
                 onPointerLeave={() => {
                   setCursorPoint(null);
                   cursorPointRef.current = null;
