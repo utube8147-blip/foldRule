@@ -13,9 +13,10 @@ interface MinimapProps {
   containerRef: React.RefObject<HTMLDivElement>;
   pdfDimensions: PdfDimensions;
   canvasPadding: number;
+  activeTool?: string;
 }
 
-export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPadding }: MinimapProps) {
+export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPadding, activeTool }: MinimapProps) {
   const thumbCanvasRef   = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const isDraggingRef    = useRef(false);
@@ -24,8 +25,11 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
   const [locked, setLocked]     = useState(false);
   const [hovering, setHovering] = useState(false);
 
-  // panel is visible when locked OR the mouse is inside the wrapper
-  const panelVisible = locked || hovering;
+  // Determine if a drawing tool is active (tools that need to click on canvas)
+  const isDrawingToolActive = activeTool && ['rectangle', 'polygon', 'linear'].includes(activeTool);
+
+  // panel is visible when locked OR (the mouse is inside the wrapper AND no drawing tool is active)
+  const panelVisible = locked || (hovering && !isDrawingToolActive);
 
   // Sync ref so the toggle callback never has a stale closure
   const lockedRef = useRef(false);

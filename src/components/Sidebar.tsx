@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
 import { FileText, FolderOpen, Filter, Search, Settings2, Plus, Trash2, Database, Info, Layers } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { ProjectState, MaterialSpec } from '../types';
+import { ProjectState, Material } from '../types';
 
 interface SidebarProps {
   isCollapsed: boolean;
   projectState: ProjectState;
-  onUpdateMaterials: (materials: MaterialSpec[]) => void;
+  onUpdateMaterials: (materials: Material[]) => void;
   onOpenMaterialLibrary?: () => void;
   onDrawingAdded: (name: string, fileUrl: string, file?: File) => void;
   onSelectDrawing: (id: string) => void;

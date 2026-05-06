@@ -1,24 +1,32 @@
-// ─── Viewer.tsx — Key changes from previous version ──────────────────────────
+'use client';
+
+// ─── Viewer.tsx ───────────────────────────────────────────────────────────────
 //
-//  1. Minimap extracted → import { Minimap } from './Minimap'
-//  2. Space-bar bug fixed: preventDefault() in keydown blocks browser scroll,
-//     and the scroll container's onKeyDown also calls e.preventDefault() on Space.
-//  3. Lock/unlock logic lives in Minimap itself (no props needed here).
+//  FIX: Measurements are no longer stored in the undo stack.
+//  TakeoffContext is the single source of truth for measurements[].
+//  The undo stack only tracks tempPoints and measurements atomically.
+//
+//  Ctrl+Z behaviour:
+//    • Undo/Redo handled entirely by TakeoffContext
+//    • No special case logic needed in Viewer
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo, memo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   ZoomIn, ZoomOut, Maximize, ChevronLeft, ChevronRight,
   MousePointer2, CircleDot, Ruler, Square, Hash, FolderOpen,
-  Check, Scaling, Target, Settings2,
+  Check, Scaling, Target, Settings2, Undo2, Redo2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
 import { PresetTemplate } from './presets/PresetTemplates';
 import { PresetDrawer } from './presets/PresetDrawer';
 import { Minimap } from './Minimap';
+import { MeasurementDetailsDialog } from './MeasurementDetailsDialog';
+import { CountPinOverlay } from './CountPinOverlay';
+
 
 const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -27,9 +35,22 @@ const pdfWorkerUrl = new URL(
 import { SnapSettingsPanel } from './SnapSettingsPanel';
 import { useSnapEngine } from '@/hooks/useSnapEngine';
 import { useMeasurements } from '@/hooks/useMeasurements';
+import { useTakeoffContext } from '@/context/TakeoffContext';
+import type { InProgressPoint } from '@/context/TakeoffContext';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+
+// ─── Static tool definitions (moved outside component to prevent recreation) ───
+const VIEWER_TOOLS = [
+  { id: 'select',    icon: MousePointer2, label: 'Select (Pan)',  shortcut: 'V' },
+  { id: 'point',     icon: CircleDot,     label: 'Point',         shortcut: 'P' },
+  { id: 'linear',    icon: Ruler,         label: 'Linear',        shortcut: 'L' },
+  { id: 'polygon',   icon: Square,        label: 'Polygon',       shortcut: 'A' },
+  { id: 'rectangle', icon: Square,        label: 'Rectangle',     shortcut: 'R' },
+  { id: 'count',     icon: Hash,          label: 'Count',         shortcut: 'C' },
+  { id: 'scale',     icon: Scaling,       label: 'Calibrate',     shortcut: 'S' },
+] as const;
 
 // ─── Snap Candidate Dialog ────────────────────────────────────────────────────
 
@@ -72,20 +93,20 @@ function SnapCandidateDialog({ count, onAccept, onDismiss }: SnapCandidateDialog
 // ─── Viewer Props ─────────────────────────────────────────────────────────────
 
 interface ViewerProps {
-  activeTool: ToolType;
-  setActiveTool: (tool: ToolType) => void;
-  measurements: TakeoffRow[];
-  onAddMeasurement: (m: Omit<TakeoffRow, 'id' | 'color' | 'isVisible' | 'drawingId'>) => void;
+  activeTool:          ToolType;
+  setActiveTool:       (tool: ToolType) => void;
+  measurements:        TakeoffRow[];
+  onAddMeasurement:    (m: Omit<TakeoffRow, 'color' | 'isVisible' | 'drawingId'>) => void;
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
-  scaleFactor: number;
-  onScaleSet: (factor: number) => void;
-  activeDrawing: Drawing | null;
-  onDrawingAdded: (name: string, fileUrl: string, file?: File) => void;
-  showPresetDrawer: boolean;
+  scaleFactor:         number;
+  onScaleSet:          (factor: number) => void;
+  activeDrawing:       Drawing | null;
+  onDrawingAdded:      (name: string, fileUrl: string, file?: File) => void;
+  showPresetDrawer:    boolean;
   onClosePresetDrawer: () => void;
-  onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
-  hideToolbar?: boolean;
-  onToolbarReady?: (api: ViewerToolbarAPI) => void;
+  onSelectPreset:      (data: Record<string, any>, template: PresetTemplate) => void;
+  hideToolbar?:        boolean;
+  onToolbarReady?:     (api: ViewerToolbarAPI) => void;
 }
 
 export interface ViewerToolbarAPI {
@@ -112,13 +133,20 @@ export interface ViewerToolbarAPI {
   pageNumber: number;
   fitToScreen: () => void;
   handleManualScale: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  handleUndo: () => void;
+  handleRedo: () => void;
 }
 
 // ─── Main Viewer Component ────────────────────────────────────────────────────
 
 export function Viewer({
-  activeTool, setActiveTool, measurements, onAddMeasurement,
-  onUpdateMeasurement, scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
+  activeTool, setActiveTool,
+  measurements,
+  onAddMeasurement: onAddMeasurementProp,
+  onUpdateMeasurement: onUpdateMeasurementProp,
+  scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
   showPresetDrawer, onClosePresetDrawer, onSelectPreset,
   hideToolbar = false,
   onToolbarReady,
@@ -134,7 +162,7 @@ export function Viewer({
   const [loading, setLoading]       = useState(false);
   const [isPanning, setIsPanning]   = useState(false);
 
-  // ── Space bar pan state ─────────────────────────────────────────────────────
+  // ── Space bar pan state ───────────────────────────────────────────────────
   const [spaceHeld, setSpaceHeld] = useState(false);
   const spaceHeldRef = useRef(false);
 
@@ -168,6 +196,61 @@ export function Viewer({
   const [snapThreshold, setSnapThreshold]       = useState(14);
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
+
+  // ── Measurement Details Dialog ───────────────────────────────────────────────
+  const [showMeasurementDialog, setShowMeasurementDialog] = useState(false);
+  const [pendingMeasurementData, setPendingMeasurementData] = useState<{
+    id: string;
+    type: string;
+    description: string;
+  } | null>(null);
+  const pendingMeasurementRef = useRef<{
+    id: string;
+    type: string;
+    description: string;
+    name: string;
+    material: string;
+  } | null>(null);
+
+  // ── Wrap parent callbacks — stable refs ──────────────────────────────────────
+  const onAddMeasurement = useCallback((
+    m: Omit<TakeoffRow, 'color' | 'isVisible' | 'drawingId'>
+  ) => {
+    onAddMeasurementProp(m);
+  }, [onAddMeasurementProp]);
+
+  const onUpdateMeasurement = useCallback((id: string, updates: Partial<TakeoffRow>) => {
+    onUpdateMeasurementProp?.(id, updates);
+  }, [onUpdateMeasurementProp]);
+
+  // ── Get context actions ─────────────────────────────────────────────────────
+  const {
+    tempPoints,
+    pushPoint,
+    commitMeasurement,
+    batchCommitMeasurements, // ADD THIS - get batch commit from context
+    clearTempPoints,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    pendingMeasurement,
+    setPendingMeasurement,
+  } = useTakeoffContext();
+
+  // ── Wrap undo/redo for consistent API ───────────────────────────────────────
+  // Note: setCursorPoint will be added via useEffect after measureEngine is initialized
+  const undoRedoRef = useRef<{ setCursorPoint: (p: any) => void }>({ setCursorPoint: () => {} });
+  
+  const handleUndo = useCallback(() => {
+    undo();
+    undoRedoRef.current.setCursorPoint(null);
+  }, [undo]);
+  
+  const handleRedo = useCallback(() => {
+    redo();
+    undoRedoRef.current.setCursorPoint(null);
+  }, [redo]);
 
   // ── Snap Engine ─────────────────────────────────────────────────────────────
   const snapEngine = useSnapEngine({
@@ -203,13 +286,17 @@ export function Viewer({
   const measureEngine = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
-    pageNumberRef: pageNumberRef as React.RefObject<number>,
-    scaleRef: scaleRef as React.RefObject<number>,
+    pageNumberRef:    pageNumberRef    as React.RefObject<number>,
+    scaleRef:         scaleRef        as React.RefObject<number>,
     activeTool,
-    setActiveTool: setActiveToolString,
+    setActiveTool:    setActiveToolString,
     measurements,
+    tempPoints,
+    pushPoint,
+    commitMeasurement,
+    batchCommitMeasurements, // PASS batchCommitMeasurements to useMeasurements
+    clearTempPoints,
     scaleFactor,
-    onAddMeasurement,
     onUpdateMeasurement,
     isPanning,
     snapToCorner,
@@ -219,10 +306,10 @@ export function Viewer({
     snapThreshold,
     redrawPinCanvas,
     cursorPointRef,
+    activeDrawingId,
   });
 
   const {
-    tempPoints,
     pendingSnapCandidates,
     setPendingSnapCandidates,
     finishMeasurement,
@@ -230,26 +317,64 @@ export function Viewer({
     handleContextMenu,
     handleCanvasPointerMove,
     toCanvas,
+    setCursorPoint,
   } = measureEngine;
+
+  // Bind setCursorPoint to ref so undo/redo can clear the cursor
+  useEffect(() => {
+    undoRedoRef.current.setCursorPoint = setCursorPoint;
+  }, [setCursorPoint]);
 
   useEffect(() => {
     (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
   }, [onScaleSet]);
 
-  // ── Tools list ───────────────────────────────────────────────────────────────
-  const tools = [
-    { id: 'select', icon: MousePointer2, label: 'Select (Pan)', shortcut: 'V' },
-    { id: 'point',  icon: CircleDot,     label: 'Point',        shortcut: 'P' },
-    { id: 'linear', icon: Ruler,         label: 'Linear',       shortcut: 'L' },
-    { id: 'area',   icon: Square,        label: 'Area',         shortcut: 'A' },
-    { id: 'count',  icon: Hash,          label: 'Count',        shortcut: 'C' },
-    { id: 'scale',  icon: Scaling,       label: 'Calibrate',    shortcut: 'S' },
-  ];
+  // Use static tools array defined outside component
+  const tools = VIEWER_TOOLS;
 
-  const CANVAS_PADDING  = 24;
+  const CANVAS_PADDING   = 24;
   const ZOOM_SENSITIVITY = 0.25;
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 10;
+
+  // ── Wrap finishMeasurement to show dialog ───────────────────────────────────
+  const handleFinishMeasurement = useCallback(() => {
+    // For count/point: need at least 1 point; for others need at least 2 points
+    const minPoints = (activeTool === 'count' || activeTool === 'point') ? 1 : 2;
+    if (tempPoints.length < minPoints) {
+      finishMeasurement();
+      return;
+    }
+
+    // Show dialog to collect name and material for all tools that collect measurements
+    const typeStr = activeTool === 'polygon' || activeTool === 'rectangle' ? 'Polygon' : activeTool === 'linear' ? 'Length' : activeTool === 'count' ? 'Count' : 'Point';
+    setPendingMeasurementData({
+      id: `temp-${Date.now()}`,
+      type: typeStr,
+      description: `New ${typeStr}`,
+    });
+    setShowMeasurementDialog(true);
+
+    // Store reference to finish callback
+    pendingMeasurementRef.current = {
+      id: `temp-${Date.now()}`,
+      type: typeStr,
+      description: `New ${typeStr}`,
+      name: '',
+      material: '',
+    };
+  }, [tempPoints.length, activeTool, finishMeasurement]);
+
+  const handleDialogConfirm = useCallback((name: string, material: string, icon?: string) => {
+    setShowMeasurementDialog(false);
+    const label = name.trim() || `New ${pendingMeasurementData?.type || 'Measurement'}`;
+    finishMeasurement(undefined, { label, icon });
+  }, [finishMeasurement, pendingMeasurementData]);
+
+  const handleDialogSkip = useCallback(() => {
+    setShowMeasurementDialog(false);
+    finishMeasurement();
+  }, [finishMeasurement]);
 
   // ── Center the document in the viewport ─────────────────────────────────────
   const centerDocumentInViewport = useCallback(() => {
@@ -300,12 +425,12 @@ export function Viewer({
     }
   }, []);
 
-  // ── Expose toolbar API to parent ──────────────────────────────────────────
-  useEffect(() => {
-    if (!onToolbarReady) return;
+  // ── Create memoized toolbar API object to prevent infinite loop ────────────
+  // Note: tools is static (VIEWER_TOOLS), so removed from dependencies
+  const toolbarAPI = useMemo(() => {
     const currentPageData = pageData.get(pageNumber - 1);
-    onToolbarReady({
-      tools,
+    return {
+      tools: [...VIEWER_TOOLS],
       activeTool,
       setActiveTool,
       scale,
@@ -328,12 +453,39 @@ export function Viewer({
       pageNumber,
       fitToScreen: () => fitToScreen(),
       handleManualScale,
-    });
+      canUndo,
+      canRedo,
+      handleUndo,
+      handleRedo,
+    };
   }, [
-    activeTool, scale, scaleFactor, snapEnabled, showSnapSettings,
-    showPins, snapThreshold, confidenceFilter, analysisStatus, analysisPage,
-    pageData, pageNumber, pdf, fitToScreen, handleManualScale,
+    activeTool,
+    setActiveTool,
+    scale,
+    scaleFactor,
+    snapEnabled,
+    showSnapSettings,
+    showPins,
+    snapThreshold,
+    confidenceFilter,
+    analysisStatus,
+    analysisPage,
+    pageData,
+    pageNumber,
+    pdf,
+    fitToScreen,
+    handleManualScale,
+    canUndo,
+    canRedo,
+    handleUndo,
+    handleRedo,
   ]);
+
+  // ── Expose toolbar API to parent (fixed: no infinite loop) ─────────────────
+  useEffect(() => {
+    if (!onToolbarReady) return;
+    onToolbarReady(toolbarAPI);
+  }, [onToolbarReady, toolbarAPI]);
 
   // ── File Upload ──────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -396,7 +548,7 @@ export function Viewer({
           .catch(err => { console.error(err); if (isMounted) setLoading(false); });
       };
       reader.readAsArrayBuffer(file);
-    } else {
+    } else if (activeDrawingUrl) {
       pdfjsLib
         .getDocument(activeDrawingUrl)
         .promise.then(handlePdfLoad)
@@ -435,7 +587,7 @@ export function Viewer({
         if (!canvas) return;
         const context = canvas.getContext('2d');
         if (!context) return;
-        
+
         canvas.width = phyW;
         canvas.height = phyH;
         canvas.style.width = `${cssW}px`;
@@ -459,11 +611,10 @@ export function Viewer({
 
         setPdfDimensions({ w: cssW, h: cssH });
 
-        // FIX: Use 'canvas' property instead of 'canvasContext' for newer pdf.js versions
-        renderTask = page.render({ 
-          canvasContext: context, 
+        renderTask = page.render({
+          canvasContext: context,
           viewport: physicalVP,
-          canvas: canvas as any // Add canvas property for compatibility
+          canvas: canvas as any
         } as any);
         await renderTask.promise;
       } catch (err: any) {
@@ -520,39 +671,60 @@ export function Viewer({
     return () => container.removeEventListener('wheel', handleWheel);
   }, []);
 
-  // ── Keyboard Zoom Shortcuts ────────────────────────────────────────────────
+  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
-    const handleKeyZoom = (e: KeyboardEvent) => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Zoom
       if ((e.ctrlKey || e.metaKey) && (e.key === '+' || e.key === '=')) {
         e.preventDefault();
         setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY));
-      } else if ((e.ctrlKey || e.metaKey) && e.key === '-') {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '-') {
         e.preventDefault();
         setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY));
-      } else if ((e.ctrlKey || e.metaKey) && e.key === '0') {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === '0') {
         e.preventDefault();
         fitToScreen();
+        return;
+      }
+
+      // Undo: Ctrl+Z
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+        return;
+      }
+
+      // Redo: Ctrl+Y or Ctrl+Shift+Z
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        (e.key === 'y' || (e.key === 'z' && e.shiftKey))
+      ) {
+        e.preventDefault();
+        handleRedo();
+        return;
       }
     };
-    window.addEventListener('keydown', handleKeyZoom);
-    return () => window.removeEventListener('keydown', handleKeyZoom);
-  }, [fitToScreen]);
 
-  // ── Space bar — pan mode (FIX: prevent browser scroll) ────────────────────
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [fitToScreen, handleUndo, handleRedo]);
+
+  // ── Space bar — pan mode ───────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
       const tag = (e.target as HTMLElement).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-
       e.preventDefault();
-
       if (!e.repeat) {
         spaceHeldRef.current = true;
         setSpaceHeld(true);
       }
     };
-
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
       spaceHeldRef.current = false;
@@ -560,7 +732,6 @@ export function Viewer({
       setIsPanning(false);
       if (containerRef.current) containerRef.current.style.cursor = '';
     };
-
     window.addEventListener('keydown', onKeyDown, { capture: true });
     window.addEventListener('keyup', onKeyUp, { capture: true });
     return () => {
@@ -578,11 +749,10 @@ export function Viewer({
     if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
   }, []);
 
-  // ── Panning with pointer capture ───────────────────────────────────────────
   const handlePointerDown = (e: React.PointerEvent) => {
     const isMiddleMouse = e.button === 1;
-    const isSpacePan = e.button === 0 && spaceHeldRef.current;
-    const isSelectPan = e.button === 0 && activeTool === 'select';
+    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
+    const isSelectPan   = e.button === 0 && activeTool === 'select';
     if (isMiddleMouse || isSpacePan || isSelectPan) {
       startPan(e, e.currentTarget as HTMLElement);
     }
@@ -596,14 +766,13 @@ export function Viewer({
   const handleContainerPointerMove = (e: React.PointerEvent) => {
     if (isPanning && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
-      containerRef.current.scrollTop -= e.movementY;
+      containerRef.current.scrollTop  -= e.movementY;
     }
   };
 
-  // ── Drawing canvas — intercept middle mouse & space pan ────────────────────
   const handleDrawingCanvasPointerDown = (e: React.PointerEvent) => {
     const isMiddleMouse = e.button === 1;
-    const isSpacePan = e.button === 0 && spaceHeldRef.current;
+    const isSpacePan    = e.button === 0 && spaceHeldRef.current;
     if (isMiddleMouse || isSpacePan) {
       e.stopPropagation();
       if (containerRef.current) startPan(e, containerRef.current);
@@ -611,9 +780,8 @@ export function Viewer({
   };
 
   const currentPageData = pageData.get(pageNumber - 1);
-  const isAnalyzing = analysisStatus === 'analyzing';
+  const isAnalyzing     = analysisStatus === 'analyzing';
 
-  // ── Cursor class for the drawing canvas ───────────────────────────────────
   const drawingCanvasCursor = spaceHeld
     ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
     : activeTool !== 'select' && !isPanning
@@ -644,6 +812,52 @@ export function Viewer({
             </div>
           </button>
         ))}
+
+        {/* Divider */}
+        <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" />
+
+        {/* Undo button */}
+        <button
+          onClick={handleUndo}
+          disabled={!canUndo}
+          className={cn(
+            'w-9 h-9 flex items-center justify-center transition-all relative group border',
+            canUndo
+              ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
+              : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
+          )}
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 className="w-4 h-4" />
+          {canUndo && (
+            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+              Undo [Ctrl+Z]
+              {tempPoints.length > 0 && (
+                <span className="text-amber-400 ml-1">· pop point</span>
+              )}
+            </div>
+          )}
+        </button>
+
+        {/* Redo button */}
+        <button
+          onClick={handleRedo}
+          disabled={!canRedo}
+          className={cn(
+            'w-9 h-9 flex items-center justify-center transition-all relative group border',
+            canRedo
+              ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
+              : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
+          )}
+          title="Redo (Ctrl+Y)"
+        >
+          <Redo2 className="w-4 h-4" />
+          {canRedo && (
+            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+              Redo [Ctrl+Y]
+            </div>
+          )}
+        </button>
       </div>
 
       <div className="flex flex-row items-center gap-2 flex-1 justify-center flex-wrap">
@@ -772,15 +986,14 @@ export function Viewer({
         />
       )}
 
-      {/* ── Scroll container ───────────────────────────────────────────────── */}
+      {/* Scroll container */}
       <div
         ref={containerRef}
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
         onKeyDown={e => {
           if (e.code === 'Space') e.preventDefault();
-
           if (e.key === 'Escape') {
-            if (tempPoints.length > 0) finishMeasurement();
+            if (tempPoints.length > 0) handleFinishMeasurement();
             else setActiveTool('select');
           }
         }}
@@ -842,12 +1055,11 @@ export function Viewer({
                 const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
                 const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
                 const left = Math.round((wrapW - pdfDimensions.w) / 2);
-                const top = Math.round((wrapH - pdfDimensions.h) / 2);
+                const top  = Math.round((wrapH - pdfDimensions.h) / 2);
                 return {
                   position: 'absolute' as const,
-                  left,
-                  top,
-                  width: pdfDimensions.w,
+                  left, top,
+                  width:  pdfDimensions.w,
                   height: pdfDimensions.h,
                 };
               })() : {}}
@@ -861,7 +1073,7 @@ export function Viewer({
                 onPointerMove={handleCanvasPointerMove}
                 onPointerDown={handleDrawingCanvasPointerDown}
                 onPointerLeave={() => {
-                  measureEngine.setCursorPoint(null);
+                  setCursorPoint(null);
                   cursorPointRef.current = null;
                   redrawPinCanvas();
                 }}
@@ -879,7 +1091,15 @@ export function Viewer({
                   transition: 'opacity 0.2s',
                 }}
               />
-
+                        
+              <CountPinOverlay
+                measurements={measurements}
+                pdfDimensions={pdfDimensions}
+                toCanvas={toCanvas}
+                activeDrawingId={activeDrawingId}
+                activeTool={activeTool}
+              />
+        
               {snapFlashes.map(flash => (
                 <div
                   key={flash.id}
@@ -893,7 +1113,7 @@ export function Viewer({
                 </div>
               ))}
 
-              {tempPoints.length > 1 && (activeTool === 'area' || activeTool === 'linear') && (() => {
+              {tempPoints.length > 0 && (activeTool === 'count') && (() => {
                 const lastPt = toCanvas(
                   tempPoints[tempPoints.length - 1].x,
                   tempPoints[tempPoints.length - 1].y,
@@ -902,7 +1122,25 @@ export function Viewer({
                   <button
                     className="absolute z-30 flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
                     style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
-                    onClick={e => { e.stopPropagation(); finishMeasurement(); }}
+                    onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
+                    onPointerDown={e => e.stopPropagation()}
+                  >
+                    <Check className="w-3 h-3" />
+                    Finish ({tempPoints.length} counts)
+                  </button>
+                );
+              })()}
+
+              {tempPoints.length > 1 && (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') && (() => {
+                const lastPt = toCanvas(
+                  tempPoints[tempPoints.length - 1].x,
+                  tempPoints[tempPoints.length - 1].y,
+                );
+                return (
+                  <button
+                    className="absolute z-30 flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                    style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
+                    onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                     onPointerDown={e => e.stopPropagation()}
                   >
                     <Check className="w-3 h-3" />
@@ -944,7 +1182,7 @@ export function Viewer({
           />
         )}
 
-        {/* ── Minimap — sticky to bottom-left of scroll viewport ───────────── */}
+        {/* Minimap */}
         {pdf && pdfDimensions && (
           <div className="sticky bottom-2 left-2 z-40 w-0 h-0 pointer-events-none">
             <div className="pointer-events-auto">
@@ -954,6 +1192,7 @@ export function Viewer({
                 containerRef={containerRef as React.RefObject<HTMLDivElement>}
                 pdfDimensions={pdfDimensions}
                 canvasPadding={CANVAS_PADDING}
+                activeTool={activeTool}
               />
             </div>
           </div>
@@ -985,16 +1224,19 @@ export function Viewer({
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
             <span>Right-click to finish · ESC to cancel · Space+drag or middle-mouse to pan</span>
             <div className="w-px h-3 bg-industrial-border" />
-            {/* {snapEnabled && (
-              <>
-                <span className="text-green-500">⦿ SNAP ACTIVE {snapThreshold}px</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )} */}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>
       )}
+
+      <MeasurementDetailsDialog
+        isOpen={showMeasurementDialog}
+        defaultName={pendingMeasurementData?.description || ''}
+        defaultMaterial=""
+        measurementType={pendingMeasurementData?.type}
+        onConfirm={handleDialogConfirm}
+        onSkip={handleDialogSkip}
+      />
 
       <PresetDrawer
         isOpen={showPresetDrawer}

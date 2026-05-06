@@ -1,19 +1,27 @@
 import React, { useState, useEffect } from 'react';
-import { MaterialSpec } from '../types';
+import { Material } from '../types';
 import { X, Search, Filter, ArrowUpDown, Database, Download, Plus, Trash2, Settings, Bell, Info, Compass, Layers, Droplet } from 'lucide-react';
 import { formatCurrency, cn } from '../lib/utils';
 import { motion } from 'motion/react';
 
+// Extend Material type for internal use with division field
+interface MaterialWithDivision extends Material {
+  division?: string;
+}
+
 interface MaterialLibraryProps {
-  materials: MaterialSpec[];
-  onUpdateMaterials: (materials: MaterialSpec[]) => void;
+  materials: Material[];
+  onUpdateMaterials: (materials: Material[]) => void;
   onClose: () => void;
 }
 
 export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: MaterialLibraryProps) {
   const [activeCategory, setActiveCategory] = useState('03 - Concrete');
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedMaterial, setSelectedMaterial] = useState<MaterialSpec | null>(null);
+  const [selectedMaterial, setSelectedMaterial] = useState<MaterialWithDivision | null>(null);
+
+  // Cast materials to internal type with division
+  const materialsWithDivision = materials as MaterialWithDivision[];
 
   const categories = [
     { code: '01', name: 'General Requirements', icon: Info },
@@ -27,11 +35,13 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
   const handleAddMaterial = () => {
     const newId = crypto.randomUUID();
     const div = activeCategory.split(' - ')[0]; // E.g. '03'
-    const newMaterial: MaterialSpec = {
+    const newMaterial: MaterialWithDivision = {
       id: newId,
       code: `${div} ${Math.floor(Math.random() * 99)} 00.X`,
       name: 'NEW SPECIFICATION ITEM',
+      category: activeCategory,
       unit: 'EA',
+      unitRate: 0,
       materialCost: 0,
       laborCost: 0,
       equipmentCost: 0,
@@ -41,7 +51,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
     setSelectedMaterial(newMaterial);
   };
 
-  const handleUpdateSelected = (updates: Partial<MaterialSpec>) => {
+  const handleUpdateSelected = (updates: Partial<MaterialWithDivision>) => {
     if (!selectedMaterial) return;
     const updated = { ...selectedMaterial, ...updates };
     setSelectedMaterial(updated);
@@ -57,17 +67,17 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
 
   const activeDivision = activeCategory.split(' - ')[0];
   
-  const filteredMaterials = materials.filter(m => 
+  const filteredMaterials = materialsWithDivision.filter(m => 
     m.division === activeDivision &&
-    (m.name.toLowerCase().includes(searchQuery.toLowerCase()) || m.code.toLowerCase().includes(searchQuery.toLowerCase()))
+    (m.name.toLowerCase().includes(searchQuery.toLowerCase()) || (m.code || '').toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
   useEffect(() => {
     if (!selectedMaterial || selectedMaterial.division !== activeDivision) {
-      const matsInDiv = materials.filter(m => m.division === activeDivision);
+      const matsInDiv = materialsWithDivision.filter(m => m.division === activeDivision);
       setSelectedMaterial(matsInDiv.length > 0 ? matsInDiv[0] : null);
     }
-  }, [activeDivision, materials]);
+  }, [activeDivision, materialsWithDivision]);
 
   return (
     <motion.div 

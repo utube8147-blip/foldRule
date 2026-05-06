@@ -1,19 +1,26 @@
+// ─── workspace/page.tsx ───────────────────────────────────────────────────────
+//
+//  COMPLETE FIXED VERSION:
+//    1. deleteMeasurement imported from useTakeoffContext
+//    2. Passed to Viewer via onDeleteMeasurement prop
+//    3. All types consistent
+//
+// ─────────────────────────────────────────────────────────────────────────────
+
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
-// ── FIX: dynamic import with ssr:false AND no loading component to prevent hydration issues
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer';
+import { TakeoffRow, ToolType } from '@/types';
 
-// Import with no loading component - let it render nothing on server
+
 const Viewer = dynamic(
   () => import('@/components/Viewer').then(m => m.Viewer),
-  { 
-    ssr: false,
-  }
+  { ssr: false }
 );
 
 import { TakeoffTable } from '@/components/TakeoffTable';
@@ -34,9 +41,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
-import { TakeoffRow } from '@/types';
-
-// ─── Workspace Page ───────────────────────────────────────────────────────────
 
 export default function Workspace() {
   const router = useRouter();
@@ -58,7 +62,6 @@ export default function Workspace() {
     toggleVisibility,
   } = useTakeoffContext();
 
-  // ── Local UI state ────────────────────────────────────────────────────────────
   const [leftCollapsed, setLeftCollapsed]       = useState(false);
   const [rightCollapsed, setRightCollapsed]     = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
@@ -66,18 +69,29 @@ export default function Workspace() {
   const [showPresetDrawer, setShowPresetDrawer] = useState(false);
   const [toasts, setToasts]                     = useState<any[]>([]);
   const [isMounted, setIsMounted]               = useState(false);
+  const [toolbarAPI, setToolbarAPI]             = useState<ViewerToolbarAPI | null>(null);
 
-  // ── Toolbar API surfaced from Viewer via onToolbarReady ───────────────────────
-  const [toolbarAPI, setToolbarAPI] = useState<ViewerToolbarAPI | null>(null);
+  useEffect(() => { setIsMounted(true); }, []);
 
-  // Handle client-side mounting to prevent hydration mismatches
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
+  // Memoize derived values to prevent unnecessary recalculations
+  const activeDrawing = useMemo(() => 
+    ps.drawings.find(d => d.id === ps.activeDrawingId) || null,
+    [ps.drawings, ps.activeDrawingId]
+  );
+  
+  const currentScaleFactor = useMemo(() => 
+    activeDrawing ? activeDrawing.scaleFactor : 1,
+    [activeDrawing]
+  );
+  
+  const activeMeasurements = useMemo(() => 
+    ps.measurements.filter(m => m.drawingId === ps.activeDrawingId),
+    [ps.measurements, ps.activeDrawingId]
+  );
 
-  const activeDrawing       = ps.drawings.find(d => d.id === ps.activeDrawingId) || null;
-  const currentScaleFactor  = activeDrawing ? activeDrawing.scaleFactor : 1;
-  const activeMeasurements  = ps.measurements.filter(m => m.drawingId === ps.activeDrawingId);
+  // Stable callback ref for toolbar API
+  const toolbarAPIRef = useRef<ViewerToolbarAPI | null>(null);
+  useEffect(() => { toolbarAPIRef.current = toolbarAPI; }, [toolbarAPI]);
 
   const addToast = (message: string, type: 'success' | 'info' = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
@@ -85,10 +99,8 @@ export default function Workspace() {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   };
 
-  // ── Group ID helper ───────────────────────────────────────────────────────────
   const generateGroupId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-  // ── Carcass grouped measurement generator ────────────────────────────────────
   const generateGroupedCarcassMeasurements = (
     data: Record<string, any>,
     template: PresetTemplate,
@@ -110,26 +122,26 @@ export default function Workspace() {
     const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
 
     if (data.hasBack !== false) {
-      measurements.push({ description: 'Back Panel', type: 'Area', quantity: +(iW * iH).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Back Panel', type: 'Polygon', quantity: +(iW * iH).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasTop !== false) {
-      measurements.push({ description: 'Top Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Top Panel', type: 'Polygon', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasBottom !== false) {
-      measurements.push({ description: 'Bottom Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Bottom Panel', type: 'Polygon', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasLeftSide !== false) {
-      measurements.push({ description: 'Left Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Left Side Panel', type: 'Polygon', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasRightSide !== false) {
-      measurements.push({ description: 'Right Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Right Side Panel', type: 'Polygon', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (shelves > 0) {
-      measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
+      measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Polygon', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
     }
     if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
-      measurements.push({ description: `Doors (${doorCount} pcs)`, type: 'Area', quantity: +doorArea.toFixed(3), unit: 'm²', notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors', isOverridden: true });
+      measurements.push({ description: `Doors (${doorCount} pcs)`, type: 'Polygon', quantity: +doorArea.toFixed(3), unit: 'm²', notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors', isOverridden: true });
       measurements.push({ description: 'Door Hardware', type: 'Count', quantity: doorCount, unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`, category: 'Hardware', isOverridden: true });
     }
     if (data.hasDrawers) {
@@ -158,7 +170,6 @@ export default function Workspace() {
     return { measurements, groupName };
   };
 
-  // ── Preset handler ────────────────────────────────────────────────────────────
   const handlePresetSelect = (data: Record<string, any>, template: PresetTemplate) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -251,30 +262,30 @@ export default function Workspace() {
     }
   };
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
       switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear'); break;
-        case 'a': setActiveTool('area');   break;
-        case 'c': setActiveTool('count');  break;
-        case 'p': setActiveTool('point');  break;
-        case 'v': setActiveTool('select'); break;
-        case 'escape': setActiveTool('select'); break;
+        case 'l': setActiveTool('linear' as ToolType); break;
+        case 'a': setActiveTool('area' as ToolType); break;
+        case 'c': setActiveTool('count' as ToolType); break;
+        case 'p': setActiveTool('point' as ToolType); break;
+        case 'v': setActiveTool('select' as ToolType); break;
+        case 'escape': setActiveTool('select' as ToolType); break;
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool]);
 
-  // ── Canvas measurement handler ────────────────────────────────────────────────
-  const handleAddMeasurement = (m: any) => {
+  // Stabilize handlers with useCallback to prevent child re-renders
+  const handleAddMeasurement = useCallback((m: any) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
       return;
     }
     const safeMeasurement = {
+      id:             m.id             || crypto.randomUUID(),
       description:    m.description    || 'Untitled Measurement',
       type:           m.type           || 'Length',
       quantity:       m.quantity       || 0,
@@ -291,36 +302,47 @@ export default function Workspace() {
       parentId:       m.parentId,
       isGroupHeader:  m.isGroupHeader  || false,
       category:       m.category,
+      drawingId:      activeDrawing.id,
     };
-    addMeasurement(safeMeasurement);
+    addMeasurement(safeMeasurement as TakeoffRow);
     addToast(`MEASUREMENT ADDED: ${safeMeasurement.description}`, 'success');
-  };
+  }, [activeDrawing, addMeasurement]);
 
-  const handleExport    = () => setShowExportModal(true);
-  const executeExport   = () => {
+  const handleExport = useCallback(() => setShowExportModal(true), []);
+  
+  const executeExport = useCallback(() => {
     exportToExcel(ps);
     addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
     setShowExportModal(false);
-  };
-  const handleScaleSet  = (f: number) => {
+  }, [ps]);
+  
+  const handleScaleSet = useCallback((f: number) => {
     if (activeDrawing) {
       updateDrawingScale(activeDrawing.id, f);
       addToast(`SCALE CALIBRATED: 1px = ${f}u`, 'info');
     }
-  };
+  }, [activeDrawing, updateDrawingScale]);
+
+  // Stabilize toolbar API callback
+  const handleToolbarReady = useCallback((api: ViewerToolbarAPI) => {
+    setToolbarAPI(api);
+  }, []);
 
   const api = toolbarAPI;
 
-  // Show loading state while mounting to prevent hydration mismatch
   if (!isMounted) {
     return (
       <div className="flex flex-col h-screen bg-industrial-black">
-        <Navbar
-          projectName={ps.projectName}
-          onProjectNameChange={() => {}}
-          onExport={() => {}}
-          onOpenPresets={() => {}}
-        />
+      <Navbar
+        projectName={ps.projectName}
+        onProjectNameChange={(name) => setProjectState(prev => ({ 
+          ...prev, 
+          projectName: name 
+        }))}
+        onExport={handleExport}
+        onOpenPresets={() => setShowPresetDrawer(true)}
+      />
+
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
@@ -336,7 +358,6 @@ export default function Workspace() {
   return (
     <div className="flex flex-col h-screen overflow-hidden bg-industrial-black">
 
-      {/* ── 1. Top navbar (fixed, h-14) ──────────────────────────────────────── */}
       <Navbar
         projectName={ps.projectName}
         onProjectNameChange={(name) => setProjectState(prev => ({ ...prev, projectName: name }))}
@@ -344,10 +365,8 @@ export default function Workspace() {
         onOpenPresets={() => setShowPresetDrawer(true)}
       />
 
-      {/* ── 2. Content row — Sidebar | [Toolbar + Viewer + TakeoffPanel] ─────── */}
       <div className="flex flex-1 overflow-hidden mt-14">
 
-        {/* Left sidebar */}
         <Sidebar
           isCollapsed={leftCollapsed}
           projectState={ps}
@@ -356,10 +375,12 @@ export default function Workspace() {
           onDrawingAdded={addDrawing}
           onSelectDrawing={setActiveDrawingId}
           onProjectNameChange={(name) => setProjectState(prev => ({ ...prev, projectName: name }))}
-          onProjectNumberChange={(num) => setProjectState(prev => ({ ...prev, projectNumber: num }))}
-        />
+          onProjectNumberChange={(num) => setProjectState(prev => ({ 
+            ...prev, 
+            projectNumber: num 
+          }))}        
+          />
 
-        {/* Sidebar collapse toggle */}
         <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
           <button
             onClick={() => setLeftCollapsed(!leftCollapsed)}
@@ -370,13 +391,11 @@ export default function Workspace() {
           </button>
         </div>
 
-        {/* ── Right column: toolbar on top, then viewer + takeoff panel below ── */}
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
-          {/* ── Viewer toolbar — only spans right of sidebar ─────────────────── */}
+          {/* Viewer toolbar */}
           <div className="flex-shrink-0 h-12 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-4 z-30 shadow-sm">
 
-            {/* Tool buttons */}
             <div className="flex gap-1 flex-shrink-0">
               {api?.tools.map(tool => (
                 <button
@@ -398,7 +417,6 @@ export default function Workspace() {
               ))}
             </div>
 
-            {/* Middle: analysis status + snap + scale + calibration */}
             <div className="flex items-center gap-2 flex-1 justify-center flex-wrap mx-4">
 
               {api?.analysisStatus === 'analyzing' && api.analysisPage && (
@@ -474,7 +492,6 @@ export default function Workspace() {
               </button>
             </div>
 
-            {/* Zoom controls */}
             <div className="flex items-center gap-2 flex-shrink-0">
               <button onClick={() => api?.setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
                 <ZoomOut className="w-4 h-4" />
@@ -492,14 +509,12 @@ export default function Workspace() {
             </div>
           </div>
 
-          {/* ── Viewer canvas + TakeoffPanel row ─────────────────────────────── */}
           <div className="flex flex-1 overflow-hidden relative min-h-0">
 
-            {/* Viewer - with min-width to prevent collapse */}
             <div className="flex-1 min-w-0 relative">
               <Viewer
-                activeTool={activeTool}
-                setActiveTool={setActiveTool}
+                activeTool={activeTool as ToolType}
+                setActiveTool={setActiveTool as (tool: ToolType) => void}
                 measurements={activeMeasurements}
                 onAddMeasurement={handleAddMeasurement}
                 onUpdateMeasurement={updateMeasurement}
@@ -511,13 +526,10 @@ export default function Workspace() {
                 onClosePresetDrawer={() => setShowPresetDrawer(false)}
                 onSelectPreset={handlePresetSelect}
                 hideToolbar={true}
-                onToolbarReady={(api) => {
-                  setToolbarAPI(api);
-                }}
+                onToolbarReady={handleToolbarReady}
               />
             </div>
 
-            {/* Right panel — TakeoffTable */}
             <div className={cn(
               'flex flex-col h-full overflow-hidden transition-all duration-300 flex-shrink-0',
               rightCollapsed ? 'w-0' : 'w-96',
@@ -530,7 +542,7 @@ export default function Workspace() {
                 onToggleVisibility={toggleVisibility}
                 onExpand={() => router.push('/takeoff-full')}
                 onAddManual={() => handleAddMeasurement({
-                  id: `${activeDrawing?.id || 'manual'}-${Date.now()}`,
+                  id: crypto.randomUUID(),
                   drawingId: activeDrawing?.id || '',
                   description: 'Manual Item',
                   type: 'Length',
@@ -546,7 +558,6 @@ export default function Workspace() {
               />
             </div>
 
-            {/* Right panel collapse toggle */}
             <div className="absolute right-0 bottom-10 z-[60] mr-2">
               <button
                 onClick={() => setRightCollapsed(!rightCollapsed)}
@@ -558,11 +569,10 @@ export default function Workspace() {
             </div>
 
           </div>
-        </div>{/* end right column */}
+        </div>
 
-      </div>{/* end content row */}
+      </div>
 
-      {/* ── Modals ────────────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {showMaterialLibrary && (
           <MaterialLibrary
@@ -585,10 +595,8 @@ export default function Workspace() {
         onRemove={(id) => setToasts(prev => prev.filter(t => t.id !== id))}
       />
 
-      {/* ── Status bar ────────────────────────────────────────────────────────── */}
       <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
 
-        {/* Left */}
         <div className="flex items-center gap-6">
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
             Workspace: LOGISTICS_HUB_P2
@@ -599,10 +607,8 @@ export default function Workspace() {
           </span>
         </div>
 
-        {/* Center — Preset trigger */}
         <div className="relative flex items-center justify-center group">
 
-          {/* Popover */}
           <div className={cn(
             'absolute bottom-7 left-1/2 -translate-x-1/2 z-[100]',
             'bg-[#111] border border-amber-400/60 px-4 py-2.5 min-w-[160px]',
@@ -630,7 +636,6 @@ export default function Workspace() {
             ))}
           </div>
 
-          {/* Button */}
           <button
             onClick={() => setShowPresetDrawer(prev => !prev)}
             className={cn(
@@ -643,10 +648,8 @@ export default function Workspace() {
                 : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black',
             )}
           >
-            {/* Shimmer */}
             <span className="absolute top-0 left-[-60%] w-[40%] h-full bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none group-hover/btn:animate-[shimmer_0.45s_linear_forwards]" />
 
-            {/* Double bouncing chevrons */}
             <span className="flex flex-col items-center gap-[1px] animate-[bounceUp_1.4s_ease-in-out_infinite]">
               <svg width="8" height="5" viewBox="0 0 8 5" fill="none">
                 <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -660,7 +663,6 @@ export default function Workspace() {
           </button>
         </div>
 
-        {/* Right */}
         <div className="flex items-center gap-4 justify-end">
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
             LAT: 34.0522 N / LON: 118.2437 W

@@ -1,12 +1,12 @@
 // components/TakeoffTable.tsx
-import React, { useState } from 'react';
+import React, { useState, useMemo, useCallback, memo } from 'react';
 import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
-import { TakeoffRow, MaterialSpec } from '../types';
+import { TakeoffRow, Material } from '../types';
 
 interface TakeoffTableProps {
   measurements: TakeoffRow[];
-  materials: MaterialSpec[];
+  materials: Material[];
   onUpdate: (id: string, updates: Partial<TakeoffRow>) => void;
   onDelete: (id: string) => void;
   onAddManual: () => void;
@@ -60,11 +60,20 @@ export function TakeoffTable({
     const ungrouped: TakeoffRow[] = [];
 
     measurements.forEach((measurement) => {
+      // Handle old-style groupId grouping
       if (measurement.isGroupHeader && measurement.groupId) {
         groups.set(measurement.groupId, { header: measurement, items: [] });
       } else if (measurement.groupId && groups.has(measurement.groupId)) {
         groups.get(measurement.groupId)!.items.push(measurement);
-      } else if (!measurement.isGroupHeader) {
+      }
+      // Handle new-style parent-child grouping (childIds/parentId)
+      else if (measurement.isGroupHeader && measurement.childIds) {
+        groups.set(measurement.id, { header: measurement, items: [] });
+      } else if (measurement.parentId && groups.has(measurement.parentId)) {
+        groups.get(measurement.parentId)!.items.push(measurement);
+      } 
+      // Ungrouped: no groupId, no parentId, not a group header
+      else if (!measurement.isGroupHeader && !measurement.groupId && !measurement.parentId) {
         ungrouped.push(measurement);
       }
     });
@@ -78,6 +87,14 @@ export function TakeoffTable({
       next.has(groupId) ? next.delete(groupId) : next.add(groupId);
       return next;
     });
+  };
+
+  // Helper to get groupId for a measurement (works with both old and new grouping styles)
+  const getGroupId = (measurement: TakeoffRow): string | null => {
+    if (measurement.isGroupHeader) {
+      return measurement.groupId || measurement.id;
+    }
+    return measurement.groupId || measurement.parentId || null;
   };
 
   const calculateGroupTotal = (items: TakeoffRow[], type: 'cost' | 'quantity' = 'cost') =>
@@ -131,6 +148,10 @@ export function TakeoffTable({
     const isEditing = editingId === row.id && editingField === 'materialId';
     const matched = getMaterial(row.materialId);
 
+    // Helper to get total cost from material (handles missing fields)
+    const getMaterialTotal = (mat: Material) => 
+      (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
+
     if (isEditing) {
       return (
         <select
@@ -140,7 +161,7 @@ export function TakeoffTable({
             const selectedId = e.target.value;
             const mat = materials.find((m) => m.id === selectedId);
             if (mat) {
-              const total = mat.materialCost + mat.laborCost + mat.equipmentCost;
+              const total = getMaterialTotal(mat);
               onUpdate(row.id, { materialId: mat.id, unitRate: total, unit: mat.unit });
             } else {
               onUpdate(row.id, { materialId: undefined });
@@ -154,7 +175,7 @@ export function TakeoffTable({
           <option value="">— None —</option>
           {materials.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.code} – {m.name} ({formatCurrency(m.materialCost + m.laborCost + m.equipmentCost)}/{m.unit})
+              {m.code || m.id.slice(0,6)} – {m.name} ({formatCurrency(getMaterialTotal(m))}/{m.unit})
             </option>
           ))}
         </select>
@@ -168,7 +189,7 @@ export function TakeoffTable({
       >
         {matched ? (
           <span className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-zinc-300 font-mono">{matched.code}</span>
+            <span className="text-[10px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0,6)}</span>
             <span className="text-[8px] text-zinc-500 leading-tight">{matched.name}</span>
           </span>
         ) : (
@@ -220,6 +241,14 @@ export function TakeoffTable({
       <tr key={`${row.id}-detail`} className="bg-[#0d0d0d]">
         <td colSpan={3} className="px-3 pb-3 pt-0">
           <div className="border border-zinc-800 rounded-sm bg-[#111] p-3 mt-1 space-y-3">
+
+            {/* Label row (for Count measurements) */}
+            {row.label && (
+              <div className="flex items-start gap-3">
+                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
+                <span className="text-[9px] text-zinc-400 font-mono">{row.label}</span>
+              </div>
+            )}
 
             {/* Material row */}
             <div className="flex items-start gap-3">
@@ -331,7 +360,7 @@ export function TakeoffTable({
                           : <ChevronRight className="w-3 h-3 text-amber-500 shrink-0" />}
                         <FolderOpen className="w-3 h-3 text-amber-500/60 shrink-0" />
                         <span className="text-[11px] font-bold text-amber-500 uppercase tracking-wider truncate">
-                          {header.groupName}
+                          {header.groupName || header.description}
                         </span>
                         <span className="text-[8px] text-zinc-600 shrink-0">({items.length})</span>
                       </div>

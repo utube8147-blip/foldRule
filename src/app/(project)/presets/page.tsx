@@ -263,14 +263,14 @@ export default function PresetsPage() {
       const groupName = `${fd.customName || 'Cabinet'} (${fd.width || 600}×${fd.height || 720}×${fd.depth || 550}mm)`;
 
       const parts: Partial<TakeoffRow>[] = [];
-      if (fd.hasBack)      parts.push({ description: 'Back Panel',       type: 'Area',   quantity: +(iW * iH).toFixed(3),                  unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasTop)       parts.push({ description: 'Top Panel',        type: 'Area',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasBottom)    parts.push({ description: 'Bottom Panel',     type: 'Area',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasLeftSide)  parts.push({ description: 'Left Side Panel',  type: 'Area',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasRightSide) parts.push({ description: 'Right Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (shelves > 0)     parts.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3),   unit: 'm²',  category: 'Shelves',         notes: `Material: ${fd.shelfMaterial || fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasBack)      parts.push({ description: 'Back Panel',       type: 'Polygon',   quantity: +(iW * iH).toFixed(3),                  unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasTop)       parts.push({ description: 'Top Panel',        type: 'Polygon',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasBottom)    parts.push({ description: 'Bottom Panel',     type: 'Polygon',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasLeftSide)  parts.push({ description: 'Left Side Panel',  type: 'Polygon',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasRightSide) parts.push({ description: 'Right Side Panel', type: 'Polygon',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (shelves > 0)     parts.push({ description: `Shelves (${shelves} pcs)`, type: 'Polygon', quantity: +(iW * D * shelves).toFixed(3),   unit: 'm²',  category: 'Shelves',         notes: `Material: ${fd.shelfMaterial || fd.boardMaterial || '18mm MDF'}` });
       if (fd.hasDoors) {
-        parts.push({ description: `Doors (${doorCount} pcs)`, type: 'Area',  quantity: +((W / doorCount) * H * doorCount).toFixed(3), unit: 'm²',  category: 'Doors',    notes: `Material: ${fd.doorMaterial || 'MDF Primed'}` });
+        parts.push({ description: `Doors (${doorCount} pcs)`, type: 'Polygon',  quantity: +((W / doorCount) * H * doorCount).toFixed(3), unit: 'm²',  category: 'Doors',    notes: `Material: ${fd.doorMaterial || 'MDF Primed'}` });
         parts.push({ description: 'Door Hardware',            type: 'Count', quantity: doorCount,                                      unit: 'sets', category: 'Hardware', notes: `Hinges & handles | Type: ${fd.hingeType || 'Concealed'}` });
       }
       if (fd.hasDrawers) {
