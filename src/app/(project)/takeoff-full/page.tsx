@@ -13,7 +13,6 @@
 import React, { useState, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTakeoffContext } from '@/context/TakeoffContext';
-import { exportToExcel } from '@/lib/excelExport';
 import {
   FolderOpen, Layers, Target, Wrench, History,
   Users, HelpCircle, Settings, Share2, Download,
@@ -297,7 +296,19 @@ export default function TakeoffFullPage() {
             Share
           </button>
           <button
-            onClick={() => exportToExcel(ps)}
+            onClick={() => {
+              fetch('/api/export', { method: 'POST' })
+                .then(res => res.blob())
+                .then(blob => {
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'export.xlsx';
+                  a.click();
+                  URL.revokeObjectURL(url);
+                })
+                .catch(err => console.error('Export failed:', err));
+            }}
             className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-950 bg-amber-500 hover:bg-amber-400 px-4 py-1.5 transition-all active:scale-95"
           >
             <Download className="w-3 h-3" />

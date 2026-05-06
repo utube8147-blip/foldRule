@@ -29,7 +29,6 @@ import { ExportModal } from '@/components/ExportModal';
 import { ToastContainer } from '@/components/Toast';
 import { PresetTemplate } from '@/components/presets/PresetTemplates';
 import { useTakeoffContext } from '@/context/TakeoffContext';
-import { exportToExcel } from '@/lib/excelExport';
 import {
   PanelRightClose,
   Sidebar as SidebarIcon,
@@ -311,10 +310,20 @@ export default function Workspace() {
   const handleExport = useCallback(() => setShowExportModal(true), []);
   
   const executeExport = useCallback(() => {
-    exportToExcel(ps);
-    addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
-    setShowExportModal(false);
-  }, [ps]);
+    fetch('/api/export', { method: 'POST' })
+      .then(res => res.blob())
+      .then(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'export.xlsx';
+        a.click();
+        URL.revokeObjectURL(url);
+        addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
+        setShowExportModal(false);
+      })
+      .catch(() => addToast('EXPORT FAILED — SEE CONSOLE', 'info'));
+  }, []);
   
   const handleScaleSet = useCallback((f: number) => {
     if (activeDrawing) {
