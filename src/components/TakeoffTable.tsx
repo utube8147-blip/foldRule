@@ -1,6 +1,6 @@
 // components/TakeoffTable.tsx
-import React, { useState, useMemo, useCallback, memo } from 'react';
-import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp } from 'lucide-react';
+import React, { useState, useMemo, useCallback } from 'react';
+import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { TakeoffRow, Material } from '../types';
 
@@ -12,6 +12,96 @@ interface TakeoffTableProps {
   onAddManual: () => void;
   onToggleVisibility: (id?: string) => void;
   onExpand?: () => void;
+  batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
+}
+
+// ─── Confirmation Dialog Component ───────────────────────────────────────────
+interface ConfirmDialogProps {
+  isOpen: boolean;
+  title: string;
+  message: string;
+  confirmText?: string;
+  cancelText?: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  type?: 'danger' | 'warning' | 'info';
+}
+
+function ConfirmDialog({ 
+  isOpen, 
+  title, 
+  message, 
+  confirmText = 'Delete', 
+  cancelText = 'Cancel',
+  onConfirm, 
+  onCancel,
+  type = 'danger'
+}: ConfirmDialogProps) {
+  if (!isOpen) return null;
+
+  const typeStyles = {
+    danger: {
+      icon: <AlertTriangle className="w-5 h-5 text-red-500" />,
+      button: 'bg-red-600 hover:bg-red-700 text-white',
+      border: 'border-red-500/30'
+    },
+    warning: {
+      icon: <AlertTriangle className="w-5 h-5 text-amber-500" />,
+      button: 'bg-amber-600 hover:bg-amber-700 text-white',
+      border: 'border-amber-500/30'
+    },
+    info: {
+      icon: <AlertTriangle className="w-5 h-5 text-blue-500" />,
+      button: 'bg-blue-600 hover:bg-blue-700 text-white',
+      border: 'border-blue-500/30'
+    }
+  };
+
+  const style = typeStyles[type];
+
+  return (
+    <>
+      <div 
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 animate-in fade-in duration-200"
+        onClick={onCancel}
+      />
+      
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-96 animate-in zoom-in-95 fade-in duration-200">
+        <div className={cn("bg-stone-900 border rounded-lg shadow-2xl", style.border)}>
+          <div className="flex items-center justify-between p-4 border-b border-stone-800">
+            <div className="flex items-center gap-3">
+              <div className="p-1.5 bg-stone-800/50 rounded-full">{style.icon}</div>
+              <h3 className="text-sm font-bold text-zinc-100 uppercase tracking-wider">{title}</h3>
+            </div>
+            <button onClick={onCancel} className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors rounded-lg hover:bg-stone-800">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          
+          <div className="p-4">
+            <p className="text-xs text-zinc-400 leading-relaxed font-mono">{message}</p>
+          </div>
+          
+          <div className="flex items-center justify-end gap-2 p-4 border-t border-stone-800 bg-stone-900/50 rounded-b-lg">
+            <button onClick={onCancel} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors">
+              {cancelText}
+            </button>
+            <button onClick={onConfirm} className={cn("px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded transition-all", style.button)}>
+              {confirmText}
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <style>{`
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        @keyframes zoom-in-95 { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        .animate-in { animation-duration: 0.2s; animation-fill-mode: both; }
+        .fade-in { animation-name: fade-in; }
+        .zoom-in-95 { animation-name: zoom-in-95; }
+      `}</style>
+    </>
+  );
 }
 
 export function TakeoffTable({
@@ -22,29 +112,39 @@ export function TakeoffTable({
   onAddManual,
   onToggleVisibility,
   onExpand,
+  batchUpdateMeasurements,
 }: TakeoffTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  // Track which rows have their accordion detail panel open
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-
-  // ── Helpers ────────────────────────────────────────────────────────────────
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    groupName: string;
+    groupId: string;
+  }>({ isOpen: false, groupName: '', groupId: '' });
 
   const stopEditing = () => {
     setEditingId(null);
     setEditingField(null);
+    setEditingGroupId(null);
   };
 
   const startEditing = (id: string, field: string, e?: React.MouseEvent) => {
-    e?.stopPropagation(); // prevent accordion toggle when clicking to edit
+    e?.stopPropagation();
     setEditingId(id);
     setEditingField(field);
   };
 
-  const getMaterial = (materialId?: string) =>
-    materials.find((m) => m.id === materialId);
+  const startEditingGroup = (groupId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setEditingGroupId(groupId);
+  };
 
+  const getMaterial = (materialId?: string) => materials.find((m) => m.id === materialId);
+  
   const toggleRowExpand = (id: string) => {
     setExpandedRows((prev) => {
       const next = new Set(prev);
@@ -53,27 +153,20 @@ export function TakeoffTable({
     });
   };
 
-  // ── Group helpers ──────────────────────────────────────────────────────────
-
   const organizedData = React.useMemo(() => {
     const groups: Map<string, { header: TakeoffRow; items: TakeoffRow[] }> = new Map();
     const ungrouped: TakeoffRow[] = [];
 
     measurements.forEach((measurement) => {
-      // Handle old-style groupId grouping
       if (measurement.isGroupHeader && measurement.groupId) {
         groups.set(measurement.groupId, { header: measurement, items: [] });
       } else if (measurement.groupId && groups.has(measurement.groupId)) {
         groups.get(measurement.groupId)!.items.push(measurement);
-      }
-      // Handle new-style parent-child grouping (childIds/parentId)
-      else if (measurement.isGroupHeader && measurement.childIds) {
+      } else if (measurement.isGroupHeader && measurement.childIds) {
         groups.set(measurement.id, { header: measurement, items: [] });
       } else if (measurement.parentId && groups.has(measurement.parentId)) {
         groups.get(measurement.parentId)!.items.push(measurement);
-      } 
-      // Ungrouped: no groupId, no parentId, not a group header
-      else if (!measurement.isGroupHeader && !measurement.groupId && !measurement.parentId) {
+      } else if (!measurement.isGroupHeader && !measurement.groupId && !measurement.parentId) {
         ungrouped.push(measurement);
       }
     });
@@ -89,14 +182,6 @@ export function TakeoffTable({
     });
   };
 
-  // Helper to get groupId for a measurement (works with both old and new grouping styles)
-  const getGroupId = (measurement: TakeoffRow): string | null => {
-    if (measurement.isGroupHeader) {
-      return measurement.groupId || measurement.id;
-    }
-    return measurement.groupId || measurement.parentId || null;
-  };
-
   const calculateGroupTotal = (items: TakeoffRow[], type: 'cost' | 'quantity' = 'cost') =>
     type === 'quantity'
       ? items.reduce((sum, i) => sum + i.quantity, 0)
@@ -105,7 +190,20 @@ export function TakeoffTable({
   const totalCost = measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0);
   const allVisible = measurements.every((m) => m.isVisible !== false);
 
-  // ── Cell renderers ─────────────────────────────────────────────────────────
+  // ── Helper to batch update group children ─────────────────────────────────
+  const batchUpdateGroup = useCallback((groupId: string, items: TakeoffRow[], updates: Partial<TakeoffRow>) => {
+    if (!batchUpdateMeasurements) {
+      // Fallback to individual updates if batch update not available
+      items.forEach(item => onUpdate(item.id, updates));
+      return;
+    }
+    
+    const batchUpdates = items.map(item => ({
+      id: item.id,
+      updates,
+    }));
+    batchUpdateMeasurements(batchUpdates);
+  }, [batchUpdateMeasurements, onUpdate]);
 
   const renderEditableText = (
     row: TakeoffRow,
@@ -135,22 +233,50 @@ export function TakeoffTable({
     }
 
     return (
-      <span
-        onClick={(e) => startEditing(row.id, field, e)}
-        className={cn('cursor-text hover:text-amber-accent transition-colors', className)}
-      >
+      <span onClick={(e) => startEditing(row.id, field, e)} className={cn('cursor-text hover:text-amber-accent transition-colors', className)}>
         {type === 'number' && typeof value === 'number' ? value.toFixed(2) : (value as string)}
       </span>
+    );
+  };
+
+  const renderEditableQuantity = (row: TakeoffRow) => {
+    const isEditing = editingId === row.id && editingField === 'quantity';
+    const value = row.quantity;
+
+    if (isEditing) {
+      return (
+        <input
+          autoFocus
+          type="number"
+          step="0.01"
+          defaultValue={value}
+          onBlur={(e) => {
+            const val = parseFloat(e.target.value);
+            onUpdate(row.id, { quantity: isNaN(val) ? 0 : val });
+            stopEditing();
+          }}
+          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+          onClick={(e) => e.stopPropagation()}
+          className="w-20 bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200 text-right"
+        />
+      );
+    }
+
+    return (
+      <div className="flex items-center justify-end gap-1">
+        <span onClick={(e) => startEditing(row.id, 'quantity', e)} className="cursor-text hover:text-amber-accent transition-colors font-mono font-bold text-amber-accent">
+          {value.toFixed(2)}
+        </span>
+        {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
+        {row.unit && <span className="text-[9px] text-zinc-600">{row.unit}</span>}
+      </div>
     );
   };
 
   const renderMaterialSelect = (row: TakeoffRow) => {
     const isEditing = editingId === row.id && editingField === 'materialId';
     const matched = getMaterial(row.materialId);
-
-    // Helper to get total cost from material (handles missing fields)
-    const getMaterialTotal = (mat: Material) => 
-      (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
+    const getMaterialTotal = (mat: Material) => (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
 
     if (isEditing) {
       return (
@@ -183,10 +309,7 @@ export function TakeoffTable({
     }
 
     return (
-      <span
-        onClick={(e) => startEditing(row.id, 'materialId', e)}
-        className="cursor-pointer hover:text-amber-accent transition-colors"
-      >
+      <span onClick={(e) => startEditing(row.id, 'materialId', e)} className="cursor-pointer hover:text-amber-accent transition-colors">
         {matched ? (
           <span className="flex flex-col gap-0.5">
             <span className="text-[10px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0,6)}</span>
@@ -199,82 +322,54 @@ export function TakeoffTable({
     );
   };
 
-  // ── Inline action buttons (color dot · eye · trash) ──────────────────────
-
-  const renderInlineActions = (row: TakeoffRow) => (
-    <div className="flex items-center justify-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+  const renderRowActions = (row: TakeoffRow) => (
+    <div className="flex items-center justify-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
       <label className="cursor-pointer">
         <input
           type="color"
           value={row.color || '#EF9F27'}
-          onChange={(e) => onUpdate(row.id, { color: e.target.value })}
+          onChange={(e) => { e.stopPropagation(); onUpdate(row.id, { color: e.target.value }); }}
+          onClick={(e) => e.stopPropagation()}
           className="opacity-0 w-0 h-0 absolute pointer-events-none"
         />
-        <div
-          className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform"
-          style={{ backgroundColor: row.color || '#EF9F27' }}
-        />
+        <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: row.color || '#EF9F27' }} />
       </label>
-      <button
-        onClick={() => onToggleVisibility(row.id)}
-        className={cn(
-          'transition-colors',
-          row.isVisible !== false ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent'
-        )}
-      >
+      <button onClick={(e) => { e.stopPropagation(); onToggleVisibility(row.id); }} className={cn('transition-colors', row.isVisible !== false ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}>
         {row.isVisible !== false ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
       </button>
-      <button
-        onClick={() => onDelete(row.id)}
-        className="text-zinc-700 hover:text-red-500 transition-colors"
-      >
+      <button onClick={(e) => { e.stopPropagation(); onDelete(row.id); }} className="text-zinc-700 hover:text-red-500 transition-colors">
         <Trash2 className="w-3 h-3" />
       </button>
     </div>
   );
 
-  // ── Accordion detail panel ─────────────────────────────────────────────────
-
   const renderDetailPanel = (row: TakeoffRow) => {
-    const matched = getMaterial(row.materialId);
+    const itemTotalCost = row.quantity * row.unitRate;
     return (
       <tr key={`${row.id}-detail`} className="bg-[#0d0d0d]">
         <td colSpan={3} className="px-3 pb-3 pt-0">
           <div className="border border-zinc-800 rounded-sm bg-[#111] p-3 mt-1 space-y-3">
-
-            {/* Label row (for Count measurements) */}
             {row.label && (
               <div className="flex items-start gap-3">
                 <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
                 <span className="text-[9px] text-zinc-400 font-mono">{row.label}</span>
               </div>
             )}
-
-            {/* Material row */}
             <div className="flex items-start gap-3">
               <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Material</span>
-              <div className="flex-1 min-w-0">
-                {renderMaterialSelect(row)}
-              </div>
+              <div className="flex-1 min-w-0">{renderMaterialSelect(row)}</div>
             </div>
-
-            {/* Qty + Unit Rate */}
             <div className="flex gap-4">
-              <div className="flex items-center gap-3 flex-1">
-                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Qty</span>
-                <div className="flex items-center gap-1.5">
-                  {renderEditableText(row, 'quantity', 'number', 'text-[11px] text-amber-accent font-mono font-bold')}
-                  {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
-                  {row.unit && <span className="text-[9px] text-zinc-600">{row.unit}</span>}
-                </div>
-              </div>
               <div className="flex items-center gap-3 flex-1">
                 <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Rate</span>
                 {renderEditableText(row, 'unitRate', 'number', 'text-[11px] text-zinc-300 font-mono')}
+                <span className="text-[9px] text-zinc-600">/ {row.unit || 'unit'}</span>
+              </div>
+              <div className="flex items-center gap-3 flex-1">
+                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Cost</span>
+                <span className="text-[11px] font-bold text-amber-accent">{formatCurrency(itemTotalCost)}</span>
               </div>
             </div>
-
-            {/* Notes */}
             {row.notes && (
               <div className="flex items-start gap-3">
                 <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Notes</span>
@@ -287,65 +382,58 @@ export function TakeoffTable({
     );
   };
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-
   return (
     <aside className="w-full min-w-0 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
+      <ConfirmDialog
+        isOpen={confirmDialog.isOpen}
+        title="Delete Group"
+        message={`Are you sure you want to delete "${confirmDialog.groupName}" and all its items? This action cannot be undone.`}
+        confirmText="Delete Group"
+        cancelText="Cancel"
+        type="danger"
+        onConfirm={() => { onDelete(confirmDialog.groupId); setConfirmDialog({ isOpen: false, groupName: '', groupId: '' }); }}
+        onCancel={() => setConfirmDialog({ isOpen: false, groupName: '', groupId: '' })}
+      />
 
-      {/* Header */}
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center flex-shrink-0">
         <span className="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
         <div className="flex items-center gap-3">
-          <button
-            onClick={() => onToggleVisibility()}
-            className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold"
-            title={allVisible ? 'Hide All' : 'Show All'}
-          >
+          <button onClick={() => onToggleVisibility()} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold" title={allVisible ? 'Hide All' : 'Show All'}>
             {allVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
           </button>
-          <button
-            onClick={onAddManual}
-            className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold"
-          >
-            <Plus className="w-3 h-3" />
-            ADD ROW
+          <button onClick={onAddManual} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold">
+            <Plus className="w-3 h-3" /> ADD ROW
           </button>
           {onExpand && (
             <>
               <div className="w-px h-3 bg-zinc-700" />
-              <button
-                onClick={onExpand}
-                className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[10px] font-bold"
-                title="Open full-page takeoff view"
-              >
-                <ExternalLink className="w-3 h-3" />
-                EXPAND
+              <button onClick={onExpand} className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[10px] font-bold" title="Open full-page takeoff view">
+                <ExternalLink className="w-3 h-3" /> EXPAND
               </button>
             </>
           )}
         </div>
       </div>
 
-      {/* Table */}
       <div className="flex-1 overflow-auto custom-scrollbar">
         <table className="w-full text-[10px] border-collapse">
           <thead className="bg-stone-900/80 sticky top-0 z-20">
             <tr className="border-b border-industrial-border text-zinc-500 uppercase tracking-tighter">
               <th className="p-2 text-center w-8 border-r border-industrial-border">#</th>
               <th className="p-2 border-r border-industrial-border text-left">Description</th>
-              <th className="p-2 text-right pr-3">Cost</th>
+              <th className="p-2 text-right pr-3">Qty / Actions</th>
             </tr>
           </thead>
 
           <tbody className="divide-y divide-industrial-border">
-
-            {/* ── Groups ───────────────────────────────────────────────────── */}
             {Array.from(organizedData.groups.entries()).map(([groupId, { header, items }], groupIdx) => {
               const isGroupExpanded = expandedGroups.has(groupId);
+              const groupTotalQuantity = calculateGroupTotal(items, 'quantity');
+              const isEditingGroup = editingGroupId === groupId;
+              const allItemsVisible = items.every(item => item.isVisible !== false);
+              
               return (
                 <React.Fragment key={groupId}>
-
-                  {/* Group header row */}
                   <tr
                     className="border-t border-amber-500/20 bg-[#1a1a1a] cursor-pointer hover:bg-[#222] transition-colors group"
                     onClick={() => toggleGroup(groupId)}
@@ -355,31 +443,94 @@ export function TakeoffTable({
                     </td>
                     <td className="p-2 border-r border-industrial-border">
                       <div className="flex items-center gap-2">
-                        {isGroupExpanded
-                          ? <ChevronDown className="w-3 h-3 text-amber-500 shrink-0" />
-                          : <ChevronRight className="w-3 h-3 text-amber-500 shrink-0" />}
+                        {isGroupExpanded ? <ChevronDown className="w-3 h-3 text-amber-500 shrink-0" /> : <ChevronRight className="w-3 h-3 text-amber-500 shrink-0" />}
                         <FolderOpen className="w-3 h-3 text-amber-500/60 shrink-0" />
-                        <span className="text-[11px] font-bold text-amber-500 uppercase tracking-wider truncate">
-                          {header.groupName || header.description}
-                        </span>
+                        {isEditingGroup ? (
+                          <input
+                            autoFocus
+                            type="text"
+                            defaultValue={header.groupName || header.description}
+                            onBlur={(e) => {
+                              const newName = e.target.value;
+                              onUpdate(header.id, { groupName: newName, description: newName });
+                              stopEditing();
+                            }}
+                            onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
+                          />
+                        ) : (
+                          <span
+                            className="text-[11px] font-bold text-amber-500 uppercase tracking-wider truncate cursor-text hover:text-amber-300 transition-colors"
+                            onClick={(e) => startEditingGroup(groupId, e)}
+                          >
+                            {header.groupName || header.description}
+                          </span>
+                        )}
                         <span className="text-[8px] text-zinc-600 shrink-0">({items.length})</span>
                       </div>
                     </td>
-                    <td className="p-2 text-right font-bold text-amber-500 whitespace-nowrap pr-3">
-                      {formatCurrency(calculateGroupTotal(items))}
+                    <td className="p-2 text-right pr-3">
+                      <div className="flex items-center justify-end gap-3">
+                        <span className="font-bold text-amber-500 whitespace-nowrap">
+                          {groupTotalQuantity.toFixed(2)} {items[0]?.unit || ''}
+                        </span>
+                        
+                        <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <label className="cursor-pointer">
+                            <input
+                              type="color"
+                              value={header.color || '#EF9F27'}
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                const color = e.target.value;
+                                onUpdate(header.id, { color });
+                                // Batch update all children at once
+                                batchUpdateGroup(groupId, items, { color });
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="opacity-0 w-0 h-0 absolute pointer-events-none"
+                            />
+                            <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: header.color || '#EF9F27' }} />
+                          </label>
+                          
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const newVisibility = !allItemsVisible;
+                              onToggleVisibility(header.id);
+                              // Batch update all children at once
+                              batchUpdateGroup(groupId, items, { isVisible: newVisibility });
+                            }}
+                            className={cn('transition-colors', allItemsVisible ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
+                          >
+                            {allItemsVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                          </button>
+                          
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setConfirmDialog({
+                                isOpen: true,
+                                groupName: header.groupName || header.description || 'this group',
+                                groupId: header.id,
+                              });
+                            }}
+                            className="text-zinc-700 hover:text-red-500 transition-colors"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
                     </td>
                   </tr>
 
-                  {/* Group items */}
                   {isGroupExpanded && items.map((item, itemIdx) => {
                     const isRowExpanded = expandedRows.has(item.id);
                     return (
                       <React.Fragment key={item.id}>
                         <tr
-                          className={cn(
-                            'border-t border-[#1a1a1a] transition-colors cursor-pointer',
-                            isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50'
-                          )}
+                          className={cn('border-t border-[#1a1a1a] transition-colors cursor-pointer', isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
                           onClick={() => toggleRowExpand(item.id)}
                         >
                           <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[9px] whitespace-nowrap">
@@ -406,51 +557,32 @@ export function TakeoffTable({
                                   {item.description || <span className="text-zinc-600 italic">No description</span>}
                                 </span>
                               )}
-                              <div className="ml-auto flex items-center gap-2 shrink-0">
-                                {renderInlineActions(item)}
-                                <span className="text-zinc-700">
-                                  {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                                </span>
-                              </div>
+                              <span className="text-zinc-700">
+                                {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                              </span>
                             </div>
                           </td>
-                          <td className="p-2 text-right font-bold text-zinc-300 whitespace-nowrap pr-3">
-                            {formatCurrency(item.quantity * item.unitRate)}
+                          <td className="p-2 text-right pr-3">
+                            <div className="flex items-center justify-end gap-3">
+                              {renderEditableQuantity(item)}
+                              {renderRowActions(item)}
+                            </div>
                           </td>
                         </tr>
                         {isRowExpanded && renderDetailPanel(item)}
                       </React.Fragment>
                     );
                   })}
-
-                  {/* Group summary */}
-                  {isGroupExpanded && items.length > 0 && (
-                    <tr className="bg-[#111] border-t border-[#1e1e1e]">
-                      <td colSpan={3} className="p-1.5 px-3 text-right">
-                        <div className="flex items-center justify-end gap-3 text-[8px] text-zinc-600 font-mono">
-                          <span>Subtotal: {formatCurrency(calculateGroupTotal(items))}</span>
-                          <span className="w-px h-2 bg-zinc-700" />
-                          <span>+10% waste: {formatCurrency(calculateGroupTotal(items) * 0.1)}</span>
-                          <span className="w-px h-2 bg-zinc-700" />
-                          <span className="text-amber-500">Total: {formatCurrency(calculateGroupTotal(items) * 1.1)}</span>
-                        </div>
-                      </td>
-                    </tr>
-                  )}
                 </React.Fragment>
               );
             })}
 
-            {/* ── Ungrouped rows ────────────────────────────────────────────── */}
             {organizedData.ungrouped.map((row, idx) => {
               const isRowExpanded = expandedRows.has(row.id);
               return (
                 <React.Fragment key={row.id}>
                   <tr
-                    className={cn(
-                      'border-t border-industrial-border transition-colors cursor-pointer',
-                      isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50'
-                    )}
+                    className={cn('border-t border-industrial-border transition-colors cursor-pointer', isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
                     onClick={() => toggleRowExpand(row.id)}
                   >
                     <td className="p-2 text-center border-r border-industrial-border text-zinc-600 font-bold whitespace-nowrap">
@@ -476,16 +608,16 @@ export function TakeoffTable({
                             {row.description || <span className="text-zinc-600 italic">No description</span>}
                           </span>
                         )}
-                        <div className="ml-auto flex items-center gap-2 shrink-0">
-                          {renderInlineActions(row)}
-                          <span className="text-zinc-700">
-                            {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
-                          </span>
-                        </div>
+                        <span className="text-zinc-700">
+                          {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                        </span>
                       </div>
                     </td>
-                    <td className="p-2 text-right font-bold text-zinc-200 whitespace-nowrap pr-3">
-                      {formatCurrency(row.quantity * row.unitRate)}
+                    <td className="p-2 text-right pr-3">
+                      <div className="flex items-center justify-end gap-3">
+                        {renderEditableQuantity(row)}
+                        {renderRowActions(row)}
+                      </div>
                     </td>
                   </tr>
                   {isRowExpanded && renderDetailPanel(row)}
@@ -504,7 +636,6 @@ export function TakeoffTable({
         </table>
       </div>
 
-      {/* Footer */}
       <div className="p-4 bg-stone-900 border-t border-industrial-border">
         <div className="mb-4">
           <div className="flex justify-between items-end mb-1">
