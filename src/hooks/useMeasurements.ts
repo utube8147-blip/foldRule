@@ -15,26 +15,13 @@
 //                        becomes its own child row in the takeoff table.
 //    • ESC             → cancel
 //
-//  FIX 1: React onClick never fires for right-clicks (button 2).
-//         All right-click logic lives in handleContextMenu only.
-//
-//  FIX 2: Each broken segment is saved as a separate child row under the group.
-//         Segments with fewer points than the minimum are discarded before commit.
-//         The parent group row shows the summed quantity; each child shows its own.
-//
-//  FIX 3: Right-click pre-generates nextSegmentIdRef and sets pendingBreak=true.
-//         Next left-click writes that new segmentId into tempPoints, creating a
-//         real data boundary that survives until finishMeasurement is called.
-//         This fixed the bug where Finish ignored breaks and treated all points
-//         as one segment.
-//
-//  FIX 4: Batch commit all parent + children at once to eliminate race condition.
-//         Uses batchCommitMeasurements from context for atomic updates.
+//  FIX: Batch commit all parent + children at once to eliminate race condition
+//  FIX: Parent has empty points array to prevent connecting lines
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { TakeoffRow, MeasurementType } from '../types';
+import { TakeoffRow } from '../types';
 import { SnapResult, PendingSnapCandidate, PdfDimensions } from '../types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 
@@ -63,7 +50,7 @@ export interface UseMeasurementsParams {
   tempPoints:           InProgressPoint[];
   pushPoint:            (point: InProgressPoint) => void;
   commitMeasurement:    (m: TakeoffRow) => void;
-  batchCommitMeasurements: (measurements: TakeoffRow[]) => void; // ADDED for batch commits
+  batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
   clearTempPoints:      () => void;
   scaleFactor:          number;
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
@@ -146,7 +133,7 @@ export function useMeasurements({
   }, [activeTool, clearTempPoints, cursorPointRef, resetBreakState]);
 
   // ─────────────────────────────────────────────────────────────────────────
-  // ── Main drawing effect ───────────────────────────────────────────────────
+  // ── Main drawing effect (canvas display) ───────────────────────────────────
   // ─────────────────────────────────────────────────────────────────────────
   const rafIdRef = useRef<number | null>(null);
 
@@ -163,10 +150,10 @@ export function useMeasurements({
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // ──────────────────────────────────────────────────────────────────
-      // 1.  COMMITTED MEASUREMENTS
+      // 1.  COMMITTED MEASUREMENTS - Draw all measurements
       // ──────────────────────────────────────────────────────────────────
       measurements.forEach(m => {
-        // Do not draw the overarching parent group! (It connects the breaks)
+        // Skip group headers that have children (they have empty points array)
         if (m.isGroupHeader && m.childIds && m.childIds.length > 0) return;
 
         if (!m.isVisible || m.points.length === 0) return;
@@ -356,6 +343,7 @@ export function useMeasurements({
             }
             ctx.stroke();
           } else {
+            // linear
             ctx.beginPath();
             ctx.moveTo(seg.pts[0].x, seg.pts[0].y);
             for (let i = 1; i < seg.pts.length; i++) ctx.lineTo(seg.pts[i].x, seg.pts[i].y);
@@ -556,12 +544,12 @@ export function useMeasurements({
         id: groupId, drawingId: activeDrawingId || '',
         description: groupLabel, label: groupLabel, icon: groupIcon, type: 'Count',
         quantity: pts.length, unit: 'EA', unitRate: 0, notes: '',
-        points: [], // FIX 1: Empty points array
+        points: [], // EMPTY - prevents connecting lines
         isOverridden: false, color: groupColor, isVisible: true,
         isGroupHeader: true, childIds,
       };
       
-      // BATCH COMMIT - parent + all children at once, NO race condition!
+      // Batch commit - parent + all children at once
       batchCommitMeasurements([parent, ...children]);
       
       clearTempPoints(); setCursorPoint(null); 
@@ -640,12 +628,12 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Length', quantity: totalQty, unit: 'm', unitRate: 0, notes: '',
-          points: [], // FIX 1: Empty points array - no connecting line
+          points: [], // EMPTY - prevents connecting lines
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // BATCH COMMIT - parent + all children at once
+        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 
@@ -708,12 +696,12 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
-          points: [], // FIX 1: Empty points array - no connecting line
+          points: [], // EMPTY - prevents connecting lines
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // BATCH COMMIT - parent + all children at once
+        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 
@@ -786,12 +774,12 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Rectangle', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
-          points: [], // FIX 1: Empty points array - no connecting line
+          points: [], // EMPTY - prevents connecting lines
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // BATCH COMMIT - parent + all children at once
+        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 

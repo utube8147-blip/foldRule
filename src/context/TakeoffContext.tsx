@@ -7,6 +7,9 @@
 //    - tempPoints[]       in-progress drawing points (lifted from Viewer)
 //    - undo/redo stack    before/after snapshots of both arrays
 //
+//  FIX: Parent quantities are recalculated dynamically when children change
+//  FIX: Undo/redo properly updates parent totals
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -71,13 +74,8 @@ interface TakeoffContextValue {
   setPendingMeasurement: (m: PendingMeasurement | null) => void;
 
   pushPoint:           (point: InProgressPoint) => void;
-  
-  /** Commit a single measurement */
   commitMeasurement:   (m: TakeoffRow) => void;
-  
-  /** Batch commit multiple measurements atomically - NO race condition */
   batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
-  
   clearTempPoints:     () => void;
 
   // ── Undo / Redo ───────────────────────────────────────────────────────────
@@ -85,6 +83,10 @@ interface TakeoffContextValue {
   redo:                () => void;
   canUndo:             boolean;
   canRedo:             boolean;
+  
+  // ── Helper to get effective quantity (computes from children for groups) ──
+  getEffectiveQuantity: (measurement: TakeoffRow) => number;
+  getEffectiveUnit: (measurement: TakeoffRow) => string;
 }
 
 // ─── Default project state ────────────────────────────────────────────────────
@@ -150,12 +152,94 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     });
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
+  // ── Helper to recalculate parent total based on children ───────────────────
+  const recalculateParentTotal = useCallback((parentId: string, measurements: TakeoffRow[]): TakeoffRow[] => {
+    const parentIndex = measurements.findIndex(m => m.id === parentId);
+    if (parentIndex === -1) return measurements;
+    
+    const parent = measurements[parentIndex];
+    if (!parent.isGroupHeader || !parent.childIds) return measurements;
+    
+    // Find all children that still exist
+    const existingChildren = measurements.filter(m => parent.childIds.includes(m.id));
+    
+    if (existingChildren.length === 0) {
+      // If no children left, remove the parent entirely
+      return measurements.filter(m => m.id !== parentId);
+    }
+    
+    // Recalculate total based on child quantities
+    let newTotal = 0;
+    let newUnit = parent.unit;
+    
+    for (const child of existingChildren) {
+      if (child.type === 'Length') {
+        newTotal += child.quantity;
+        newUnit = child.unit;
+      } else if (child.type === 'Polygon' || child.type === 'Rectangle') {
+        newTotal += child.quantity;
+        newUnit = child.unit;
+      } else if (child.type === 'Count') {
+        newTotal += child.quantity;
+        newUnit = child.unit;
+      }
+    }
+    
+    // Update parent with new total
+    const updatedMeasurements = [...measurements];
+    updatedMeasurements[parentIndex] = { 
+      ...parent, 
+      quantity: newTotal, 
+      unit: newUnit 
+    };
+    
+    return updatedMeasurements;
+  }, []);
+
+  // ── Get effective quantity (computes from children for groups) ─────────────
+  const getEffectiveQuantity = useCallback((measurement: TakeoffRow): number => {
+    if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
+      const children = measurementsRef.current.filter(m => measurement.childIds.includes(m.id));
+      return children.reduce((sum, child) => sum + (child.quantity || 0), 0);
+    }
+    return measurement.quantity || 0;
+  }, []);
+
+  const getEffectiveUnit = useCallback((measurement: TakeoffRow): string => {
+    if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
+      const children = measurementsRef.current.filter(m => measurement.childIds.includes(m.id));
+      if (children.length > 0) {
+        return children[0].unit || measurement.unit;
+      }
+    }
+    return measurement.unit || '';
+  }, []);
+
+  // ── Undo / Redo ────────────────────────────────────────────────────────────
   const undo = useCallback(() => {
     setUndoPast(past => {
       if (past.length === 0) return past;
       const entry = past[past.length - 1];
       const rest  = past.slice(0, -1);
-      applySnapshot(entry.measurementsBefore, entry.tempPointsBefore);
+      
+      // Apply the before state
+      let measurements = [...entry.measurementsBefore];
+      const tempPts = [...entry.tempPointsBefore];
+      
+      // Recalculate all parent totals to ensure consistency
+      const parentIdsNeedingRecalc = new Set<string>();
+      for (const m of measurements) {
+        if (m.parentId) {
+          parentIdsNeedingRecalc.add(m.parentId);
+        }
+      }
+      
+      for (const parentId of parentIdsNeedingRecalc) {
+        measurements = recalculateParentTotal(parentId, measurements);
+      }
+      
+      applySnapshot(measurements, tempPts);
+      
       if (entry.undoneMeasurement && entry.tempPointsBefore.length > 0) {
         setPendingMeasurement({
           id: entry.undoneMeasurement.id,
@@ -169,19 +253,36 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       setUndoFuture(f => [entry, ...f]);
       return rest;
     });
-  }, [applySnapshot]);
+  }, [applySnapshot, recalculateParentTotal]);
 
   const redo = useCallback(() => {
     setUndoFuture(future => {
       if (future.length === 0) return future;
       const entry = future[0];
       const rest  = future.slice(1);
-      applySnapshot(entry.measurementsAfter, entry.tempPointsAfter);
+      
+      // Apply the after state
+      let measurements = [...entry.measurementsAfter];
+      const tempPts = [...entry.tempPointsAfter];
+      
+      // Recalculate all parent totals to ensure consistency
+      const parentIdsNeedingRecalc = new Set<string>();
+      for (const m of measurements) {
+        if (m.parentId) {
+          parentIdsNeedingRecalc.add(m.parentId);
+        }
+      }
+      
+      for (const parentId of parentIdsNeedingRecalc) {
+        measurements = recalculateParentTotal(parentId, measurements);
+      }
+      
+      applySnapshot(measurements, tempPts);
       setPendingMeasurement(null);
       setUndoPast(p => [...p, entry]);
       return rest;
     });
-  }, [applySnapshot]);
+  }, [applySnapshot, recalculateParentTotal]);
 
   const pushPoint = useCallback((point: InProgressPoint) => {
     const mBefore  = measurementsRef.current;
@@ -201,12 +302,17 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     });
   }, [pushEntry, syncedSetTempPoints]);
 
-  // ── Single commit ──────────────────────────────────────────────────────────
+  // ── commitMeasurement - single commit ──────────────────────────────────────
   const commitMeasurement = useCallback((m: TakeoffRow) => {
     const mBefore = measurementsRef.current;
-    const mAfter = [...mBefore, m];
+    let mAfter = [...mBefore, m];
     
     const isChild = !!m.parentId;
+    
+    // If this is a child, update the parent's total
+    if (isChild && m.parentId) {
+      mAfter = recalculateParentTotal(m.parentId, mAfter);
+    }
     
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -222,7 +328,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
         undoneMeasurement: m,
       });
     }
-  }, [pushEntry, syncedSetProjectState]);
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   // ── BATCH COMMIT - eliminates race condition ───────────────────────────────
   const batchCommitMeasurements = useCallback((measurements: TakeoffRow[]) => {
@@ -232,7 +338,19 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     const tBefore = tempPointsRef.current;
     
     // Add ALL measurements at once - no race condition!
-    const mAfter = [...mBefore, ...measurements];
+    let mAfter = [...mBefore, ...measurements];
+    
+    // After adding all measurements, recalculate parent totals for any children
+    const parentIdsNeedingRecalc = new Set<string>();
+    for (const m of measurements) {
+      if (m.parentId) {
+        parentIdsNeedingRecalc.add(m.parentId);
+      }
+    }
+    
+    for (const parentId of parentIdsNeedingRecalc) {
+      mAfter = recalculateParentTotal(parentId, mAfter);
+    }
     
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -247,7 +365,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       tempPointsAfter: tBefore,
       undoneMeasurement: measurements.find(m => m.isGroupHeader),
     });
-  }, [pushEntry, syncedSetProjectState]);
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   const clearTempPoints = useCallback(() => {
     syncedSetTempPoints(() => {
@@ -259,7 +377,12 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   const addMeasurement = useCallback((m: TakeoffRow) => {
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
-    const mAfter  = [...mBefore, m];
+    let mAfter  = [...mBefore, m];
+    
+    // If this is a child, update the parent's total
+    if (m.parentId) {
+      mAfter = recalculateParentTotal(m.parentId, mAfter);
+    }
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -272,12 +395,18 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       measurementsAfter:  mAfter,
       tempPointsAfter:    tBefore,
     });
-  }, [pushEntry, syncedSetProjectState]);
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   const updateMeasurement = useCallback((id: string, updates: Partial<TakeoffRow>) => {
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
-    const mAfter  = mBefore.map(m => m.id === id ? { ...m, ...updates } : m);
+    let mAfter  = mBefore.map(m => m.id === id ? { ...m, ...updates } : m);
+    
+    // Find the measurement being updated and recalculate its parent if needed
+    const updatedMeasurement = mAfter.find(m => m.id === id);
+    if (updatedMeasurement?.parentId) {
+      mAfter = recalculateParentTotal(updatedMeasurement.parentId, mAfter);
+    }
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -290,12 +419,27 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       measurementsAfter:  mAfter,
       tempPointsAfter:    tBefore,
     });
-  }, [pushEntry, syncedSetProjectState]);
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   const deleteMeasurement = useCallback((id: string) => {
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
-    const mAfter  = mBefore.filter(m => m.id !== id);
+    
+    // Find the measurement being deleted
+    const deletedMeasurement = mBefore.find(m => m.id === id);
+    if (!deletedMeasurement) return;
+    
+    let mAfter = mBefore.filter(m => m.id !== id);
+    
+    // If the deleted measurement had a parent, recalculate the parent's total
+    if (deletedMeasurement.parentId) {
+      mAfter = recalculateParentTotal(deletedMeasurement.parentId, mAfter);
+    }
+    
+    // If the deleted measurement was a group header, also delete all its children
+    if (deletedMeasurement.isGroupHeader && deletedMeasurement.childIds) {
+      mAfter = mAfter.filter(m => !deletedMeasurement.childIds.includes(m.id));
+    }
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -308,7 +452,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       measurementsAfter:  mAfter,
       tempPointsAfter:    tBefore,
     });
-  }, [pushEntry, syncedSetProjectState]);
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   const toggleVisibility = useCallback((id?: string) => {
     if (!id) return;
@@ -349,9 +493,9 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       id: groupId,
       drawingId: projectState.activeDrawingId || '',
       description: groupName,
-      type: 'Length',
+      type: groupType === 'count' ? 'Count' : 'Length',
       quantity: 0,
-      unit: '',
+      unit: groupType === 'count' ? 'EA' : 'm',
       unitRate: 0,
       notes: '',
       points: [],
@@ -363,7 +507,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       childIds: measurementIds,
     };
 
-    const mAfter = mBefore.map(m => 
+    let mAfter = mBefore.map(m => 
       measurementIds.includes(m.id) 
         ? { ...m, groupId, parentId: groupId }
         : m
@@ -504,6 +648,8 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     redo,
     canUndo: undoPast.length   > 0,
     canRedo: undoFuture.length > 0,
+    getEffectiveQuantity,
+    getEffectiveUnit,
   };
 
   return (
