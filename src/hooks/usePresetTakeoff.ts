@@ -588,7 +588,7 @@ export function usePresetTakeoff({
       const parts: Partial<TakeoffRow>[] = [];
       parts.push(withPresetData({
         description: 'Concrete',
-        type: 'Volume',
+        type: 'Volume' as any,
         quantity: +volume.toFixed(2),
         unit: 'm³',
         category: 'Concrete',
