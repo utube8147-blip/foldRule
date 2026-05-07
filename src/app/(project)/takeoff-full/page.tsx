@@ -181,7 +181,7 @@ export default function TakeoffFullPage() {
   // Determine "flagged" rows: items that have a unitRate > 0 (i.e. configured/changed)
   const isFlagged = (row: TakeoffRow) => row.unitRate > 0 && row.isOverridden;
 
-  const filtered = useMemo(() => all.filter(m => {
+  const filtered = useMemo(() => all.filter((m: { description: string; notes: any; presetId: any; }) => {
     const q = search.toLowerCase();
     return (
       m.description.toLowerCase().includes(q) ||
@@ -194,7 +194,7 @@ export default function TakeoffFullPage() {
   const { groups, ungrouped } = useMemo(() => {
     const groups = new Map<string, { header: TakeoffRow; items: TakeoffRow[] }>();
     const ungrouped: TakeoffRow[] = [];
-    filtered.forEach(m => {
+    filtered.forEach((m: TakeoffRow) => {
       if (m.isGroupHeader && m.groupId) {
         groups.set(m.groupId, { header: m, items: [] });
       } else if (m.groupId && groups.has(m.groupId)) {
@@ -206,8 +206,8 @@ export default function TakeoffFullPage() {
     return { groups, ungrouped };
   }, [filtered]);
 
-  const totalCost  = all.reduce((s, m) => s + m.quantity * m.unitRate, 0);
-  const totalArea  = all.filter(m => m.unit === 'm²').reduce((s, m) => s + m.quantity, 0);
+  const totalCost  = all.reduce((s: number, m: { quantity: number; unitRate: number; }) => s + m.quantity * m.unitRate, 0);
+  const totalArea  = all.filter((m: { unit: string; }) => m.unit === 'm²').reduce((s: any, m: { quantity: any; }) => s + m.quantity, 0);
   const flaggedRows = [...ungrouped, ...Array.from(groups.values()).flatMap(g => g.items)]
     .filter(isFlagged);
   const costDelta  = flaggedRows.reduce((s, r) => s + r.quantity * r.unitRate * 0.33, 0);
