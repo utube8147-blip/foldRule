@@ -161,7 +161,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     if (!parent.isGroupHeader || !parent.childIds) return measurements;
     
     // Find all children that still exist
-    const existingChildren = measurements.filter(m => parent.childIds.includes(m.id));
+  const existingChildren = measurements.filter(m => parent.childIds!.includes(m.id));
     
     if (existingChildren.length === 0) {
       // If no children left, remove the parent entirely
