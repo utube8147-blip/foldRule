@@ -426,9 +426,11 @@ export default function Workspace() {
 
       <div className="flex flex-1 overflow-hidden mt-14">
 
+        {/* normalize project state to ensure activeDrawingId is undefined instead of null
+            to satisfy prop types expecting string | undefined */}
         <Sidebar
           isCollapsed={leftCollapsed}
-          projectState={ps}
+          projectState={{ ...ps, activeDrawingId: ps.activeDrawingId ?? undefined }}
           onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
           onOpenMaterialLibrary={() => setShowMaterialLibrary(true)}
           onDrawingAdded={addDrawing}
