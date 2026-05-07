@@ -447,7 +447,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                               <TemplateCard
                                 key={template.id}
                                 template={template}
-                                isSelected={selectedTemplate?.id === template.id}
+                                isSelected={(selectedTemplate as any)?.id === template.id}
                                 isLocked={isLocked}
                                 onUpgradeClick={() => setShowEnterpriseModal(true)}
                                 onClick={() => setSelectedTemplate(template)}
