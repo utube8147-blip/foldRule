@@ -17,7 +17,7 @@ import {
 } from '@/components/presets/PresetTemplates';
 import { useTakeoffContext } from '@/context/TakeoffContext';
 import { usePresetContext }  from '@/context/PresetContext';
-import { TakeoffRow } from '@/types';
+import { TakeoffRow, Drawing } from '@/types';
 import { ToastContainer } from '@/components/Toast';
 
 const LOCKED_COUNT = 3;
@@ -214,7 +214,8 @@ export default function PresetsPage() {
     setShowEnterpriseModal,
   } = usePresetContext();
 
-  const activeDrawing   = ps.drawings.find(d => d.id === ps.activeDrawingId) ?? null;
+  const activeDrawing = ps.drawings.find((d: Drawing) => d.id === ps.activeDrawingId) ?? null;
+
   const categories      = Array.from(new Set(ELEMENT_PRESETS.map(p => p.category)));
   const currentFormData = selectedTemplate ? getFormData(selectedTemplate.id) : {};
 
