@@ -6,14 +6,18 @@ export interface Point {
   y: number;
 }
 
-export interface ProjectState {
-  projectName: string;
-  projectNumber: string;
+export interface Material {
+  id: string;
+  name: string;
+  code: string;           // ← ADD
+  category: string;
   unit: string;
-  drawings: Drawing[];
-  activeDrawingId: string | null;
-  measurements: TakeoffRow[];
-  materials: Material[];  // Use consistent type
+  unitRate: number;
+  materialCost: number;   // ← ADD
+  laborCost: number;      // ← ADD
+  equipmentCost: number;  // ← ADD
+  supplier?: string;
+  sku?: string;
 }
 
 export type MaterialSpec = Material;
@@ -40,6 +44,7 @@ export interface TakeoffRow {
   category?: string;
   color: string;
   isVisible: boolean;
+  materialId?: string;  // ← ADD THIS
 }
 
 export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point';
