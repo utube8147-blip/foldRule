@@ -199,7 +199,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   // ── Get effective quantity (computes from children for groups) ─────────────
   const getEffectiveQuantity = useCallback((measurement: TakeoffRow): number => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => measurement.childIds.includes(m.id));
+      const children = measurementsRef.current.filter(m => measurement.childIds!.includes(m.id));
       return children.reduce((sum, child) => sum + (child.quantity || 0), 0);
     }
     return measurement.quantity || 0;
@@ -207,7 +207,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
 
   const getEffectiveUnit = useCallback((measurement: TakeoffRow): string => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => measurement.childIds.includes(m.id));
+      const children = measurementsRef.current.filter(m => measurement.childIds!.includes(m.id));
       if (children.length > 0) {
         return children[0].unit || measurement.unit;
       }
