@@ -24,7 +24,7 @@ export type MaterialSpec = Material;
 
 export interface TakeoffRow {
   label: string;
-  childIds: never[];
+  childIds: string[];
   id: string;
   drawingId: string;
   description: string;
