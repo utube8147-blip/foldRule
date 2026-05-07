@@ -1113,10 +1113,8 @@ export function Viewer({
                 onContextMenu={handleContextMenu}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerDown={(e) => {
-                  const handled = handleCanvasPointerDown(e);
-                  if (!handled) {
-                    handleDrawingCanvasPointerDown(e);
-                  }
+                  handleCanvasPointerDown(e);
+                  handleDrawingCanvasPointerDown(e);
                 }}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerLeave={() => {
