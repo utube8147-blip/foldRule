@@ -10,9 +10,13 @@
 //    • Undo/Redo handled entirely by TakeoffContext
 //    • No special case logic needed in Viewer
 //
+//  ADDED: Group append support for all measurement types
+//    • Linear, Polygon, Rectangle, Count, Point all supported
+//    • Receives appendToGroupId and onAppendComplete from parent
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useEffect, useState, useCallback, useMemo, memo } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   ZoomIn, ZoomOut, Maximize, ChevronLeft, ChevronRight,
@@ -26,7 +30,6 @@ import { PresetDrawer } from './presets/PresetDrawer';
 import { Minimap } from './Minimap';
 import { MeasurementDetailsDialog } from './MeasurementDetailsDialog';
 import { CountPinOverlay } from './CountPinOverlay';
-
 
 const pdfWorkerUrl = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -107,6 +110,8 @@ interface ViewerProps {
   onSelectPreset:      (data: Record<string, any>, template: PresetTemplate) => void;
   hideToolbar?:        boolean;
   onToolbarReady?:     (api: ViewerToolbarAPI) => void;
+  appendToGroupId?:    string | null;
+  onAppendComplete?:   () => void;
 }
 
 export interface ViewerToolbarAPI {
@@ -149,6 +154,8 @@ export function Viewer({
   scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
   showPresetDrawer, onClosePresetDrawer, onSelectPreset,
   hideToolbar = false,
+  appendToGroupId: propAppendToGroupId,
+  onAppendComplete,
   onToolbarReady,
 }: ViewerProps) {
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
@@ -202,7 +209,6 @@ export function Viewer({
   const [pendingPtLen, setPendingPtLen] = useState<number>(0);
   const [calibrationInput, setCalibrationInput] = useState('');
 
-
   // ── Measurement Details Dialog ───────────────────────────────────────────────
   const [showMeasurementDialog, setShowMeasurementDialog] = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<{
@@ -217,6 +223,9 @@ export function Viewer({
     name: string;
     material: string;
   } | null>(null);
+
+  // Use the prop from parent
+  const appendToGroupId = propAppendToGroupId;
 
   // ── Wrap parent callbacks — stable refs ──────────────────────────────────────
   const onAddMeasurement = useCallback((
@@ -234,7 +243,7 @@ export function Viewer({
     tempPoints,
     pushPoint,
     commitMeasurement,
-    batchCommitMeasurements, // ADD THIS - get batch commit from context
+    batchCommitMeasurements,
     clearTempPoints,
     undo,
     redo,
@@ -245,7 +254,6 @@ export function Viewer({
   } = useTakeoffContext();
 
   // ── Wrap undo/redo for consistent API ───────────────────────────────────────
-  // Note: setCursorPoint will be added via useEffect after measureEngine is initialized
   const undoRedoRef = useRef<{ setCursorPoint: (p: any) => void }>({ setCursorPoint: () => {} });
   
   const handleUndo = useCallback(() => {
@@ -289,7 +297,7 @@ export function Viewer({
     setActiveTool(tool as ToolType);
   }, [setActiveTool]);
 
-   const handleScalePrompt = useCallback((ptLen: number) => {
+  const handleScalePrompt = useCallback((ptLen: number) => {
     setPendingPtLen(ptLen);
     setCalibrationInput('');
     setShowCalibrationDialog(true);
@@ -314,7 +322,9 @@ export function Viewer({
     tempPoints,
     pushPoint,
     commitMeasurement,
-    batchCommitMeasurements, // PASS batchCommitMeasurements to useMeasurements
+    batchCommitMeasurements,
+    appendToGroupId,
+    onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints,
     scaleFactor,
@@ -337,8 +347,8 @@ export function Viewer({
     handleCanvasClick,
     handleContextMenu,
     handleCanvasPointerMove,
-    handleCanvasPointerDown, // ADD THIS
-    handleCanvasPointerUp, // ADD THIS LINE
+    handleCanvasPointerDown,
+    handleCanvasPointerUp,
     toCanvas,
     setCursorPoint,
   } = measureEngine;
@@ -348,8 +358,11 @@ export function Viewer({
     undoRedoRef.current.setCursorPoint = setCursorPoint;
   }, [setCursorPoint]);
 
+  // Fix: Safely set the onScaleSet ref
   useEffect(() => {
-    (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
+    if (useMeasurements && (useMeasurements as any)._onScaleSetRef) {
+      (useMeasurements as any)._onScaleSetRef.current = onScaleSet;
+    }
   }, [onScaleSet]);
 
   // Use static tools array defined outside component
@@ -360,14 +373,19 @@ export function Viewer({
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 10;
 
- 
-
   // ── Wrap finishMeasurement to show dialog ───────────────────────────────────
   const handleFinishMeasurement = useCallback(() => {
     // For count/point: need at least 1 point; for others need at least 2 points
     const minPoints = (activeTool === 'count' || activeTool === 'point') ? 1 : 2;
     if (tempPoints.length < minPoints) {
       finishMeasurement();
+      return;
+    }
+
+    if (appendToGroupId) {
+      // Skip the dialog, go straight to appending
+      finishMeasurement(undefined, { appendToGroupId });
+      onAppendComplete?.();
       return;
     }
 
@@ -388,7 +406,7 @@ export function Viewer({
       name: '',
       material: '',
     };
-  }, [tempPoints.length, activeTool, finishMeasurement]);
+  }, [tempPoints.length, activeTool, finishMeasurement, appendToGroupId, onAppendComplete]);
 
   const handleDialogConfirm = useCallback((name: string, material: string, icon?: string) => {
     setShowMeasurementDialog(false);
@@ -451,7 +469,6 @@ export function Viewer({
   }, []);
 
   // ── Create memoized toolbar API object to prevent infinite loop ────────────
-  // Note: tools is static (VIEWER_TOOLS), so removed from dependencies
   const toolbarAPI = useMemo(() => {
     const currentPageData = pageData.get(pageNumber - 1);
     return {
@@ -506,7 +523,7 @@ export function Viewer({
     handleRedo,
   ]);
 
-  // ── Expose toolbar API to parent (fixed: no infinite loop) ─────────────────
+  // ── Expose toolbar API to parent ─────────────────────────────────
   useEffect(() => {
     if (!onToolbarReady) return;
     onToolbarReady(toolbarAPI);
@@ -581,7 +598,6 @@ export function Viewer({
     }
 
     return () => { isMounted = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDrawingId, activeDrawingUrl]);
 
   // ── PDF Rendering ─────────────────────────────────────────────────────────
@@ -765,8 +781,6 @@ export function Viewer({
     };
   }, []);
 
-
-  
   // ── Shared pan initiator ───────────────────────────────────────────────────
   const startPan = useCallback((e: React.PointerEvent, targetElement: HTMLElement) => {
     if (!pdfRef.current) return;
@@ -1099,13 +1113,12 @@ export function Viewer({
                 onContextMenu={handleContextMenu}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerDown={(e) => {
-                  // First try point relocation, if not handled then handle drawing
                   const handled = handleCanvasPointerDown(e);
                   if (!handled) {
                     handleDrawingCanvasPointerDown(e);
                   }
                 }}
-                onPointerUp={handleCanvasPointerUp} // ADD THIS for drag end
+                onPointerUp={handleCanvasPointerUp}
                 onPointerLeave={() => {
                   setCursorPoint(null);
                   cursorPointRef.current = null;
@@ -1277,6 +1290,14 @@ export function Viewer({
         onClose={onClosePresetDrawer}
         onSelectPreset={onSelectPreset}
       />
+
+      {appendToGroupId && (
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 bg-blue-500/20 border border-blue-400/60 px-4 py-2 font-mono text-[10px] text-blue-300 uppercase tracking-widest flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+          Adding segment to group — draw line then right-click or press Finish
+          <button onClick={() => onAppendComplete?.()} className="ml-2 text-blue-500 hover:text-blue-300">✕</button>
+        </div>
+      )}
 
       {/* Calibration Dialog */}
       {showCalibrationDialog && (

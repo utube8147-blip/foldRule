@@ -7,6 +7,10 @@
 //    • Updates quantities in real-time
 //    • Supports undo/redo
 //
+//  ADDED: Append to group for all measurement types
+//    • Linear, Polygon, Rectangle, Count, Point all supported
+//    • Automatically switches to correct tool when adding to group
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useEffect, useCallback, useState } from 'react';
@@ -42,6 +46,7 @@ export interface UseMeasurementsParams {
   commitMeasurement:    (m: TakeoffRow) => void;
   batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
   clearTempPoints:      () => void;
+  onAppendComplete?: () => void;
   scaleFactor:          number;
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
   isPanning:            boolean;
@@ -53,6 +58,7 @@ export interface UseMeasurementsParams {
   redrawPinCanvas:      () => void;
   cursorPointRef:       React.MutableRefObject<{ x: number; y: number } | null>;
   activeDrawingId:      string | null;
+  appendToGroupId?: string | null;
 }
 
 // ─── Hook return ──────────────────────────────────────────────────────────────
@@ -62,12 +68,12 @@ export interface UseMeasurementsReturn {
   setCursorPoint:           React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
   pendingSnapCandidates:    PendingSnapCandidate[] | null;
   setPendingSnapCandidates: React.Dispatch<React.SetStateAction<PendingSnapCandidate[] | null>>;
-  finishMeasurement:        (pts?: InProgressPoint[], meta?: { label?: string; icon?: string }) => void;
+  finishMeasurement: (pts?: InProgressPoint[], meta?: { label?: string; icon?: string; appendToGroupId?: string }) => void;
   handleCanvasClick:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
   handleContextMenu:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
   handleCanvasPointerMove:  (e: React.PointerEvent<HTMLCanvasElement>) => void;
   handleCanvasPointerDown:  (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerUp:    (e: React.PointerEvent<HTMLCanvasElement>) => void; // ADD THIS
+  handleCanvasPointerUp:    (e: React.PointerEvent<HTMLCanvasElement>) => void;
   toCanvas:                 (normX: number, normY: number) => { x: number; y: number };
   toNorm:                   (canvasX: number, canvasY: number) => { x: number; y: number };
   pendingBreak:             boolean;
@@ -102,7 +108,7 @@ export function useMeasurements({
   pushPoint, commitMeasurement, batchCommitMeasurements, clearTempPoints, scaleFactor,
   onUpdateMeasurement, isPanning, snapToCorner, getScaledCorners,
   triggerSnapFlash, snapEnabled, snapThreshold, redrawPinCanvas,
-  cursorPointRef, activeDrawingId, onScalePrompt, // ← ADD THIS
+  cursorPointRef, activeDrawingId, onScalePrompt, appendToGroupId, onAppendComplete
 }: UseMeasurementsParams): UseMeasurementsReturn {
 
   const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
@@ -141,6 +147,10 @@ export function useMeasurements({
     nextSegmentIdRef.current = null;
   }, []);
 
+  // ─── onScaleSet ref (FIX: Initialize the ref that Viewer expects) ─────────
+  const onScaleSetRef = useRef<((f: number) => void) | null>(null);
+  (useMeasurements as any)._onScaleSetRef = onScaleSetRef;
+
   // ── Clear on tool switch ──────────────────────────────────────────────────
   useEffect(() => {
     clearTempPoints();
@@ -151,18 +161,13 @@ export function useMeasurements({
 
   // ── Helper: Find point under cursor ────────────────────────────────────────
   const findPointUnderCursor = useCallback((canvasX: number, canvasY: number, hitRadius: number = 8): PointHitResult | null => {
-    // Only allow point relocation in select mode or when active tool is the same type?
-    // We'll allow in select mode to avoid conflicts with drawing
     if (activeTool !== 'select') return null;
     
     for (const m of measurements) {
       if (!m.isVisible) continue;
       if (m.drawingId !== activeDrawingId) continue;
-      
-      // Skip group headers (they have no points to relocate)
       if (m.isGroupHeader) continue;
       
-      // Check each point of the measurement
       for (let i = 0; i < m.points.length; i++) {
         const pt = m.points[i];
         const canvasPt = toCanvas(pt.x, pt.y);
@@ -212,7 +217,6 @@ export function useMeasurements({
       
       case 'Rectangle': {
         if (updatedPoints.length !== 4) {
-          // Reconstruct rectangle from two points if needed
           const p1 = toCanvas(updatedPoints[0].x, updatedPoints[0].y);
           const p2 = toCanvas(updatedPoints[2].x, updatedPoints[2].y);
           const r4 = [
@@ -280,13 +284,11 @@ export function useMeasurements({
       parentId: hit.measurement.parentId,
     };
     
-    // Change cursor to grabbing
     if (drawingCanvasRef.current) {
       drawingCanvasRef.current.style.cursor = 'grabbing';
     }
   }, [drawingCanvasRef]);
 
-  
   // ─── Imperative redraw for drag preview ────────────────────────────────────
   const redrawDrawingCanvas = useCallback((draggedPointCanvas?: { x: number; y: number }) => {
     const canvas = drawingCanvasRef.current;
@@ -301,7 +303,6 @@ export function useMeasurements({
       if (m.isGroupHeader && m.childIds && m.childIds.length > 0) return;
       if (!m.isVisible || m.points.length === 0) return;
 
-      // If this measurement is being dragged, substitute the live point
       let pts = m.points.map(p => toCanvas(p.x, p.y));
       if (draggedPointCanvas && dragStateRef.current?.measurementId === m.id) {
         pts = pts.map((p, i) =>
@@ -340,7 +341,6 @@ export function useMeasurements({
         }
         ctx.stroke();
 
-        // Draw vertices
         pts.forEach((p, idx) => {
           ctx.beginPath();
           ctx.arc(p.x, p.y, activeTool === 'select' ? 6 : 4, 0, Math.PI * 2);
@@ -350,7 +350,6 @@ export function useMeasurements({
           ctx.lineWidth = activeTool === 'select' ? 1.5 : 1;
           ctx.stroke();
 
-          // Highlight the dragged vertex
           if (dragStateRef.current?.measurementId === m.id && dragStateRef.current.pointIndex === idx) {
             ctx.beginPath();
             ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
@@ -364,7 +363,6 @@ export function useMeasurements({
       }
     });
 
-    // Draw the live cursor dot at the dragged position
     if (draggedPointCanvas) {
       ctx.save();
       ctx.beginPath();
@@ -378,7 +376,6 @@ export function useMeasurements({
       ctx.restore();
     }
   }, [measurements, toCanvas, activeTool, drawingCanvasRef, pdfDimensionsRef]);
-
 
   const handlePointDragMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!dragStateRef.current?.isDragging) return;
@@ -396,10 +393,7 @@ export function useMeasurements({
       livePoint = snapResult.point;
     }
 
-    // Update ref (not state — avoids React render cycle lag)
     cursorPointRef.current = livePoint;
-
-    // ── Imperatively repaint the drawing canvas with the live point ──────────
     redrawDrawingCanvas(livePoint);
     redrawPinCanvas();
   }, [drawingCanvasRef, snapToCorner, triggerSnapFlash, redrawPinCanvas, redrawDrawingCanvas, cursorPointRef]);
@@ -412,31 +406,22 @@ export function useMeasurements({
     const finalCanvasPoint = cursorPointRef.current;
     
     if (finalCanvasPoint && onUpdateMeasurement) {
-      // Find the measurement
       const measurement = measurements.find(m => m.id === drag.measurementId);
       if (measurement && measurement.points[drag.pointIndex]) {
-        // Convert to normalized coordinates
         const newNormPoint = toNorm(finalCanvasPoint.x, finalCanvasPoint.y);
-        
-        // Update the point
         const updatedPoints = [...measurement.points];
         updatedPoints[drag.pointIndex] = newNormPoint;
-        
-        // Recalculate quantity based on new points
         const { quantity, unit } = recalculateMeasurementQuantity(measurement, updatedPoints);
         
-        // Update the measurement
         onUpdateMeasurement(drag.measurementId, {
           points: updatedPoints,
           quantity,
           unit,
         });
         
-        // If this is a child measurement, also update parent's total
         if (drag.parentId) {
           const parent = measurements.find(m => m.id === drag.parentId);
           if (parent && parent.isGroupHeader && parent.childIds) {
-            // Recalculate parent total from all children
             const children = measurements.filter(m => parent.childIds.includes(m.id));
             let newParentTotal = 0;
             for (const child of children) {
@@ -448,13 +433,11 @@ export function useMeasurements({
       }
     }
     
-    // Reset drag state
     setDragState(null);
     dragStateRef.current = null;
     setCursorPoint(null);
     cursorPointRef.current = null;
     
-    // Reset cursor
     if (drawingCanvasRef.current) {
       drawingCanvasRef.current.style.cursor = '';
     }
@@ -462,9 +445,45 @@ export function useMeasurements({
     redrawPinCanvas();
   }, [measurements, onUpdateMeasurement, toNorm, recalculateMeasurementQuantity, drawingCanvasRef, redrawPinCanvas, cursorPointRef]);
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // ── Main drawing effect (canvas display) ───────────────────────────────────
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Group points by segmentId ─────────────────────────────────────────────
+  const groupPointsBySegment = (points: InProgressPoint[]) => {
+    const segs: { segmentId: string; points: InProgressPoint[] }[] = [];
+    let cur: InProgressPoint[] = [];
+    let curId: string | undefined;
+    for (const pt of points) {
+      const id = pt.segmentId || 'default';
+      if (curId !== id) {
+        if (cur.length) segs.push({ segmentId: curId!, points: cur });
+        cur = [pt]; curId = id;
+      } else {
+        cur.push(pt);
+      }
+    }
+    if (cur.length) segs.push({ segmentId: curId!, points: cur });
+    return segs;
+  };
+
+  // ── Post-commit snap candidate check ─────────────────────────────────────
+  const checkSnapCandidates = useCallback((pts: InProgressPoint[], measurementId: string) => {
+    if (!snapEnabledRef.current || !pdfDimensionsRef.current) return;
+    const free = pts.map((p, i) => ({ ...p, index: i })).filter(p => !p.snapped);
+    if (free.length === 0) return;
+    const corners = getScaledCorners(pageNumberRef.current);
+    const cands: PendingSnapCandidate[] = [];
+    for (const fp of free) {
+      const fc = toCanvas(fp.x, fp.y);
+      let best = snapThresholdRef.current * 2;
+      let tgt: { x: number; y: number } | null = null;
+      for (const c of corners) {
+        const d = Math.hypot(fc.x - c.x, fc.y - c.y);
+        if (d < best) { best = d; tgt = { x: c.x, y: c.y }; }
+      }
+      if (tgt) cands.push({ pointIndex: fp.index, measurementId, snapTarget: toNorm(tgt.x, tgt.y) });
+    }
+    if (cands.length) setPendingSnapCandidates(cands);
+  }, [getScaledCorners, toCanvas, toNorm, pdfDimensionsRef, pageNumberRef]);
+
+  // ─── Main drawing effect ───────────────────────────────────────────────────
   const rafIdRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -479,13 +498,8 @@ export function useMeasurements({
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // ──────────────────────────────────────────────────────────────────
-      // 1.  COMMITTED MEASUREMENTS - Draw all measurements
-      // ──────────────────────────────────────────────────────────────────
       measurements.forEach(m => {
-        // Skip group headers that have children (they have empty points array)
         if (m.isGroupHeader && m.childIds && m.childIds.length > 0) return;
-
         if (!m.isVisible || m.points.length === 0) return;
         const pts = m.points.map(p => toCanvas(p.x, p.y));
 
@@ -520,7 +534,6 @@ export function useMeasurements({
           }
           ctx.stroke();
           
-          // Draw vertices with larger hover area for select mode
           pts.forEach((p, idx) => {
             ctx.beginPath();
             ctx.arc(p.x, p.y, activeTool === 'select' ? 6 : 4, 0, Math.PI * 2);
@@ -530,7 +543,6 @@ export function useMeasurements({
             ctx.lineWidth = activeTool === 'select' ? 1.5 : 1;
             ctx.stroke();
             
-            // Highlight vertex if being dragged
             if (dragState && dragState.measurementId === m.id && dragState.pointIndex === idx) {
               ctx.beginPath();
               ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
@@ -544,7 +556,6 @@ export function useMeasurements({
         }
       });
 
-      // Draw dragging preview point
       if (dragState && cursorPoint) {
         ctx.save();
         ctx.beginPath();
@@ -558,9 +569,6 @@ export function useMeasurements({
         ctx.restore();
       }
 
-      // ──────────────────────────────────────────────────────────────────
-      // 2.  IN-PROGRESS TEMP POINTS (only when not dragging)
-      // ──────────────────────────────────────────────────────────────────
       if (!dragState) {
         const tempPx = tempPoints.map(p => ({
           ...toCanvas(p.x, p.y),
@@ -574,7 +582,6 @@ export function useMeasurements({
 
         const strokeColor = '#F59E0B';
 
-        // ── COUNT ─────────────────────────────────────────────────────────
         if (activeTool === 'count') {
           const DOT_R = 5;
           tempPx.forEach((p, idx) => {
@@ -639,7 +646,6 @@ export function useMeasurements({
           return;
         }
 
-        // ── LINEAR / POLYGON / RECTANGLE / SCALE ─────────────────────────
         ctx.strokeStyle = strokeColor;
         ctx.setLineDash([5, 5]);
         ctx.lineWidth   = 2;
@@ -702,7 +708,6 @@ export function useMeasurements({
               }
               ctx.stroke();
             } else {
-              // linear
               ctx.beginPath();
               ctx.moveTo(seg.pts[0].x, seg.pts[0].y);
               for (let i = 1; i < seg.pts.length; i++) ctx.lineTo(seg.pts[i].x, seg.pts[i].y);
@@ -812,58 +817,249 @@ export function useMeasurements({
     dragState,
   ]);
 
-  // ── onScaleSet ref ────────────────────────────────────────────────────────
-  const onScaleSetRef = useRef<((f: number) => void) | null>(null);
-  (useMeasurements as any)._onScaleSetRef = onScaleSetRef;
-
-  // ── Group points by segmentId ─────────────────────────────────────────────
-  const groupPointsBySegment = (points: InProgressPoint[]) => {
-    const segs: { segmentId: string; points: InProgressPoint[] }[] = [];
-    let cur: InProgressPoint[] = [];
-    let curId: string | undefined;
-    for (const pt of points) {
-      const id = pt.segmentId || 'default';
-      if (curId !== id) {
-        if (cur.length) segs.push({ segmentId: curId!, points: cur });
-        cur = [pt]; curId = id;
-      } else {
-        cur.push(pt);
-      }
-    }
-    if (cur.length) segs.push({ segmentId: curId!, points: cur });
-    return segs;
-  };
-
-  // ── Post-commit snap candidate check ─────────────────────────────────────
-  const checkSnapCandidates = useCallback((pts: InProgressPoint[], measurementId: string) => {
-    if (!snapEnabledRef.current || !pdfDimensionsRef.current) return;
-    const free = pts.map((p, i) => ({ ...p, index: i })).filter(p => !p.snapped);
-    if (free.length === 0) return;
-    const corners = getScaledCorners(pageNumberRef.current);
-    const cands: PendingSnapCandidate[] = [];
-    for (const fp of free) {
-      const fc = toCanvas(fp.x, fp.y);
-      let best = snapThresholdRef.current * 2;
-      let tgt: { x: number; y: number } | null = null;
-      for (const c of corners) {
-        const d = Math.hypot(fc.x - c.x, fc.y - c.y);
-        if (d < best) { best = d; tgt = { x: c.x, y: c.y }; }
-      }
-      if (tgt) cands.push({ pointIndex: fp.index, measurementId, snapTarget: toNorm(tgt.x, tgt.y) });
-    }
-    if (cands.length) setPendingSnapCandidates(cands);
-  }, [getScaledCorners, toCanvas, toNorm, pdfDimensionsRef, pageNumberRef]);
-
-  // ── finishMeasurement ─────────────────────────────────────────────────────
+  // ─── finishMeasurement with full group append support ────────────────────────
   const finishMeasurement = useCallback((
     currentTempPoints?: InProgressPoint[],
-    meta?: { label?: string; icon?: string },
+    meta?: { label?: string; icon?: string; appendToGroupId?: string },
   ) => {
     const pts = currentTempPoints ?? tempPoints;
-
-    // Always clear break state when finishing
     resetBreakState();
 
+    // ─── APPEND TO EXISTING GROUP (ALL TYPES) ───────────────────────────────
+    if (meta?.appendToGroupId) {
+      const targetGroup = measurements.find(m => m.id === meta.appendToGroupId);
+      if (!targetGroup) { clearTempPoints(); return; }
+      
+      // Map active tool to measurement type
+      const activeType = activeTool === 'linear' ? 'Length' 
+        : activeTool === 'polygon' ? 'Polygon'
+        : activeTool === 'rectangle' ? 'Rectangle'
+        : activeTool === 'count' ? 'Count'
+        : activeTool === 'point' ? 'Point'
+        : null;
+      
+      const groupType = targetGroup.type;
+      
+      if (activeType !== groupType) {
+        console.warn(`Cannot append ${activeType} to ${groupType} group`);
+        clearTempPoints();
+        return;
+      }
+      
+      // ─── POINT ───────────────────────────────────────────────────────────
+      if (activeTool === 'point') {
+        if (pts.length < 1) { clearTempPoints(); return; }
+        
+        const newChildId = crypto.randomUUID();
+        const childNumber = (targetGroup.childIds?.length ?? 0) + 1;
+        
+        commitMeasurement({
+          id: newChildId,
+          drawingId: activeDrawingId || '',
+          description: `${targetGroup.label || targetGroup.description} ${childNumber}`,
+          label: targetGroup.label || targetGroup.description,
+          type: 'Point',
+          quantity: 1,
+          unit: 'PT',
+          unitRate: 0,
+          notes: '',
+          points: [{ x: pts[0].x, y: pts[0].y }],
+          isOverridden: false,
+          color: targetGroup.color,
+          isVisible: true,
+          parentId: targetGroup.id,
+        });
+        
+        onUpdateMeasurement?.(targetGroup.id, {
+          childIds: [...(targetGroup.childIds ?? []), newChildId],
+          quantity: (targetGroup.quantity ?? 0) + 1,
+        });
+        
+        clearTempPoints();
+        setCursorPoint(null);
+        onAppendComplete?.();
+        return;
+      }
+      
+      // ─── COUNT ──────────────────────────────────────────────────────────
+      if (activeTool === 'count') {
+        if (pts.length < 1) { clearTempPoints(); return; }
+        
+        const newChildId = crypto.randomUUID();
+        const childNumber = (targetGroup.childIds?.length ?? 0) + 1;
+        
+        commitMeasurement({
+          id: newChildId,
+          drawingId: activeDrawingId || '',
+          description: `${targetGroup.label || targetGroup.description} ${childNumber}`,
+          label: targetGroup.label || targetGroup.description,
+          type: 'Count',
+          quantity: 1,
+          unit: 'EA',
+          unitRate: 0,
+          notes: '',
+          points: [{ x: pts[0].x, y: pts[0].y }],
+          isOverridden: false,
+          color: targetGroup.color,
+          isVisible: true,
+          parentId: targetGroup.id,
+        });
+        
+        onUpdateMeasurement?.(targetGroup.id, {
+          childIds: [...(targetGroup.childIds ?? []), newChildId],
+          quantity: (targetGroup.quantity ?? 0) + 1,
+        });
+        
+        clearTempPoints();
+        setCursorPoint(null);
+        onAppendComplete?.();
+        return;
+      }
+      
+      // ─── LINEAR ─────────────────────────────────────────────────────────
+      if (activeTool === 'linear') {
+        const segCanvas = pts.map(p => toCanvas(p.x, p.y));
+        let len = 0;
+        for (let i = 1; i < segCanvas.length; i++)
+          len += Math.hypot(segCanvas[i].x - segCanvas[i-1].x, segCanvas[i].y - segCanvas[i-1].y);
+        const quantity = len / scaleRef.current * scaleFactor;
+        
+        const newChildId = crypto.randomUUID();
+        
+        commitMeasurement({
+          id: newChildId,
+          drawingId: activeDrawingId || '',
+          description: `Section ${(targetGroup.childIds?.length ?? 0) + 1}`,
+          label: `Section ${(targetGroup.childIds?.length ?? 0) + 1}`,
+          type: 'Length',
+          quantity,
+          unit: 'm',
+          unitRate: 0,
+          notes: '',
+          points: pts.map(p => ({ x: p.x, y: p.y })),
+          isOverridden: false,
+          color: targetGroup.color,
+          isVisible: true,
+          parentId: targetGroup.id,
+        });
+        
+        onUpdateMeasurement?.(targetGroup.id, {
+          childIds: [...(targetGroup.childIds ?? []), newChildId],
+          quantity: (targetGroup.quantity ?? 0) + quantity,
+        });
+        
+        clearTempPoints();
+        setCursorPoint(null);
+        onAppendComplete?.();
+        return;
+      }
+      
+      // ─── POLYGON ────────────────────────────────────────────────────────
+      if (activeTool === 'polygon') {
+        const allSegs = groupPointsBySegment(pts);
+        const validSegs = allSegs.filter(s => s.points.length >= 3);
+        if (validSegs.length === 0) { clearTempPoints(); return; }
+        
+        const zoom = scaleRef.current;
+        const calcArea = (points: { x: number; y: number }[]) => {
+          let a = 0;
+          for (let i = 0; i < points.length; i++) {
+            const j = (i + 1) % points.length;
+            a += points[i].x * points[j].y - points[j].x * points[i].y;
+          }
+          return Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
+        };
+        
+        const newPoints = validSegs[0].points.map(p => ({ x: p.x, y: p.y }));
+        const newQuantity = calcArea(newPoints.map(p => toCanvas(p.x, p.y)));
+        const newChildId = crypto.randomUUID();
+        
+        commitMeasurement({
+          id: newChildId,
+          drawingId: activeDrawingId || '',
+          description: `Shape ${(targetGroup.childIds?.length ?? 0) + 1}`,
+          label: targetGroup.label || targetGroup.description,
+          type: 'Polygon',
+          quantity: newQuantity,
+          unit: 'sq m',
+          unitRate: 0,
+          notes: '',
+          points: newPoints,
+          isOverridden: false,
+          color: targetGroup.color,
+          isVisible: true,
+          parentId: targetGroup.id,
+        });
+        
+        onUpdateMeasurement?.(targetGroup.id, {
+          childIds: [...(targetGroup.childIds ?? []), newChildId],
+          quantity: (targetGroup.quantity ?? 0) + newQuantity,
+        });
+        
+        clearTempPoints();
+        setCursorPoint(null);
+        onAppendComplete?.();
+        return;
+      }
+      
+      // ─── RECTANGLE ──────────────────────────────────────────────────────
+      if (activeTool === 'rectangle') {
+        const allSegs = groupPointsBySegment(pts);
+        const validSegs = allSegs.filter(s => s.points.length === 2);
+        if (validSegs.length === 0) { clearTempPoints(); return; }
+        
+        const zoom = scaleRef.current;
+        const rectFromTwo = (p1n: { x: number; y: number }, p2n: { x: number; y: number }) => {
+          const p1 = toCanvas(p1n.x, p1n.y);
+          const p2 = toCanvas(p2n.x, p2n.y);
+          const r4 = [
+            { x: p1.x, y: p1.y }, { x: p2.x, y: p1.y },
+            { x: p2.x, y: p2.y }, { x: p1.x, y: p2.y },
+          ];
+          let a = 0;
+          for (let i = 0; i < 4; i++) {
+            const j = (i + 1) % 4;
+            a += r4[i].x * r4[j].y - r4[j].x * r4[i].y;
+          }
+          return {
+            normPoints: r4.map(p => toNorm(p.x, p.y)),
+            area: Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor,
+          };
+        };
+        
+        const { normPoints, area } = rectFromTwo(validSegs[0].points[0], validSegs[0].points[1]);
+        const newChildId = crypto.randomUUID();
+        
+        commitMeasurement({
+          id: newChildId,
+          drawingId: activeDrawingId || '',
+          description: `Rectangle ${(targetGroup.childIds?.length ?? 0) + 1}`,
+          label: targetGroup.label || targetGroup.description,
+          type: 'Rectangle',
+          quantity: area,
+          unit: 'sq m',
+          unitRate: 0,
+          notes: '',
+          points: normPoints,
+          isOverridden: false,
+          color: targetGroup.color,
+          isVisible: true,
+          parentId: targetGroup.id,
+        });
+        
+        onUpdateMeasurement?.(targetGroup.id, {
+          childIds: [...(targetGroup.childIds ?? []), newChildId],
+          quantity: (targetGroup.quantity ?? 0) + area,
+        });
+        
+        clearTempPoints();
+        setCursorPoint(null);
+        onAppendComplete?.();
+        return;
+      }
+    }
+
+    // ─── REGULAR FINISH MEASUREMENT (NO APPEND) ─────────────────────────────
     // ── Point ──────────────────────────────────────────────────────────────
     if (activeTool === 'point') {
       if (pts.length < 1) { clearTempPoints(); setCursorPoint(null); return; }
@@ -905,36 +1101,36 @@ export function useMeasurements({
         id: groupId, drawingId: activeDrawingId || '',
         description: groupLabel, label: groupLabel, icon: groupIcon, type: 'Count',
         quantity: pts.length, unit: 'EA', unitRate: 0, notes: '',
-        points: [], // EMPTY - prevents connecting lines
+        points: [],
         isOverridden: false, color: groupColor, isVisible: true,
         isGroupHeader: true, childIds,
       };
       
-      // Batch commit - parent + all children at once
       batchCommitMeasurements([parent, ...children]);
-      
       clearTempPoints(); setCursorPoint(null); 
       return;
     }
 
-    if (pts.length < 2) { clearTempPoints(); setCursorPoint(null); return; }
-
     // ── Scale ──────────────────────────────────────────────────────────────
     if (activeTool === 'scale') {
       if (tempPoints.length === 0) {
-        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+        // This case shouldn't happen in finishMeasurement
+        clearTempPoints(); setCursorPoint(null); return;
       } else {
         const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
-        const ptLen = Math.hypot(snap.point.x - p0.x, snap.point.y - p0.y) / scaleRef.current;
+        const p1 = toCanvas(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
         clearTempPoints();
         setCursorPoint(null);
         cursorPointRef.current = null;
         resetBreakState();
         setActiveTool('select');
-        onScalePrompt(ptLen); // ← fires the custom dialog instead of window.prompt
+        onScalePrompt(ptLen);
       }
       return;
     }
+
+    if (pts.length < 2) { clearTempPoints(); setCursorPoint(null); return; }
 
     const zoom       = scaleRef.current;
     const newId      = crypto.randomUUID();
@@ -961,7 +1157,6 @@ export function useMeasurements({
       const totalQty = validSegs.reduce((sum, seg) => sum + segLength(seg), 0);
 
       if (validSegs.length === 1) {
-        // Single segment - simple commit
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
@@ -970,7 +1165,6 @@ export function useMeasurements({
           isOverridden: false, color: groupColor, isVisible: true,
         });
       } else {
-        // Multiple segments - batch commit ALL at once
         const childIds: string[] = [];
         const children: TakeoffRow[] = [];
 
@@ -993,12 +1187,11 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Length', quantity: totalQty, unit: 'm', unitRate: 0, notes: '',
-          points: [], // EMPTY - prevents connecting lines
+          points: [],
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 
@@ -1061,12 +1254,11 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
-          points: [], // EMPTY - prevents connecting lines
+          points: [],
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 
@@ -1139,12 +1331,11 @@ export function useMeasurements({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Rectangle', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
-          points: [], // EMPTY - prevents connecting lines
+          points: [],
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
         };
         
-        // Batch commit - parent + all children at once
         batchCommitMeasurements([parent, ...children]);
       }
 
@@ -1155,15 +1346,13 @@ export function useMeasurements({
   }, [
     tempPoints, activeTool, scaleFactor, commitMeasurement, batchCommitMeasurements,
     clearTempPoints, setActiveTool, checkSnapCandidates, toCanvas, toNorm,
-    activeDrawingId, scaleRef, resetBreakState,
+    activeDrawingId, scaleRef, resetBreakState, onUpdateMeasurement, measurements,
+    onScalePrompt, cursorPointRef, onAppendComplete, pushPoint
   ]);
 
   // ── handleCanvasClick (LEFT-CLICK ONLY) ───────────────────────────────────
-  // Modified to check for point dragging first
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    // Don't handle click if we're dragging a point (will be handled by drag end)
     if (dragState) return;
-    
     if (activeTool === 'select') return;
     if (e.button !== 0) return;
 
@@ -1240,48 +1429,43 @@ export function useMeasurements({
       return;
     }
 
-  // ── Scale ──────────────────────────────────────────────────────────────────────
-  if (activeTool === 'scale') {
-    if (tempPoints.length === 0) {
-      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+    if (activeTool === 'scale') {
+      if (tempPoints.length === 0) {
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
       } else {
-      const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
-      const p1 = { x: snap.point.x, y: snap.point.y };
-      const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
-      clearTempPoints();
-      setCursorPoint(null);
-      cursorPointRef.current = null;
-      resetBreakState();
-      setActiveTool('select');
-      onScalePrompt(ptLen); // ← custom dialog, no window.prompt
+        const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
+        const p1 = { x: snap.point.x, y: snap.point.y };
+        const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
+        clearTempPoints();
+        setCursorPoint(null);
+        cursorPointRef.current = null;
+        resetBreakState();
+        setActiveTool('select');
+        onScalePrompt(ptLen);
+      }
+      return;
     }
-    return;
-  }
 
     pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
   }, [
-      activeTool, snapToCorner, triggerSnapFlash, toNorm, toCanvas,
-      commitMeasurement, pushPoint, clearTempPoints, drawingCanvasRef, activeDrawingId,
-      tempPoints, pendingBreak, dragState, scaleRef, resetBreakState,
-      setActiveTool, cursorPointRef, onScalePrompt, // ← ADD
-    ]);
+    activeTool, snapToCorner, triggerSnapFlash, toNorm, toCanvas,
+    commitMeasurement, pushPoint, clearTempPoints, drawingCanvasRef, activeDrawingId,
+    tempPoints, pendingBreak, dragState, scaleRef, resetBreakState,
+    setActiveTool, cursorPointRef, onScalePrompt,
+  ]);
 
-  // ── NEW: handleCanvasPointerDown for point relocation ──────────────────────
+  // ── handleCanvasPointerDown for point relocation ──────────────────────
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    // Only handle in select mode or when we want to allow point relocation
-    // We'll allow relocation in select mode to avoid conflicts
-    if (activeTool !== 'select') return;
+    if (activeTool !== 'select') return false;
     
     const rect = drawingCanvasRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    if (!rect) return false;
     
     const canvasX = (e.clientX - rect.left) * (drawingCanvasRef.current!.width / rect.width);
     const canvasY = (e.clientY - rect.top) * (drawingCanvasRef.current!.height / rect.height);
     
-    // Check if clicking on an existing point
     const hit = findPointUnderCursor(canvasX, canvasY);
     if (hit) {
-      // Start dragging this point
       handlePointDragStart(e, hit);
       e.preventDefault();
       e.stopPropagation();
@@ -1291,17 +1475,13 @@ export function useMeasurements({
     return false;
   }, [activeTool, drawingCanvasRef, findPointUnderCursor, handlePointDragStart]);
 
-  
-
-  // ── Combined pointer move handler (handles both drawing and dragging) ──────
+  // ── Combined pointer move handler ──────────────────────────────────────
   const handleCanvasPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    // If we're dragging a point, handle that
     if (dragStateRef.current?.isDragging) {
       handlePointDragMove(e);
       return;
     }
     
-    // Otherwise, handle normal drawing cursor movement
     if (activeTool === 'select' || isPanning) return;
     const rect = drawingCanvasRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -1329,28 +1509,32 @@ export function useMeasurements({
     if (activeTool === 'select') return;
 
     if (activeTool === 'count' || activeTool === 'point') {
-      finishMeasurement();
+      finishMeasurement(undefined, appendToGroupId ? { appendToGroupId } : undefined);
       return;
     }
 
     if (activeTool === 'linear' || activeTool === 'polygon') {
       if (tempPoints.length === 0) return;
+      if (appendToGroupId && tempPoints.length >= (activeTool === 'linear' ? 2 : 3)) {
+        finishMeasurement(undefined, { appendToGroupId });
+        return;
+      }
       nextSegmentIdRef.current = crypto.randomUUID();
       setPendingBreak(true);
       return;
     }
-
+    
     if (activeTool === 'rectangle') {
       if (tempPoints.length === 0) return;
-      const segs = groupPointsBySegment(tempPoints);
-      const lastSeg = segs[segs.length - 1];
-      if (lastSeg && lastSeg.points.length === 2) {
-        nextSegmentIdRef.current = crypto.randomUUID();
-        setPendingBreak(true);
+      if (appendToGroupId && tempPoints.length >= 2) {
+        finishMeasurement(undefined, { appendToGroupId });
+        return;
       }
+      nextSegmentIdRef.current = crypto.randomUUID();
+      setPendingBreak(true);
       return;
     }
-  }, [activeTool, tempPoints, finishMeasurement]);
+  }, [activeTool, tempPoints, finishMeasurement, appendToGroupId]);
 
   return {
     cursorPoint, setCursorPoint,
@@ -1360,7 +1544,7 @@ export function useMeasurements({
     handleContextMenu,
     handleCanvasPointerMove,
     handleCanvasPointerDown,
-    handleCanvasPointerUp, // ADD THIS LINE
+    handleCanvasPointerUp,
     toCanvas, toNorm,
     pendingBreak,
   };

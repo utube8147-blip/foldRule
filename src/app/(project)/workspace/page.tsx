@@ -4,6 +4,8 @@
 //    1. deleteMeasurement imported from useTakeoffContext
 //    2. Passed to Viewer via onDeleteMeasurement prop
 //    3. All types consistent
+//    4. Group append support for all measurement types
+//    5. Auto-fix existing groups with wrong types
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -69,8 +71,28 @@ export default function Workspace() {
   const [toasts, setToasts]                     = useState<any[]>([]);
   const [isMounted, setIsMounted]               = useState(false);
   const [toolbarAPI, setToolbarAPI]             = useState<ViewerToolbarAPI | null>(null);
+  
+  // ── Group append state ─────────────────────────────────────────────────────
+  const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
+
+  // ── FIX EXISTING GROUPS WITH WRONG TYPES ───────────────────────────────────
+  // This fixes polygon/rectangle groups that were created with wrong type
+  // Can be removed after all existing data is clean
+  useEffect(() => {
+    const groupsToFix = ps.measurements.filter(m => 
+      m.isGroupHeader && m.childIds && m.childIds.length > 0
+    );
+    
+    groupsToFix.forEach(group => {
+      const firstChild = ps.measurements.find(c => c.id === group.childIds?.[0]);
+      if (firstChild && group.type !== firstChild.type) {
+        console.log(`Fixing group ${group.id}: ${group.type} → ${firstChild.type}`);
+        updateMeasurement(group.id, { type: firstChild.type });
+      }
+    });
+  }, [ps.measurements, updateMeasurement]);
 
   // Memoize derived values to prevent unnecessary recalculations
   const activeDrawing = useMemo(() => 
@@ -260,6 +282,31 @@ export default function Workspace() {
       addToast(`${template.name.toUpperCase()} ADDED`, 'success');
     }
   };
+
+  // ── Group append handlers ──────────────────────────────────────────────────
+  const handleAddSegmentToGroup = useCallback((groupId: string, groupType: string) => {
+    console.log('Add segment to group:', { groupId, groupType });
+    
+    setAppendToGroupId(groupId);
+    
+    // Map the group type to the appropriate tool
+    const toolMap: Record<string, ToolType> = {
+      'Length': 'linear',
+      'Polygon': 'polygon',
+      'Rectangle': 'rectangle',
+      'Count': 'count',
+      'Point': 'point',
+    };
+    const newTool = toolMap[groupType] || 'linear';
+    
+    console.log('Setting tool to:', newTool);
+    setActiveTool(newTool);
+    addToast(`ADDING TO GROUP: Use ${newTool} tool to draw new item`, 'info');
+  }, [setActiveTool]);
+
+  const handleAppendComplete = useCallback(() => {
+    setAppendToGroupId(null);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -536,6 +583,8 @@ export default function Workspace() {
                 onSelectPreset={handlePresetSelect}
                 hideToolbar={true}
                 onToolbarReady={handleToolbarReady}
+                appendToGroupId={appendToGroupId}
+                onAppendComplete={handleAppendComplete}
               />
             </div>
 
@@ -550,6 +599,7 @@ export default function Workspace() {
                 onDelete={deleteMeasurement}
                 onToggleVisibility={toggleVisibility}
                 onExpand={() => router.push('/takeoff-full')}
+                onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={() => handleAddMeasurement({
                   id: crypto.randomUUID(),
                   drawingId: activeDrawing?.id || '',

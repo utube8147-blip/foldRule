@@ -12,6 +12,7 @@ interface TakeoffTableProps {
   onAddManual: () => void;
   onToggleVisibility: (id?: string) => void;
   onExpand?: () => void;
+  onAddSegmentToGroup?: (groupId: string, groupType: string) => void; // ← ADD groupType parameter
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
 
@@ -112,6 +113,7 @@ export function TakeoffTable({
   onAddManual,
   onToggleVisibility,
   onExpand,
+  onAddSegmentToGroup,
   batchUpdateMeasurements,
 }: TakeoffTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -505,6 +507,16 @@ export function TakeoffTable({
                             className={cn('transition-colors', allItemsVisible ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
                           >
                             {allItemsVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onAddSegmentToGroup?.(groupId, header.type);  // ← Pass the type
+                            }}
+                            className="text-zinc-600 hover:text-blue-400 transition-colors"
+                            title="Add segment to this group"
+                          >
+                            <Plus className="w-3 h-3" />
                           </button>
                           
                           <button
