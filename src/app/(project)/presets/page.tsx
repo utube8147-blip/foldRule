@@ -339,11 +339,11 @@ export default function PresetsPage() {
 
       const parts: Partial<TakeoffRow>[] = [];
       if (area > 0) {
-        parts.push({ description: 'Roof Covering', type: 'Polygon', quantity: +adjustedArea, unit: 'm²', category: 'Roofing', notes: `Material: ${fd.material || 'Tile'} | Pitch: ${pitch}°` });
-        parts.push({ description: 'Underlay / Membrane', type: 'Polygon', quantity: +(parseFloat(adjustedArea) * 1.1).toFixed(2), unit: 'm²', category: 'Roofing', notes: '+10% overlap | Type: Breathable membrane' });
+        parts.push({ description: 'Roof Covering', type: 'Area', quantity: +adjustedArea, unit: 'm²', category: 'Roofing', notes: `Material: ${fd.material || 'Tile'} | Pitch: ${pitch}°` });
+        parts.push({ description: 'Underlay / Membrane', type: 'Area', quantity: +(parseFloat(adjustedArea) * 1.1).toFixed(2), unit: 'm²', category: 'Roofing', notes: '+10% overlap | Type: Breathable membrane' });
         parts.push({ description: 'Guttering & Downpipes', type: 'Length', quantity: +(area / 10).toFixed(1), unit: 'm', category: 'Drainage', notes: `Material: ${fd.guttering || 'Aluminium'}` });
       }
-      if (fd.insulation) parts.push({ description: 'Roof Insulation', type: 'Polygon', quantity: area, unit: 'm²', category: 'Insulation', notes: `Thickness: ${fd.insulation}` });
+      if (fd.insulation) parts.push({ description: 'Roof Insulation', type: 'Area', quantity: area, unit: 'm²', category: 'Insulation', notes: `Thickness: ${fd.insulation}` });
       parts.push({ description: 'Installation & Flashing', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes valleys, ridges, flashings, & sealing' });
 
       addMeasurement({
@@ -400,7 +400,7 @@ export default function PresetsPage() {
 
       const parts: Partial<TakeoffRow>[] = [];
       if (area > 0) {
-        parts.push({ description: 'Ceiling Finishes', type: 'Polygon', quantity: area, unit: 'm²', category: 'Finishes', notes: `Material: ${fd.material || 'Plaster'} | Type: ${fd.type || 'Suspended'}` });
+        parts.push({ description: 'Ceiling Finishes', type: 'Area', quantity: area, unit: 'm²', category: 'Finishes', notes: `Material: ${fd.material || 'Plaster'} | Type: ${fd.type || 'Suspended'}` });
       }
       
       if (fd.type === 'Suspended') {
@@ -408,7 +408,7 @@ export default function PresetsPage() {
         parts.push({ description: 'Hanger Wire / Brackets', type: 'Count', quantity: Math.max(1, Math.ceil(area / 2)), unit: 'sets', category: 'Hardware', notes: 'Threaded rod, brackets, clips' });
       }
       
-      if (fd.acousticAbsorption) parts.push({ description: 'Acoustic Treatment', type: 'Polygon', quantity: area, unit: 'm²', category: 'Finishes', notes: 'Acoustic panels / mineral wool backing' });
+      if (fd.acousticAbsorption) parts.push({ description: 'Acoustic Treatment', type: 'Area', quantity: area, unit: 'm²', category: 'Finishes', notes: 'Acoustic panels / mineral wool backing' });
       
       parts.push({ description: 'Installation & Access', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes access panels, fire rating checks' });
 
