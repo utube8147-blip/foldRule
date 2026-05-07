@@ -7,6 +7,7 @@
 //     with amber "flagged" rows for items with unitRate changes
 //   • Right panel: Sync Status — Change Detection card, Impacted Line Items,
 //     Visual Reference placeholder, Accept / Discard footer
+//   • FIXED: Proper hierarchical display of groups and children with indentation
 
 'use client';
 
@@ -91,7 +92,6 @@ function MaterialCell({
               materialId: mat.id,
               unitRate: total,
               unit: mat.unit,
-              // description is NOT updated here
             });
           } else {
             onUpdate(row.id, { materialId: undefined });
@@ -166,13 +166,13 @@ export default function TakeoffFullPage() {
     toggleVisibility,
   } = useTakeoffContext();
 
-  const [search, setSearch]                 = useState('');
-  const [activeNav, setActiveNav]           = useState('Files');
+  const [search, setSearch] = useState('');
+  const [activeNav, setActiveNav] = useState('Files');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
-  const [filterType, setFilterType]         = useState('All');
+  const [filterType, setFilterType] = useState('All');
 
-  // Configurator strip state (cosmetic — wire to real logic as needed)
-  const [wallType, setWallType]       = useState('A1 - LOAD BEARING');
+  // Configurator strip state
+  const [wallType, setWallType] = useState('A1 - LOAD BEARING');
   const [studSpacing, setStudSpacing] = useState('450');
   const [pendingSync, setPendingSync] = useState(false);
 
@@ -186,34 +186,74 @@ export default function TakeoffFullPage() {
     return (
       m.description.toLowerCase().includes(q) ||
       (m.notes ?? '').toLowerCase().includes(q) ||
-      ((m.presetId ?? '') as string).toLowerCase().includes(q)
+      ((m.presetId ?? '') as string).toLowerCase().includes(q) ||
+      (m.groupName ?? '').toLowerCase().includes(q)
     );
   }), [all, search]);
 
-  // Organise into groups + ungrouped
+  // ─── FIXED: Organise into groups + ungrouped with proper hierarchy ──────────
   const { groups, ungrouped } = useMemo(() => {
     const groups = new Map<string, { header: TakeoffRow; items: TakeoffRow[] }>();
     const ungrouped: TakeoffRow[] = [];
+    
+    // First pass: find all group headers
     filtered.forEach((m: TakeoffRow) => {
-      if (m.isGroupHeader && m.groupId) {
-        groups.set(m.groupId, { header: m, items: [] });
-      } else if (m.groupId && groups.has(m.groupId)) {
-        groups.get(m.groupId)!.items.push(m);
-      } else if (!m.isGroupHeader) {
+      // Check if this is a group header
+      if (m.isGroupHeader === true || (m.childIds && m.childIds.length > 0)) {
+        groups.set(m.id, { header: m, items: [] });
+      }
+    });
+    
+    // Second pass: assign children to their parents
+    filtered.forEach((m: TakeoffRow) => {
+      // Skip if this is a group header itself
+      if (groups.has(m.id)) return;
+      
+      // Check if it has a parentId
+      if (m.parentId && groups.has(m.parentId)) {
+        groups.get(m.parentId)!.items.push(m);
+        return;
+      }
+      
+      // Check if it's referenced in any header's childIds
+      let assigned = false;
+      for (const [groupId, group] of groups) {
+        if (group.header.childIds?.includes(m.id)) {
+          group.items.push(m);
+          assigned = true;
+          break;
+        }
+      }
+      
+      // If not assigned to any group, it's ungrouped
+      if (!assigned && !m.isGroupHeader) {
         ungrouped.push(m);
       }
     });
+    
+    // Sort items within each group by index or description
+    for (const [_, group] of groups) {
+      group.items.sort((a, b) => {
+        // Try to maintain order based on childIds if available
+        if (group.header.childIds) {
+          const aIdx = group.header.childIds.indexOf(a.id);
+          const bIdx = group.header.childIds.indexOf(b.id);
+          if (aIdx !== -1 && bIdx !== -1) return aIdx - bIdx;
+        }
+        return a.description.localeCompare(b.description);
+      });
+    }
+    
     return { groups, ungrouped };
   }, [filtered]);
 
-  const totalCost  = all.reduce((s: number, m: { quantity: number; unitRate: number; }) => s + m.quantity * m.unitRate, 0);
-  const totalArea  = all.filter((m: { unit: string; }) => m.unit === 'm²').reduce((s: any, m: { quantity: any; }) => s + m.quantity, 0);
-  const flaggedRows = [...ungrouped, ...Array.from(groups.values()).flatMap(g => g.items)]
-    .filter(isFlagged);
-  const costDelta  = flaggedRows.reduce((s, r) => s + r.quantity * r.unitRate * 0.33, 0);
+  const totalCost = all.reduce((s: number, m: { quantity: number; unitRate: number; }) => s + m.quantity * m.unitRate, 0);
+  const totalArea = all.filter((m: { unit: string; }) => m.unit === 'm²').reduce((s: any, m: { quantity: any; }) => s + m.quantity, 0);
+  const flaggedRows = [...ungrouped, ...Array.from(groups.values()).flatMap(g => g.items)].filter(isFlagged);
+  const costDelta = flaggedRows.reduce((s, r) => s + r.quantity * r.unitRate * 0.33, 0);
 
   const groupCost = (items: TakeoffRow[]) => items.reduce((s, i) => s + i.quantity * i.unitRate, 0);
-  const groupQty  = (items: TakeoffRow[]) => items.reduce((s, i) => s + i.quantity, 0);
+  const groupQty = (items: TakeoffRow[]) => items.reduce((s, i) => s + i.quantity, 0);
 
   const toggleGroup = (id: string) =>
     setExpandedGroups(prev => {
@@ -240,26 +280,34 @@ export default function TakeoffFullPage() {
 
   const handleAddManual = () =>
     addMeasurement({
-      description:  'Manual Item',
-      type:         'Length',
-      quantity:     0,
-      unit:         'm',
-      unitRate:     0,
-      notes:        '',
-      points:       [],
+      description: 'Manual Item',
+      type: 'Length',
+      quantity: 0,
+      unit: 'm',
+      unitRate: 0,
+      notes: '',
+      points: [],
       isOverridden: false,
-      color:        '#EF9F27',
-      isVisible:    true,
+      color: '#EF9F27',
+      isVisible: true,
     } as any);
 
-  const allRows = [...Array.from(groups.values()).flatMap(g => g.items), ...ungrouped];
+  // Helper to get group icon based on type
+  const getGroupIcon = (groupType: string) => {
+    switch (groupType) {
+      case 'carcass': return '🚪';
+      case 'staircase': return '🪜';
+      case 'roof': return '🏠';
+      case 'ceiling': return '⬆️';
+      default: return '📁';
+    }
+  };
 
   return (
     <div className="flex flex-col h-screen bg-[#131313] font-mono overflow-hidden">
 
       {/* ── Top navigation bar ─────────────────────────────────────────────────── */}
       <header className="fixed top-0 left-0 right-0 h-14 z-50 bg-zinc-950 border-b border-zinc-800 flex items-center justify-between px-4">
-        {/* Left: brand + nav links */}
         <div className="flex items-center gap-8">
           <div className="text-[17px] font-black text-amber-500 tracking-tighter uppercase">
             ESTIMATOR_PRO_V1
@@ -282,7 +330,6 @@ export default function TakeoffFullPage() {
           </nav>
         </div>
 
-        {/* Right: actions */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => router.back()}
@@ -331,12 +378,12 @@ export default function TakeoffFullPage() {
         <aside className="fixed left-0 top-14 h-[calc(100vh-3.5rem)] w-20 bg-zinc-900 border-r border-zinc-800 flex flex-col items-center py-4 z-40">
           <div className="flex flex-col gap-1 w-full items-center flex-1">
             {[
-              { icon: FolderOpen, label: 'Files'    },
-              { icon: Layers,     label: 'Layers'   },
-              { icon: Target,     label: 'Snap'     },
-              { icon: Wrench,     label: 'Tools'    },
-              { icon: History,    label: 'History'  },
-              { icon: Users,      label: 'Team'     },
+              { icon: FolderOpen, label: 'Files' },
+              { icon: Layers, label: 'Layers' },
+              { icon: Target, label: 'Snap' },
+              { icon: Wrench, label: 'Tools' },
+              { icon: History, label: 'History' },
+              { icon: Users, label: 'Team' },
             ].map(({ icon, label }) => (
               <SideNavItem
                 key={label}
@@ -348,8 +395,8 @@ export default function TakeoffFullPage() {
             ))}
           </div>
           <div className="flex flex-col gap-1 w-full items-center">
-            <SideNavItem icon={HelpCircle} label="Help"     />
-            <SideNavItem icon={Settings}   label="Settings" />
+            <SideNavItem icon={HelpCircle} label="Help" />
+            <SideNavItem icon={Settings} label="Settings" />
           </div>
         </aside>
 
@@ -370,7 +417,7 @@ export default function TakeoffFullPage() {
                   </span>
                 </div>
                 <div className="text-[11px] text-zinc-600">
-                  {all.length} measurements · {groups.size} assemblies
+                  {all.length} measurements · {groups.size} assemblies · {ungrouped.length} items
                 </div>
               </div>
               <div className="flex gap-3">
@@ -393,7 +440,6 @@ export default function TakeoffFullPage() {
               </div>
               <div className="h-5 w-px bg-zinc-800 flex-shrink-0" />
 
-              {/* Wall type */}
               <div className="flex flex-col flex-shrink-0">
                 <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Wall Type</label>
                 <select
@@ -407,7 +453,6 @@ export default function TakeoffFullPage() {
                 </select>
               </div>
 
-              {/* Stud spacing */}
               <div className="flex flex-col flex-shrink-0">
                 <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Stud Spacing</label>
                 <div className="flex items-center">
@@ -426,7 +471,6 @@ export default function TakeoffFullPage() {
                 </div>
               </div>
 
-              {/* Track depth — disabled */}
               <div className="flex flex-col flex-shrink-0 opacity-50">
                 <label className="text-[9px] text-zinc-500 uppercase font-bold tracking-widest mb-1">Track Depth</label>
                 <div className="flex items-center">
@@ -440,7 +484,6 @@ export default function TakeoffFullPage() {
                 </div>
               </div>
 
-              {/* Search */}
               <div className="flex items-center gap-2 bg-zinc-950 border border-zinc-800 px-2 py-1 ml-2 focus-within:border-amber-500/50 transition-colors flex-shrink-0">
                 <Search className="w-3 h-3 text-zinc-600" />
                 <input
@@ -472,10 +515,10 @@ export default function TakeoffFullPage() {
               </div>
             </div>
 
-            {/* ── Takeoff table ───────────────────────────────────────────────── */}
+            {/* ── Takeoff table with hierarchy ───────────────────────────────────── */}
             <div className="flex-1 overflow-auto bg-[#0d0d0d]"
                  style={{ scrollbarWidth: 'thin', scrollbarColor: '#2a2a2a transparent' }}>
-              <table className="w-full text-left border-collapse min-w-[800px]">
+              <table className="w-full text-left border-collapse min-w-[1000px]">
                 <thead className="sticky top-0 bg-zinc-900 z-10">
                   <tr className="border-b border-zinc-700">
                     <th className="w-10 p-2 border-r border-zinc-800" />
@@ -491,38 +534,54 @@ export default function TakeoffFullPage() {
                 </thead>
                 <tbody className="text-[12px]">
 
-                  {/* Groups */}
+                  {/* GROUPS SECTION */}
                   {Array.from(groups.entries()).map(([groupId, { header, items }], gIdx) => {
                     const expanded = expandedGroups.has(groupId);
                     const gCode = `G-${String(gIdx + 1).padStart(3, '0')}-A`;
+                    const groupTotal = groupCost(items);
+                    const groupTotalQty = groupQty(items);
+                    
                     return (
                       <React.Fragment key={groupId}>
-                        {/* Group header row */}
+                        {/* GROUP HEADER ROW - with visual hierarchy indicator */}
                         <tr
-                          className="border-b border-zinc-800 bg-zinc-900/30 cursor-pointer hover:bg-zinc-800/40 transition-colors group"
+                          className="border-t-2 border-amber-500/30 bg-zinc-900/60 cursor-pointer hover:bg-zinc-800/60 transition-colors group"
                           onClick={() => toggleGroup(groupId)}
                         >
                           <td className="p-2 border-r border-zinc-800 text-center">
-                            <FolderOpenDot className="w-3.5 h-3.5 text-amber-500 mx-auto" />
+                            <FolderOpenDot className="w-4 h-4 text-amber-500 mx-auto" />
                           </td>
-                          <td className="p-2 border-r border-zinc-800 text-amber-500 font-bold">{gCode}</td>
+                          <td className="p-2 border-r border-zinc-800">
+                            <span className="text-amber-500 font-bold text-[10px] bg-amber-500/10 px-1.5 py-0.5 rounded">
+                              {gCode}
+                            </span>
+                          </td>
                           <td className="p-2 border-r border-zinc-800" colSpan={2}>
                             <div className="flex items-center gap-2">
                               {expanded
-                                ? <ChevronDown className="w-3 h-3 text-amber-500 flex-shrink-0" />
-                                : <ChevronRight className="w-3 h-3 text-amber-500 flex-shrink-0" />}
-                              <span className="font-black text-amber-500 uppercase text-[11px] tracking-wide">
-                                {header.groupName}
+                                ? <ChevronDown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+                                : <ChevronRight className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
+                              <span className="text-[12px] font-black text-amber-500 uppercase tracking-wide">
+                                {header.groupName || header.description}
                               </span>
-                              <span className="text-[9px] text-zinc-600">({items.length} items)</span>
+                              <span className="text-[9px] text-zinc-600 bg-zinc-800/50 px-2 py-0.5 rounded">
+                                {items.length} {items.length === 1 ? 'item' : 'items'}
+                              </span>
+                              {header.presetId && (
+                                <span className="text-[8px] text-zinc-700 border border-zinc-700 px-1.5 py-0.5 rounded">
+                                  {header.presetId}
+                                </span>
+                              )}
                             </div>
                           </td>
-                          <td className="p-2 border-r border-zinc-800 text-right text-amber-400 font-bold">
-                            {groupQty(items).toFixed(2)}
-                          </td>
+                          <td className="p-2 border-r border-zinc-800 text-right">
+                            <span className="text-amber-400 font-bold text-[11px]">{groupTotalQty.toFixed(2)}</span>
+                           </td>
                           <td className="p-2 border-r border-zinc-800 text-center text-zinc-600 text-[10px]">ASSY</td>
                           <td className="p-2 border-r border-zinc-800 text-right text-zinc-600">—</td>
-                          <td className="p-2 text-right font-black text-amber-500">{formatCurrency(groupCost(items))}</td>
+                          <td className="p-2 text-right">
+                            <span className="font-black text-amber-500 text-[12px]">{formatCurrency(groupTotal)}</span>
+                           </td>
                           <td className="p-2 text-center border-l border-zinc-800">
                             <button
                               onClick={e => { e.stopPropagation(); deleteMeasurement(header.id); }}
@@ -533,56 +592,66 @@ export default function TakeoffFullPage() {
                            </td>
                          </tr>
 
-                        {/* Group items */}
+                        {/* GROUP CHILDREN - with indentation to show hierarchy */}
                         {expanded && items.map((item, iIdx) => {
                           const flagged = isFlagged(item);
-                          const code = rowCode(item, gIdx * 100 + iIdx);
+                          const childCode = `${gCode}.${String(iIdx + 1).padStart(2, '0')}`;
                           return (
                             <tr
                               key={item.id}
                               className={cn(
-                                'border-b transition-colors group/item',
+                                'border-b transition-colors group/item hover:bg-zinc-800/20',
                                 flagged
                                   ? 'border-amber-900/30 bg-amber-500/5 hover:bg-amber-500/10'
-                                  : 'border-zinc-800 bg-zinc-900/10 hover:bg-zinc-800/30',
+                                  : 'border-zinc-800/50',
+                                iIdx % 2 === 1 && !flagged && 'bg-zinc-900/20',
                               )}
                             >
                               <td className="p-2 border-r border-zinc-800 text-center">
                                 {flagged
-                                  ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" style={{ fill: 'currentColor', opacity: 0.9 }} />
-                                  : <span className="w-2 h-2 inline-block bg-zinc-700 mx-auto" />}
+                                  ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" />
+                                  : <div className="w-1.5 h-1.5 rounded-full bg-zinc-600 mx-auto" />}
                                </td>
-                              <td className={cn('p-2 border-r border-zinc-800 font-bold pl-6', flagged ? 'text-amber-500' : 'text-zinc-400')}>
-                                {code}
-                               </td>
-                              {/* Description — free text, not affected by material */}
                               <td className="p-2 border-r border-zinc-800">
-                                <div className="flex items-center gap-2 pl-4">
-                                  <Package className="w-3 h-3 text-zinc-700 flex-shrink-0" />
+                                <span className={cn('text-[10px] font-mono', flagged ? 'text-amber-500' : 'text-zinc-500')}>
+                                  {childCode}
+                                </span>
+                               </td>
+                              {/* INDENTED DESCRIPTION - shows hierarchy clearly */}
+                              <td className="p-2 border-r border-zinc-800">
+                                <div className="flex items-center gap-2 pl-6">
+                                  <div className="w-4 h-px bg-zinc-700" />
+                                  <Package className="w-2.5 h-2.5 text-zinc-600 flex-shrink-0" />
                                   <EditableCell row={item} field="description" type="text" onUpdate={updateMeasurement} />
                                 </div>
                                </td>
-                              {/* Material — separate dropdown */}
                               <td className="p-2 border-r border-zinc-800">
                                 <MaterialCell row={item} materials={ps.materials as any} onUpdate={updateMeasurement} />
                                </td>
-                              <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
+                              <td className={cn('p-2 border-r border-zinc-800 text-right', flagged ? 'text-amber-500' : '')}>
                                 <div className="flex justify-end items-center gap-1">
                                   <EditableCell row={item} field="quantity" type="number" onUpdate={updateMeasurement} />
                                   {item.isOverridden && <Pencil className="w-2 h-2 text-amber-500/50 flex-shrink-0" />}
                                 </div>
                                </td>
-                              <td className="p-2 border-r border-zinc-800 text-center text-zinc-400">
-                                <EditableCell row={item} field="unit" onUpdate={updateMeasurement} />
+                              <td className="p-2 border-r border-zinc-800 text-center text-zinc-500 text-[10px]">
+                                {item.unit}
                                </td>
-                              <td className="p-2 border-r border-zinc-800 text-right text-zinc-400">
+                              <td className="p-2 border-r border-zinc-800 text-right">
                                 <EditableCell row={item} field="unitRate" type="number" onUpdate={updateMeasurement} />
                                </td>
-                              <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-200')}>
+                              <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-300')}>
                                 {formatCurrency(item.quantity * item.unitRate)}
                                </td>
                               <td className="p-2 text-center border-l border-zinc-800">
                                 <div className="flex items-center justify-center gap-1.5">
+                                  <label className="cursor-pointer">
+                                    <input type="color" value={item.color || '#EF9F27'}
+                                      onChange={e => updateMeasurement(item.id, { color: e.target.value })}
+                                      className="opacity-0 w-0 h-0 absolute pointer-events-none" />
+                                    <div className="w-3 h-3 rounded-full hover:scale-110 transition-transform shadow-sm opacity-0 group-hover/item:opacity-100"
+                                      style={{ backgroundColor: item.color || '#EF9F27' }} />
+                                  </label>
                                   <button onClick={() => toggleVisibility(item.id)}
                                     className="text-zinc-700 hover:text-amber-400 transition-colors opacity-0 group-hover/item:opacity-100">
                                     {item.isVisible !== false ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
@@ -597,25 +666,29 @@ export default function TakeoffFullPage() {
                           );
                         })}
 
-                        {/* Group subtotal row */}
+                        {/* GROUP SUBTOTAL ROW - shows group summary */}
                         {expanded && items.length > 0 && (
-                          <tr className="bg-zinc-950 border-b border-zinc-900">
-                            <td colSpan={9} className="p-1.5 px-4 text-right">
-                              <div className="flex items-center justify-end gap-4 text-[9px] text-zinc-600">
-                                <span>Subtotal: {formatCurrency(groupCost(items))}</span>
-                                <span className="w-px h-2 bg-zinc-800" />
-                                <span>+10% waste: {formatCurrency(groupCost(items) * 0.1)}</span>
-                                <span className="w-px h-2 bg-zinc-800" />
-                                <span className="text-amber-500 font-bold">Total: {formatCurrency(groupCost(items) * 1.1)}</span>
+                          <tr className="bg-zinc-950/80 border-b border-zinc-800">
+                            <td colSpan={8} className="p-2 px-4 text-right">
+                              <div className="flex items-center justify-end gap-4 text-[9px]">
+                                <span className="text-zinc-600">Group Subtotal:</span>
+                                <span className="text-amber-500 font-bold">{formatCurrency(groupCost(items))}</span>
+                                <span className="text-zinc-700">|</span>
+                                <span className="text-zinc-600">+10% waste:</span>
+                                <span className="text-amber-500/80">{formatCurrency(groupCost(items) * 0.1)}</span>
+                                <span className="text-zinc-700">|</span>
+                                <span className="text-zinc-600">Total:</span>
+                                <span className="text-amber-500 font-black">{formatCurrency(groupCost(items) * 1.1)}</span>
                               </div>
                              </td>
+                            <td className="p-2 border-l border-zinc-800" />
                            </tr>
                         )}
                       </React.Fragment>
                     );
                   })}
 
-                  {/* Ungrouped rows */}
+                  {/* UNGROUPED ROWS SECTION */}
                   {ungrouped.map((row, idx) => {
                     const flagged = isFlagged(row);
                     const code = rowCode(row, idx);
@@ -631,43 +704,44 @@ export default function TakeoffFullPage() {
                       >
                         <td className="p-2 border-r border-zinc-800 text-center">
                           {flagged
-                            ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" style={{ fill: 'currentColor', opacity: 0.9 }} />
-                            : <span className="w-2 h-2 inline-block bg-zinc-700 mx-auto" />}
+                            ? <TriangleAlert className="w-3.5 h-3.5 text-amber-500 mx-auto" />
+                            : <div className="w-1.5 h-1.5 rounded-full bg-zinc-600 mx-auto" />}
                          </td>
-                        <td className={cn('p-2 border-r border-zinc-800 font-bold', flagged ? 'text-amber-500' : 'text-zinc-400')}>
-                          {code}
+                        <td className="p-2 border-r border-zinc-800">
+                          <span className={cn('text-[10px] font-mono', flagged ? 'text-amber-500' : 'text-zinc-500')}>
+                            {code}
+                          </span>
                          </td>
-                        {/* Description — free text */}
-                        <td className="p-2 border-r border-zinc-800 text-zinc-200">
-                          <div className="flex flex-col">
+                        <td className="p-2 border-r border-zinc-800">
+                          <div className="flex items-center gap-2">
+                            <Package className="w-2.5 h-2.5 text-zinc-600 flex-shrink-0" />
                             <EditableCell row={row} field="description" type="text" onUpdate={updateMeasurement} />
-                            {row.notes && (
-                              <span className="text-[9px] text-zinc-600 mt-0.5 truncate">{row.notes}</span>
-                            )}
                           </div>
+                          {row.notes && (
+                            <div className="text-[8px] text-zinc-600 mt-0.5 truncate pl-5">{row.notes}</div>
+                          )}
                          </td>
-                        {/* Material — separate dropdown */}
                         <td className="p-2 border-r border-zinc-800">
                           <MaterialCell row={row} materials={ps.materials as MaterialSpec[]} onUpdate={updateMeasurement} />
                          </td>
-                        <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
+                        <td className={cn('p-2 border-r border-zinc-800 text-right', flagged ? 'text-amber-500' : '')}>
                           <div className="flex justify-end items-center gap-1">
                             <EditableCell row={row} field="quantity" type="number" onUpdate={updateMeasurement} />
-                            {row.isOverridden && <Pencil className="w-2.5 h-2.5 text-amber-500/50 flex-shrink-0" />}
+                            {row.isOverridden && <Pencil className="w-2 h-2 text-amber-500/50 flex-shrink-0" />}
                           </div>
                          </td>
-                        <td className="p-2 border-r border-zinc-800 text-center text-zinc-400">
-                          <EditableCell row={row} field="unit" onUpdate={updateMeasurement} />
+                        <td className="p-2 border-r border-zinc-800 text-center text-zinc-500 text-[10px]">
+                          {row.unit}
                          </td>
-                        <td className="p-2 border-r border-zinc-800 text-right text-zinc-400">
+                        <td className="p-2 border-r border-zinc-800 text-right">
                           <EditableCell row={row} field="unitRate" type="number" onUpdate={updateMeasurement} />
                          </td>
-                        <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-200')}>
+                        <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-300')}>
                           {formatCurrency(row.quantity * row.unitRate)}
                          </td>
                         <td className="p-2 text-center border-l border-zinc-800">
                           <div className="flex items-center justify-center gap-1.5">
-                            <label className="cursor-pointer" title="Change colour">
+                            <label className="cursor-pointer">
                               <input type="color" value={row.color || '#EF9F27'}
                                 onChange={e => updateMeasurement(row.id, { color: e.target.value })}
                                 className="opacity-0 w-0 h-0 absolute pointer-events-none" />
@@ -684,7 +758,7 @@ export default function TakeoffFullPage() {
                             </button>
                           </div>
                          </td>
-                       </tr>
+                      </tr>                      
                     );
                   })}
 
@@ -710,11 +784,20 @@ export default function TakeoffFullPage() {
                 <span className="w-2 h-2 border-r border-b border-zinc-700" />
               </div>
               <div className="flex items-center gap-4 text-[9px] text-zinc-600">
-                <span>{all.length} rows</span>
+                <span className="flex items-center gap-1">
+                  <FolderOpenDot className="w-2.5 h-2.5" />
+                  {groups.size} groups
+                </span>
                 <span className="w-px h-2 bg-zinc-800" />
-                <span>{groups.size} groups</span>
+                <span className="flex items-center gap-1">
+                  <Package className="w-2.5 h-2.5" />
+                  {ungrouped.length} ungrouped
+                </span>
                 <span className="w-px h-2 bg-zinc-800" />
-                <span>{ungrouped.length} ungrouped</span>
+                <span className="flex items-center gap-1">
+                  <TriangleAlert className="w-2.5 h-2.5 text-amber-500" />
+                  {flaggedRows.length} flagged
+                </span>
               </div>
             </div>
           </div>
@@ -722,7 +805,6 @@ export default function TakeoffFullPage() {
 
         {/* ── Right panel: Sync Status ──────────────────────────────────────────── */}
         <aside className="w-80 flex-shrink-0 bg-zinc-950 flex flex-col border-l border-zinc-800 overflow-hidden">
-          {/* Panel header */}
           <div className="p-4 border-b border-zinc-800 flex items-center justify-between flex-shrink-0">
             <div className="flex items-center gap-2">
               <Zap className="w-4 h-4 text-amber-500" style={{ fill: 'currentColor' }} />
@@ -820,34 +902,26 @@ export default function TakeoffFullPage() {
             <div className="space-y-2">
               <div className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">Visual Reference</div>
               <div className="aspect-video bg-zinc-900 border border-zinc-800 relative overflow-hidden group">
-                {/* Blueprint grid overlay */}
                 <div className="absolute inset-0"
                   style={{
                     backgroundImage: 'linear-gradient(#3f3f46 1px, transparent 1px), linear-gradient(90deg, #3f3f46 1px, transparent 1px)',
                     backgroundSize: '16px 16px',
                     opacity: 0.3,
                   }} />
-                {/* SVG structural diagram */}
                 <svg viewBox="0 0 240 135" className="absolute inset-0 w-full h-full" xmlns="http://www.w3.org/2000/svg">
-                  {/* Vertical studs */}
                   {[30, 70, 110, 150, 190, 210].map((x, i) => (
                     <rect key={i} x={x} y="10" width="6" height="115" fill="#292524" stroke="#52525b" strokeWidth="1" />
                   ))}
-                  {/* Top track */}
                   <rect x="20" y="8" width="200" height="8" fill="#3f3f46" stroke="#52525b" strokeWidth="0.8" />
-                  {/* Bottom track */}
                   <rect x="20" y="119" width="200" height="8" fill="#3f3f46" stroke="#52525b" strokeWidth="0.8" />
-                  {/* Noggins */}
                   {[50, 85].map((y, i) => (
                     <rect key={i} x="20" y={y} width="200" height="5" fill="#1c1917" stroke="#52525b" strokeWidth="0.8" strokeDasharray="4,2" />
                   ))}
-                  {/* Amber dimension line */}
                   <line x1="30" y1="130" x2="70" y2="130" stroke="#f59e0b" strokeWidth="1" />
                   <line x1="30" y1="127" x2="30" y2="133" stroke="#f59e0b" strokeWidth="1" />
                   <line x1="70" y1="127" x2="70" y2="133" stroke="#f59e0b" strokeWidth="1" />
                   <text x="47" y="129" fill="#f59e0b" fontSize="6" fontFamily="monospace" textAnchor="middle">{studSpacing}mm</text>
                 </svg>
-                {/* Label overlay */}
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <div className="text-[9px] font-bold bg-zinc-950/80 px-2 py-1 border border-zinc-800 text-zinc-300 uppercase tracking-widest">
                     SECTION A-A: STUDS @ {studSpacing}MM

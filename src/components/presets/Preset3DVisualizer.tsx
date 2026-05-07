@@ -37,6 +37,16 @@ export const VIZ_COLORS = {
   ghost:   0x334455,
 } as const;
 
+// Helper to safely parse dimension values
+function parseDimension(value: any, defaultValue: number): number {
+  if (typeof value === 'number') return value;
+  if (typeof value === 'string') {
+    const num = parseFloat(value.replace('mm', '').replace('px', ''));
+    return isNaN(num) ? defaultValue : num;
+  }
+  return defaultValue;
+}
+
 function makeHelpers(group: THREE.Group): BuildHelpers {
   return {
     addBox(w, h, d, material, x, y, z) {
@@ -63,19 +73,19 @@ function makeHelpers(group: THREE.Group): BuildHelpers {
 // ─── Carcass Renderer ──────────────────────────────────────────────────────────
 
 const buildCarcass: PresetRenderer = (group, fd, { activeMat }) => {
-  const W = (parseFloat(fd.width ?? 600) || 600) / 1000;
-  const H = (parseFloat(fd.height ?? 720) || 720) / 1000;
-  const D = (parseFloat(fd.depth ?? 550) || 550) / 1000;
-  const T = (parseFloat(fd.panelThickness ?? 18) || 18) / 1000;
+  const W = parseDimension(fd.width, 600) / 1000;
+  const H = parseDimension(fd.height, 720) / 1000;
+  const D = parseDimension(fd.depth, 550) / 1000;
+  const T = parseDimension(fd.panelThickness, 18) / 1000;
   
   const iW = W - 2 * T;
   const iH = H - 2 * T;
   const iD = D - T;
   
-  const shelves = Math.max(0, Math.min(8, parseInt(fd.shelfCount ?? 2) || 0));
-  const doorCount = Math.max(1, Math.min(4, parseInt(fd.doorCount ?? 2) || 2));
-  const drawerCount = Math.max(1, Math.min(6, parseInt(fd.drawerCount ?? 2) || 2));
-  const dividerCount = Math.max(1, Math.min(3, parseInt(fd.dividerCount ?? 1) || 1));
+  const shelves = Math.max(0, Math.min(8, parseInt(fd.shelfCount ?? '2') || 0));
+  const doorCount = Math.max(1, Math.min(4, parseInt(fd.doorCount ?? '2') || 2));
+  const drawerCount = Math.max(1, Math.min(6, parseInt(fd.drawerCount ?? '2') || 2));
+  const dividerCount = Math.max(1, Math.min(3, parseInt(fd.dividerCount ?? '1') || 1));
   
   const maxDim = Math.max(W, H, D);
   const scale = 0.85 / maxDim;
@@ -186,9 +196,9 @@ const buildCarcass: PresetRenderer = (group, fd, { activeMat }) => {
 // ─── Door Renderer ─────────────────────────────────────────────────────────────
 
 const buildDoor: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const qty = Math.max(1, Math.min(4, parseInt(fd.quantity ?? 1) || 1));
-  const widthMm = parseFloat(fd.width?.replace('mm', '') ?? 800) || 800;
-  const heightMm = parseFloat(fd.height?.replace('mm', '') ?? 2100) || 2100;
+  const qty = Math.max(1, Math.min(4, parseInt(fd.quantity ?? '1') || 1));
+  const widthMm = parseDimension(fd.width, 800);
+  const heightMm = parseDimension(fd.height, 2100);
   const W = widthMm / 1000;
   const H = heightMm / 1000;
   const frameDepth = 0.08;
@@ -226,9 +236,9 @@ const buildDoor: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Window Renderer ───────────────────────────────────────────────────────────
 
 const buildWindow: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const qty = Math.max(1, Math.min(6, parseInt(fd.quantity ?? 1) || 1));
-  const widthMm = parseFloat(fd.width?.replace('mm', '') ?? 1200) || 1200;
-  const heightMm = parseFloat(fd.height?.replace('mm', '') ?? 900) || 900;
+  const qty = Math.max(1, Math.min(6, parseInt(fd.quantity ?? '1') || 1));
+  const widthMm = parseDimension(fd.width, 1200);
+  const heightMm = parseDimension(fd.height, 900);
   const W = widthMm / 1000;
   const H = heightMm / 1000;
   const frameWidth = 0.06;
@@ -262,11 +272,11 @@ const buildWindow: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Stud Wall Renderer ────────────────────────────────────────────────────────
 
 const buildStudWall: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const L = (parseFloat(fd.length ?? 0) || 5000) / 1000;
-  const H = (parseFloat(fd.height ?? 0) || 2700) / 1000;
+  const L = parseDimension(fd.length, 5000) / 1000;
+  const H = parseDimension(fd.height, 2700) / 1000;
   const isCustom = fd.spacing === 'Custom';
-  const spacing = (isCustom ? parseInt(fd.customSpacing ?? 600) : (fd.spacing === '600mm' ? 600 : 450)) / 1000;
-  const thickness = (parseFloat(fd.thickness?.replace('mm', '') ?? 70) || 70) / 1000;
+  const spacing = (isCustom ? parseDimension(fd.customSpacing, 600) : (fd.spacing === '600mm' ? 600 : 450)) / 1000;
+  const thickness = parseDimension(fd.thickness, 70) / 1000;
   const studCount = Math.ceil(L / spacing) + 1;
 
   const maxDim = Math.max(L, H, thickness);
@@ -301,9 +311,9 @@ const buildStudWall: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Floor Slab Renderer ──────────────────────────────────────────────────────
 
 const buildFloorSlab: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const L = (parseFloat(fd.length ?? 0) || 10000) / 1000;
-  const W = (parseFloat(fd.width ?? 0) || 8000) / 1000;
-  const thicknessMm = parseInt(fd.thickness ?? 150) || 150;
+  const L = parseDimension(fd.length, 10000) / 1000;
+  const W = parseDimension(fd.width, 8000) / 1000;
+  const thicknessMm = parseDimension(fd.thickness, 150);
   const H = thicknessMm / 1000;
 
   const maxDim = Math.max(L, W, H);
@@ -332,8 +342,8 @@ const buildFloorSlab: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Beam Renderer ────────────────────────────────────────────────────────────
 
 const buildBeam: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const qty = Math.max(1, Math.min(5, parseInt(fd.quantity ?? 1) || 1));
-  const length = (parseFloat(fd.length ?? 0) || 6000) / 1000;
+  const qty = Math.max(1, Math.min(5, parseInt(fd.quantity ?? '1') || 1));
+  const length = parseDimension(fd.length, 6000) / 1000;
   const beamType = fd.beamType || 'I-Beam';
   
   // Different dimensions based on beam type
@@ -369,7 +379,7 @@ const buildBeam: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Tiling Renderer ──────────────────────────────────────────────────────────
 
 const buildTiling: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const area = parseFloat(fd.area ?? 0) || 10;
+  const area = parseDimension(fd.area, 10);
   const tileSizeStr = fd.tileSize || '300x300';
   const tileMm = parseInt(tileSizeStr.split('x')[0]) || 300;
   const tileM = tileMm / 1000;
@@ -407,8 +417,8 @@ const buildTiling: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Roof Renderer ────────────────────────────────────────────────────────────
 
 const buildRoof: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const area = parseFloat(fd.roofArea ?? 100) || 100;
-  const pitch = parseFloat(fd.roofPitch ?? 30) || 30;
+  const area = parseDimension(fd.roofArea, 100);
+  const pitch = parseDimension(fd.roofPitch, 30);
   const pitchRad = (pitch * Math.PI) / 180;
   
   const L = Math.sqrt(area * 2);
@@ -440,7 +450,7 @@ const buildRoof: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Ceiling Renderer ──────────────────────────────────────────────────────────
 
 const buildCeiling: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const area = parseFloat(fd.area ?? 50) || 50;
+  const area = parseDimension(fd.area, 50);
   const L = Math.sqrt(area);
   const W = area / L;
 
@@ -477,10 +487,10 @@ const buildCeiling: PresetRenderer = (group, fd, { activeMat, addBox }) => {
 // ─── Staircase Renderer ────────────────────────────────────────────────────────
 
 const buildStaircase: PresetRenderer = (group, fd, { activeMat, addBox }) => {
-  const steps = parseInt(fd.steps ?? 12) || 12;
-  const riserHeight = (parseFloat(fd.riserHeight ?? 200) || 200) / 1000;
-  const treadsDepth = (parseFloat(fd.treadsDepth ?? 300) || 300) / 1000;
-  const width = (parseFloat(fd.width ?? 900) || 900) / 1000;
+  const steps = parseInt(fd.steps ?? '12') || 12;
+  const riserHeight = parseDimension(fd.riserHeight, 200) / 1000;
+  const treadsDepth = parseDimension(fd.treadsDepth, 300) / 1000;
+  const width = parseDimension(fd.width, 900) / 1000;
   
   const totalHeight = steps * riserHeight;
   const totalLength = steps * treadsDepth;
