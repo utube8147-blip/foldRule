@@ -1,17 +1,9 @@
 ﻿import type { NextConfig } from "next";
 
-const nextConfig: NextConfig & { eslint?: { ignoreDuringBuilds?: boolean } } = {
+const nextConfig: NextConfig = {
   reactStrictMode: true,
   turbopack: {},
   serverExternalPackages: ["canvas", "node-canvas"],
-
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
 };
 
 export default nextConfig;
