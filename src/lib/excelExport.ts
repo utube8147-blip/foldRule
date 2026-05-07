@@ -14,12 +14,90 @@ import { buildBOQMatrixSheet, getDefaultUnitCategories, MAT_START } from './xl/s
 import { buildMaterialsListSheet } from './xl/sheet-materials-list';
 import { buildCostBreakdownSheet } from './xl/sheet-cost-breakdown';
 
-function getMockBOQData(): BOQData {
-  return boq_data;
+// Add this function to sanitize the data
+function sanitizeBOQData(data: any): BOQData {
+  const result = JSON.parse(JSON.stringify(data));
+  
+  const processItem = (item: any) => {
+    if (item.panel_count === null) {
+      delete item.panel_count;
+    }
+    if (item.qty_per_unit === undefined && item.qty_formula) {
+      item.qty_per_unit = 1;
+    }
+    // Ensure item_number is a string
+    if (item.item_number !== undefined && typeof item.item_number !== 'string') {
+      item.item_number = String(item.item_number);
+    }
+    // Ensure description exists
+    if (!item.description) {
+      item.description = 'N/A';
+    }
+    return item;
+  };
+  
+  const processComponent = (comp: any) => {
+    if (comp.items && Array.isArray(comp.items)) {
+      comp.items = comp.items.map(processItem);
+    }
+    // Ensure component_name exists
+    if (!comp.component_name && comp.name) {
+      comp.component_name = comp.name;
+    }
+    if (!comp.component_name) {
+      comp.component_name = 'Unnamed Component';
+    }
+    return comp;
+  };
+  
+  const processSection = (section: any) => {
+    if (section.components && Array.isArray(section.components)) {
+      section.components = section.components.map(processComponent);
+    }
+    // Ensure section_id exists
+    if (!section.section_id && section.id) {
+      section.section_id = section.id;
+    }
+    if (!section.section_id) {
+      section.section_id = 'UNKNOWN_SECTION';
+    }
+    return section;
+  };
+  
+  if (result.sections) {
+    result.sections = result.sections.map(processSection);
+  }
+  if (result.kitchen_sections) {
+    result.kitchen_sections = result.kitchen_sections.map(processSection);
+  }
+  
+  // Ensure project_info has required fields
+  if (!result.project_info) {
+    result.project_info = {};
+  }
+  if (!result.project_info.name) {
+    result.project_info.name = 'UNKNOWN_PROJECT';
+  }
+  if (!result.project_info.document_metadata) {
+    result.project_info.document_metadata = {};
+  }
+  if (!result.project_info.document_metadata.currency) {
+    result.project_info.document_metadata.currency = 'AED';
+  }
+  if (result.project_info.document_metadata.vat_percent === undefined) {
+    result.project_info.document_metadata.vat_percent = 5;
+  }
+  
+  return result as BOQData;
 }
 
-interface CalculationRulesExtended extends CalculationRules {
-  unit_type_mapping?: Record<string, unknown>;
+function getMockBOQData(): BOQData {
+  return sanitizeBOQData(boq_data);
+}
+
+// ExcelJS custom interface - not extending CalculationRules to avoid type conflicts
+interface CalculationRulesExtended {
+  unit_type_mapping?: Record<string, string[]>;
   excel_formatting?: Record<string, unknown>;
   sheet_area_square_meters?: number;
 }
@@ -77,7 +155,8 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
   const boqData  = data || getMockBOQData();
 
   const doc             = boqData.project_info;
-  const sections        = boqData.kitchen_sections || (boqData as unknown as Record<string, unknown>).sections || [];
+  const rawSections     = boqData.kitchen_sections || (boqData as unknown as Record<string, unknown>).sections || [];
+  const sections        = Array.isArray(rawSections) ? rawSections : [];
   const fixtures        = boqData.installed_fixtures || [];
   const sectionMap      = boqData.section_grouping || {};
   const materialColumns = boqData.material_columns || [];
@@ -141,51 +220,69 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
   };
 
   // ── CRITICAL: resolve drawings from all possible JSON locations ───────────
-  // The JSON may store drawing references as:
-  //   - project_info.drawings          (most common in the Python version)
-  //   - top-level boqData.drawings     (some variants)
-  //   - project_info.document_metadata.drawings
-  //   - project_info.drawing_references
   const docWithExt = doc as ProjectInfo & Record<string, unknown>;
   const boqDataExt = boqData as unknown as Record<string, unknown>;
   const docMetaExt = doc.document_metadata as Record<string, unknown> | undefined;
-  
+
   const drawings: string[] =
-    (Array.isArray(doc.drawings) && doc.drawings.length > 0                                     ? doc.drawings                                                           : null) ||
-    (Array.isArray(boqDataExt.drawings) && (boqDataExt.drawings as string[]).length > 0          ? boqDataExt.drawings as string[]                                        : null) ||
+    (Array.isArray(docWithExt.drawings) && (docWithExt.drawings as string[]).length > 0 ? docWithExt.drawings as string[] : null) ||
+    (Array.isArray(boqDataExt.drawings) && (boqDataExt.drawings as string[]).length > 0 ? boqDataExt.drawings as string[] : null) ||
     (Array.isArray(docWithExt.drawing_references) && (docWithExt.drawing_references as string[]).length > 0 ? docWithExt.drawing_references as string[] : null) ||
-    (docMetaExt && Array.isArray(docMetaExt.drawings) && (docMetaExt.drawings as string[]).length > 0       ? docMetaExt.drawings as string[]          : null) ||
+    (docMetaExt && Array.isArray(docMetaExt.drawings) && (docMetaExt.drawings as string[]).length > 0 ? docMetaExt.drawings as string[] : null) ||
     [];
 
   const transformedDoc: TransformedProjectInfo = {
-    // spread raw project_info first so all its fields are available
     ...doc,
-    // explicit mapped keys
-    project:          docWithExt.name as string,
     document_metadata: doc.document_metadata || {},
     material_detection_rules: transformedMatRules,
     additional_notes: (boqDataExt.additional_notes as Record<string, unknown>) || {},
-    // ── drawings resolved above ──
     drawings,
   };
+
+  // Validate required data before building sheets
+  if (sections.length === 0) {
+    console.warn('[v0] No sections found in BOQ data');
+  }
 
   workbook.creator = 'BOQ Export System';
   workbook.created = new Date();
 
-  await buildSummarySheet(workbook, transformedDoc, sections, sectionMap);
+  try {
+    await buildSummarySheet(workbook, transformedDoc, sections, sectionMap);
+  } catch (error) {
+    console.error('[v0] Error building summary sheet:', error);
+    throw new Error(`Failed to build summary sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
-  const gtRow = await buildBOQMatrixSheet(
-    workbook, transformedDoc, sections, fixtures, sectionMap,
-    transformedMaterialColumns, sheetAreaM2, outputOptions, unitCategories,
-  );
+  let gtRow = 10; // Default fallback row
+  try {
+    gtRow = await buildBOQMatrixSheet(
+      workbook, transformedDoc, sections, fixtures, sectionMap,
+      transformedMaterialColumns, sheetAreaM2, outputOptions, unitCategories,
+    );
+  } catch (error) {
+    console.error('[v0] Error building BOQ matrix sheet:', error);
+    throw new Error(`Failed to build BOQ matrix sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
-  const matListStartRow = await buildMaterialsListSheet(
-    workbook, transformedDoc, transformedMaterialColumns, gtRow, sheetAreaM2, fixtures,
-  );
+  let matListStartRow = 5; // Default fallback row
+  try {
+    matListStartRow = await buildMaterialsListSheet(
+      workbook, transformedDoc, transformedMaterialColumns, gtRow, sheetAreaM2, fixtures,
+    );
+  } catch (error) {
+    console.error('[v0] Error building materials list sheet:', error);
+    throw new Error(`Failed to build materials list sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
-  await buildCostBreakdownSheet(
-    workbook, transformedDoc, transformedMaterialColumns, matListStartRow, fixtures,
-  );
+  try {
+    await buildCostBreakdownSheet(
+      workbook, transformedDoc, transformedMaterialColumns, matListStartRow, fixtures,
+    );
+  } catch (error) {
+    console.error('[v0] Error building cost breakdown sheet:', error);
+    throw new Error(`Failed to build cost breakdown sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 
   return workbook;
 }
@@ -197,8 +294,10 @@ export async function exportToExcel(data?: BOQData): Promise<void> {
     const doc      = boqData.project_info;
 
     const dateStr  = new Date().toISOString().split('T')[0];
-    const projectName = (doc as ProjectInfo & Record<string, unknown>).name || 'boq';
-    const safeName = (projectName as string)
+    const projectName = (doc as ProjectInfo & Record<string, unknown>).name || 
+                        (doc as ProjectInfo & Record<string, unknown>).project_name || 
+                        'boq';
+    const safeName = String(projectName)
       .toLowerCase()
       .replace(/\s+/g, '-')
       .replace(/[^a-z0-9-]/g, '');
@@ -211,7 +310,9 @@ export async function exportToExcel(data?: BOQData): Promise<void> {
     const link      = document.createElement('a');
     link.href       = URL.createObjectURL(blob);
     link.download   = filename;
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
     URL.revokeObjectURL(link.href);
   } catch (error) {
     console.error('[v0] Error exporting to Excel:', error);
@@ -226,7 +327,6 @@ export {
   buildBOQMatrixSheet,
   buildMaterialsListSheet,
   buildCostBreakdownSheet,
-  buildWorkbook,
   getMockBOQData,
   getDefaultUnitCategories,
   MAT_START,
