@@ -197,6 +197,12 @@ export function Viewer({
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
+  // ── Calibration dialog state ───────────────────────────────────────────────
+  const [showCalibrationDialog, setShowCalibrationDialog] = useState(false);
+  const [pendingPtLen, setPendingPtLen] = useState<number>(0);
+  const [calibrationInput, setCalibrationInput] = useState('');
+
+
   // ── Measurement Details Dialog ───────────────────────────────────────────────
   const [showMeasurementDialog, setShowMeasurementDialog] = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<{
@@ -283,6 +289,20 @@ export function Viewer({
     setActiveTool(tool as ToolType);
   }, [setActiveTool]);
 
+   const handleScalePrompt = useCallback((ptLen: number) => {
+    setPendingPtLen(ptLen);
+    setCalibrationInput('');
+    setShowCalibrationDialog(true);
+  }, []);
+
+  const handleCalibrationConfirm = useCallback(() => {
+    const r = parseFloat(calibrationInput);
+    if (!isNaN(r) && r > 0 && pendingPtLen > 0) {
+      onScaleSetRef.current(r / pendingPtLen);
+    }
+    setShowCalibrationDialog(false);
+  }, [calibrationInput, pendingPtLen]);
+
   const measureEngine = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
@@ -295,6 +315,7 @@ export function Viewer({
     pushPoint,
     commitMeasurement,
     batchCommitMeasurements, // PASS batchCommitMeasurements to useMeasurements
+    onScalePrompt: handleScalePrompt,
     clearTempPoints,
     scaleFactor,
     onUpdateMeasurement,
@@ -338,6 +359,8 @@ export function Viewer({
   const ZOOM_SENSITIVITY = 0.25;
   const MIN_ZOOM = 0.05;
   const MAX_ZOOM = 10;
+
+ 
 
   // ── Wrap finishMeasurement to show dialog ───────────────────────────────────
   const handleFinishMeasurement = useCallback(() => {
@@ -742,6 +765,8 @@ export function Viewer({
     };
   }, []);
 
+
+  
   // ── Shared pan initiator ───────────────────────────────────────────────────
   const startPan = useCallback((e: React.PointerEvent, targetElement: HTMLElement) => {
     if (!pdfRef.current) return;
@@ -1252,6 +1277,53 @@ export function Viewer({
         onClose={onClosePresetDrawer}
         onSelectPreset={onSelectPreset}
       />
+
+      {/* Calibration Dialog */}
+      {showCalibrationDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="bg-zinc-900 border border-amber-400/40 shadow-2xl shadow-amber-400/10 p-6 w-80 font-mono">
+            <div className="flex items-center gap-2 mb-4">
+              <Scaling className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              <span className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
+                Calibrate Scale
+              </span>
+            </div>
+            <p className="text-[10px] text-zinc-400 uppercase tracking-wider mb-4 leading-relaxed">
+              You drew a line across a known distance.<br />
+              Enter the real-world length in meters.
+            </p>
+            <input
+              autoFocus
+              type="number"
+              min="0.001"
+              step="any"
+              placeholder="e.g. 5"
+              value={calibrationInput}
+              onChange={e => setCalibrationInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') handleCalibrationConfirm();
+                if (e.key === 'Escape') setShowCalibrationDialog(false);
+              }}
+              className="w-full bg-zinc-800 border border-zinc-600 focus:border-amber-400 text-zinc-100 text-sm font-mono px-3 py-2 outline-none mb-4 transition-colors"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleCalibrationConfirm}
+                disabled={!calibrationInput || isNaN(parseFloat(calibrationInput))}
+                className="flex-1 bg-amber-400 disabled:bg-zinc-700 disabled:text-zinc-500 text-black font-bold text-[10px] uppercase tracking-widest py-2 transition-all hover:bg-amber-300"
+              >
+                Set Scale
+              </button>
+              <button
+                onClick={() => setShowCalibrationDialog(false)}
+                className="flex-1 border border-zinc-700 text-zinc-400 font-bold text-[10px] uppercase tracking-widest py-2 hover:border-zinc-500 transition-all"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         @keyframes snapPulse {

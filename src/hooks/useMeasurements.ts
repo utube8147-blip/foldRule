@@ -33,6 +33,7 @@ export interface UseMeasurementsParams {
   pdfDimensionsRef:     React.MutableRefObject<PdfDimensions | null>;
   pageNumberRef:        React.MutableRefObject<number>;
   scaleRef:             React.MutableRefObject<number>;
+  onScalePrompt: (ptLen: number) => void;
   activeTool:           string;
   setActiveTool:        (tool: string) => void;
   measurements:         TakeoffRow[];
@@ -101,7 +102,7 @@ export function useMeasurements({
   pushPoint, commitMeasurement, batchCommitMeasurements, clearTempPoints, scaleFactor,
   onUpdateMeasurement, isPanning, snapToCorner, getScaledCorners,
   triggerSnapFlash, snapEnabled, snapThreshold, redrawPinCanvas,
-  cursorPointRef, activeDrawingId,
+  cursorPointRef, activeDrawingId, onScalePrompt, // ← ADD THIS
 }: UseMeasurementsParams): UseMeasurementsReturn {
 
   const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
@@ -285,32 +286,123 @@ export function useMeasurements({
     }
   }, [drawingCanvasRef]);
 
-  // ─── Handle point relocation move ──────────────────────────────────────────
+  
+  // ─── Imperative redraw for drag preview ────────────────────────────────────
+  const redrawDrawingCanvas = useCallback((draggedPointCanvas?: { x: number; y: number }) => {
+    const canvas = drawingCanvasRef.current;
+    const dims   = pdfDimensionsRef.current;
+    if (!canvas || !dims) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    measurements.forEach(m => {
+      if (m.isGroupHeader && m.childIds && m.childIds.length > 0) return;
+      if (!m.isVisible || m.points.length === 0) return;
+
+      // If this measurement is being dragged, substitute the live point
+      let pts = m.points.map(p => toCanvas(p.x, p.y));
+      if (draggedPointCanvas && dragStateRef.current?.measurementId === m.id) {
+        pts = pts.map((p, i) =>
+          i === dragStateRef.current!.pointIndex ? draggedPointCanvas : p
+        );
+      }
+
+      if (m.type === 'Count' || m.type === 'Point') {
+        pts.forEach(p => {
+          ctx.save();
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+          ctx.fillStyle = m.color + '18';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = m.color;
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+          ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+          ctx.lineWidth = 1.2;
+          ctx.stroke();
+          ctx.restore();
+        });
+      } else {
+        ctx.strokeStyle = m.color;
+        ctx.fillStyle   = m.color + '55';
+        ctx.lineWidth   = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        if (m.type === 'Polygon' || m.type === 'Rectangle') {
+          ctx.closePath();
+          ctx.fill();
+        }
+        ctx.stroke();
+
+        // Draw vertices
+        pts.forEach((p, idx) => {
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, activeTool === 'select' ? 6 : 4, 0, Math.PI * 2);
+          ctx.fillStyle = m.color + (activeTool === 'select' ? 'CC' : '88');
+          ctx.fill();
+          ctx.strokeStyle = m.color;
+          ctx.lineWidth = activeTool === 'select' ? 1.5 : 1;
+          ctx.stroke();
+
+          // Highlight the dragged vertex
+          if (dragStateRef.current?.measurementId === m.id && dragStateRef.current.pointIndex === idx) {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+            ctx.strokeStyle = '#F59E0B';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([4, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+          }
+        });
+      }
+    });
+
+    // Draw the live cursor dot at the dragged position
+    if (draggedPointCanvas) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(draggedPointCanvas.x, draggedPointCanvas.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = '#F59E0B44';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(draggedPointCanvas.x, draggedPointCanvas.y, 5, 0, Math.PI * 2);
+      ctx.fillStyle = '#F59E0B';
+      ctx.fill();
+      ctx.restore();
+    }
+  }, [measurements, toCanvas, activeTool, drawingCanvasRef, pdfDimensionsRef]);
+
+
   const handlePointDragMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!dragStateRef.current || !dragStateRef.current.isDragging) return;
-    
+    if (!dragStateRef.current?.isDragging) return;
+
     const rect = drawingCanvasRef.current?.getBoundingClientRect();
     if (!rect) return;
-    
+
     const canvasX = (e.clientX - rect.left) * (drawingCanvasRef.current!.width / rect.width);
-    const canvasY = (e.clientY - rect.top) * (drawingCanvasRef.current!.height / rect.height);
-    
-    // Apply snap if enabled
-    let snapResult = { point: { x: canvasX, y: canvasY }, snapped: false };
+    const canvasY = (e.clientY - rect.top)  * (drawingCanvasRef.current!.height / rect.height);
+
+    let livePoint = { x: canvasX, y: canvasY };
     if (snapEnabledRef.current) {
-      snapResult = snapToCorner(canvasX, canvasY);
-      if (snapResult.snapped) {
-        triggerSnapFlash(snapResult.point.x, snapResult.point.y);
-      }
+      const snapResult = snapToCorner(canvasX, canvasY);
+      if (snapResult.snapped) triggerSnapFlash(snapResult.point.x, snapResult.point.y);
+      livePoint = snapResult.point;
     }
-    
-    // Update cursor point for visual feedback
-    setCursorPoint(snapResult.point);
-    cursorPointRef.current = snapResult.point;
-    
-    // Redraw to show live preview
+
+    // Update ref (not state — avoids React render cycle lag)
+    cursorPointRef.current = livePoint;
+
+    // ── Imperatively repaint the drawing canvas with the live point ──────────
+    redrawDrawingCanvas(livePoint);
     redrawPinCanvas();
-  }, [drawingCanvasRef, snapToCorner, triggerSnapFlash, redrawPinCanvas, cursorPointRef]);
+  }, [drawingCanvasRef, snapToCorner, triggerSnapFlash, redrawPinCanvas, redrawDrawingCanvas, cursorPointRef]);
 
   // ─── Handle point relocation end ───────────────────────────────────────────
   const handlePointDragEnd = useCallback(() => {
@@ -662,7 +754,7 @@ export function useMeasurements({
             if (lastSeg?.pts.length === 1 && !pendingBreak) {
               const w = Math.abs(cursorPoint.x - lastSeg.pts[0].x);
               const h = Math.abs(cursorPoint.y - lastSeg.pts[0].y);
-              text = `${(w * h / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(2)} sq m`;
+              text = `${(w * h / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(3)} sq m`;
             }
           } else if (activeTool === 'polygon' && allPtsForLabel.length > 2) {
             let a = 0;
@@ -670,7 +762,7 @@ export function useMeasurements({
               const j = (i + 1) % allPtsForLabel.length;
               a += allPtsForLabel[i].x * allPtsForLabel[j].y - allPtsForLabel[j].x * allPtsForLabel[i].y;
             }
-            text = `${(Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(2)} sq m`;
+            text = `${(Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(3)} sq m`;
           } else if (activeTool === 'linear' || activeTool === 'scale') {
             let len = 0;
             if (activeTool === 'linear' && tempPx.length > 0) {
@@ -695,8 +787,8 @@ export function useMeasurements({
               }
             }
             text = activeTool === 'scale'
-              ? `${(len / zoom).toFixed(2)} pts`
-              : `${(len / zoom * scaleFactor).toFixed(2)} m`;
+              ? `${(len / zoom).toFixed(3)} pts`
+              : `${(len / zoom * scaleFactor).toFixed(3)} m`;
           }
 
           if (text) {
@@ -829,15 +921,19 @@ export function useMeasurements({
 
     // ── Scale ──────────────────────────────────────────────────────────────
     if (activeTool === 'scale') {
-      const p0 = toCanvas(pts[0].x, pts[0].y);
-      const p1 = toCanvas(pts[1].x, pts[1].y);
-      const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
-      const realStr = window.prompt('Enter real world length in meters (e.g. 5):', '5');
-      if (realStr) {
-        const r = parseFloat(realStr);
-        if (!isNaN(r) && r > 0) onScaleSetRef.current?.(r / ptLen);
+      if (tempPoints.length === 0) {
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+      } else {
+        const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
+        const ptLen = Math.hypot(snap.point.x - p0.x, snap.point.y - p0.y) / scaleRef.current;
+        clearTempPoints();
+        setCursorPoint(null);
+        cursorPointRef.current = null;
+        resetBreakState();
+        setActiveTool('select');
+        onScalePrompt(ptLen); // ← fires the custom dialog instead of window.prompt
       }
-      clearTempPoints(); setCursorPoint(null); setActiveTool('select'); return;
+      return;
     }
 
     const zoom       = scaleRef.current;
@@ -1144,12 +1240,31 @@ export function useMeasurements({
       return;
     }
 
+  // ── Scale ──────────────────────────────────────────────────────────────────────
+  if (activeTool === 'scale') {
+    if (tempPoints.length === 0) {
+      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+      } else {
+      const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
+      const p1 = { x: snap.point.x, y: snap.point.y };
+      const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
+      clearTempPoints();
+      setCursorPoint(null);
+      cursorPointRef.current = null;
+      resetBreakState();
+      setActiveTool('select');
+      onScalePrompt(ptLen); // ← custom dialog, no window.prompt
+    }
+    return;
+  }
+
     pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
   }, [
-    activeTool, snapToCorner, triggerSnapFlash, toNorm,
-    commitMeasurement, pushPoint, drawingCanvasRef, activeDrawingId,
-    tempPoints, pendingBreak, dragState,
-  ]);
+      activeTool, snapToCorner, triggerSnapFlash, toNorm, toCanvas,
+      commitMeasurement, pushPoint, clearTempPoints, drawingCanvasRef, activeDrawingId,
+      tempPoints, pendingBreak, dragState, scaleRef, resetBreakState,
+      setActiveTool, cursorPointRef, onScalePrompt, // ← ADD
+    ]);
 
   // ── NEW: handleCanvasPointerDown for point relocation ──────────────────────
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {

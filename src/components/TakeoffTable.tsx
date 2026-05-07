@@ -234,7 +234,7 @@ export function TakeoffTable({
 
     return (
       <span onClick={(e) => startEditing(row.id, field, e)} className={cn('cursor-text hover:text-amber-accent transition-colors', className)}>
-        {type === 'number' && typeof value === 'number' ? value.toFixed(2) : (value as string)}
+        {type === 'number' && typeof value === 'number' ? value.toFixed(3) : (value as string)}
       </span>
     );
   };
@@ -265,7 +265,7 @@ export function TakeoffTable({
     return (
       <div className="flex items-center justify-end gap-1">
         <span onClick={(e) => startEditing(row.id, 'quantity', e)} className="cursor-text hover:text-amber-accent transition-colors font-mono font-bold text-amber-accent">
-          {value.toFixed(2)}
+          {value.toFixed(3)}
         </span>
         {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
         {row.unit && <span className="text-[9px] text-zinc-600">{row.unit}</span>}
@@ -473,7 +473,7 @@ export function TakeoffTable({
                     <td className="p-2 text-right pr-3">
                       <div className="flex items-center justify-end gap-3">
                         <span className="font-bold text-amber-500 whitespace-nowrap">
-                          {groupTotalQuantity.toFixed(2)} {items[0]?.unit || ''}
+                          {groupTotalQuantity.toFixed(3)} {items[0]?.unit || ''}
                         </span>
                         
                         <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
