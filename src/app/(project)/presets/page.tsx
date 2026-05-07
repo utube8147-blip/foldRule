@@ -263,14 +263,14 @@ export default function PresetsPage() {
       const groupName = `${fd.customName || 'Cabinet'} (${fd.width || 600}×${fd.height || 720}×${fd.depth || 550}mm)`;
 
       const parts: Partial<TakeoffRow>[] = [];
-      if (fd.hasBack)      parts.push({ description: 'Back Panel',       type: 'Area',  quantity: +(iW * iH).toFixed(3),                  unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasTop)       parts.push({ description: 'Top Panel',        type: 'Area',  quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasBottom)    parts.push({ description: 'Bottom Panel',     type: 'Area',  quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasLeftSide)  parts.push({ description: 'Left Side Panel',  type: 'Area',  quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (fd.hasRightSide) parts.push({ description: 'Right Side Panel', type: 'Area',  quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
-      if (shelves > 0)     parts.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3),  unit: 'm²',  category: 'Shelves',         notes: `Material: ${fd.shelfMaterial || fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasBack)      parts.push({ description: 'Back Panel',       type: 'Polygon',   quantity: +(iW * iH).toFixed(3),                  unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasTop)       parts.push({ description: 'Top Panel',        type: 'Polygon',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasBottom)    parts.push({ description: 'Bottom Panel',     type: 'Polygon',   quantity: +(iW * D).toFixed(3),                   unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasLeftSide)  parts.push({ description: 'Left Side Panel',  type: 'Polygon',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (fd.hasRightSide) parts.push({ description: 'Right Side Panel', type: 'Polygon',   quantity: +(D * H).toFixed(3),                    unit: 'm²',  category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}` });
+      if (shelves > 0)     parts.push({ description: `Shelves (${shelves} pcs)`, type: 'Polygon', quantity: +(iW * D * shelves).toFixed(3),   unit: 'm²',  category: 'Shelves',         notes: `Material: ${fd.shelfMaterial || fd.boardMaterial || '18mm MDF'}` });
       if (fd.hasDoors) {
-        parts.push({ description: `Doors (${doorCount} pcs)`, type: 'Area',  quantity: +((W / doorCount) * H * doorCount).toFixed(3), unit: 'm²',  category: 'Doors',    notes: `Material: ${fd.doorMaterial || 'MDF Primed'}` });
+        parts.push({ description: `Doors (${doorCount} pcs)`, type: 'Polygon',  quantity: +((W / doorCount) * H * doorCount).toFixed(3), unit: 'm²',  category: 'Doors',    notes: `Material: ${fd.doorMaterial || 'MDF Primed'}` });
         parts.push({ description: 'Door Hardware',            type: 'Count', quantity: doorCount,                                      unit: 'sets', category: 'Hardware', notes: `Hinges & handles | Type: ${fd.hingeType || 'Concealed'}` });
       }
       if (fd.hasDrawers) {
@@ -330,7 +330,7 @@ export default function PresetsPage() {
 
       addToast(`${groupName} ADDED (${parts.length} components)`, 'success');
 
-    } else if (t.id === 'roof') {
+} else if (t.id === 'roof') {
       const area = parseFloat(String(fd.roofArea ?? 0)) || 0;
       const pitch = parseFloat(String(fd.roofPitch ?? 0)) || 0;
       const pitchFactor = 1 + (pitch * 0.02);
@@ -339,9 +339,9 @@ export default function PresetsPage() {
 
       const parts: Partial<TakeoffRow>[] = [];
       if (area > 0) {
-        parts.push({ description: 'Roof Covering',       type: 'Area',   quantity: +adjustedArea,                                    unit: 'm²', category: 'Roofing',  notes: `Material: ${fd.material || 'Tile'} | Pitch: ${pitch}°` });
-        parts.push({ description: 'Underlay / Membrane', type: 'Area',   quantity: +(parseFloat(adjustedArea) * 1.1).toFixed(2),     unit: 'm²', category: 'Roofing',  notes: '+10% overlap | Type: Breathable membrane' });
-        parts.push({ description: 'Guttering & Downpipes', type: 'Length', quantity: +(area / 10).toFixed(1),                        unit: 'm',  category: 'Drainage', notes: `Material: ${fd.guttering || 'Aluminium'}` });
+        parts.push({ description: 'Roof Covering', type: 'Area', quantity: +adjustedArea, unit: 'm²', category: 'Roofing', notes: `Material: ${fd.material || 'Tile'} | Pitch: ${pitch}°` });
+        parts.push({ description: 'Underlay / Membrane', type: 'Area', quantity: +(parseFloat(adjustedArea) * 1.1).toFixed(2), unit: 'm²', category: 'Roofing', notes: '+10% overlap | Type: Breathable membrane' });
+        parts.push({ description: 'Guttering & Downpipes', type: 'Length', quantity: +(area / 10).toFixed(1), unit: 'm', category: 'Drainage', notes: `Material: ${fd.guttering || 'Aluminium'}` });
       }
       if (fd.insulation) parts.push({ description: 'Roof Insulation', type: 'Area', quantity: area, unit: 'm²', category: 'Insulation', notes: `Thickness: ${fd.insulation}` });
       parts.push({ description: 'Installation & Flashing', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes valleys, ridges, flashings, & sealing' });
@@ -402,14 +402,14 @@ export default function PresetsPage() {
       if (area > 0) {
         parts.push({ description: 'Ceiling Finishes', type: 'Area', quantity: area, unit: 'm²', category: 'Finishes', notes: `Material: ${fd.material || 'Plaster'} | Type: ${fd.type || 'Suspended'}` });
       }
-
+      
       if (fd.type === 'Suspended') {
-        parts.push({ description: 'Suspension Grid System', type: 'Length', quantity: +(area * 0.4).toFixed(1), unit: 'm',    category: 'Framework', notes: 'Main & cross tees' });
-        parts.push({ description: 'Hanger Wire / Brackets', type: 'Count',  quantity: Math.max(1, Math.ceil(area / 2)),       unit: 'sets', category: 'Hardware',  notes: 'Threaded rod, brackets, clips' });
+        parts.push({ description: 'Suspension Grid System', type: 'Length', quantity: +(area * 0.4).toFixed(1), unit: 'm', category: 'Framework', notes: 'Main & cross tees' });
+        parts.push({ description: 'Hanger Wire / Brackets', type: 'Count', quantity: Math.max(1, Math.ceil(area / 2)), unit: 'sets', category: 'Hardware', notes: 'Threaded rod, brackets, clips' });
       }
-
+      
       if (fd.acousticAbsorption) parts.push({ description: 'Acoustic Treatment', type: 'Area', quantity: area, unit: 'm²', category: 'Finishes', notes: 'Acoustic panels / mineral wool backing' });
-
+      
       parts.push({ description: 'Installation & Access', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes access panels, fire rating checks' });
 
       addMeasurement({
@@ -471,14 +471,14 @@ export default function PresetsPage() {
       parts.push({ description: 'Treads', type: 'Count', quantity: steps, unit: 'pcs', category: 'Stair Components', notes: `Material: ${fd.material || 'Timber'} | Depth: ${treadsDepth}mm` });
       parts.push({ description: 'Risers', type: 'Count', quantity: steps, unit: 'pcs', category: 'Stair Components', notes: `Height: ${riserHeight}mm | Material: ${fd.material || 'Timber'}` });
       parts.push({ description: 'Stringers / Carriages', type: 'Count', quantity: 2, unit: 'pcs', category: 'Framework', notes: `Material: ${fd.stringerMaterial || fd.material || 'Timber'}` });
-
+      
       if (fd.handrail) {
         const handrailLength = ((steps * riserHeight) / 1000) / Math.sin((Math.PI) / 6);
-        parts.push({ description: 'Handrail',           type: 'Length', quantity: +handrailLength.toFixed(2),              unit: 'm',   category: 'Safety', notes: `Material: ${fd.railMaterial || 'Timber'} | Height: ${fd.railHeight || '900mm'}` });
-        parts.push({ description: 'Balustrade Posts',   type: 'Count',  quantity: Math.max(1, Math.ceil(steps / 3)),        unit: 'pcs', category: 'Safety', notes: 'Newel posts' });
-        parts.push({ description: 'Balusters / Spindles', type: 'Count', quantity: Math.max(1, steps * 3),                 unit: 'pcs', category: 'Safety', notes: 'Spacing: 100mm max' });
+        parts.push({ description: 'Handrail', type: 'Length', quantity: +handrailLength.toFixed(2), unit: 'm', category: 'Safety', notes: `Material: ${fd.railMaterial || 'Timber'} | Height: ${fd.railHeight || '900mm'}` });
+        parts.push({ description: 'Balustrade Posts', type: 'Count', quantity: Math.max(1, Math.ceil(steps / 3)), unit: 'pcs', category: 'Safety', notes: 'Newel posts' });
+        parts.push({ description: 'Balusters / Spindles', type: 'Count', quantity: Math.max(1, steps * 3), unit: 'pcs', category: 'Safety', notes: `Spacing: 100mm max` });
       }
-
+      
       parts.push({ description: 'Installation & Fixing', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Assembly, securing, finishing sanding' });
       if (fd.fireRating) parts.push({ description: 'Fire Rating Treatment', type: 'Count', quantity: 1, unit: 'each', category: 'Protection', notes: `Rating: ${fd.fireRating}` });
 
@@ -530,23 +530,21 @@ export default function PresetsPage() {
 
       addToast(`${groupName} ADDED (${parts.length} components)`, 'success');
 
+
     } else {
       let quantity = 0;
       let unit     = 'm';
-      switch (t.measurementType) {
-        case 'linear':    quantity = parseFloat(String(fd.length ?? fd.pipeLength ?? 0)) || 0;                                                              unit = 'm';   break;
-        case 'area':      quantity = parseFloat(String(fd.area ?? 0)) || (parseFloat(String(fd.width ?? 0)) * parseFloat(String(fd.height ?? 0))) / 1e6 || 0; unit = 'm²';  break;
-        case 'polygon':   quantity = parseFloat(String(fd.area ?? 0)) || 0;                                                                                 unit = 'm²';  break;
-        case 'rectangle': quantity = parseFloat(String(fd.area ?? 0)) || (parseFloat(String(fd.width ?? 0)) * parseFloat(String(fd.height ?? 0))) / 1e6 || 0; unit = 'm²';  break;
-        case 'count':     quantity = parseInt(String(fd.quantity ?? fd.doorCount ?? fd.windowCount ?? 1));                                                   unit = 'pcs'; break;
+      switch (t.measurementType as string) {
+
+        case 'linear': quantity = parseFloat(String(fd.length ?? fd.pipeLength ?? 0)) || 0;                                                             unit = 'm';   break;
+        case 'area':   quantity = parseFloat(String(fd.area ?? 0)) || (parseFloat(String(fd.width ?? 0)) * parseFloat(String(fd.height ?? 0))) / 1e6 || 0;              unit = 'm²';  break;
+        case 'count':  quantity = parseInt(String(fd.quantity ?? fd.doorCount ?? fd.windowCount ?? 1));                                                  unit = 'pcs'; break;
       }
       addMeasurement({
         id:           `${activeDrawing.id}-${Date.now()}`,
         drawingId:    activeDrawing.id,
         description:  t.name,
-        type:         (t.measurementType === 'linear') ? 'Length'
-                    : (t.measurementType === 'area' || t.measurementType === 'polygon' || t.measurementType === 'rectangle') ? 'Area'
-                    : 'Count',
+        type:         t.measurementType === 'linear' ? 'Length' : t.measurementType === 'area' ? 'Area' : 'Count',
         quantity,
         unit,
         unitRate:     0,
