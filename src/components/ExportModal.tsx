@@ -3,26 +3,26 @@ import { X, Pencil, Table, Download } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface ExportModalProps {
-  // types file doesn't export ProjectState in some setups; use any to avoid build error
   projectState: any;
   onClose: () => void;
-  onExport: () => void;
+  onExport: (filename: string) => void; // ← now accepts filename
 }
 
 export function ExportModal({ projectState, onClose, onExport }: ExportModalProps) {
-  const [fileName, setFileName] = useState(`${projectState.projectName.toLowerCase().replace(/\s+/g, '-')}-takeoff.xlsx`);
+  const [fileName, setFileName] = useState(
+    `${projectState.projectName.toLowerCase().replace(/\s+/g, '-')}-takeoff.xlsx`
+  );
 
   const handleExport = () => {
-    // We could pass filename here if the export function supported it
-    onExport();
+    onExport(fileName); // ← passes the filename the user typed
   };
 
-  const filesCount = new Set(projectState.measurements.map((m: { drawingId: any; }) => m.drawingId)).size;
+  const filesCount = new Set(projectState.measurements.map((m: { drawingId: any }) => m.drawingId)).size;
   const pointsCount = projectState.measurements.length;
 
   return (
     <div className="absolute inset-0 z-[150] flex items-center justify-center bg-[#0D0D0D]/75 backdrop-blur-[2px] font-mono">
-      <motion.div 
+      <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
@@ -35,23 +35,25 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
             <X className="w-5 h-5 pointer-events-none" />
           </button>
         </div>
-        
+
         {/* Modal Body */}
         <div className="p-6 space-y-6">
           {/* Filename Input */}
           <div>
-            <label className="block text-[10px] text-stone-500 uppercase tracking-[0.2em] mb-3 font-bold">Target Filename</label>
+            <label className="block text-[10px] text-stone-500 uppercase tracking-[0.2em] mb-3 font-bold">
+              Target Filename
+            </label>
             <div className="bg-[#0D0D0D] border border-[#262626] px-4 py-3 flex items-center gap-3 group focus-within:border-amber-accent transition-colors">
               <Pencil className="w-4 h-4 text-stone-600" />
-              <input 
-                className="bg-transparent border-none p-0 focus:ring-0 text-stone-200 text-sm font-bold w-full outline-none lowercase" 
-                type="text" 
+              <input
+                className="bg-transparent border-none p-0 focus:ring-0 text-stone-200 text-sm font-bold w-full outline-none lowercase"
+                type="text"
                 value={fileName}
                 onChange={(e) => setFileName(e.target.value)}
               />
             </div>
           </div>
-          
+
           {/* Two Column Settings */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -69,7 +71,7 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
               </div>
             </div>
           </div>
-          
+
           {/* Calculation Engine Status */}
           <div className="bg-[#1a1a1a] p-4 border border-[#262626] space-y-3">
             <div className="flex justify-between items-center">
@@ -81,10 +83,10 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
             </div>
           </div>
         </div>
-        
+
         {/* Modal Footer */}
         <div className="px-6 pb-6 pt-2">
-          <button 
+          <button
             onClick={handleExport}
             className="w-full bg-amber-accent text-[#0D0D0D] font-black text-xs py-4 hover:bg-amber-400 transition-colors flex items-center justify-center gap-3 shadow-lg active:translate-y-px uppercase tracking-[0.2em]"
           >

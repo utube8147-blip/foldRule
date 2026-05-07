@@ -52,9 +52,9 @@ function buildRow(overrides: Partial<TakeoffRow> & { id: string; drawingId: stri
     unit:          'm',
     unitRate:      0,
     notes:         '',
-    points:        [],          // ← always an array, never undefined
+    points:        [],
     isOverridden:  false,
-    childIds:      [],          // ← always an array, never undefined
+    childIds:      [],
     color:         '#EF9F27',
     isVisible:     true,
     isGroupHeader: false,
@@ -80,6 +80,7 @@ export default function Workspace() {
     deleteMeasurement,
     clearAll,
     toggleVisibility,
+    updateProjectMeta,
   } = useTakeoffContext();
 
   const [leftCollapsed, setLeftCollapsed]             = useState(false);
@@ -91,7 +92,6 @@ export default function Workspace() {
   const [isMounted, setIsMounted]                     = useState(false);
   const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
 
-  // ── Group append state ──────────────────────────────────────────────────────
   const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
@@ -190,7 +190,7 @@ export default function Workspace() {
     return { measurements, groupName };
   }, []);
 
-  // ── Preset select handler — FIXED: all rows get points/childIds/color ───────
+  // ── Preset select handler ───────────────────────────────────────────────────
   const handlePresetSelect = useCallback((data: Record<string, any>, template: PresetTemplate) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -205,7 +205,6 @@ export default function Workspace() {
 
       const headerId = `${groupId}-header`;
 
-      // Build all child IDs upfront so the header knows them immediately
       const childRows: TakeoffRow[] = measurements.map((m, i) =>
         buildRow({
           id:          `${groupId}-child-${i}-${Date.now()}`,
@@ -236,7 +235,7 @@ export default function Workspace() {
         groupType:     template.id,
         isGroupHeader: true,
         isExpanded:    true,
-        childIds:      childRows.map(c => c.id),   // ← populated immediately
+        childIds:      childRows.map(c => c.id),
         label:         groupName,
         description:   groupName,
         type:          'Count',
@@ -258,7 +257,6 @@ export default function Workspace() {
       addToast(`${groupName} ADDED (${childRows.length} components)`, 'success');
 
     } else {
-      // ── Simple (non-carcass) preset ─────────────────────────────────────────
       let quantity = 0;
       let unit     = 'm';
 
@@ -340,7 +338,7 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool]);
 
-  // ── onAddMeasurement — FIXED: preserves all fields including color/childIds ─
+  // ── onAddMeasurement ────────────────────────────────────────────────────────
   const handleAddMeasurement = useCallback((m: any) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -375,30 +373,42 @@ export default function Workspace() {
 
   const handleExport = useCallback(() => setShowExportModal(true), []);
 
-const executeExport = useCallback(() => {
-  fetch('/api/export', { method: 'GET' })
-    .then(async res => {
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: res.statusText }));
-        throw new Error(err.details || err.error || `HTTP ${res.status}`);
-      }
-      return res.blob();
+  // ── executeExport now accepts the filename from the modal ──────────────────
+  const executeExport = useCallback((filename: string) => {
+    fetch('/api/export', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filename }), // ← sends the user's chosen filename
     })
-    .then(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-      addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
-      setShowExportModal(false);
-    })
-    .catch(err => {
-      console.error('Export failed:', err);
-      addToast(`EXPORT FAILED — ${err.message}`, 'info');
-    });
-}, [addToast]);
+      .then(async res => {
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: res.statusText }));
+          throw new Error(err.details || err.error || `HTTP ${res.status}`);
+        }
+
+        // Use the filename the user typed, falling back to Content-Disposition
+        const disposition = res.headers.get('Content-Disposition');
+        const match       = disposition?.match(/filename="(.+)"/);
+        const finalName   = filename || match?.[1] || `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
+
+        const blob = await res.blob();
+        return { blob, filename: finalName };
+      })
+      .then(({ blob, filename: finalName }) => {
+        const url = URL.createObjectURL(blob);
+        const a   = document.createElement('a');
+        a.href     = url;
+        a.download = finalName;
+        a.click();
+        URL.revokeObjectURL(url);
+        addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
+        setShowExportModal(false);
+      })
+      .catch(err => {
+        console.error('Export failed:', err);
+        addToast(`EXPORT FAILED — ${err.message}`, 'info');
+      });
+  }, [addToast]);
 
   const handleScaleSet = useCallback((f: number) => {
     if (activeDrawing) {
@@ -418,7 +428,7 @@ const executeExport = useCallback(() => {
       <div className="flex flex-col h-screen bg-industrial-black">
         <Navbar
           projectName={ps.projectName}
-          onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
+          onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
           onExport={handleExport}
           onOpenPresets={() => setShowPresetDrawer(true)}
         />
@@ -439,7 +449,7 @@ const executeExport = useCallback(() => {
 
       <Navbar
         projectName={ps.projectName}
-        onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
+        onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
         onExport={handleExport}
         onOpenPresets={() => setShowPresetDrawer(true)}
       />
@@ -453,8 +463,7 @@ const executeExport = useCallback(() => {
           onOpenMaterialLibrary={() => setShowMaterialLibrary(true)}
           onDrawingAdded={addDrawing}
           onSelectDrawing={setActiveDrawingId}
-          onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
-          onProjectNumberChange={(num) => setProjectState((prev: any) => ({ ...prev, projectNumber: num }))}
+          onUpdateProjectMeta={updateProjectMeta}
         />
 
         <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
@@ -662,7 +671,7 @@ const executeExport = useCallback(() => {
           <ExportModal
             projectState={ps}
             onClose={() => setShowExportModal(false)}
-            onExport={executeExport}
+            onExport={executeExport}  // ← now typed as (filename: string) => void
           />
         )}
       </AnimatePresence>
