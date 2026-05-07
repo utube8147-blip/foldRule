@@ -438,7 +438,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     
     // If the deleted measurement was a group header, also delete all its children
     if (deletedMeasurement.isGroupHeader && deletedMeasurement.childIds) {
-      mAfter = mAfter.filter(m => !deletedMeasurement.childIds.includes(m.id));
+      mAfter = mAfter.filter(m => !deletedMeasurement.childIds!.includes(m.id));
     }
 
     syncedSetProjectState(prev => {
