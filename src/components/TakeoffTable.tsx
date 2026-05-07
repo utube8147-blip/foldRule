@@ -159,29 +159,18 @@ export function TakeoffTable({
     const groups: Map<string, { header: TakeoffRow; items: TakeoffRow[] }> = new Map();
     const ungrouped: TakeoffRow[] = [];
 
-    // Pass 1: register all group headers first (order-independent)
     measurements.forEach((measurement) => {
-      if (measurement.isGroupHeader) {
-        const key = measurement.groupId || measurement.id;
-        groups.set(key, { header: measurement, items: [] });
-      }
-    });
-
-    // Pass 2: assign children and ungrouped
-    measurements.forEach((measurement) => {
-      if (measurement.isGroupHeader) return;
-
-      if (measurement.groupId && groups.has(measurement.groupId)) {
+      if (measurement.isGroupHeader && measurement.groupId) {
+        groups.set(measurement.groupId, { header: measurement, items: [] });
+      } else if (measurement.groupId && groups.has(measurement.groupId)) {
         groups.get(measurement.groupId)!.items.push(measurement);
-        return;
-      }
-
-      if (measurement.parentId && groups.has(measurement.parentId)) {
+      } else if (measurement.isGroupHeader && measurement.childIds) {
+        groups.set(measurement.id, { header: measurement, items: [] });
+      } else if (measurement.parentId && groups.has(measurement.parentId)) {
         groups.get(measurement.parentId)!.items.push(measurement);
-        return;
+      } else if (!measurement.isGroupHeader && !measurement.groupId && !measurement.parentId) {
+        ungrouped.push(measurement);
       }
-
-      ungrouped.push(measurement);
     });
 
     return { groups, ungrouped };

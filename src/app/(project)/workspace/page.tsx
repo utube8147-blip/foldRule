@@ -1,13 +1,4 @@
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
-//
-//  COMPLETE FIXED VERSION:
-//    1. deleteMeasurement imported from useTakeoffContext
-//    2. Passed to Viewer via onDeleteMeasurement prop
-//    3. All types consistent
-//    4. Group append support for all measurement types
-//    5. Auto-fix existing groups with wrong types
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
 'use client';
 
@@ -43,6 +34,34 @@ import {
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
 
+// ─── Stable color palette for presets ────────────────────────────────────────
+const PRESET_COLORS = [
+  '#EF9F27', '#85B7EB', '#7EC8A4', '#E07B7B', '#B07BE0',
+  '#E0C47B', '#7BE0D4', '#E07BB0', '#9BE07B', '#7B9BE0',
+];
+let colorIndex = 0;
+const getPresetColor = () => PRESET_COLORS[colorIndex++ % PRESET_COLORS.length];
+
+// ─── Safe row builder — ensures every required TakeoffRow field is present ────
+function buildRow(overrides: Partial<TakeoffRow> & { id: string; drawingId: string }): TakeoffRow {
+  return {
+    label:         '',
+    description:   'Untitled',
+    type:          'Length',
+    quantity:      0,
+    unit:          'm',
+    unitRate:      0,
+    notes:         '',
+    points:        [],          // ← always an array, never undefined
+    isOverridden:  false,
+    childIds:      [],          // ← always an array, never undefined
+    color:         '#EF9F27',
+    isVisible:     true,
+    isGroupHeader: false,
+    ...overrides,
+  };
+}
+
 export default function Workspace() {
   const router = useRouter();
 
@@ -63,191 +82,185 @@ export default function Workspace() {
     toggleVisibility,
   } = useTakeoffContext();
 
-  const [leftCollapsed, setLeftCollapsed]       = useState(false);
-  const [rightCollapsed, setRightCollapsed]     = useState(false);
+  const [leftCollapsed, setLeftCollapsed]             = useState(false);
+  const [rightCollapsed, setRightCollapsed]           = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
-  const [showExportModal, setShowExportModal]   = useState(false);
-  const [showPresetDrawer, setShowPresetDrawer] = useState(false);
-  const [toasts, setToasts]                     = useState<any[]>([]);
-  const [isMounted, setIsMounted]               = useState(false);
-  const [toolbarAPI, setToolbarAPI]             = useState<ViewerToolbarAPI | null>(null);
-  
-  // ── Group append state ─────────────────────────────────────────────────────
+  const [showExportModal, setShowExportModal]         = useState(false);
+  const [showPresetDrawer, setShowPresetDrawer]       = useState(false);
+  const [toasts, setToasts]                           = useState<any[]>([]);
+  const [isMounted, setIsMounted]                     = useState(false);
+  const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
+
+  // ── Group append state ──────────────────────────────────────────────────────
   const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
 
   useEffect(() => { setIsMounted(true); }, []);
 
-  // ── FIX EXISTING GROUPS WITH WRONG TYPES ───────────────────────────────────
-  // This fixes polygon/rectangle groups that were created with wrong type
-  // Can be removed after all existing data is clean
+  // ── Fix existing groups with mismatched types ───────────────────────────────
   useEffect(() => {
-    const groupsToFix = ps.measurements.filter((m) => 
-      m.isGroupHeader && m.childIds && m.childIds.length > 0
-    );
-    
-    groupsToFix.forEach((group) => {
-      const firstChild = ps.measurements.find((c) => c.id === group.childIds?.[0]);
-      if (firstChild && group.type !== firstChild.type) {
-        console.log(`Fixing group ${group.id}: ${group.type} → ${firstChild.type}`);
-        updateMeasurement(group.id, { type: firstChild.type });
-      }
-    });
+    ps.measurements
+      .filter(m => m.isGroupHeader && m.childIds && m.childIds.length > 0)
+      .forEach(group => {
+        const firstChild = ps.measurements.find(c => c.id === group.childIds?.[0]);
+        if (firstChild && group.type !== firstChild.type) {
+          updateMeasurement(group.id, { type: firstChild.type });
+        }
+      });
   }, [ps.measurements, updateMeasurement]);
 
-  // Memoize derived values to prevent unnecessary recalculations
-  const activeDrawing = useMemo(() => 
-    ps.drawings.find((d: { id: any; }) => d.id === ps.activeDrawingId) || null,
-    [ps.drawings, ps.activeDrawingId]
-  );
-  
-  const currentScaleFactor = useMemo(() => 
-    activeDrawing ? activeDrawing.scaleFactor : 1,
-    [activeDrawing]
-  );
-  
-  const activeMeasurements = useMemo(() => 
-    ps.measurements.filter((m: { drawingId: any; }) => m.drawingId === ps.activeDrawingId),
-    [ps.measurements, ps.activeDrawingId]
+  // ── Derived values ──────────────────────────────────────────────────────────
+  const activeDrawing = useMemo(
+    () => ps.drawings.find((d: { id: any }) => d.id === ps.activeDrawingId) || null,
+    [ps.drawings, ps.activeDrawingId],
   );
 
-  // Stable callback ref for toolbar API
+  const currentScaleFactor = useMemo(
+    () => (activeDrawing ? activeDrawing.scaleFactor : 1),
+    [activeDrawing],
+  );
+
+  const activeMeasurements = useMemo(
+    () => ps.measurements.filter((m: { drawingId: any }) => m.drawingId === ps.activeDrawingId),
+    [ps.measurements, ps.activeDrawingId],
+  );
+
   const toolbarAPIRef = useRef<ViewerToolbarAPI | null>(null);
   useEffect(() => { toolbarAPIRef.current = toolbarAPI; }, [toolbarAPI]);
 
-  const addToast = (message: string, type: 'success' | 'info' = 'info') => {
+  // ── Toast helper ────────────────────────────────────────────────────────────
+  const addToast = useCallback((message: string, type: 'success' | 'info' = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
-  };
+  }, []);
 
-  const generateGroupId = () => `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-
-  const generateGroupedCarcassMeasurements = (
+  // ── Carcass preset generator ────────────────────────────────────────────────
+  const generateGroupedCarcassMeasurements = useCallback((
     data: Record<string, any>,
     template: PresetTemplate,
     drawingId: string,
-    groupId: string
+    groupId: string,
   ): { measurements: Partial<TakeoffRow>[]; groupName: string } => {
     const measurements: Partial<TakeoffRow>[] = [];
 
-    const W      = parseFloat(data.width          ?? 600) / 1000;
-    const H      = parseFloat(data.height         ?? 720) / 1000;
-    const D      = parseFloat(data.depth          ?? 550) / 1000;
-    const T      = parseFloat(data.panelThickness ?? 18)  / 1000;
-    const shelves    = parseInt(data.shelfCount ?? 2);
-    const doorCount  = parseInt(data.doorCount  ?? 1);
+    const W     = parseFloat(data.width          ?? 600) / 1000;
+    const H     = parseFloat(data.height         ?? 720) / 1000;
+    const D     = parseFloat(data.depth          ?? 550) / 1000;
+    const T     = parseFloat(data.panelThickness ?? 18)  / 1000;
+    const shelves   = parseInt(data.shelfCount ?? 2);
+    const doorCount = parseInt(data.doorCount  ?? 1);
 
     const iW = W - 2 * T;
     const iH = H - 2 * T;
 
     const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
 
-    if (data.hasBack !== false) {
-      measurements.push({ description: 'Back Panel', type: 'Area', quantity: +(iW * iH).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
-    }
-    if (data.hasTop !== false) {
-      measurements.push({ description: 'Top Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
-    }
-    if (data.hasBottom !== false) {
-      measurements.push({ description: 'Bottom Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
-    }
-    if (data.hasLeftSide !== false) {
-      measurements.push({ description: 'Left Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
-    }
-    if (data.hasRightSide !== false) {
-      measurements.push({ description: 'Right Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
-    }
-    if (shelves > 0) {
-      measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
-    }
+    if (data.hasBack !== false)      measurements.push({ description: 'Back Panel',      type: 'Area',   quantity: +(iW * iH).toFixed(3),         unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasTop  !== false)      measurements.push({ description: 'Top Panel',       type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasBottom !== false)    measurements.push({ description: 'Bottom Panel',    type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasLeftSide  !== false) measurements.push({ description: 'Left Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasRightSide !== false) measurements.push({ description: 'Right Side Panel',type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+
+    if (shelves > 0) measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
+
     if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
-      measurements.push({ description: `Doors (${doorCount} pcs)`, type: 'Area', quantity: +doorArea.toFixed(3), unit: 'm²', notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors', isOverridden: true });
-      measurements.push({ description: 'Door Hardware', type: 'Count', quantity: doorCount, unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`, category: 'Hardware', isOverridden: true });
+      measurements.push({ description: `Doors (${doorCount} pcs)`,  type: 'Area',  quantity: +doorArea.toFixed(3), unit: 'm²',   notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors',     isOverridden: true });
+      measurements.push({ description: 'Door Hardware',               type: 'Count', quantity: doorCount,            unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,       category: 'Hardware',  isOverridden: true });
     }
     if (data.hasDrawers) {
       const drawerCount = parseInt(data.drawerCount ?? 2);
-      measurements.push({ description: `Drawer Fronts (${drawerCount} pcs)`, type: 'Count', quantity: drawerCount, unit: 'pcs', notes: `Material: ${data.drawerMaterial || 'Match doors'}`, category: 'Drawers', isOverridden: true });
-      measurements.push({ description: 'Drawer Hardware', type: 'Count', quantity: drawerCount, unit: 'sets', notes: `Drawer slides (1 pair per drawer), handles`, category: 'Hardware', isOverridden: true });
+      measurements.push({ description: `Drawer Fronts (${drawerCount} pcs)`, type: 'Count', quantity: drawerCount, unit: 'pcs',  notes: `Material: ${data.drawerMaterial || 'Match doors'}`, category: 'Drawers',  isOverridden: true });
+      measurements.push({ description: 'Drawer Hardware',                      type: 'Count', quantity: drawerCount, unit: 'sets', notes: `Drawer slides (1 pair per drawer), handles`,          category: 'Hardware', isOverridden: true });
     }
 
     let edgeBanding = 0;
-    if (data.hasTop    !== false) edgeBanding += 2 * (iW + D);
-    if (data.hasBottom !== false) edgeBanding += 2 * (iW + D);
-    if (data.hasLeftSide  !== false) edgeBanding += 2 * (D + H);
-    if (data.hasRightSide !== false) edgeBanding += 2 * (D + H);
-    if (shelves > 0) edgeBanding += (2 * iW + D) * shelves;
+    if (data.hasTop      !== false) edgeBanding += 2 * (iW + D);
+    if (data.hasBottom   !== false) edgeBanding += 2 * (iW + D);
+    if (data.hasLeftSide !== false) edgeBanding += 2 * (D + H);
+    if (data.hasRightSide!== false) edgeBanding += 2 * (D + H);
+    if (shelves > 0)                edgeBanding += (2 * iW + D) * shelves;
 
-    if (edgeBanding > 0) {
-      measurements.push({ description: 'Edge Banding', type: 'Length', quantity: +(edgeBanding * 1.1).toFixed(2), unit: 'm', notes: `Material: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges +10% waste`, category: 'Finishing', isOverridden: true });
-    }
+    if (edgeBanding > 0) measurements.push({ description: 'Edge Banding', type: 'Length', quantity: +(edgeBanding * 1.1).toFixed(2), unit: 'm', notes: `Material: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges +10% waste`, category: 'Finishing', isOverridden: true });
 
     measurements.push({ description: 'Assembly & Installation', type: 'Count', quantity: 1, unit: 'each', notes: `Labor, cam locks, fixing brackets, assembly hardware`, category: 'Labor', isOverridden: true });
 
-    if (data.hasToeKick) {
-      measurements.push({ description: 'Toe Kick / Plinth', type: 'Length', quantity: W, unit: 'm', notes: `Material: ${data.kickboardMaterial || 'Same as carcass'} | Height: ${data.kickboardHeight || '100mm'}`, category: 'Finishing', isOverridden: true });
-    }
+    if (data.hasToeKick) measurements.push({ description: 'Toe Kick / Plinth', type: 'Length', quantity: W, unit: 'm', notes: `Material: ${data.kickboardMaterial || 'Same as carcass'} | Height: ${data.kickboardHeight || '100mm'}`, category: 'Finishing', isOverridden: true });
 
     return { measurements, groupName };
-  };
+  }, []);
 
-  const handlePresetSelect = (data: Record<string, any>, template: PresetTemplate) => {
+  // ── Preset select handler — FIXED: all rows get points/childIds/color ───────
+  const handlePresetSelect = useCallback((data: Record<string, any>, template: PresetTemplate) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
       return;
     }
 
-    const groupId = generateGroupId();
+    const groupId    = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const groupColor = getPresetColor();
 
     if (template.id === 'carcass') {
       const { measurements, groupName } = generateGroupedCarcassMeasurements(data, template, activeDrawing.id, groupId);
 
-      const headerRow: TakeoffRow = {
-        id: `${groupId}-header`,
-        drawingId: activeDrawing.id,
+      const headerId = `${groupId}-header`;
+
+      // Build all child IDs upfront so the header knows them immediately
+      const childRows: TakeoffRow[] = measurements.map((m, i) =>
+        buildRow({
+          id:          `${groupId}-child-${i}-${Date.now()}`,
+          drawingId:   activeDrawing.id,
+          groupId,
+          parentId:    headerId,
+          label:       m.description || '',
+          description: m.description || '',
+          type:        m.type        || 'Length',
+          quantity:    m.quantity    ?? 0,
+          unit:        m.unit        || 'm',
+          unitRate:    0,
+          notes:       m.notes       || '',
+          isOverridden: true,
+          category:    m.category,
+          presetData:  data,
+          presetId:    template.id,
+          color:       groupColor,
+          isVisible:   true,
+        }),
+      );
+
+      const headerRow = buildRow({
+        id:            headerId,
+        drawingId:     activeDrawing.id,
         groupId,
         groupName,
-        groupType: template.id,
+        groupType:     template.id,
         isGroupHeader: true,
-        isExpanded: true,
-        childIds: [],
-        label: groupName,
-        description: groupName,
-        type: 'Count',
-        quantity: 1,
-        unit: 'assembly',
-        unitRate: 0,
-        notes: `Complete ${template.name.toLowerCase()} assembly`,
-        points: [],
-        isOverridden: true,
-        presetId: template.id,
-        presetData: data,
-        category: 'Group Header',
-        color: '#EF9F27',
-        isVisible: true,
-      };
-
-      addMeasurement(headerRow);
-      measurements.forEach(measurement => {
-        addMeasurement({
-          id: `${groupId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-          drawingId: activeDrawing.id,
-          groupId,
-          parentId: `${groupId}-header`,
-          label: measurement.description,
-          ...measurement,
-          childIds: [],
-          presetData: data,
-          presetId: template.id,
-          color: '#85B7EB',
-          isVisible: true,
-        } as TakeoffRow);
+        isExpanded:    true,
+        childIds:      childRows.map(c => c.id),   // ← populated immediately
+        label:         groupName,
+        description:   groupName,
+        type:          'Count',
+        quantity:      1,
+        unit:          'assembly',
+        unitRate:      0,
+        notes:         `Complete ${template.name.toLowerCase()} assembly`,
+        isOverridden:  true,
+        presetId:      template.id,
+        presetData:    data,
+        category:      'Group Header',
+        color:         groupColor,
+        isVisible:     true,
       });
 
-      addToast(`${groupName} ADDED (${measurements.length} components)`, 'success');
+      addMeasurement(headerRow);
+      childRows.forEach(row => addMeasurement(row));
+
+      addToast(`${groupName} ADDED (${childRows.length} components)`, 'success');
+
     } else {
+      // ── Simple (non-carcass) preset ─────────────────────────────────────────
       let quantity = 0;
-      let unit = 'm';
+      let unit     = 'm';
 
       switch (template.measurementType) {
         case 'linear':
@@ -255,7 +268,9 @@ export default function Workspace() {
           unit = 'm';
           break;
         case 'area':
-          quantity = parseFloat(data.area ?? data.roofArea ?? 0) || (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0)) / 1e6 || 0;
+          quantity = parseFloat(data.area ?? data.roofArea ?? 0)
+            || (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0)) / 1e6
+            || 0;
           unit = 'm²';
           break;
         case 'count':
@@ -266,63 +281,58 @@ export default function Workspace() {
           quantity = 0;
       }
 
-      addMeasurement({
-        id: `${activeDrawing.id}-${Date.now()}`,
-        drawingId: activeDrawing.id,
-        label: template.name,
+      addMeasurement(buildRow({
+        id:          `${activeDrawing.id}-preset-${Date.now()}`,
+        drawingId:   activeDrawing.id,
+        label:       template.name,
         description: template.name,
-        type: template.measurementType === 'linear' ? 'Length' : template.measurementType === 'area' ? 'Area' : 'Count',
+        type:        template.measurementType === 'linear' ? 'Length'
+                   : template.measurementType === 'area'   ? 'Area'
+                   : 'Count',
         quantity,
         unit,
-        unitRate: 0,
-        notes: `Preset: ${template.name} · ${template.category}`,
-        points: [],
+        unitRate:    0,
+        notes:       `Preset: ${template.name} · ${template.category}`,
         isOverridden: true,
-        childIds: [],
-        presetData: data,
-        presetId: template.id,
-        color: '#EF9F27',
-        isVisible: true,
-      } as TakeoffRow);
+        presetData:  data,
+        presetId:    template.id,
+        color:       groupColor,
+        isVisible:   true,
+      }));
 
       addToast(`${template.name.toUpperCase()} ADDED`, 'success');
     }
-  };
+  }, [activeDrawing, addMeasurement, addToast, generateGroupedCarcassMeasurements]);
 
-  // ── Group append handlers ──────────────────────────────────────────────────
+  // ── Group append handlers ───────────────────────────────────────────────────
   const handleAddSegmentToGroup = useCallback((groupId: string, groupType: string) => {
-    console.log('Add segment to group:', { groupId, groupType });
-    
     setAppendToGroupId(groupId);
-    
-    // Map the group type to the appropriate tool
     const toolMap: Record<string, ToolType> = {
-      'Length': 'linear',
-      'Polygon': 'polygon',
+      'Length':    'linear',
+      'Polygon':   'polygon',
       'Rectangle': 'rectangle',
-      'Count': 'count',
-      'Point': 'point',
+      'Count':     'count',
+      'Point':     'point',
     };
     const newTool = toolMap[groupType] || 'linear';
-    
-    console.log('Setting tool to:', newTool);
     setActiveTool(newTool);
     addToast(`ADDING TO GROUP: Use ${newTool} tool to draw new item`, 'info');
-  }, [setActiveTool]);
+  }, [setActiveTool, addToast]);
 
   const handleAppendComplete = useCallback(() => {
     setAppendToGroupId(null);
   }, []);
 
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
       switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear' as ToolType); break;
-        case 'a': setActiveTool('area' as ToolType); break;
-        case 'c': setActiveTool('count' as ToolType); break;
-        case 'p': setActiveTool('point' as ToolType); break;
-        case 'v': setActiveTool('select' as ToolType); break;
+        case 'l': setActiveTool('linear'    as ToolType); break;
+        case 'a': setActiveTool('area'      as ToolType); break;
+        case 'c': setActiveTool('count'     as ToolType); break;
+        case 'p': setActiveTool('point'     as ToolType); break;
+        case 'v': setActiveTool('select'    as ToolType); break;
         case 'escape': setActiveTool('select' as ToolType); break;
       }
     };
@@ -330,62 +340,73 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool]);
 
-  // Stabilize handlers with useCallback to prevent child re-renders
+  // ── onAddMeasurement — FIXED: preserves all fields including color/childIds ─
   const handleAddMeasurement = useCallback((m: any) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
       return;
     }
-    const safeMeasurement = {
-      id:             m.id             || crypto.randomUUID(),
-      description:    m.description    || 'Untitled Measurement',
-      type:           m.type           || 'Length',
-      quantity:       m.quantity       || 0,
-      unit:           m.unit           || 'm',
-      unitRate:       m.unitRate       || 0,
-      notes:          m.notes          || '',
-      points:         m.points         || [],
-      isOverridden:   m.isOverridden   !== false,
-      presetData:     m.presetData,
-      presetId:       m.presetId,
-      groupId:        m.groupId,
-      groupName:      m.groupName,
-      groupType:      m.groupType,
-      parentId:       m.parentId,
-      isGroupHeader:  m.isGroupHeader  || false,
-      category:       m.category,
-      drawingId:      activeDrawing.id,
-    };
-    addMeasurement(safeMeasurement as TakeoffRow);
-    addToast(`MEASUREMENT ADDED: ${safeMeasurement.description}`, 'success');
-  }, [activeDrawing, addMeasurement]);
+    addMeasurement(buildRow({
+      id:            m.id            || crypto.randomUUID(),
+      drawingId:     activeDrawing.id,
+      label:         m.label         ?? '',
+      description:   m.description   || 'Untitled Measurement',
+      type:          m.type          || 'Length',
+      quantity:      m.quantity      ?? 0,
+      unit:          m.unit          || 'm',
+      unitRate:      m.unitRate      ?? 0,
+      notes:         m.notes         || '',
+      points:        m.points        || [],
+      isOverridden:  m.isOverridden  ?? false,
+      childIds:      m.childIds      || [],
+      color:         m.color         || '#EF9F27',
+      isVisible:     m.isVisible     ?? true,
+      isGroupHeader: m.isGroupHeader || false,
+      parentId:      m.parentId,
+      groupId:       m.groupId,
+      groupName:     m.groupName,
+      groupType:     m.groupType,
+      presetData:    m.presetData,
+      presetId:      m.presetId,
+      category:      m.category,
+      icon:          m.icon,
+    }));
+  }, [activeDrawing, addMeasurement, addToast]);
 
   const handleExport = useCallback(() => setShowExportModal(true), []);
-  
-  const executeExport = useCallback(() => {
-    fetch('/api/export', { method: 'POST' })
-      .then(res => res.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'export.xlsx';
-        a.click();
-        URL.revokeObjectURL(url);
-        addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
-        setShowExportModal(false);
-      })
-      .catch(() => addToast('EXPORT FAILED — SEE CONSOLE', 'info'));
-  }, []);
-  
+
+const executeExport = useCallback(() => {
+  fetch('/api/export', { method: 'GET' })
+    .then(async res => {
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: res.statusText }));
+        throw new Error(err.details || err.error || `HTTP ${res.status}`);
+      }
+      return res.blob();
+    })
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
+      setShowExportModal(false);
+    })
+    .catch(err => {
+      console.error('Export failed:', err);
+      addToast(`EXPORT FAILED — ${err.message}`, 'info');
+    });
+}, [addToast]);
+
   const handleScaleSet = useCallback((f: number) => {
     if (activeDrawing) {
       updateDrawingScale(activeDrawing.id, f);
-      addToast(`SCALE CALIBRATED: 1px = ${f}u`, 'info');
+      addToast(`SCALE CALIBRATED: 1px = ${f.toFixed(4)}u`, 'info');
     }
-  }, [activeDrawing, updateDrawingScale]);
+  }, [activeDrawing, updateDrawingScale, addToast]);
 
-  // Stabilize toolbar API callback
   const handleToolbarReady = useCallback((api: ViewerToolbarAPI) => {
     setToolbarAPI(api);
   }, []);
@@ -395,16 +416,12 @@ export default function Workspace() {
   if (!isMounted) {
     return (
       <div className="flex flex-col h-screen bg-industrial-black">
-      <Navbar
-        projectName={ps.projectName}
-        onProjectNameChange={(name) => setProjectState((prev: any) => ({ 
-          ...prev, 
-          projectName: name 
-        }))}
-        onExport={handleExport}
-        onOpenPresets={() => setShowPresetDrawer(true)}
-      />
-
+        <Navbar
+          projectName={ps.projectName}
+          onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
+          onExport={handleExport}
+          onOpenPresets={() => setShowPresetDrawer(true)}
+        />
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
@@ -429,8 +446,6 @@ export default function Workspace() {
 
       <div className="flex flex-1 overflow-hidden mt-14">
 
-        {/* normalize project state to ensure activeDrawingId is undefined instead of null
-            to satisfy prop types expecting string | undefined */}
         <Sidebar
           isCollapsed={leftCollapsed}
           projectState={{ ...ps, activeDrawingId: ps.activeDrawingId ?? undefined }}
@@ -439,11 +454,8 @@ export default function Workspace() {
           onDrawingAdded={addDrawing}
           onSelectDrawing={setActiveDrawingId}
           onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
-          onProjectNumberChange={(num) => setProjectState((prev: any) => ({ 
-            ...prev, 
-            projectNumber: num 
-          }))}        
-          />
+          onProjectNumberChange={(num) => setProjectState((prev: any) => ({ ...prev, projectNumber: num }))}
+        />
 
         <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
           <button
@@ -509,7 +521,6 @@ export default function Workspace() {
                     ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
                     : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
                 )}
-                title="Toggle corner snapping"
               >
                 <Target className="w-3 h-3" />
                 {api?.snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
@@ -523,7 +534,6 @@ export default function Workspace() {
                     ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
                     : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
                 )}
-                title="Snap settings"
               >
                 <Settings2 className="w-3 h-3" />
                 SNAP
@@ -609,20 +619,20 @@ export default function Workspace() {
                 onExpand={() => router.push('/takeoff-full')}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={() => handleAddMeasurement({
-                  id: crypto.randomUUID(),
-                  drawingId: activeDrawing?.id || '',
+                  id:          crypto.randomUUID(),
+                  drawingId:   activeDrawing?.id || '',
                   description: 'Manual Item',
-                  type: 'Length',
-                  quantity: 0,
-                  unit: 'm',
-                  unitRate: 0,
-                  notes: '',
-                  points: [],
-                  childIds: [],
+                  type:        'Length',
+                  quantity:    0,
+                  unit:        'm',
+                  unitRate:    0,
+                  notes:       '',
+                  points:      [],
+                  childIds:    [],
                   isOverridden: true,
-                  label: '',
-                  color: '#EF9F27',
-                  isVisible: true,
+                  label:       '',
+                  color:       '#EF9F27',
+                  isVisible:   true,
                 } as TakeoffRow)}
               />
             </div>
@@ -636,10 +646,8 @@ export default function Workspace() {
                 <PanelRightClose className={cn('w-4 h-4 transition-transform', rightCollapsed && 'rotate-180')} />
               </button>
             </div>
-
           </div>
         </div>
-
       </div>
 
       <AnimatePresence>
@@ -677,7 +685,6 @@ export default function Workspace() {
         </div>
 
         <div className="relative flex items-center justify-center group">
-
           <div className={cn(
             'absolute bottom-7 left-1/2 -translate-x-1/2 z-[100]',
             'bg-[#111] border border-amber-400/60 px-4 py-2.5 min-w-[160px]',
@@ -687,13 +694,7 @@ export default function Workspace() {
             <p className="text-[8px] text-zinc-600 uppercase tracking-[0.2em] font-bold text-center mb-2">
               — Presets —
             </p>
-            {[
-              'Carcass Cabinet',
-              'Door Assembly',
-              'Roof Framing',
-              'Pipe Run',
-              'Window Unit',
-            ].map(label => (
+            {['Carcass Cabinet', 'Door Assembly', 'Roof Framing', 'Pipe Run', 'Window Unit'].map(label => (
               <button
                 key={label}
                 onClick={() => setShowPresetDrawer(true)}
@@ -709,16 +710,13 @@ export default function Workspace() {
             onClick={() => setShowPresetDrawer(prev => !prev)}
             className={cn(
               'relative flex items-center gap-1.5 px-3 h-[22px] overflow-hidden',
-              'border text-[9px] uppercase tracking-widest font-bold',
-              'transition-all duration-150',
-              'group/btn',
+              'border text-[9px] uppercase tracking-widest font-bold transition-all duration-150 group/btn',
               showPresetDrawer
                 ? 'bg-amber-400 text-black border-amber-400'
                 : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black',
             )}
           >
             <span className="absolute top-0 left-[-60%] w-[40%] h-full bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none group-hover/btn:animate-[shimmer_0.45s_linear_forwards]" />
-
             <span className="flex flex-col items-center gap-[1px] animate-[bounceUp_1.4s_ease-in-out_infinite]">
               <svg width="8" height="5" viewBox="0 0 8 5" fill="none">
                 <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
@@ -727,7 +725,6 @@ export default function Workspace() {
                 <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </span>
-
             PRESETS
           </button>
         </div>
@@ -740,6 +737,17 @@ export default function Workspace() {
         </div>
 
       </footer>
+
+      <style>{`
+        @keyframes bounceUp {
+          0%, 100% { transform: translateY(0); }
+          50%       { transform: translateY(-2px); }
+        }
+        @keyframes shimmer {
+          0%   { left: -60%; }
+          100% { left: 160%; }
+        }
+      `}</style>
     </div>
   );
 }
