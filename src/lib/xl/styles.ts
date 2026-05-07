@@ -45,7 +45,7 @@ export function createFont(size: number, bold: boolean = false, color: string = 
   return { name: FONT_FACE, size, bold, color: { argb: color }, italic };
 }
 
-export function createAlignment(horizontal: 'left' | 'center' | 'right' = 'left', vertical: 'center' | 'top' | 'bottom' = 'center', wrap: boolean = false): Partial<ExcelJS.Alignment> {
+export function createAlignment(horizontal: 'left' | 'center' | 'right' = 'left', vertical: 'top' | 'middle' | 'bottom' = 'middle', wrap: boolean = false): Partial<ExcelJS.Alignment> {
   return { horizontal, vertical, wrapText: wrap };
 }
 

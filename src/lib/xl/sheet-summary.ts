@@ -17,7 +17,7 @@ const FONT_FACE  = 'Calibri';
 function fill(argb: string): ExcelJS.Fill {
   return { type: 'pattern', pattern: 'solid', fgColor: { argb } };
 }
-function font(size: number, bold = false, argb = DARK_TEXT, italic = false): ExcelJS.Font {
+function font(size: number, bold = false, argb = DARK_TEXT, italic = false): Partial<ExcelJS.Font> {
   return { name: FONT_FACE, size, bold, color: { argb }, italic };
 }
 function al(
@@ -226,7 +226,7 @@ export async function buildSummarySheet(
       c.font      = font(10, false, [2, 3, 5].includes(ci as number) ? NAVY : DARK_TEXT);
       c.fill      = fill(bg);
       c.alignment = al(ha, 'middle');
-      const bk: ExcelJS.Borders = { bottom: thin };
+      const bk: Partial<ExcelJS.Borders> = { bottom: thin };
       if (ci === 2) bk.left  = gl;
       if (ci === 5) bk.right = gl;
       c.border = bk;

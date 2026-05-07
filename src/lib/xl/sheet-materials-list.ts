@@ -87,46 +87,46 @@ export async function buildMaterialsListSheet(
 
   // Row 1 — gold stripe (h=5)
   ws.getRow(r).height = 5;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD) as ExcelJS.Fill;
   r++;
 
   // Row 2 — navy title bar (h=36)
   ws.getRow(r).height = 36;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.NAVY);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.NAVY) as ExcelJS.Fill;
   ws.mergeCells(r, 2, r, LAST_COL);
   ws.getCell(r, 2).value = 'MATERIALS LIST  ·  PROJECT TOTAL QUANTITIES';
   ws.getCell(r, 2).font = createFont(14, true, Colors.WHITE);
-  ws.getCell(r, 2).fill = createFill(Colors.NAVY);
+  ws.getCell(r, 2).fill = createFill(Colors.NAVY) as ExcelJS.Fill;
   ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
   ws.getCell(r, 2).border = { bottom: createBorder('medium', Colors.GOLD) };
   r++;
 
   // Row 3 — mid-blue subtitle
   ws.getRow(r).height = 22;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.MID_BLUE);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.MID_BLUE) as ExcelJS.Fill;
   ws.mergeCells(r, 2, r, LAST_COL);
   ws.getCell(r, 2).value =
     `${doc.project || doc.name || ''}   ·   ${doc.location || ''}   ·   ` +
     `TYPE ${doc.kitchen_type || 'N/A'}   ·   ${doc.total_units || 0} Units`;
   ws.getCell(r, 2).font = createFont(10, false, Colors.GOLD_LIGHT, true);
-  ws.getCell(r, 2).fill = createFill(Colors.MID_BLUE);
+  ws.getCell(r, 2).fill = createFill(Colors.MID_BLUE) as ExcelJS.Fill;
   ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
   r++;
 
   // Row 4 — gold stripe (h=4)
   ws.getRow(r).height = 4;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD) as ExcelJS.Fill;
   r++;
 
   // Row 5 — pale-blue live-link info (h=20)
   ws.getRow(r).height = 20;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.PALE_BLUE);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.PALE_BLUE) as ExcelJS.Fill;
   ws.mergeCells(r, 2, r, LAST_COL);
   ws.getCell(r, 2).value =
     `★  All quantities are live-linked from BOQ_Matrix row ${gtRow}. ` +
     `Edit dimensions in BOQ_Matrix; this sheet updates automatically.`;
   ws.getCell(r, 2).font = createFont(9, false, Colors.MID_GREY, true);
-  ws.getCell(r, 2).fill = createFill(Colors.PALE_BLUE);
+  ws.getCell(r, 2).fill = createFill(Colors.PALE_BLUE) as ExcelJS.Fill;
   ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
   r++;
 
@@ -146,7 +146,7 @@ export async function buildMaterialsListSheet(
     const cell = ws.getCell(r, ci);
     cell.value = colHdrs[ci - 1];
     cell.font = createFont(11, true, Colors.WHITE);
-    cell.fill = createFill(ci === 1 ? Colors.GOLD : Colors.MID_BLUE);
+    cell.fill = createFill(ci === 1 ? Colors.GOLD : Colors.MID_BLUE) as ExcelJS.Fill;
     cell.alignment = createAlignment('center', 'middle', true);
     cell.border = createThickBorder();
     trackWidth(ci, colHdrs[ci - 1]);
@@ -176,20 +176,20 @@ export async function buildMaterialsListSheet(
     const gl = createBorder('medium', Colors.GOLD);
 
     // Col 1 — gold stripe
-    ws.getCell(r, 1).fill = createFill(Colors.GOLD);
+    ws.getCell(r, 1).fill = createFill(Colors.GOLD) as ExcelJS.Fill;
     ws.getCell(r, 1).border = { bottom: brd.bottom };
 
     // Col 2 — row index
     ws.getCell(r, 2).value = idx + 1;
     ws.getCell(r, 2).font = createFont(10, true, Colors.NAVY);
-    ws.getCell(r, 2).fill = createFill(bg);
+    ws.getCell(r, 2).fill = createFill(bg) as ExcelJS.Fill;
     ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
     ws.getCell(r, 2).border = { left: gl, bottom: brd.bottom };
 
     // Col 3 — material key (italic grey)
     ws.getCell(r, 3).value = key;
     ws.getCell(r, 3).font = createFont(9, false, Colors.MID_GREY, true);
-    ws.getCell(r, 3).fill = createFill(bg);
+    ws.getCell(r, 3).fill = createFill(bg) as ExcelJS.Fill;
     ws.getCell(r, 3).alignment = createAlignment('left', 'middle');
     ws.getCell(r, 3).border = brd;
     trackWidth(3, key);
@@ -198,7 +198,7 @@ export async function buildMaterialsListSheet(
     const labelClean = label.replace(/\n/g, ' ');
     ws.getCell(r, 4).value = labelClean;
     ws.getCell(r, 4).font = createFont(10, false, Colors.DARK_TEXT);
-    ws.getCell(r, 4).fill = createFill(bg);
+    ws.getCell(r, 4).fill = createFill(bg) as ExcelJS.Fill;
     ws.getCell(r, 4).alignment = createAlignment('left', 'middle', true);
     ws.getCell(r, 4).border = brd;
     trackWidth(4, labelClean);
@@ -216,7 +216,7 @@ export async function buildMaterialsListSheet(
     // Col 5 — unit string
     ws.getCell(r, 5).value = unitStr;
     ws.getCell(r, 5).font = createFont(10, false, UNIT_CELL_GREY);
-    ws.getCell(r, 5).fill = createFill(bg);
+    ws.getCell(r, 5).fill = createFill(bg) as ExcelJS.Fill;
     ws.getCell(r, 5).alignment = createAlignment('center', 'middle');
     ws.getCell(r, 5).border = brd;
 
@@ -227,7 +227,7 @@ export async function buildMaterialsListSheet(
       result: undefined 
     };
     ws.getCell(r, 6).font  = createFont(11, true, FORMULA_GREEN);
-    ws.getCell(r, 6).fill  = createFill(Colors.GREEN_HL);
+    ws.getCell(r, 6).fill  = createFill(Colors.GREEN_HL) as ExcelJS.Fill;
     ws.getCell(r, 6).alignment = createAlignment('center', 'middle');
     ws.getCell(r, 6).border = brd;
     ws.getCell(r, 6).numFmt = '0.000';
@@ -236,14 +236,14 @@ export async function buildMaterialsListSheet(
     if (!isCount && !isLinear && !isVolume) {
       ws.getCell(r, 7).value = sheetAreaM2;
       ws.getCell(r, 7).font = createFont(10, false, Colors.CHARCOAL);
-      ws.getCell(r, 7).fill = createFill(Colors.AMBER_HL);
+      ws.getCell(r, 7).fill = createFill(Colors.AMBER_HL) as ExcelJS.Fill;
       ws.getCell(r, 7).alignment = createAlignment('center', 'middle');
       ws.getCell(r, 7).border = brd;
       ws.getCell(r, 7).numFmt = '0.00';
     } else {
       ws.getCell(r, 7).value = '—';
       ws.getCell(r, 7).font = createFont(10, false, Colors.MID_GREY);
-      ws.getCell(r, 7).fill = createFill(bg);
+      ws.getCell(r, 7).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 7).alignment = createAlignment('center', 'middle');
       ws.getCell(r, 7).border = brd;
     }
@@ -255,14 +255,14 @@ export async function buildMaterialsListSheet(
         result: undefined 
       };
       ws.getCell(r, 8).font = createFont(11, true, Colors.NAVY);
-      ws.getCell(r, 8).fill = createFill(Colors.PALE_BLUE);
+      ws.getCell(r, 8).fill = createFill(Colors.PALE_BLUE) as ExcelJS.Fill;
       ws.getCell(r, 8).alignment = createAlignment('center', 'middle');
       ws.getCell(r, 8).border = brd;
       ws.getCell(r, 8).numFmt = '0';
     } else {
       ws.getCell(r, 8).value = '—';
       ws.getCell(r, 8).font = createFont(10, false, Colors.MID_GREY);
-      ws.getCell(r, 8).fill = createFill(bg);
+      ws.getCell(r, 8).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 8).alignment = createAlignment('center', 'middle');
       ws.getCell(r, 8).border = brd;
     }
@@ -271,7 +271,7 @@ export async function buildMaterialsListSheet(
     const remarks = (col as any).remarks || '';
     ws.getCell(r, 9).value = remarks;
     ws.getCell(r, 9).font = createFont(9, false, Colors.MID_GREY, true);
-    ws.getCell(r, 9).fill = createFill(bg);
+    ws.getCell(r, 9).fill = createFill(bg) as ExcelJS.Fill;
     ws.getCell(r, 9).alignment = createAlignment('left', 'middle', true);
     ws.getCell(r, 9).border = {
       right:  gl,
@@ -295,7 +295,7 @@ export async function buildMaterialsListSheet(
     // Fixtures section header
     ws.getRow(r).height = 30;
     for (let ci = 1; ci <= LAST_COL; ci++) {
-      ws.getCell(r, ci).fill = createFill(Colors.CHARCOAL);
+      ws.getCell(r, ci).fill = createFill(Colors.CHARCOAL) as ExcelJS.Fill;
       ws.getCell(r, ci).border = {
         top:    createBorder('medium', Colors.GOLD),
         bottom: createBorder('medium', Colors.GOLD),
@@ -304,7 +304,7 @@ export async function buildMaterialsListSheet(
     ws.mergeCells(r, 2, r, LAST_COL);
     ws.getCell(r, 2).value = 'INSTALLED FIXTURES  ·  SCHEDULE OF QUANTITIES';
     ws.getCell(r, 2).font = createFont(11, true, Colors.GOLD_LIGHT);
-    ws.getCell(r, 2).fill = createFill(Colors.CHARCOAL);
+    ws.getCell(r, 2).fill = createFill(Colors.CHARCOAL) as ExcelJS.Fill;
     ws.getCell(r, 2).alignment = createAlignment('left', 'middle');
     ws.getCell(r, 2).border = {
       top:    createBorder('medium', Colors.GOLD),
@@ -322,7 +322,7 @@ export async function buildMaterialsListSheet(
       const cell = ws.getCell(r, ci);
       cell.value = fxHdrs[ci - 1];
       cell.font = createFont(10, true, Colors.WHITE);
-      cell.fill = createFill(ci === 1 ? Colors.GOLD : Colors.MID_BLUE);
+      cell.fill = createFill(ci === 1 ? Colors.GOLD : Colors.MID_BLUE) as ExcelJS.Fill;
       cell.alignment = createAlignment('center', 'middle', true);
       cell.border = {
         top:    createBorder('medium', Colors.GOLD),
@@ -350,46 +350,46 @@ export async function buildMaterialsListSheet(
       const gl = createBorder('medium', Colors.GOLD);
 
       // Col 1 — gold stripe
-      ws.getCell(r, 1).fill = createFill(Colors.GOLD);
-      ws.getCell(r, 1).border = { bottom: brd.bottom };
+      ws.getCell(r, 1).fill = createFill(Colors.GOLD) as ExcelJS.Fill;
+      ws.getCell(r, 1).border = { bottom: brd.bottom } as ExcelJS.Borders;
 
       // Col 2 — row index
       ws.getCell(r, 2).value = fxIdx + 1;
       ws.getCell(r, 2).font = createFont(10, true, Colors.NAVY);
-      ws.getCell(r, 2).fill = createFill(bg);
+      ws.getCell(r, 2).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
-      ws.getCell(r, 2).border = { left: gl, bottom: brd.bottom };
+      ws.getCell(r, 2).border = { left: gl, bottom: brd.bottom } as ExcelJS.Borders;
 
       // Col 3 — item number
       ws.getCell(r, 3).value = fx.item_number || '';
       ws.getCell(r, 3).font = createFont(9, false, Colors.MID_GREY, true);
-      ws.getCell(r, 3).fill = createFill(bg);
+      ws.getCell(r, 3).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 3).alignment = createAlignment('left', 'middle');
-      ws.getCell(r, 3).border = brd;
+      ws.getCell(r, 3).border = brd as ExcelJS.Borders;
       trackWidth(3, fx.item_number || '');
 
       // Col 4 — description
       ws.getCell(r, 4).value = fx.description || '';
       ws.getCell(r, 4).font = createFont(10, false, Colors.DARK_TEXT);
-      ws.getCell(r, 4).fill = createFill(bg);
+      ws.getCell(r, 4).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 4).alignment = createAlignment('left', 'middle', true);
-      ws.getCell(r, 4).border = brd;
+      ws.getCell(r, 4).border = brd as ExcelJS.Borders;
       trackWidth(4, fx.description || '');
 
       // Col 5 — unit
       ws.getCell(r, 5).value = fx.measurement_unit || 'Each';
       ws.getCell(r, 5).font = createFont(10, false, UNIT_CELL_GREY);
-      ws.getCell(r, 5).fill = createFill(bg);
+      ws.getCell(r, 5).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 5).alignment = createAlignment('center', 'middle');
-      ws.getCell(r, 5).border = brd;
+      ws.getCell(r, 5).border = brd as ExcelJS.Borders;
 
       // Col 6 — qty per unit
       const qtyPerUnit = fx.quantity_per_unit || 1;
       ws.getCell(r, 6).value = qtyPerUnit;
       ws.getCell(r, 6).font = createFont(10, true, Colors.NAVY);
-      ws.getCell(r, 6).fill = createFill(Colors.GREEN_HL);
+      ws.getCell(r, 6).fill = createFill(Colors.GREEN_HL) as ExcelJS.Fill;
       ws.getCell(r, 6).alignment = createAlignment('center', 'middle');
-      ws.getCell(r, 6).border = brd;
+      ws.getCell(r, 6).border = brd as ExcelJS.Borders;
       ws.getCell(r, 6).numFmt = '0';
 
       // Col 7 — total qty formula
@@ -398,23 +398,23 @@ export async function buildMaterialsListSheet(
         result: undefined 
       };
       ws.getCell(r, 7).font  = createFont(11, true, FORMULA_GREEN);
-      ws.getCell(r, 7).fill  = createFill(Colors.GREEN_HL);
+      ws.getCell(r, 7).fill  = createFill(Colors.GREEN_HL) as ExcelJS.Fill;
       ws.getCell(r, 7).alignment = createAlignment('center', 'middle');
-      ws.getCell(r, 7).border = brd;
+      ws.getCell(r, 7).border = brd as ExcelJS.Borders;
       ws.getCell(r, 7).numFmt = '0';
 
       // Col 8 — dash
       ws.getCell(r, 8).value = '—';
       ws.getCell(r, 8).font = createFont(10, false, Colors.MID_GREY);
-      ws.getCell(r, 8).fill = createFill(bg);
+      ws.getCell(r, 8).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 8).alignment = createAlignment('center', 'middle');
-      ws.getCell(r, 8).border = brd;
+      ws.getCell(r, 8).border = brd as ExcelJS.Borders;
 
       // Col 9 — remarks
       const fxRemarks = fx.remarks || '';
       ws.getCell(r, 9).value = fxRemarks;
       ws.getCell(r, 9).font = createFont(9, false, Colors.MID_GREY, true);
-      ws.getCell(r, 9).fill = createFill(bg);
+      ws.getCell(r, 9).fill = createFill(bg) as ExcelJS.Fill;
       ws.getCell(r, 9).alignment = createAlignment('left', 'middle', true);
       ws.getCell(r, 9).border = {
         right:  gl,
@@ -435,19 +435,19 @@ export async function buildMaterialsListSheet(
 
   // Gold stripe
   ws.getRow(r).height = 5;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.GOLD) as ExcelJS.Fill;
   r++;
 
   // Footer note
   ws.getRow(r).height = 20;
-  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.NAVY);
+  for (let ci = 1; ci <= LAST_COL; ci++) ws.getCell(r, ci).fill = createFill(Colors.NAVY) as ExcelJS.Fill;
   ws.mergeCells(r, 2, r, LAST_COL);
   ws.getCell(r, 2).value =
     `Sheet size basis: ${sheetAreaM2} m² per board  ·  ` +
     `Sheets Needed rounds UP to whole boards  ·  ` +
     `Count/Linear/Volume items show actual quantities.`;
   ws.getCell(r, 2).font = createFont(8, false, Colors.MID_GREY, true);
-  ws.getCell(r, 2).fill = createFill(Colors.NAVY);
+  ws.getCell(r, 2).fill = createFill(Colors.NAVY) as ExcelJS.Fill;
   ws.getCell(r, 2).alignment = createAlignment('center', 'middle');
   r++;
 
