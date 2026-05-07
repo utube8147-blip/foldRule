@@ -1,6 +1,25 @@
 // hooks/useTakeoff.ts
-import { useState, useCallback, useEffect } from 'react';
-import { ProjectState, TakeoffRow, Point, ToolType, MeasurementType, Drawing } from '../types';
+import { useState, useCallback } from 'react';
+import { TakeoffRow, ToolType, Drawing } from '../types';
+
+type ProjectState = {
+  projectName: string;
+  projectNumber: string;
+  unit: string;
+  drawings: Drawing[];
+  activeDrawingId: string | null;
+  measurements: TakeoffRow[];
+  materials: Array<{
+    id: string;
+    division: string;
+    code: string;
+    name: string;
+    unit: string;
+    materialCost: number;
+    laborCost: number;
+    equipmentCost: number;
+  }>;
+};
 
 const PALETTE = [
   '#F59E0B', // Amber
