@@ -302,7 +302,7 @@ export function CountPinOverlay({
 }: CountPinOverlayProps) {
   if (!pdfDimensions) return null;
 
-  // Build a quick id→row lookup so children can read icon/label from their parent
+  // Build a quick id→row lookup so children can read label data from their parent
   const byId = new Map<string, TakeoffRow>();
   measurements.forEach(m => byId.set(m.id, m));
 
@@ -326,8 +326,8 @@ export function CountPinOverlay({
           pins.push({
             x, y,
             color:   m.color,
-            iconId:  m.icon || child.icon,
-            label:   m.label || m.description || 'Count',
+            iconId:  undefined,
+            label:   m.description || 'Count',
             index:   idx + 1,
             isPoint: false,
           });
@@ -345,8 +345,8 @@ export function CountPinOverlay({
       pins.push({
         x, y,
         color:   m.color,
-        iconId:  m.icon,
-        label:   m.label || m.description || (m.type === 'Point' ? 'Point' : 'Count'),
+        iconId:  undefined,
+        label:   m.description || (m.type === 'Point' ? 'Point' : 'Count'),
         index:   idx + 1,
         isPoint: m.type === 'Point',
       });
