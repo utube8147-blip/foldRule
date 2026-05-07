@@ -181,12 +181,12 @@ export default function TakeoffFullPage() {
   // Determine "flagged" rows: items that have a unitRate > 0 (i.e. configured/changed)
   const isFlagged = (row: TakeoffRow) => row.unitRate > 0 && row.isOverridden;
 
-  const filtered = useMemo(() => all.filter((m: { description: string; notes: any; presetId: any; }) => {
+  const filtered = useMemo(() => all.filter((m: TakeoffRow) => {
     const q = search.toLowerCase();
     return (
       m.description.toLowerCase().includes(q) ||
       (m.notes ?? '').toLowerCase().includes(q) ||
-      (m.presetId ?? '').toLowerCase().includes(q)
+      ((m.presetId ?? '') as string).toLowerCase().includes(q)
     );
   }), [all, search]);
 
@@ -564,7 +564,7 @@ export default function TakeoffFullPage() {
                                </td>
                               {/* Material — separate dropdown */}
                               <td className="p-2 border-r border-zinc-800">
-                                <MaterialCell row={item} materials={ps.materials} onUpdate={updateMeasurement} />
+                                <MaterialCell row={item} materials={ps.materials as any} onUpdate={updateMeasurement} />
                                </td>
                               <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
                                 <div className="flex justify-end items-center gap-1">
@@ -648,7 +648,7 @@ export default function TakeoffFullPage() {
                          </td>
                         {/* Material — separate dropdown */}
                         <td className="p-2 border-r border-zinc-800">
-                          <MaterialCell row={row} materials={ps.materials} onUpdate={updateMeasurement} />
+                          <MaterialCell row={row} materials={ps.materials as MaterialSpec[]} onUpdate={updateMeasurement} />
                          </td>
                         <td className={cn('p-2 border-r border-zinc-800 text-right font-bold', flagged ? 'text-amber-500' : '')}>
                           <div className="flex justify-end items-center gap-1">

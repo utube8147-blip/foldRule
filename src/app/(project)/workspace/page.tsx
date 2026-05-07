@@ -17,7 +17,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { Navbar } from '@/components/Navbar';
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer';
-import { TakeoffRow, ToolType } from '@/types';
+import { Material, TakeoffRow, ToolType } from '@/types';
 
 
 const Viewer = dynamic(
@@ -81,12 +81,12 @@ export default function Workspace() {
   // This fixes polygon/rectangle groups that were created with wrong type
   // Can be removed after all existing data is clean
   useEffect(() => {
-    const groupsToFix = ps.measurements.filter((m: { isGroupHeader: any; childIds: string | any[]; }) => 
+    const groupsToFix = ps.measurements.filter((m) => 
       m.isGroupHeader && m.childIds && m.childIds.length > 0
     );
     
-    groupsToFix.forEach((group: { childIds: any[]; type: any; id: string; }) => {
-      const firstChild = ps.measurements.find((c: { id: any; }) => c.id === group.childIds?.[0]);
+    groupsToFix.forEach((group) => {
+      const firstChild = ps.measurements.find((c) => c.id === group.childIds?.[0]);
       if (firstChild && group.type !== firstChild.type) {
         console.log(`Fixing group ${group.id}: ${group.type} → ${firstChild.type}`);
         updateMeasurement(group.id, { type: firstChild.type });
@@ -597,7 +597,7 @@ export default function Workspace() {
             )}>
               <TakeoffTable
                 measurements={ps.measurements}
-                materials={ps.materials}
+                materials={ps.materials as Material[]}
                 onUpdate={updateMeasurement}
                 onDelete={deleteMeasurement}
                 onToggleVisibility={toggleVisibility}
@@ -639,8 +639,8 @@ export default function Workspace() {
       <AnimatePresence>
         {showMaterialLibrary && (
           <MaterialLibrary
-            materials={ps.materials}
-            onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
+            materials={ps.materials as Material[]}
+            onUpdateMaterials={(mats: Material[]) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
             onClose={() => setShowMaterialLibrary(false)}
           />
         )}

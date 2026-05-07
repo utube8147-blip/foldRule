@@ -15,7 +15,17 @@
 import React, {
   createContext, useCallback, useContext, useRef, useState,
 } from 'react';
-import { TakeoffRow, Drawing, ProjectState } from '@/types';
+import { TakeoffRow, Drawing } from '@/types';
+
+type ProjectState = {
+  projectName: string;
+  projectNumber: string;
+  unit: string;
+  drawings: Drawing[];
+  activeDrawingId: string | null;
+  measurements: TakeoffRow[];
+  materials: unknown[];
+};
 
 // ── InProgressPoint (re-exported so Viewer/useMeasurements can import from here)
 export type InProgressPoint = { x: number; y: number; snapped: boolean; segmentId?: string };
@@ -199,7 +209,8 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   // ── Get effective quantity (computes from children for groups) ─────────────
   const getEffectiveQuantity = useCallback((measurement: TakeoffRow): number => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => (measurement.childIds ?? []).includes(m.id));
+      const childIds = measurement.childIds as string[];
+      const children = measurementsRef.current.filter(m => childIds.includes(m.id));
       return children.reduce((sum, child) => sum + (child.quantity || 0), 0);
     }
     return measurement.quantity || 0;
@@ -207,7 +218,8 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
 
   const getEffectiveUnit = useCallback((measurement: TakeoffRow): string => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => (measurement.childIds ?? []).includes(m.id));
+      const childIds = measurement.childIds as string[];
+      const children = measurementsRef.current.filter(m => childIds.includes(m.id));
       if (children.length > 0) {
         return children[0].unit || measurement.unit;
       }
