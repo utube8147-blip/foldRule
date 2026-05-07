@@ -310,6 +310,7 @@ export default function PresetsPage() {
         category:      'Group Header',
         color:         '#EF9F27',
         isVisible:     true,
+        childIds:      [],
       } as TakeoffRow);
 
       parts.forEach(part => {
@@ -358,9 +359,9 @@ export default function PresetsPage() {
         description: groupName,
         type: 'Count',
         quantity: 1,
-        unit: 'assembly',
+        unit: 'm²',
         unitRate: 0,
-        notes: 'Complete roof assembly',
+        notes: 'Complete ceiling assembly',
         points: [],
         isOverridden: true,
         presetId: t.id,
@@ -368,6 +369,7 @@ export default function PresetsPage() {
         category: 'Group Header',
         color: '#97C459',
         isVisible: true,
+        childIds: [],
       } as TakeoffRow);
 
       parts.forEach((part) => {
@@ -434,6 +436,7 @@ export default function PresetsPage() {
         category: 'Group Header',
         color: '#ED93B1',
         isVisible: true,
+        childIds: [],
       } as TakeoffRow);
 
       parts.forEach((part) => {
@@ -504,6 +507,7 @@ export default function PresetsPage() {
         category: 'Group Header',
         color: '#F0997B',
         isVisible: true,
+        childIds: [],
       } as TakeoffRow);
 
       parts.forEach((part) => {
@@ -551,6 +555,7 @@ export default function PresetsPage() {
         unitRate:     0,
         notes:        `Preset: ${t.name} · ${t.category}`,
         points:       [],
+        childIds:     [],
         isOverridden: true,
         presetData:   fd,
         presetId:     t.id,
