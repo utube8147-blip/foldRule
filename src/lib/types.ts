@@ -5,7 +5,7 @@ export interface PresetTemplate {
   name: string;
   category: string;
   description: string;
-  measurementType: 'linear' | 'area' | 'count' | 'point';
+  measurementType: 'linear' | 'area' | 'count' | 'point' | 'scale' | 'polygon' | 'rectangle';
   fields: {
     key: string;
     label: string;
