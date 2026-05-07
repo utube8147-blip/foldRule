@@ -311,6 +311,7 @@ export default function PresetsPage() {
         color:         '#EF9F27',
         isVisible:     true,
         childIds:      [],
+        label:         groupName,
       } as TakeoffRow);
 
       parts.forEach(part => {
@@ -357,6 +358,7 @@ export default function PresetsPage() {
         isGroupHeader: true,
         isExpanded: true,
         description: groupName,
+        label: groupName,
         type: 'Count',
         quantity: 1,
         unit: 'm²',
@@ -437,6 +439,7 @@ export default function PresetsPage() {
         color: '#ED93B1',
         isVisible: true,
         childIds: [],
+        label: groupName,
       } as TakeoffRow);
 
       parts.forEach((part) => {
@@ -508,6 +511,7 @@ export default function PresetsPage() {
         color: '#F0997B',
         isVisible: true,
         childIds: [],
+        label: groupName,
       } as TakeoffRow);
 
       parts.forEach((part) => {
@@ -549,6 +553,7 @@ export default function PresetsPage() {
         id:           `${activeDrawing.id}-${Date.now()}`,
         drawingId:    activeDrawing.id,
         description:  t.name,
+        label:        t.name,
         type:         t.measurementType === 'linear' ? 'Length' : t.measurementType === 'area' ? 'Area' : 'Count',
         quantity,
         unit,

@@ -211,6 +211,7 @@ export default function Workspace() {
         isGroupHeader: true,
         isExpanded: true,
         childIds: [],
+        label: groupName,
         description: groupName,
         type: 'Count',
         quantity: 1,
@@ -233,6 +234,7 @@ export default function Workspace() {
           drawingId: activeDrawing.id,
           groupId,
           parentId: `${groupId}-header`,
+          label: measurement.description,
           ...measurement,
           childIds: [],
           presetData: data,
@@ -267,6 +269,7 @@ export default function Workspace() {
       addMeasurement({
         id: `${activeDrawing.id}-${Date.now()}`,
         drawingId: activeDrawing.id,
+        label: template.name,
         description: template.name,
         type: template.measurementType === 'linear' ? 'Length' : template.measurementType === 'area' ? 'Area' : 'Count',
         quantity,
@@ -617,6 +620,7 @@ export default function Workspace() {
                   points: [],
                   childIds: [],
                   isOverridden: true,
+                  label: '',
                   color: '#EF9F27',
                   isVisible: true,
                 } as TakeoffRow)}
