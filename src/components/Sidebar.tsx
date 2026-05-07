@@ -1,7 +1,14 @@
 import React, { useState } from 'react';
 import { FileText, FolderOpen, Filter, Search, Settings2, Plus, Trash2, Database, Info, Layers } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { ProjectState, Material } from '../types';
+import { Material } from '../types';
+
+interface ProjectState {
+  drawings: { id: string; name: string }[];
+  activeDrawingId?: string;
+  projectName: string;
+  projectNumber?: string;
+}
 
 interface SidebarProps {
   isCollapsed: boolean;

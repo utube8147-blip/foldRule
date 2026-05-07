@@ -33,7 +33,7 @@ export type InProgressPoint = { x: number; y: number; snapped: boolean; segmentI
 // ── PendingMeasurement — metadata for restored measurements during undo
 export type PendingMeasurement = {
   id: string;
-  type: 'Length' | 'Polygon' | 'Rectangle' | 'Count' | 'Point';
+  type: 'Length' | 'Area' | 'Polygon' | 'Rectangle' | 'Count' | 'Point';
   color: string;
   description: string;
 };
