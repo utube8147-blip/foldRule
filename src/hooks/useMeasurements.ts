@@ -878,6 +878,7 @@ export function useMeasurements({
           color: targetGroup.color,
           isVisible: true,
           parentId: targetGroup.id,
+          childIds: []
         });
         
         onUpdateMeasurement?.(targetGroup.id, {
@@ -934,6 +935,7 @@ export function useMeasurements({
           color: targetGroup.color,
           isVisible: true,
           parentId: targetGroup.id,
+          childIds: []
         });
         
         onUpdateMeasurement?.(targetGroup.id, {

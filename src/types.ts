@@ -47,9 +47,10 @@ export interface TakeoffRow {
   color: string;
   isVisible: boolean;
   materialId?: string;  // ← ADD THIS
+  icon?: string;  // ← Add this line
 }
 
-export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point';
+export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point' | 'Polygon' | 'Rectangle';
 
 
 
