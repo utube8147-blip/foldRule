@@ -32,57 +32,21 @@ import {
   DimensionValue,
 } from './types';
 
-// ── Column indices (must match Python constants) ───────────────────────────
-export const COL_SNO   = 2;
-export const COL_DESC  = 3;
-export const COL_UNIT  = 4;
-export const COL_TIMES = 5;
-export const COL_L     = 6;
-export const COL_W     = 7;
-export const COL_H     = 8;
-export const COL_QTY   = 9;
-export const MAT_START = 10;
+// ── Extracted utilities ────────────────────────────────────────────────────
+import {
+  COL_SNO, COL_DESC, COL_UNIT, COL_TIMES, COL_L, COL_W, COL_H, COL_QTY, MAT_START,
+  BASE_H,
+  columnNameToNumber,
+  getCalculationType,
+  getDefaultUnitCategories,
+} from './sheet-boq-matrix-utils';
 
-// BASE_H matches Python constant used for label-row height calculation
-const BASE_H = 16;
-
-// ── Helper: column name → 1-based number (e.g. "A"→1, "C"→3, "AA"→27) ──
-// FIX-9: used for freeze_panes xSplit instead of string.length
-function columnNameToNumber(name: string): number {
-  let n = 0;
-  for (const ch of name.toUpperCase()) {
-    n = n * 26 + (ch.charCodeAt(0) - 64);
-  }
-  return n;
-}
-
-export function getDefaultUnitCategories(): Record<string, string[]> {
-  return {
-    area_based:   ['M²', 'm2', 'SQ M', 'SQM', 'M2'],
-    volume_based: ['M³', 'm3', 'CU M', 'M3'],
-    linear_based: ['LM', 'lm', 'L M', 'M', 'm'],
-    count_based:  ['Nr', 'nos', 'PC', 'pcs', 'Each', 'each'],
-    pair_based:   ['Pr', 'Pair'],
-    set_based:    ['Set', 'Kit', 'Box'],
-  };
-}
-
-function getCalculationType(
-  unit: string,
-  unitCategories: Record<string, string[]>,
-): string {
-  const u = (unit || '').toUpperCase();
-  for (const [calcType, units] of Object.entries(unitCategories)) {
-    if (units.some(x => x.toUpperCase() === u)) return calcType;
-  }
-  if (['NR', 'NOS', 'PC', 'PCS', 'EACH'].includes(u)) return 'count_based';
-  if (['PR', 'PAIR'].includes(u))                       return 'pair_based';
-  if (['SET', 'KIT', 'BOX'].includes(u))                return 'set_based';
-  if (['M²', 'M2', 'SQ M', 'SQM'].includes(u))         return 'area_based';
-  if (['M³', 'M3', 'CU M'].includes(u))                 return 'volume_based';
-  if (['LM', 'L M', 'M'].includes(u))                   return 'linear_based';
-  return 'count_based';
-}
+// Re-export for backward compatibility
+export {
+  COL_SNO, COL_DESC, COL_UNIT, COL_TIMES, COL_L, COL_W, COL_H, COL_QTY, MAT_START,
+  BASE_H,
+  getDefaultUnitCategories,
+};
 
 function detectMaterials(item: MatrixItem, materialRules: any): string[] {
   const spec = (item.specification || '').toLowerCase();

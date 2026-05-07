@@ -10,11 +10,12 @@ export interface Point {
 // ─── Material Types ────────────────────────────────────────────────────────────
 export interface Material {
   id: string;
+  division?: string;
   code: string;
   name: string;
-  category: string;
+  category?: string;
   unit: string;
-  unitRate: number;
+  unitRate?: number;
   materialCost: number;
   laborCost: number;
   equipmentCost: number;

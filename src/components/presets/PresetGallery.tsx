@@ -82,7 +82,7 @@ function PresetForm({ template, onSubmit, onClose }: PresetFormProps) {
           <div className="p-6">
             <FormComponent 
               formData={formData}
-              onChange={(key: string, value: any) => setFormData(prev => ({ ...prev, [key]: value }))}
+              onChange={(key: string, value: string | number | boolean | null | undefined) => setFormData(prev => ({ ...prev, [key]: value }))}
               template={template}
             />
           </div>

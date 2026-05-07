@@ -6,16 +6,23 @@ function toNodeBuffer(ab: ArrayBuffer | Buffer): Buffer {
   return Buffer.isBuffer(ab) ? ab : Buffer.from(ab);
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const body = await request.json().catch(() => ({}));
-    const customData: BOQData | undefined = body.data ?? undefined;
+    const body = await request.json().catch(() => ({})) as Record<string, unknown>;
+    const customData: BOQData | undefined = body.data as BOQData | undefined;
+
+    if (!customData || !customData.project_info) {
+      return NextResponse.json(
+        { error: 'Invalid request data: missing project_info' },
+        { status: 400 }
+      );
+    }
 
     const workbook = await buildWorkbook(customData);
     const buffer = toNodeBuffer(await workbook.xlsx.writeBuffer());
 
     const dateStr = new Date().toISOString().split('T')[0];
-    const projectName = customData?.project_info?.name ?? 'export';
+    const projectName = (customData.project_info.name as string) ?? 'export';
     const safeName = projectName.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
     const filename = `BOQ_${safeName}_${dateStr}.xlsx`;
 
@@ -28,15 +35,16 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
-    console.error('Export error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[v0] Export POST error:', errorMessage, error);
     return NextResponse.json(
-      { error: 'Failed to generate export', details: String(error) },
+      { error: 'Failed to generate export', details: errorMessage },
       { status: 500 }
     );
   }
 }
 
-export async function GET() {
+export async function GET(): Promise<NextResponse> {
   try {
     const workbook = await buildWorkbook();
     const buffer = toNodeBuffer(await workbook.xlsx.writeBuffer());
@@ -53,9 +61,10 @@ export async function GET() {
       },
     });
   } catch (error) {
-    console.error('Export error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[v0] Export GET error:', errorMessage, error);
     return NextResponse.json(
-      { error: 'Failed to generate export' },
+      { error: 'Failed to generate export', details: errorMessage },
       { status: 500 }
     );
   }

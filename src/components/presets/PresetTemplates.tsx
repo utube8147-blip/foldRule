@@ -5,29 +5,39 @@ import Preset3DVisualizer from './Preset3DVisualizer';
 
 // ─── Shared Types ──────────────────────────────────────────────────────────────
 
+type FormFieldValue = string | number | boolean | null | undefined;
+type MeasurementType = 'linear' | 'area' | 'count' | 'point';
+type FieldType = 'text' | 'number' | 'select' | 'boolean';
+
+export interface PresetFieldDefinition {
+  key: string;
+  label: string;
+  type: FieldType;
+  default?: FormFieldValue;
+  options?: string[];
+  unit?: string;
+  placeholder?: string;
+  required?: boolean;
+  fullWidth?: boolean;
+  hint?: string;
+}
+
 export interface PresetTemplate {
   id: string;
   name: string;
   category: string;
   description: string;
-  measurementType: 'linear' | 'area' | 'count' | 'point';
-  fields: {
-    key: string;
-    label: string;
-    type: 'text' | 'number' | 'select' | 'boolean';
-    default?: any;
-    options?: string[];
-    unit?: string;
-    placeholder?: string;
-    required?: boolean;
-    fullWidth?: boolean;
-    hint?: string;
-  }[];
+  measurementType: MeasurementType;
+  fields: PresetFieldDefinition[];
+}
+
+export interface FormDataRecord {
+  [key: string]: FormFieldValue;
 }
 
 export interface PresetFormComponentProps {
-  formData: Record<string, any>;
-  onChange: (key: string, value: any) => void;
+  formData: FormDataRecord;
+  onChange: (key: string, value: FormFieldValue) => void;
   template: PresetTemplate;
 }
 
@@ -49,8 +59,8 @@ export function NumberInput({
   fieldKey, label, unit, placeholder, value, onChange,
 }: {
   fieldKey: string; label: string; unit?: string;
-  placeholder?: string; value: any; onChange: (k: string, v: any) => void;
-}) {
+  placeholder?: string; value: FormFieldValue; onChange: (k: string, v: FormFieldValue) => void;
+}): React.ReactElement {
   return (
     <div>
       <FieldLabel unit={unit}>{label}</FieldLabel>
@@ -58,7 +68,7 @@ export function NumberInput({
         type="number"
         step="any"
         placeholder={placeholder ?? '0'}
-        value={value ?? ''}
+        value={typeof value === 'number' || typeof value === 'string' ? value : ''}
         onChange={e => onChange(fieldKey, parseFloat(e.target.value) || 0)}
         className={inputBase}
       />
@@ -69,14 +79,14 @@ export function NumberInput({
 export function SelectInput({
   fieldKey, label, options, value, onChange,
 }: {
-  fieldKey: string; label: string; options: string[]; value: any;
-  onChange: (k: string, v: any) => void;
-}) {
+  fieldKey: string; label: string; options: string[]; value: FormFieldValue;
+  onChange: (k: string, v: FormFieldValue) => void;
+}): React.ReactElement {
   return (
     <div>
       <FieldLabel>{label}</FieldLabel>
       <select
-        value={value ?? ''}
+        value={typeof value === 'string' ? value : ''}
         onChange={e => onChange(fieldKey, e.target.value)}
         className={inputBase + ' cursor-pointer'}
       >
@@ -90,9 +100,9 @@ export function SelectInput({
 export function ToggleGroup({
   fieldKey, label, options, value, onChange,
 }: {
-  fieldKey: string; label: string; options: string[]; value: any;
-  onChange: (k: string, v: any) => void;
-}) {
+  fieldKey: string; label: string; options: string[]; value: FormFieldValue;
+  onChange: (k: string, v: FormFieldValue) => void;
+}): React.ReactElement {
   return (
     <div className="col-span-2">
       <FieldLabel>{label}</FieldLabel>
@@ -120,8 +130,8 @@ export function CheckLeaf({
   fieldKey, label, qty, value, onChange,
 }: {
   fieldKey: string; label: string; qty?: string; value: boolean;
-  onChange: (k: string, v: any) => void;
-}) {
+  onChange: (k: string, v: FormFieldValue) => void;
+}): React.ReactElement {
   return (
     <label className="flex items-center justify-between cursor-pointer p-2.5 hover:bg-[#1a1a1a] border border-transparent hover:border-[#2a2a2a] transition-all col-span-2">
       <div className="flex items-center gap-3" onClick={() => onChange(fieldKey, !value)}>
@@ -170,8 +180,6 @@ function withViz(
   FormComponent: React.ComponentType<PresetFormComponentProps>,
 ): React.ComponentType<PresetFormComponentProps> {
   return function WrappedForm(props: PresetFormComponentProps) {
-    console.log('Rendering withViz for preset:', props.template.id, props.formData);
-    
     return (
       <div className="flex flex-row gap-4 relative" style={{ isolation: 'isolate', minHeight: '450px' }}>
         {/* ── 3D Visualizer - Left Side ── */}
@@ -196,13 +204,18 @@ function withViz(
 
 // ── Carcass (detailed — from preset1-carcass.tsx) ──────────────────────────
 
-function calcCarcassQuantities(fd: Record<string, any>) {
-  const W = parseFloat(fd.width  ?? 600) / 1000;
-  const H = parseFloat(fd.height ?? 720) / 1000;
-  const D = parseFloat(fd.depth  ?? 550) / 1000;
-  const T = parseFloat(fd.panelThickness ?? 18) / 1000;
-  const shelves   = parseInt(fd.shelfCount  ?? 2);
-  const doorCount = parseInt(fd.doorCount   ?? 1);
+function calcCarcassQuantities(fd: FormDataRecord): {
+  boardArea: number;
+  edgeBanding: number;
+  doorArea: number;
+  toeKickArea: number;
+} {
+  const W = parseFloat(String(fd.width ?? 600)) / 1000;
+  const H = parseFloat(String(fd.height ?? 720)) / 1000;
+  const D = parseFloat(String(fd.depth ?? 550)) / 1000;
+  const T = parseFloat(String(fd.panelThickness ?? 18)) / 1000;
+  const shelves   = parseInt(String(fd.shelfCount ?? 2));
+  const doorCount = parseInt(String(fd.doorCount ?? 1));
 
   const iW = W - 2 * T;
   const iH = H - 2 * T;
@@ -214,7 +227,7 @@ function calcCarcassQuantities(fd: Record<string, any>) {
   if (fd.hasLeftSide)  totalBoard += D * H;
   if (fd.hasRightSide) totalBoard += D * H;
   if (shelves > 0)     totalBoard += iW * D * shelves;
-  if (fd.hasDivider)   totalBoard += H * D * parseInt(fd.dividerCount ?? 1);
+  if (fd.hasDivider)   totalBoard += H * D * parseInt(String(fd.dividerCount ?? 1));
 
   const edgeBanding =
     (fd.hasTop    ? 2 * (iW + D) : 0) +
@@ -236,10 +249,10 @@ function calcCarcassQuantities(fd: Record<string, any>) {
 
 function CarcassForm({ formData, onChange }: PresetFormComponentProps) {
   const q       = calcCarcassQuantities(formData);
-  const W       = parseFloat(formData.width  ?? 600);
-  const H       = parseFloat(formData.height ?? 720);
-  const D       = parseFloat(formData.depth  ?? 550);
-  const shelves = parseInt(formData.shelfCount ?? 2);
+  const W       = parseFloat(String(formData.width ?? 600));
+  const H       = parseFloat(String(formData.height ?? 720));
+  const D       = parseFloat(String(formData.depth ?? 550));
+  const shelves = parseInt(String(formData.shelfCount ?? 2));
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -311,9 +324,11 @@ function CarcassForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Stud Wall ──────────────────────────────────────────────────────────────
 
 function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
-  const L = parseFloat(formData.length ?? 0);
-  const H = parseFloat(formData.height ?? 0);
-  const spacingMm = formData.spacing === '600mm' ? 600 : 450;
+  const L = parseFloat(String(formData.length ?? 0));
+  const H = parseFloat(String(formData.height ?? 0));
+  const isCustomSpacing = formData.spacing === 'Custom';
+  const customSpacingMm = isCustomSpacing ? parseInt(String(formData.customSpacing ?? 600)) : null;
+  const spacingMm = isCustomSpacing && customSpacingMm ? customSpacingMm : (formData.spacing === '600mm' ? 600 : 450);
   const studCount = L > 0 ? Math.ceil((L / spacingMm) * 1000) + 1 : 0;
   const timberLength = L > 0 && H > 0 ? +((studCount * H / 1000) + (L / 1000) * 3).toFixed(1) : 0;
   const plasterArea  = L > 0 && H > 0 ? +((L / 1000) * (H / 1000) * 2 * 1.05).toFixed(1) : 0;
@@ -326,6 +341,9 @@ function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
 
       <SectionHeading>Framing</SectionHeading>
       <ToggleGroup fieldKey="spacing"    label="Stud Spacing"       options={['450mm','600mm','Custom']}  value={formData.spacing}    onChange={onChange} />
+      {isCustomSpacing && (
+        <NumberInput fieldKey="customSpacing" label="Custom Spacing" unit="MM" value={formData.customSpacing} onChange={onChange} />
+      )}
       <SelectInput fieldKey="nogginRows" label="Noggin Rows"        options={['1 Row','2 Rows','3 Rows']} value={formData.nogginRows} onChange={onChange} />
       <SelectInput fieldKey="thickness"  label="Material Thickness" options={['45mm','70mm','90mm']}      value={formData.thickness}  onChange={onChange} />
 
@@ -348,8 +366,8 @@ function StudWallForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Floor Slab ─────────────────────────────────────────────────────────────
 
 function FloorSlabForm({ formData, onChange }: PresetFormComponentProps) {
-  const area        = (parseFloat(formData.length ?? 0) * parseFloat(formData.width ?? 0)).toFixed(1);
-  const thicknessMm = parseInt(formData.thickness ?? '100');
+  const area        = (parseFloat(String(formData.length ?? 0)) * parseFloat(String(formData.width ?? 0))).toFixed(1);
+  const thicknessMm = parseInt(String(formData.thickness ?? '100'));
   const volume      = area && thicknessMm ? +((parseFloat(area) * thicknessMm) / 1000).toFixed(2) : 0;
 
   return (
@@ -376,6 +394,11 @@ function FloorSlabForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Roof ───────────────────────────────────────────────────────────────────
 
 function RoofForm({ formData, onChange }: PresetFormComponentProps) {
+  const area = parseFloat(String(formData.roofArea ?? 0)) || 0;
+  const pitch = parseFloat(String(formData.roofPitch ?? 0)) || 0;
+  const pitchFactor = 1 + (pitch * 0.02);
+  const adjustedArea = parseFloat(String(area)) > 0 ? (area * pitchFactor).toFixed(1) : '0';
+
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Dimensions</SectionHeading>
@@ -386,6 +409,16 @@ function RoofForm({ formData, onChange }: PresetFormComponentProps) {
       <SelectInput fieldKey="roofType"   label="Roof Type"            options={['Pitched','Flat','Curved']}       value={formData.roofType}   onChange={onChange} />
       <SelectInput fieldKey="material"   label="Material"             options={['Tile','Slate','Metal','Asphalt']} value={formData.material}   onChange={onChange} />
       <SelectInput fieldKey="insulation" label="Insulation Thickness" options={['100mm','150mm','200mm']}          value={formData.insulation} onChange={onChange} />
+
+      <SectionHeading>Details</SectionHeading>
+      <SelectInput fieldKey="guttering"  label="Guttering"            options={['Plastic','Aluminium','Cast Iron']} value={formData.guttering}  onChange={onChange} />
+      <SelectInput fieldKey="underlayType" label="Underlay Type"      options={['Standard','Breathable','Premium']} value={formData.underlayType} onChange={onChange} />
+
+      {parseFloat(String(adjustedArea)) > 0 && (
+        <StatStrip stats={[
+          { label: 'Adjusted Area', value: adjustedArea, unit: 'M²' },
+        ]} />
+      )}
     </div>
   );
 }
@@ -393,7 +426,7 @@ function RoofForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Door ───────────────────────────────────────────────────────────────────
 
 function DoorForm({ formData, onChange }: PresetFormComponentProps) {
-  const qty = parseInt(formData.quantity ?? 1);
+  const qty = parseInt(String(formData.quantity ?? 1));
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Quantity</SectionHeading>
@@ -414,6 +447,10 @@ function DoorForm({ formData, onChange }: PresetFormComponentProps) {
       <SelectInput fieldKey="doorType"  label="Door Type"  options={['Swing','Sliding','Folding','Bi-fold']} value={formData.doorType}  onChange={onChange} />
       <SelectInput fieldKey="material"  label="Material"   options={['Wood','Steel','Aluminium','Glass']}    value={formData.material}  onChange={onChange} />
       <SelectInput fieldKey="frameType" label="Frame Type" options={['Timber','Steel','Aluminium']}          value={formData.frameType} onChange={onChange} />
+      
+      <SectionHeading>Safety</SectionHeading>
+      <SelectInput fieldKey="fireRating" label="Fire Rating" options={['None','30 mins','60 mins','90 mins','120 mins']} value={formData.fireRating} onChange={onChange} />
+      <SelectInput fieldKey="acoustic" label="Acoustic Rating" options={['Standard','30dB','40dB','50dB']} value={formData.acoustic} onChange={onChange} />
     </div>
   );
 }
@@ -421,9 +458,9 @@ function DoorForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Window ─────────────────────────────────────────────────────────────────
 
 function WindowForm({ formData, onChange }: PresetFormComponentProps) {
-  const qty       = parseInt(formData.quantity ?? 1);
-  const w         = parseFloat(formData.width  ?? 0);
-  const h         = parseFloat(formData.height ?? 0);
+  const qty       = parseInt(String(formData.quantity ?? 1));
+  const w         = parseFloat(String(formData.width ?? 0));
+  const h         = parseFloat(String(formData.height ?? 0));
   const glassArea = w > 0 && h > 0 ? +((w / 1000) * (h / 1000) * qty).toFixed(2) : 0;
 
   return (
@@ -457,6 +494,10 @@ function WindowForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Ceiling ────────────────────────────────────────────────────────────────
 
 function CeilingForm({ formData, onChange }: PresetFormComponentProps) {
+  const area = parseFloat(String(formData.area ?? 0)) || 0;
+  const panelArea = 0.6 * 0.6; // Standard 600x600
+  const panelCount = parseFloat(String(area)) > 0 ? Math.ceil(area / panelArea) : 0;
+
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
       <SectionHeading>Area</SectionHeading>
@@ -467,6 +508,16 @@ function CeilingForm({ formData, onChange }: PresetFormComponentProps) {
       <SelectInput fieldKey="ceilingType" label="Ceiling Type" options={['Suspended','Direct Fix','Plasterboard','Acoustic']} value={formData.ceilingType} onChange={onChange} />
       <SelectInput fieldKey="gridType"    label="Grid Type"    options={['T-bar','Clips','Adhesive']}                         value={formData.gridType}    onChange={onChange} />
       <SelectInput fieldKey="fireRating"  label="Fire Rating"  options={['None','30min','60min','90min']}                     value={formData.fireRating}  onChange={onChange} />
+
+      <SectionHeading>Panels</SectionHeading>
+      <SelectInput fieldKey="panelType"   label="Panel Type"   options={['Acoustic','Mineral','Gypsum','Metal']}              value={formData.panelType}  onChange={onChange} />
+      <SelectInput fieldKey="panelSize"   label="Panel Size"   options={['600x600','600x1200','1200x1200']}                   value={formData.panelSize}  onChange={onChange} />
+
+      {panelCount > 0 && (
+        <StatStrip stats={[
+          { label: 'Est. Panels', value: panelCount, unit: 'pcs' },
+        ]} />
+      )}
     </div>
   );
 }
@@ -474,10 +525,12 @@ function CeilingForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Staircase ──────────────────────────────────────────────────────────────
 
 function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
-  const steps = parseInt(formData.stepCount ?? 0);
+  const steps = parseInt(String(formData.stepCount ?? 0));
   const riser = steps > 0 && formData.flightRise
-    ? +((parseFloat(formData.flightRise) / steps) * 1000).toFixed(0)
+    ? +((parseFloat(String(formData.flightRise)) / steps) * 1000).toFixed(0)
     : null;
+  const tread = parseFloat(String(formData.treadWidth ?? 250)) || 250;
+  const totalRun = steps > 0 ? ((steps - 1) * tread / 1000).toFixed(2) : 0;
 
   return (
     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
@@ -492,10 +545,20 @@ function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
         </div>
       )}
 
+      <SectionHeading>Dimensions</SectionHeading>
+      <NumberInput fieldKey="treadWidth"  label="Tread Width" unit="MM" value={formData.treadWidth}  onChange={onChange} />
+      <NumberInput fieldKey="stairWidth"  label="Stair Width" unit="MM" value={formData.stairWidth}  onChange={onChange} />
+
       <SectionHeading>Specification</SectionHeading>
       <SelectInput fieldKey="stringType" label="String Type"  options={['Open','Closed']}                         value={formData.stringType} onChange={onChange} />
       <SelectInput fieldKey="material"   label="Material"     options={['Timber','Concrete','Steel','Composite']}  value={formData.material}   onChange={onChange} />
       <SelectInput fieldKey="railing"    label="Railing Type" options={['Timber','Metal','Glass','None']}          value={formData.railing}    onChange={onChange} />
+
+      {parseFloat(String(totalRun)) > 0 && (
+        <StatStrip stats={[
+          { label: 'Total Run', value: totalRun, unit: 'M' },
+        ]} />
+      )}
     </div>
   );
 }
@@ -503,8 +566,8 @@ function StaircaseForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Beam ───────────────────────────────────────────────────────────────────
 
 function BeamForm({ formData, onChange }: PresetFormComponentProps) {
-  const qty    = parseInt(formData.quantity ?? 1);
-  const length = parseFloat(formData.length ?? 0);
+  const qty    = parseInt(String(formData.quantity ?? 1));
+  const length = parseFloat(String(formData.length ?? 0));
   const total  = qty > 0 && length > 0 ? +(qty * length).toFixed(1) : 0;
 
   return (
@@ -521,13 +584,7 @@ function BeamForm({ formData, onChange }: PresetFormComponentProps) {
       <SectionHeading>Section</SectionHeading>
       <SelectInput fieldKey="beamType" label="Beam Type" options={['I-Beam','H-Beam','Channel','Box']}  value={formData.beamType} onChange={onChange} />
       <SelectInput fieldKey="material" label="Material"  options={['Steel','Concrete','Timber']}        value={formData.material} onChange={onChange} />
-      <div className="col-span-2">
-        <FieldLabel>Section Size</FieldLabel>
-        <input type="text" placeholder="e.g. 305×165×40 UB"
-          value={formData.sectionSize ?? ''}
-          onChange={e => onChange('sectionSize', e.target.value)}
-          className={inputBase} />
-      </div>
+      <SelectInput fieldKey="sectionSize" label="Section Size" options={['100×50×5','150×75×7','200×100×8','250×125×10','305×165×40 UB','406×178×54 UB']} value={formData.sectionSize} onChange={onChange} />
 
       <SectionHeading>Protection</SectionHeading>
       <SelectInput fieldKey="fireProtection" label="Fire Protection" options={['None','Paint','Boarding','Intumescent']} value={formData.fireProtection} onChange={onChange} />
@@ -547,13 +604,7 @@ function ColumnForm({ formData, onChange }: PresetFormComponentProps) {
       <SectionHeading>Section</SectionHeading>
       <SelectInput fieldKey="columnType" label="Column Type" options={['Circular','Square','Rectangular','I-Section']} value={formData.columnType} onChange={onChange} />
       <SelectInput fieldKey="material"   label="Material"    options={['Steel','Concrete','Timber']}                   value={formData.material}   onChange={onChange} />
-      <div className="col-span-2">
-        <FieldLabel>Section Size</FieldLabel>
-        <input type="text" placeholder="e.g. 300×300"
-          value={formData.sectionSize ?? ''}
-          onChange={e => onChange('sectionSize', e.target.value)}
-          className={inputBase} />
-      </div>
+      <SelectInput fieldKey="sectionSize" label="Section Size" options={['100mm','150mm','200mm','250mm','300×300','400×400','PFC 100','PFC 150']} value={formData.sectionSize} onChange={onChange} />
 
       <SectionHeading>Foundations</SectionHeading>
       <SelectInput fieldKey="foundations" label="Foundation Type" options={['Pile','Pad','Strip','Raft']} value={formData.foundations} onChange={onChange} />
@@ -564,8 +615,8 @@ function ColumnForm({ formData, onChange }: PresetFormComponentProps) {
 // ── Tiling ─────────────────────────────────────────────────────────────────
 
 function TilingForm({ formData, onChange }: PresetFormComponentProps) {
-  const area        = parseFloat(formData.area ?? 0);
-  const tileSizeStr = formData.tileSize ?? '';
+  const area        = parseFloat(String(formData.area ?? 0));
+  const tileSizeStr = typeof formData.tileSize === 'string' ? formData.tileSize : '';
   const [tw, th]    = tileSizeStr.split('x').map((n: string) => parseInt(n) / 1000);
   const tileCount   = tw && th && area > 0 ? Math.ceil((area * 1.1) / (tw * th)) : null;
 
@@ -606,7 +657,7 @@ function PlumbingForm({ formData, onChange }: PresetFormComponentProps) {
 
       <SectionHeading>Fittings</SectionHeading>
       <SelectInput fieldKey="fittings" label="Fittings Type"   options={['Compression','Push-Fit','Soldered','Threaded']} value={formData.fittings} onChange={onChange} />
-      <NumberInput fieldKey="quantity" label="Qty of Fittings" value={formData.quantity} onChange={onChange} />
+      <NumberInput fieldKey="quantity" label="Number of Joints" value={formData.quantity} onChange={onChange} />
     </div>
   );
 }

@@ -18,87 +18,26 @@ import { TakeoffRow } from '../types';
 import { SnapResult, PendingSnapCandidate, PdfDimensions } from '../types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 
-// ─── Color palette ────────────────────────────────────────────────────────────
-const MEASUREMENT_COLORS = [
-  '#EF9F27', '#3B82F6', '#10B981', '#F43F5E', '#8B5CF6',
-  '#06B6D4', '#F97316', '#EC4899', '#14B8A6', '#6366F1',
-  '#84CC16', '#A855F7',
-];
-let colorIndex = 0;
-export function getNextMeasurementColor(): string {
-  return MEASUREMENT_COLORS[colorIndex++ % MEASUREMENT_COLORS.length];
-}
-export function resetColorIndex(): void { colorIndex = 0; }
+// ─── Extracted modules ────────────────────────────────────────────────────────
+import { getNextMeasurementColor, resetColorIndex } from './useMeasurements/colors';
+import {
+  UseMeasurementsParams,
+  UseMeasurementsReturn,
+  DragState,
+  PointHitResult,
+} from './useMeasurements/types';
+import {
+  toCanvas as toCanvasUtil,
+  toNorm as toNormUtil,
+  calculateDistance,
+  recalculateMeasurementQuantity as recalcQuantity,
+} from './useMeasurements/utils';
 
-// ─── Hook params ──────────────────────────────────────────────────────────────
+// ─── Re-export color functions ────────────────────────────────────────────────
+export { getNextMeasurementColor, resetColorIndex };
 
-export interface UseMeasurementsParams {
-  drawingCanvasRef:     React.RefObject<HTMLCanvasElement>;
-  pdfDimensionsRef:     React.MutableRefObject<PdfDimensions | null>;
-  pageNumberRef:        React.MutableRefObject<number>;
-  scaleRef:             React.MutableRefObject<number>;
-  onScalePrompt: (ptLen: number) => void;
-  activeTool:           string;
-  setActiveTool:        (tool: string) => void;
-  measurements:         TakeoffRow[];
-  tempPoints:           InProgressPoint[];
-  pushPoint:            (point: InProgressPoint) => void;
-  commitMeasurement:    (m: TakeoffRow) => void;
-  batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
-  clearTempPoints:      () => void;
-  onAppendComplete?: () => void;
-  scaleFactor:          number;
-  onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
-  isPanning:            boolean;
-  snapToCorner:         (rawX: number, rawY: number) => SnapResult;
-  getScaledCorners:     (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
-  triggerSnapFlash:     (x: number, y: number) => void;
-  snapEnabled:          boolean;
-  snapThreshold:        number;
-  redrawPinCanvas:      () => void;
-  cursorPointRef:       React.MutableRefObject<{ x: number; y: number } | null>;
-  activeDrawingId:      string | null;
-  appendToGroupId?: string | null;
-}
-
-// ─── Hook return ──────────────────────────────────────────────────────────────
-
-export interface UseMeasurementsReturn {
-  cursorPoint:              { x: number; y: number } | null;
-  setCursorPoint:           React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
-  pendingSnapCandidates:    PendingSnapCandidate[] | null;
-  setPendingSnapCandidates: React.Dispatch<React.SetStateAction<PendingSnapCandidate[] | null>>;
-  finishMeasurement: (pts?: InProgressPoint[], meta?: { label?: string; icon?: string; appendToGroupId?: string }) => void;
-  handleCanvasClick:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
-  handleContextMenu:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerMove:  (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerDown:  (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerUp:    (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  toCanvas:                 (normX: number, normY: number) => { x: number; y: number };
-  toNorm:                   (canvasX: number, canvasY: number) => { x: number; y: number };
-  pendingBreak:             boolean;
-}
-
-// ─── Point relocation state ───────────────────────────────────────────────────
-interface DragState {
-  isDragging: boolean;
-  measurementId: string;
-  pointIndex: number;
-  originalPoint: { x: number; y: number };
-  startCanvasX: number;
-  startCanvasY: number;
-  measurementType: string;
-  isGroupHeader: boolean;
-  parentId?: string;
-}
-
-// ─── Helper to find point under cursor ────────────────────────────────────────
-interface PointHitResult {
-  measurementId: string;
-  pointIndex: number;
-  pointCanvas: { x: number; y: number };
-  measurement: TakeoffRow;
-}
+// ─── Re-export types ─────────────────────────────────────────────────────────
+export type { UseMeasurementsParams, UseMeasurementsReturn };
 
 // ─── useMeasurements ─────────────────────────────────────────────────────────
 
@@ -130,15 +69,11 @@ export function useMeasurements({
   // ── Coordinate helpers ────────────────────────────────────────────────────
 
   const toNorm = useCallback((canvasX: number, canvasY: number) => {
-    const dims = pdfDimensionsRef.current;
-    if (!dims) return { x: canvasX, y: canvasY };
-    return { x: canvasX / dims.w, y: canvasY / dims.h };
+    return toNormUtil(canvasX, canvasY, pdfDimensionsRef.current);
   }, [pdfDimensionsRef]);
 
   const toCanvas = useCallback((normX: number, normY: number) => {
-    const dims = pdfDimensionsRef.current;
-    if (!dims) return { x: normX, y: normY };
-    return { x: normX * dims.w, y: normY * dims.h };
+    return toCanvasUtil(normX, normY, pdfDimensionsRef.current);
   }, [pdfDimensionsRef]);
 
   // ── resetBreakState ───────────────────────────────────────────────────────
@@ -149,7 +84,8 @@ export function useMeasurements({
 
   // ─── onScaleSet ref (FIX: Initialize the ref that Viewer expects) ─────────
   const onScaleSetRef = useRef<((f: number) => void) | null>(null);
-  (useMeasurements as any)._onScaleSetRef = onScaleSetRef;
+  // Store ref on function for external access
+  Object.defineProperty(useMeasurements, '_onScaleSetRef', { value: onScaleSetRef, writable: true });
 
   // ── Clear on tool switch ──────────────────────────────────────────────────
   useEffect(() => {
@@ -191,63 +127,7 @@ export function useMeasurements({
   // ─── Recalculate measurement quantity after point move ──────────────────────
   const recalculateMeasurementQuantity = useCallback((measurement: TakeoffRow, updatedPoints: { x: number; y: number }[]) => {
     const zoom = scaleRef.current;
-    
-    switch (measurement.type) {
-      case 'Length': {
-        let len = 0;
-        for (let i = 1; i < updatedPoints.length; i++) {
-          const p1 = toCanvas(updatedPoints[i-1].x, updatedPoints[i-1].y);
-          const p2 = toCanvas(updatedPoints[i].x, updatedPoints[i].y);
-          len += Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        }
-        const quantity = len / zoom * scaleFactor;
-        return { quantity, unit: 'm' };
-      }
-      
-      case 'Polygon': {
-        let a = 0;
-        for (let i = 0; i < updatedPoints.length; i++) {
-          const p1 = toCanvas(updatedPoints[i].x, updatedPoints[i].y);
-          const p2 = toCanvas(updatedPoints[(i + 1) % updatedPoints.length].x, updatedPoints[(i + 1) % updatedPoints.length].y);
-          a += p1.x * p2.y - p2.x * p1.y;
-        }
-        const quantity = Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
-        return { quantity, unit: 'sq m' };
-      }
-      
-      case 'Rectangle': {
-        if (updatedPoints.length !== 4) {
-          const p1 = toCanvas(updatedPoints[0].x, updatedPoints[0].y);
-          const p2 = toCanvas(updatedPoints[2].x, updatedPoints[2].y);
-          const r4 = [
-            { x: p1.x, y: p1.y }, { x: p2.x, y: p1.y },
-            { x: p2.x, y: p2.y }, { x: p1.x, y: p2.y },
-          ];
-          let a = 0;
-          for (let i = 0; i < 4; i++) {
-            const j = (i + 1) % 4;
-            a += r4[i].x * r4[j].y - r4[j].x * r4[i].y;
-          }
-          const quantity = Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
-          return { quantity, unit: 'sq m' };
-        }
-        let a = 0;
-        for (let i = 0; i < updatedPoints.length; i++) {
-          const p1 = toCanvas(updatedPoints[i].x, updatedPoints[i].y);
-          const p2 = toCanvas(updatedPoints[(i + 1) % updatedPoints.length].x, updatedPoints[(i + 1) % updatedPoints.length].y);
-          a += p1.x * p2.y - p2.x * p1.y;
-        }
-        const quantity = Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
-        return { quantity, unit: 'sq m' };
-      }
-      
-      case 'Count':
-      case 'Point':
-        return { quantity: measurement.quantity, unit: measurement.unit };
-      
-      default:
-        return { quantity: measurement.quantity, unit: measurement.unit };
-    }
+    return recalcQuantity(measurement, updatedPoints, toCanvas, zoom, scaleFactor);
   }, [scaleRef, scaleFactor, toCanvas]);
 
   // ─── Handle point relocation start ─────────────────────────────────────────
@@ -422,7 +302,7 @@ export function useMeasurements({
         if (drag.parentId) {
           const parent = measurements.find(m => m.id === drag.parentId);
           if (parent && parent.isGroupHeader && parent.childIds) {
-            const children = measurements.filter(m => parent.childIds.includes(m.id));
+            const children = measurements.filter(m => (parent.childIds ?? []).includes(m.id));
             let newParentTotal = 0;
             for (const child of children) {
               newParentTotal += child.quantity || 0;
@@ -1136,7 +1016,7 @@ export function useMeasurements({
     const newId      = crypto.randomUUID();
     const groupColor = getNextMeasurementColor();
 
-    // ── Linear ─────────────────────────────────────────────────────────────
+    // ── Linear ─��───────────────────────────────────────────────────────────
     if (activeTool === 'linear') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length >= 2);

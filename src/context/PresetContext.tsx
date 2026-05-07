@@ -3,7 +3,17 @@
 import React, { createContext, useContext, useState } from 'react';
 import { PresetTemplate } from '@/components/presets/PresetTemplates';
 
-// ─── Shape ────────────────────────────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type FormFieldValue = string | number | boolean | null | undefined;
+
+interface FormData {
+  [key: string]: FormFieldValue;
+}
+
+interface PresetFormDataMap {
+  [templateId: string]: FormData;
+}
 
 interface PresetContextValue {
   // template selection
@@ -11,10 +21,10 @@ interface PresetContextValue {
   setSelectedTemplate: (t: PresetTemplate | null) => void;
 
   // form data — keyed by template id so switching templates doesn't bleed state
-  formData:            Record<string, Record<string, any>>;
-  setFormField:        (templateId: string, key: string, value: any) => void;
+  formData:            PresetFormDataMap;
+  setFormField:        (templateId: string, key: string, value: FormFieldValue) => void;
   resetForm:           (templateId: string) => void;
-  getFormData:         (templateId: string) => Record<string, any>;
+  getFormData:         (templateId: string) => FormData;
 
   // gallery UI state
   searchTerm:          string;
@@ -41,14 +51,14 @@ export function usePresetContext() {
 
 export function PresetProvider({ children }: { children: React.ReactNode }) {
   const [selectedTemplate, setSelectedTemplate] = useState<PresetTemplate | null>(null);
-  const [formData, setFormData]                 = useState<Record<string, Record<string, any>>>({});
+  const [formData, setFormData]                 = useState<PresetFormDataMap>({});
   const [searchTerm, setSearchTerm]             = useState('');
   const [activeCategory, setActiveCategory]     = useState<string | null>(null);
   const [showEnterpriseModal, setShowEnterpriseModal] = useState(false);
 
   // ── form helpers ────────────────────────────────────────────────────────────
 
-  const setFormField = (templateId: string, key: string, value: any) => {
+  const setFormField = (templateId: string, key: string, value: FormFieldValue): void => {
     setFormData(prev => ({
       ...prev,
       [templateId]: {
@@ -58,7 +68,7 @@ export function PresetProvider({ children }: { children: React.ReactNode }) {
     }));
   };
 
-  const resetForm = (templateId: string) => {
+  const resetForm = (templateId: string): void => {
     setFormData(prev => {
       const next = { ...prev };
       delete next[templateId];
@@ -66,7 +76,7 @@ export function PresetProvider({ children }: { children: React.ReactNode }) {
     });
   };
 
-  const getFormData = (templateId: string): Record<string, any> =>
+  const getFormData = (templateId: string): FormData =>
     formData[templateId] ?? {};
 
   // ── value ───────────────────────────────────────────────────────────────────

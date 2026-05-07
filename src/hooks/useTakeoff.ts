@@ -1,6 +1,6 @@
 // hooks/useTakeoff.ts
 import { useState, useCallback, useEffect } from 'react';
-import { ProjectState, TakeoffRow, Point, ToolType, MeasurementType } from '../types';
+import { ProjectState, TakeoffRow, Point, ToolType, MeasurementType, Drawing } from '../types';
 
 const PALETTE = [
   '#F59E0B', // Amber
@@ -38,12 +38,13 @@ export function useTakeoff() {
   const [activeTool, setActiveTool] = useState<ToolType>('select');
 
   const addDrawing = useCallback((name: string, fileUrl: string, file?: File) => {
-    const newDrawing = {
+    const newDrawing: Drawing = {
       id: crypto.randomUUID(),
       name,
       fileUrl,
       file,
-      scaleFactor: 1
+      scaleFactor: 1,
+      pageCount: 1
     };
     setProjectState(prev => ({
       ...prev,

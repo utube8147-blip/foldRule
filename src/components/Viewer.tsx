@@ -20,8 +20,7 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   ZoomIn, ZoomOut, Maximize, ChevronLeft, ChevronRight,
-  MousePointer2, CircleDot, Ruler, Square, Hash, FolderOpen,
-  Check, Scaling, Target, Settings2, Undo2, Redo2,
+  FolderOpen, Check, Settings2, Undo2, Redo2, Target, Scaling,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
@@ -30,12 +29,12 @@ import { PresetDrawer } from './presets/PresetDrawer';
 import { Minimap } from './Minimap';
 import { MeasurementDetailsDialog } from './MeasurementDetailsDialog';
 import { CountPinOverlay } from './CountPinOverlay';
-
-const pdfWorkerUrl = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString();
 import { SnapSettingsPanel } from './SnapSettingsPanel';
+
+// ─── Extracted modules ────────────────────────────────────────────────────────
+import { pdfWorkerUrl, VIEWER_TOOLS } from './Viewer/constants';
+import { SnapCandidateDialog } from './Viewer/SnapCandidateDialog';
+
 import { useSnapEngine } from '@/hooks/useSnapEngine';
 import { useMeasurements } from '@/hooks/useMeasurements';
 import { useTakeoffContext } from '@/context/TakeoffContext';
@@ -43,55 +42,6 @@ import type { InProgressPoint } from '@/context/TakeoffContext';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-
-// ─── Static tool definitions (moved outside component to prevent recreation) ───
-const VIEWER_TOOLS = [
-  { id: 'select',    icon: MousePointer2, label: 'Select (Pan)',  shortcut: 'V' },
-  { id: 'point',     icon: CircleDot,     label: 'Point',         shortcut: 'P' },
-  { id: 'linear',    icon: Ruler,         label: 'Linear',        shortcut: 'L' },
-  { id: 'polygon',   icon: Square,        label: 'Polygon',       shortcut: 'A' },
-  { id: 'rectangle', icon: Square,        label: 'Rectangle',     shortcut: 'R' },
-  { id: 'count',     icon: Hash,          label: 'Count',         shortcut: 'C' },
-  { id: 'scale',     icon: Scaling,       label: 'Calibrate',     shortcut: 'S' },
-] as const;
-
-// ─── Snap Candidate Dialog ────────────────────────────────────────────────────
-
-interface SnapCandidateDialogProps {
-  count: number;
-  onAccept: () => void;
-  onDismiss: () => void;
-}
-
-function SnapCandidateDialog({ count, onAccept, onDismiss }: SnapCandidateDialogProps) {
-  return (
-    <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 border border-amber-400/60 shadow-xl shadow-amber-400/10 p-4 flex items-center gap-4 font-mono">
-      <Target className="w-4 h-4 text-amber-400 flex-shrink-0" />
-      <div>
-        <div className="text-[11px] font-bold text-zinc-200">
-          {count} point{count > 1 ? 's' : ''} can be snapped to nearby corners
-        </div>
-        <div className="text-[9px] text-zinc-500 uppercase tracking-wider mt-0.5">
-          Auto-fix detected loose placements
-        </div>
-      </div>
-      <div className="flex gap-2">
-        <button
-          onClick={onAccept}
-          className="text-[10px] font-bold px-3 py-1.5 bg-amber-400 text-black uppercase tracking-widest hover:bg-amber-300 transition-all"
-        >
-          FIX
-        </button>
-        <button
-          onClick={onDismiss}
-          className="text-[10px] font-bold px-3 py-1.5 border border-zinc-700 text-zinc-400 uppercase tracking-widest hover:border-zinc-500 transition-all"
-        >
-          KEEP
-        </button>
-      </div>
-    </div>
-  );
-}
 
 // ─── Viewer Props ─────────────────────────────────────────────────────────────
 
@@ -1113,8 +1063,10 @@ export function Viewer({
                 onContextMenu={handleContextMenu}
                 onPointerMove={handleCanvasPointerMove}
                 onPointerDown={(e) => {
-                  handleCanvasPointerDown(e);
-                  handleDrawingCanvasPointerDown(e);
+                  const handled = handleCanvasPointerDown(e) ?? false;
+                  if (!handled) {
+                    handleDrawingCanvasPointerDown(e);
+                  }
                 }}
                 onPointerUp={handleCanvasPointerUp}
                 onPointerLeave={() => {

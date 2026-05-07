@@ -161,7 +161,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     if (!parent.isGroupHeader || !parent.childIds) return measurements;
     
     // Find all children that still exist
-  const existingChildren = measurements.filter(m => parent.childIds!.includes(m.id));
+    const existingChildren = measurements.filter(m => (parent.childIds ?? []).includes(m.id));
     
     if (existingChildren.length === 0) {
       // If no children left, remove the parent entirely
@@ -199,7 +199,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   // ── Get effective quantity (computes from children for groups) ─────────────
   const getEffectiveQuantity = useCallback((measurement: TakeoffRow): number => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => measurement.childIds!.includes(m.id));
+      const children = measurementsRef.current.filter(m => (measurement.childIds ?? []).includes(m.id));
       return children.reduce((sum, child) => sum + (child.quantity || 0), 0);
     }
     return measurement.quantity || 0;
@@ -207,7 +207,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
 
   const getEffectiveUnit = useCallback((measurement: TakeoffRow): string => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
-      const children = measurementsRef.current.filter(m => measurement.childIds!.includes(m.id));
+      const children = measurementsRef.current.filter(m => (measurement.childIds ?? []).includes(m.id));
       if (children.length > 0) {
         return children[0].unit || measurement.unit;
       }
@@ -438,7 +438,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     
     // If the deleted measurement was a group header, also delete all its children
     if (deletedMeasurement.isGroupHeader && deletedMeasurement.childIds) {
-      mAfter = mAfter.filter(m => !deletedMeasurement.childIds!.includes(m.id));
+      mAfter = mAfter.filter(m => !(deletedMeasurement.childIds ?? []).includes(m.id));
     }
 
     syncedSetProjectState(prev => {
