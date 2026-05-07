@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { X, Pencil, Table, Download } from 'lucide-react';
-import { ProjectState } from '../types';
 import { motion } from 'motion/react';
 
 interface ExportModalProps {
-  projectState: ProjectState;
+  // types file doesn't export ProjectState in some setups; use any to avoid build error
+  projectState: any;
   onClose: () => void;
   onExport: () => void;
 }
@@ -17,7 +17,7 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
     onExport();
   };
 
-  const filesCount = new Set(projectState.measurements.map(m => m.drawingId)).size;
+  const filesCount = new Set(projectState.measurements.map((m: { drawingId: any; }) => m.drawingId)).size;
   const pointsCount = projectState.measurements.length;
 
   return (

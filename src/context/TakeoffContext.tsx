@@ -170,8 +170,9 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     const parent = measurements[parentIndex];
     if (!parent.isGroupHeader || !parent.childIds) return measurements;
     
+    const childIds = parent.childIds as string[];
     // Find all children that still exist
-    const existingChildren = measurements.filter(m => (parent.childIds ?? []).includes(m.id));
+    const existingChildren = measurements.filter(m => childIds.includes(m.id));
     
     if (existingChildren.length === 0) {
       // If no children left, remove the parent entirely
@@ -186,7 +187,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       if (child.type === 'Length') {
         newTotal += child.quantity;
         newUnit = child.unit;
-      } else if (child.type === 'Polygon' || child.type === 'Rectangle') {
+      } else if (child.type === 'Area') {
         newTotal += child.quantity;
         newUnit = child.unit;
       } else if (child.type === 'Count') {
