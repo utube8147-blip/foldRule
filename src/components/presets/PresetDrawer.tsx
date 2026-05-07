@@ -16,13 +16,15 @@ import {
   PresetFormComponentProps,
 } from './PresetTemplates';
 import { usePresetContext } from '@/context/PresetContext';
+import { useTakeoffContext } from '@/context/TakeoffContext';
+import { TakeoffRow, Drawing } from '@/types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface PresetDrawerProps {
   isOpen: boolean;
   onClose: () => void;
-  onSelectPreset: (data: Record<string, any>, template: PresetTemplate) => void;
+  onSelectPreset?: (data: Record<string, any>, template: PresetTemplate) => void;
 }
 
 // ─── Measurement type → icon ──────────────────────────────────────────────────
@@ -209,20 +211,23 @@ function TemplateCard({
 export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerProps) {
   const router = useRouter();
 
-  // ── Shared context — used to hand off state to the full presets page ─────────
+  // ── CHANGE 1: destructure batchCommitMeasurements alongside addMeasurement ──
+  const { projectState: ps, addMeasurement, batchCommitMeasurements } = useTakeoffContext();
+  const activeDrawing = ps.drawings.find((d: Drawing) => d.id === ps.activeDrawingId) ?? null;
+
   const {
     setSelectedTemplate: setContextTemplate,
     setFormField,
     resetForm,
   } = usePresetContext();
 
-  // ── Local drawer state (independent from context until handoff) ──────────────
   const [selectedTemplate, setSelectedTemplate]       = useState<PresetTemplate | null>(null);
   const [fieldValues, setFieldValues]                 = useState<Record<string, any>>({});
   const [drawerHeight, setDrawerHeight]               = useState<'collapsed' | 'half' | 'full'>('half');
   const [searchTerm, setSearchTerm]                   = useState('');
   const [activeCategory, setActiveCategory]           = useState<string | null>(null);
   const [showEnterpriseModal, setShowEnterpriseModal] = useState(false);
+  const [toastMsg, setToastMsg]                       = useState<string | null>(null);
 
   const scrollRef    = useRef<HTMLDivElement>(null);
   const LOCKED_COUNT = 3;
@@ -245,36 +250,337 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
       setSearchTerm('');
       setActiveCategory(null);
       setShowEnterpriseModal(false);
+      setToastMsg(null);
     }
   }, [isOpen]);
 
   useEffect(() => { setFieldValues({}); }, [selectedTemplate]);
 
-  const handleChange  = (key: string, value: any) => setFieldValues(prev => ({ ...prev, [key]: value }));
-  const handleReset   = () => setFieldValues({});
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
 
+  const handleChange = (key: string, value: any) => setFieldValues(prev => ({ ...prev, [key]: value }));
+  const handleReset  = () => setFieldValues({});
+
+  // ─── Helper: build a stable child id ─────────────────────────────────────
+  const makeChildId = (groupId: string, index: number) =>
+    `${groupId}-child-${index}`;
+
+  // ── CHANGE 2: addGroup now uses batchCommitMeasurements for atomic commit ──
+  //
+  //  Previously each addMeasurement call was sequential, causing the ref/state
+  //  to be stale by the time children were added and recalculateParentTotal had
+  //  nothing to sum. batchCommitMeasurements does a single setState + single
+  //  recalculation pass over the whole array — no race condition.
+  //
+  const addGroup = (
+    headerId: string,
+    headerFields: Omit<TakeoffRow, 'id' | 'childIds'>,
+    parts: Partial<TakeoffRow>[],
+  ) => {
+    const childIds = parts.map((_, i) => makeChildId(headerId, i));
+
+    const header: TakeoffRow = {
+      ...headerFields,
+      id: headerId,
+      childIds,
+      isGroupHeader: true,
+      isExpanded: true,
+    } as TakeoffRow;
+
+    const children: TakeoffRow[] = parts.map((part, i) => ({
+      unitRate: 0,
+      points: [],
+      isOverridden: true,
+      isVisible: true,
+      ...part,
+      id: childIds[i],
+      parentId: headerId,
+      drawingId: headerFields.drawingId,
+    } as TakeoffRow));
+
+    batchCommitMeasurements([header, ...children]);
+  };
+
+  // ─── Main confirm handler ─────────────────────────────────────────────────
   const handleConfirm = () => {
     if (!selectedTemplate) return;
-    onSelectPreset(fieldValues, selectedTemplate);
+
+    if (!activeDrawing) {
+      showToast('⚠ SELECT A DRAWING FIRST');
+      return;
+    }
+
+    const groupId   = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const headerId  = `${groupId}-header`;
+    const t         = selectedTemplate;
+    const fd        = fieldValues;
+
+    const bool = (val: any, defaultVal = true): boolean =>
+      val === undefined || val === null ? defaultVal : Boolean(val);
+
+    // ── CARCASS ──────────────────────────────────────────────────────────────
+    if (t.id === 'carcass') {
+      const W         = parseFloat(String(fd.width ?? 600)) / 1000;
+      const H         = parseFloat(String(fd.height ?? 720)) / 1000;
+      const D         = parseFloat(String(fd.depth ?? 550)) / 1000;
+      const T         = parseFloat(String(fd.panelThickness ?? 18)) / 1000;
+      const shelves   = parseInt(String(fd.shelfCount ?? 2));
+      const doorCount = parseInt(String(fd.doorCount ?? 1));
+      const iW        = W - 2 * T;
+      const iH        = H - 2 * T;
+      const groupName = `${fd.customName || 'Cabinet'} (${fd.width || 600}×${fd.height || 720}×${fd.depth || 550}mm)`;
+
+      const hasBack      = bool(fd.hasBack);
+      const hasTop       = bool(fd.hasTop);
+      const hasBottom    = bool(fd.hasBottom);
+      const hasLeftSide  = bool(fd.hasLeftSide);
+      const hasRightSide = bool(fd.hasRightSide);
+      const hasDoors     = bool(fd.hasDoors, false);
+      const hasDrawers   = bool(fd.hasDrawers, false);
+      const hasToeKick   = bool(fd.hasToeKick, false);
+
+      const parts: Partial<TakeoffRow>[] = [];
+      if (hasBack)      parts.push({ description: 'Back Panel',       type: 'Area',   quantity: +(iW * iH).toFixed(3),                unit: 'm²',   category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasTop)       parts.push({ description: 'Top Panel',        type: 'Area',   quantity: +(iW * D).toFixed(3),                 unit: 'm²',   category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasBottom)    parts.push({ description: 'Bottom Panel',     type: 'Area',   quantity: +(iW * D).toFixed(3),                 unit: 'm²',   category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasLeftSide)  parts.push({ description: 'Left Side Panel',  type: 'Area',   quantity: +(D * H).toFixed(3),                  unit: 'm²',   category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasRightSide) parts.push({ description: 'Right Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),                  unit: 'm²',   category: 'Board Materials', notes: `Material: ${fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (shelves > 0)  parts.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²',   category: 'Shelves',         notes: `Material: ${fd.shelfMaterial || fd.boardMaterial || '18mm MDF'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasDoors) {
+        parts.push({ description: `Doors (${doorCount} pcs)`, type: 'Area',  quantity: +((W / doorCount) * H * doorCount).toFixed(3), unit: 'm²',   category: 'Doors',    notes: `Material: ${fd.doorMaterial || 'MDF Primed'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Door Hardware',            type: 'Count', quantity: doorCount,                                      unit: 'sets', category: 'Hardware', notes: `Hinges & handles | Type: ${fd.hingeType || 'Concealed'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      }
+      if (hasDrawers) {
+        const dc = parseInt(String(fd.drawerCount ?? 2));
+        parts.push({ description: `Drawer Fronts (${dc} pcs)`, type: 'Count', quantity: dc, unit: 'pcs',  category: 'Drawers',  notes: `Material: ${fd.drawerMaterial || 'Match doors'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Drawer Hardware',           type: 'Count', quantity: dc, unit: 'sets', category: 'Hardware', notes: 'Drawer slides, handles', color: '#85B7EB', presetId: t.id, presetData: fd });
+      }
+      let eb = 0;
+      if (hasTop)       eb += 2 * (iW + D);
+      if (hasBottom)    eb += 2 * (iW + D);
+      if (hasLeftSide)  eb += 2 * (D + H);
+      if (hasRightSide) eb += 2 * (D + H);
+      if (shelves > 0)  eb += (2 * iW + D) * shelves;
+      if (eb > 0) parts.push({ description: 'Edge Banding', type: 'Length', quantity: +(eb * 1.1).toFixed(2), unit: 'm', category: 'Finishing', notes: `Material: ${fd.edgeTape || 'PVC 0.4mm'} | +10% waste`, color: '#85B7EB', presetId: t.id, presetData: fd });
+      parts.push({ description: 'Assembly & Installation', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Labor, cam locks, fixing brackets', color: '#85B7EB', presetId: t.id, presetData: fd });
+      if (hasToeKick) parts.push({ description: 'Toe Kick / Plinth', type: 'Length', quantity: W, unit: 'm', category: 'Finishing', notes: `Height: ${fd.kickboardHeight || '100mm'}`, color: '#85B7EB', presetId: t.id, presetData: fd });
+
+      addGroup(headerId, {
+        drawingId:   activeDrawing.id,
+        groupName,
+        groupType:   t.id,
+        description: groupName,
+        label:       groupName,
+        type:        'Count',
+        quantity:    1,
+        unit:        'assembly',
+        unitRate:    0,
+        notes:       'Complete carcass assembly',
+        points:      [],
+        isOverridden: true,
+        presetId:    t.id,
+        presetData:  fd,
+        category:    'Group Header',
+        color:       '#EF9F27',
+        isVisible:   true,
+      }, parts);
+
+      showToast(`✓ ${groupName} ADDED (${parts.length} parts)`);
+
+    // ── ROOF ─────────────────────────────────────────────────────────────────
+    } else if (t.id === 'roof') {
+      const area         = parseFloat(String(fd.roofArea ?? 100)) || 100;
+      const pitch        = parseFloat(String(fd.roofPitch ?? 22)) || 22;
+      const pitchFactor  = 1 / Math.cos((pitch * Math.PI) / 180);
+      const adjustedArea = (area * pitchFactor).toFixed(1);
+      const groupName    = `Roof (${fd.roofType || 'Pitched'} · ${fd.material || 'Tile'} · ${area} M²)`;
+
+      const hasDecking    = bool(fd.hasDecking);
+      const hasMembrane   = bool(fd.hasMembrane);
+      const hasInsulation = bool(fd.hasInsulation, false);
+      const hasGuttering  = bool(fd.hasGuttering);
+
+      const parts: Partial<TakeoffRow>[] = [];
+      if (hasDecking)    parts.push({ description: 'Roof Covering',         type: 'Area',   quantity: +(parseFloat(adjustedArea) * 1.05).toFixed(2), unit: 'm²', category: 'Roofing',    notes: `Material: ${fd.material || 'Tile'} | Pitch: ${pitch}° | +5% wastage`, color: '#97C459', presetId: t.id, presetData: fd });
+      if (hasMembrane)   parts.push({ description: 'Underlay / Membrane',   type: 'Area',   quantity: +(parseFloat(adjustedArea) * 1.1).toFixed(2),  unit: 'm²', category: 'Roofing',    notes: '+10% overlap | Type: Breathable membrane', color: '#97C459', presetId: t.id, presetData: fd });
+      if (hasGuttering)  parts.push({ description: 'Guttering & Downpipes', type: 'Length', quantity: +(Math.sqrt(area) * 4).toFixed(1),              unit: 'm',  category: 'Drainage',   notes: `Material: ${fd.guttering || 'Aluminium'}`, color: '#97C459', presetId: t.id, presetData: fd });
+      if (hasInsulation) parts.push({ description: 'Roof Insulation',       type: 'Area',   quantity: area,                                            unit: 'm²', category: 'Insulation', notes: `Thickness: ${fd.insulationThickness || '100mm'}`, color: '#97C459', presetId: t.id, presetData: fd });
+      parts.push({ description: 'Installation & Flashing', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes valleys, ridges, flashings, & sealing', color: '#97C459', presetId: t.id, presetData: fd });
+
+      addGroup(headerId, {
+        drawingId:   activeDrawing.id,
+        groupName,
+        groupType:   t.id,
+        description: groupName,
+        label:       groupName,
+        type:        'Count',
+        quantity:    1,
+        unit:        'm²',
+        unitRate:    0,
+        notes:       'Complete roof assembly',
+        points:      [],
+        isOverridden: true,
+        presetId:    t.id,
+        presetData:  fd,
+        category:    'Group Header',
+        color:       '#97C459',
+        isVisible:   true,
+      }, parts);
+
+      showToast(`✓ ${groupName} ADDED (${parts.length} parts)`);
+
+    // ── CEILING ───────────────────────────────────────────────────────────────
+    } else if (t.id === 'ceiling') {
+      const area      = parseFloat(String(fd.area ?? 20)) || 20;
+      const ceilType  = fd.type || 'Suspended';
+      const groupName = `Ceiling (${ceilType} · ${fd.material || 'Plaster'} · ${area} M²)`;
+
+      const hasBoard    = bool(fd.hasBoard);
+      const hasGrid     = bool(fd.hasGrid, ceilType === 'Suspended');
+      const hasAcoustic = bool(fd.acousticAbsorption, false);
+      const hasInsul    = bool(fd.hasInsulation, false);
+
+      const parts: Partial<TakeoffRow>[] = [];
+      if (hasBoard) parts.push({ description: 'Ceiling Board / Tiles', type: 'Area', quantity: +(area * 1.05).toFixed(2), unit: 'm²', category: 'Finishes', notes: `Material: ${fd.material || 'Plaster'} | Type: ${ceilType} | +5% wastage`, color: '#ED93B1', presetId: t.id, presetData: fd });
+      if (hasGrid && ceilType === 'Suspended') {
+        parts.push({ description: 'Primary Grid Sections',   type: 'Length', quantity: +(area * 0.4).toFixed(1),            unit: 'm',    category: 'Framework', notes: 'Main tees @ 1200mm spacing', color: '#ED93B1', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Secondary Grid Sections', type: 'Length', quantity: +(area * 0.6).toFixed(1),            unit: 'm',    category: 'Framework', notes: 'Cross tees', color: '#ED93B1', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Perimeter Wall Angle',    type: 'Length', quantity: +(Math.sqrt(area) * 4).toFixed(1),   unit: 'm',    category: 'Framework', notes: 'Perimeter trim', color: '#ED93B1', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Hanger Wire / Brackets',  type: 'Count',  quantity: Math.max(1, Math.ceil(area / 1.44)), unit: 'sets', category: 'Hardware',  notes: '1 per 1.2m² | Threaded rod + clips', color: '#ED93B1', presetId: t.id, presetData: fd });
+      }
+      if (hasAcoustic) parts.push({ description: 'Acoustic Treatment', type: 'Area',  quantity: area, unit: 'm²', category: 'Finishes',   notes: 'Acoustic panels / mineral wool backing', color: '#ED93B1', presetId: t.id, presetData: fd });
+      if (hasInsul)    parts.push({ description: 'Insulation Above',    type: 'Area',  quantity: area, unit: 'm²', category: 'Insulation', notes: `Thickness: ${fd.insulationThickness || '100mm'}`, color: '#ED93B1', presetId: t.id, presetData: fd });
+      parts.push({ description: 'Installation & Access', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Includes access panels, fire rating checks', color: '#ED93B1', presetId: t.id, presetData: fd });
+
+      addGroup(headerId, {
+        drawingId:   activeDrawing.id,
+        groupName,
+        groupType:   t.id,
+        description: groupName,
+        label:       groupName,
+        type:        'Count',
+        quantity:    1,
+        unit:        'assembly',
+        unitRate:    0,
+        notes:       'Complete ceiling assembly',
+        points:      [],
+        isOverridden: true,
+        presetId:    t.id,
+        presetData:  fd,
+        category:    'Group Header',
+        color:       '#ED93B1',
+        isVisible:   true,
+      }, parts);
+
+      showToast(`✓ ${groupName} ADDED (${parts.length} parts)`);
+
+    // ── STAIRCASE ─────────────────────────────────────────────────────────────
+    } else if (t.id === 'staircase') {
+      const totalRise   = parseFloat(String(fd.totalRise   ?? 2800)) || 2800;
+      const totalGoing  = parseFloat(String(fd.totalGoing  ?? 3600)) || 3600;
+      const riserHeight = parseFloat(String(fd.riserHeight ?? 175))  || 175;
+      const treadsDepth = parseFloat(String(fd.treadsDepth ?? 250))  || 250;
+      const width       = parseFloat(String(fd.width ?? 900)) || 900;
+
+      const riserCount  = Math.round(totalRise / riserHeight);
+      const treadCount  = riserCount - 1;
+      const stringerLen = +(Math.sqrt(totalRise ** 2 + totalGoing ** 2) / 1000).toFixed(2);
+      const groupName   = `Staircase (${riserCount} Risers · ${fd.material || 'Timber'} · ${width}mm Wide)`;
+
+      const hasRisers    = bool(fd.hasRisers);
+      const hasTreads    = bool(fd.hasTreads);
+      const hasStringers = bool(fd.hasStringers);
+      const hasHandrail  = bool(fd.handrail ?? fd.hasHandrail);
+      const hasNosings   = bool(fd.hasNosings, false);
+
+      const parts: Partial<TakeoffRow>[] = [];
+      if (hasTreads)    parts.push({ description: `Treads (${treadCount} pcs)`,  type: 'Count',  quantity: treadCount,  unit: 'pcs', category: 'Stair Components', notes: `Material: ${fd.material || 'Timber'} | Depth: ${treadsDepth}mm | Width: ${width}mm`, color: '#F0997B', presetId: t.id, presetData: fd });
+      if (hasRisers)    parts.push({ description: `Risers (${riserCount} pcs)`,  type: 'Count',  quantity: riserCount,  unit: 'pcs', category: 'Stair Components', notes: `Height: ${riserHeight}mm | Material: ${fd.material || 'Timber'}`, color: '#F0997B', presetId: t.id, presetData: fd });
+      if (hasStringers) parts.push({ description: 'Stringers / Carriages (×2)', type: 'Length', quantity: stringerLen,  unit: 'm',   category: 'Framework',        notes: `Material: ${fd.stringerMaterial || fd.material || 'Timber'} | Each: ${stringerLen}m`, color: '#F0997B', presetId: t.id, presetData: fd });
+      if (hasHandrail) {
+        const railLen        = +(stringerLen + 0.3).toFixed(2);
+        const spindleSpacing = parseFloat(String(fd.spindleSpacing ?? 100)) || 100;
+        parts.push({ description: 'Handrail',             type: 'Length', quantity: railLen,                                              unit: 'm',   category: 'Safety', notes: `Material: ${fd.railMaterial || 'Timber'} | Height: ${fd.railHeight || '900mm'}`, color: '#F0997B', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Balustrade Posts',     type: 'Count',  quantity: Math.max(2, Math.ceil(treadCount / 3)),               unit: 'pcs', category: 'Safety', notes: 'Newel posts at top, bottom & landing', color: '#F0997B', presetId: t.id, presetData: fd });
+        parts.push({ description: 'Balusters / Spindles', type: 'Count',  quantity: Math.floor(treadCount * (width / spindleSpacing)),    unit: 'pcs', category: 'Safety', notes: `Spacing: ${spindleSpacing}mm max`, color: '#F0997B', presetId: t.id, presetData: fd });
+      }
+      if (hasNosings) parts.push({ description: 'Nosings', type: 'Length', quantity: +((width / 1000) * treadCount).toFixed(2), unit: 'm', category: 'Finishing', notes: `Material: ${fd.material || 'Timber'}`, color: '#F0997B', presetId: t.id, presetData: fd });
+      parts.push({ description: 'Installation & Fixing', type: 'Count', quantity: 1, unit: 'each', category: 'Labor', notes: 'Assembly, securing, finishing & sanding', color: '#F0997B', presetId: t.id, presetData: fd });
+      if (fd.fireRating) parts.push({ description: 'Fire Rating Treatment', type: 'Count', quantity: 1, unit: 'each', category: 'Protection', notes: `Rating: ${fd.fireRating}`, color: '#F0997B', presetId: t.id, presetData: fd });
+
+      addGroup(headerId, {
+        drawingId:   activeDrawing.id,
+        groupName,
+        groupType:   t.id,
+        description: groupName,
+        label:       groupName,
+        type:        'Count',
+        quantity:    1,
+        unit:        'assembly',
+        unitRate:    0,
+        notes:       'Complete staircase assembly',
+        points:      [],
+        isOverridden: true,
+        presetId:    t.id,
+        presetData:  fd,
+        category:    'Group Header',
+        color:       '#F0997B',
+        isVisible:   true,
+      }, parts);
+
+      showToast(`✓ ${groupName} ADDED (${parts.length} parts)`);
+
+    // ── GENERIC FALLBACK ──────────────────────────────────────────────────────
+    } else {
+      let quantity = 0;
+      let unit     = 'm';
+      switch (t.measurementType as string) {
+        case 'linear': quantity = parseFloat(String(fd.length ?? fd.pipeLength ?? 0)) || 0;                                                                   unit = 'm';   break;
+        case 'area':   quantity = parseFloat(String(fd.area ?? 0)) || (parseFloat(String(fd.width ?? 0)) * parseFloat(String(fd.height ?? 0))) / 1e6 || 0;   unit = 'm²';  break;
+        case 'count':  quantity = parseInt(String(fd.quantity ?? fd.doorCount ?? fd.windowCount ?? 1));                                                        unit = 'pcs'; break;
+      }
+
+      // Generic: single row — addMeasurement is fine here (no parent to sync)
+      addMeasurement({
+        id:           headerId,
+        drawingId:    activeDrawing.id,
+        description:  t.name,
+        label:        t.name,
+        type:         t.measurementType === 'linear' ? 'Length' : t.measurementType === 'area' ? 'Area' : 'Count',
+        quantity,
+        unit,
+        unitRate:     0,
+        notes:        `Preset: ${t.name} · ${t.category}`,
+        points:       [],
+        childIds:     [],
+        isOverridden: true,
+        presetData:   fd,
+        presetId:     t.id,
+        color:        '#EF9F27',
+        isVisible:    true,
+      } as TakeoffRow);
+
+      showToast(`✓ ${t.name.toUpperCase()} ADDED`);
+    }
+
+    onSelectPreset?.(fieldValues, selectedTemplate);
     setSelectedTemplate(null);
-    onClose();
   };
 
   // ── Hand off local drawer state → shared PresetContext → navigate ────────────
   const handleOpenFullPage = () => {
     if (selectedTemplate) {
-      // Sync selected template into shared context so full page picks it up
       setContextTemplate(selectedTemplate);
-      // Sync form values: reset first to avoid stale keys, then write each field
       resetForm(selectedTemplate.id);
       Object.entries(fieldValues).forEach(([key, value]) => {
         setFormField(selectedTemplate.id, key, value);
       });
     } else {
-      // No template — open gallery view with nothing pre-selected
       setContextTemplate(null);
     }
-
     onClose();
     router.push('/presets');
   };
@@ -304,7 +610,6 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
           >
             {/* ── Header ──────────────────────────────────────────────────── */}
             <div className="h-12 flex-shrink-0 flex items-center justify-between px-4 border-b border-[#1e1e1e] bg-[#0d0d0d]">
-
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-2 h-2 bg-amber-500 shrink-0" />
                 <button
@@ -329,6 +634,12 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
+                {selectedTemplate && !activeDrawing && (
+                  <span className="text-[8px] font-mono font-black uppercase tracking-widest text-amber-500/80 border border-amber-500/30 px-2 py-0.5 bg-amber-500/5">
+                    ⚠ No drawing
+                  </span>
+                )}
+
                 <button
                   onClick={handleOpenFullPage}
                   className={cn(
@@ -366,6 +677,20 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                 </button>
               </div>
             </div>
+
+            {/* ── Inline toast ─────────────────────────────────────────────── */}
+            <AnimatePresence>
+              {toastMsg && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0 }}
+                  className="flex-shrink-0 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[9px] font-mono font-black uppercase tracking-widest text-amber-400"
+                >
+                  {toastMsg}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* ── Body ────────────────────────────────────────────────────── */}
             {drawerHeight !== 'collapsed' && (
@@ -475,7 +800,14 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       <div className="flex items-center gap-3 px-5 py-4 border-t border-[#1e1e1e] shrink-0 bg-[#0d0d0d]">
                         <button
                           onClick={handleConfirm}
-                          className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-black font-mono font-black text-[10px] uppercase tracking-widest px-5 py-2.5 transition-all active:scale-95"
+                          disabled={!activeDrawing}
+                          className={cn(
+                            'flex items-center gap-2 font-mono font-black text-[10px] uppercase tracking-widest px-5 py-2.5 transition-all active:scale-95',
+                            activeDrawing
+                              ? 'bg-amber-500 hover:bg-amber-400 text-black'
+                              : 'bg-zinc-800 text-zinc-600 cursor-not-allowed',
+                          )}
+                          title={!activeDrawing ? 'Select a drawing first' : undefined}
                         >
                           <Check className="w-3 h-3" />
                           ADD MEASUREMENT
@@ -488,7 +820,6 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                           ← BACK TO GALLERY
                         </button>
 
-                        {/* Carries template + all filled values to full page */}
                         <button
                           onClick={handleOpenFullPage}
                           className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest text-amber-500/70 hover:text-amber-400 transition-colors ml-auto border border-amber-500/20 px-2.5 py-1.5 hover:border-amber-500/50"
