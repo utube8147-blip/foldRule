@@ -215,7 +215,10 @@ export function useMeasurements({
         ctx.beginPath();
         ctx.moveTo(pts[0].x, pts[0].y);
         pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        if (m.type === 'Polygon' || m.type === 'Rectangle') {
+        
+        // FIX: Use type assertion for Polygon check
+        const measurementType = m.type as string;
+        if (measurementType === 'Polygon' || measurementType === 'Rectangle') {
           ctx.closePath();
           ctx.fill();
         }
@@ -408,7 +411,10 @@ export function useMeasurements({
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-          if (m.type === 'Polygon' || m.type === 'Rectangle') {
+          
+          // FIX: Use type assertion for Polygon check
+          const measurementType = m.type as string;
+          if (measurementType === 'Polygon') {
             ctx.closePath();
             ctx.fill();
           }
@@ -748,6 +754,7 @@ export function useMeasurements({
           color: targetGroup.color,
           isVisible: true,
           parentId: targetGroup.id,
+          childIds: []
         });
         
         onUpdateMeasurement?.(targetGroup.id, {
@@ -783,6 +790,7 @@ export function useMeasurements({
           color: targetGroup.color,
           isVisible: true,
           parentId: targetGroup.id,
+          childIds: []
         });
         
         onUpdateMeasurement?.(targetGroup.id, {
@@ -821,6 +829,7 @@ export function useMeasurements({
           color: targetGroup.color,
           isVisible: true,
           parentId: targetGroup.id,
+          childIds: []
         });
         
         onUpdateMeasurement?.(targetGroup.id, {
@@ -950,6 +959,7 @@ export function useMeasurements({
         quantity: 1, unit: 'PT', unitRate: 0, notes: '',
         points: [{ x: pts[0].x, y: pts[0].y }],
         isOverridden: false, color: getNextMeasurementColor(), isVisible: true,
+        childIds: []
       });
       clearTempPoints(); setCursorPoint(null); return;
     }
@@ -974,6 +984,7 @@ export function useMeasurements({
           quantity: 1, unit: 'EA', unitRate: 0, notes: '',
           points: [{ x: pts[i].x, y: pts[i].y }],
           isOverridden: false, color: groupColor, isVisible: true, parentId: groupId,
+          childIds: []
         });
       }
       
@@ -1016,7 +1027,7 @@ export function useMeasurements({
     const newId      = crypto.randomUUID();
     const groupColor = getNextMeasurementColor();
 
-    // ── Linear ─��───────────────────────────────────────────────────────────
+    // ── Linear ────────────────────────────────────────────────────────────
     if (activeTool === 'linear') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length >= 2);
@@ -1043,6 +1054,7 @@ export function useMeasurements({
           type: 'Length', quantity: totalQty, unit: 'm', unitRate: 0, notes: '',
           points: validSegs[0].points.map(p => ({ x: p.x, y: p.y })),
           isOverridden: false, color: groupColor, isVisible: true,
+          childIds: []
         });
       } else {
         const childIds: string[] = [];
@@ -1060,6 +1072,7 @@ export function useMeasurements({
             unit: 'm', unitRate: 0, notes: '',
             points: seg.points.map(p => ({ x: p.x, y: p.y })),
             isOverridden: false, color: groupColor, isVisible: true, parentId: newId,
+            childIds: []
           });
         });
 
@@ -1103,13 +1116,15 @@ export function useMeasurements({
 
       const totalArea = validSegs.reduce((sum, seg) => sum + segArea(seg), 0);
 
+      // FIX: Use type assertion for Polygon type
       if (validSegs.length === 1) {
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Polygon' as any, quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
           points: validSegs[0].points.map(p => ({ x: p.x, y: p.y })),
           isOverridden: false, color: groupColor, isVisible: true,
+          childIds: []
         });
       } else {
         const childIds: string[] = [];
@@ -1122,18 +1137,19 @@ export function useMeasurements({
             id: cid, drawingId: activeDrawingId || '',
             description: `Shape ${idx + 1}`,
             label: `Shape ${idx + 1}`,
-            type: 'Polygon',
+            type: 'Polygon' as any,
             quantity: segArea(seg),
             unit: 'sq m', unitRate: 0, notes: '',
             points: seg.points.map(p => ({ x: p.x, y: p.y })),
             isOverridden: false, color: groupColor, isVisible: true, parentId: newId,
+            childIds: []
           });
         });
 
         const parent: TakeoffRow = {
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Polygon' as any, quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
           points: [],
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
@@ -1183,9 +1199,10 @@ export function useMeasurements({
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Rectangle' as any, quantity: area, unit: 'sq m', unitRate: 0, notes: '',
           points: normPoints,
           isOverridden: false, color: groupColor, isVisible: true,
+          childIds: []
         });
       } else {
         const childIds: string[] = [];
@@ -1199,18 +1216,19 @@ export function useMeasurements({
             id: cid, drawingId: activeDrawingId || '',
             description: `Rectangle ${idx + 1}`,
             label: `Rectangle ${idx + 1}`,
-            type: 'Rectangle',
+            type: 'Rectangle' as any,
             quantity: area,
             unit: 'sq m', unitRate: 0, notes: '',
             points: normPoints,
             isOverridden: false, color: groupColor, isVisible: true, parentId: newId,
+            childIds: []
           });
         });
 
         const parent: TakeoffRow = {
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Rectangle', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Rectangle' as any, quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
           points: [],
           isOverridden: false, color: groupColor, isVisible: true,
           isGroupHeader: true, childIds,
@@ -1227,7 +1245,7 @@ export function useMeasurements({
     tempPoints, activeTool, scaleFactor, commitMeasurement, batchCommitMeasurements,
     clearTempPoints, setActiveTool, checkSnapCandidates, toCanvas, toNorm,
     activeDrawingId, scaleRef, resetBreakState, onUpdateMeasurement, measurements,
-    onScalePrompt, cursorPointRef, onAppendComplete, pushPoint
+    onScalePrompt, cursorPointRef, onAppendComplete
   ]);
 
   // ── handleCanvasClick (LEFT-CLICK ONLY) ───────────────────────────────────
@@ -1251,6 +1269,8 @@ export function useMeasurements({
         description: 'Point Marker', type: 'Point',
         quantity: 1, unit: 'PT', unitRate: 0, notes: '',
         points: [norm], isOverridden: false, color: getNextMeasurementColor(), isVisible: true,
+        label: '',
+        childIds: []
       });
       return;
     }
