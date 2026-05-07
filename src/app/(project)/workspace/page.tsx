@@ -81,12 +81,12 @@ export default function Workspace() {
   // This fixes polygon/rectangle groups that were created with wrong type
   // Can be removed after all existing data is clean
   useEffect(() => {
-    const groupsToFix = ps.measurements.filter(m => 
+    const groupsToFix = ps.measurements.filter((m: { isGroupHeader: any; childIds: string | any[]; }) => 
       m.isGroupHeader && m.childIds && m.childIds.length > 0
     );
     
-    groupsToFix.forEach(group => {
-      const firstChild = ps.measurements.find(c => c.id === group.childIds?.[0]);
+    groupsToFix.forEach((group: { childIds: any[]; type: any; id: string; }) => {
+      const firstChild = ps.measurements.find((c: { id: any; }) => c.id === group.childIds?.[0]);
       if (firstChild && group.type !== firstChild.type) {
         console.log(`Fixing group ${group.id}: ${group.type} → ${firstChild.type}`);
         updateMeasurement(group.id, { type: firstChild.type });
@@ -96,7 +96,7 @@ export default function Workspace() {
 
   // Memoize derived values to prevent unnecessary recalculations
   const activeDrawing = useMemo(() => 
-    ps.drawings.find(d => d.id === ps.activeDrawingId) || null,
+    ps.drawings.find((d: { id: any; }) => d.id === ps.activeDrawingId) || null,
     [ps.drawings, ps.activeDrawingId]
   );
   
@@ -106,7 +106,7 @@ export default function Workspace() {
   );
   
   const activeMeasurements = useMemo(() => 
-    ps.measurements.filter(m => m.drawingId === ps.activeDrawingId),
+    ps.measurements.filter((m: { drawingId: any; }) => m.drawingId === ps.activeDrawingId),
     [ps.measurements, ps.activeDrawingId]
   );
 
@@ -143,26 +143,26 @@ export default function Workspace() {
     const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
 
     if (data.hasBack !== false) {
-      measurements.push({ description: 'Back Panel', type: 'Polygon', quantity: +(iW * iH).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Back Panel', type: 'Area', quantity: +(iW * iH).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasTop !== false) {
-      measurements.push({ description: 'Top Panel', type: 'Polygon', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Top Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasBottom !== false) {
-      measurements.push({ description: 'Bottom Panel', type: 'Polygon', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Bottom Panel', type: 'Area', quantity: +(iW * D).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasLeftSide !== false) {
-      measurements.push({ description: 'Left Side Panel', type: 'Polygon', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Left Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (data.hasRightSide !== false) {
-      measurements.push({ description: 'Right Side Panel', type: 'Polygon', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
+      measurements.push({ description: 'Right Side Panel', type: 'Area', quantity: +(D * H).toFixed(3), unit: 'm²', notes: `Material: ${data.boardMaterial || '18mm MDF'}`, category: 'Board Materials', isOverridden: true });
     }
     if (shelves > 0) {
-      measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Polygon', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
+      measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
     }
     if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
-      measurements.push({ description: `Doors (${doorCount} pcs)`, type: 'Polygon', quantity: +doorArea.toFixed(3), unit: 'm²', notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors', isOverridden: true });
+      measurements.push({ description: `Doors (${doorCount} pcs)`, type: 'Area', quantity: +doorArea.toFixed(3), unit: 'm²', notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors', isOverridden: true });
       measurements.push({ description: 'Door Hardware', type: 'Count', quantity: doorCount, unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`, category: 'Hardware', isOverridden: true });
     }
     if (data.hasDrawers) {
@@ -391,7 +391,7 @@ export default function Workspace() {
       <div className="flex flex-col h-screen bg-industrial-black">
       <Navbar
         projectName={ps.projectName}
-        onProjectNameChange={(name) => setProjectState(prev => ({ 
+        onProjectNameChange={(name) => setProjectState((prev: any) => ({ 
           ...prev, 
           projectName: name 
         }))}
@@ -416,7 +416,7 @@ export default function Workspace() {
 
       <Navbar
         projectName={ps.projectName}
-        onProjectNameChange={(name) => setProjectState(prev => ({ ...prev, projectName: name }))}
+        onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
         onExport={handleExport}
         onOpenPresets={() => setShowPresetDrawer(true)}
       />
@@ -426,12 +426,12 @@ export default function Workspace() {
         <Sidebar
           isCollapsed={leftCollapsed}
           projectState={ps}
-          onUpdateMaterials={(mats) => setProjectState(prev => ({ ...prev, materials: mats }))}
+          onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
           onOpenMaterialLibrary={() => setShowMaterialLibrary(true)}
           onDrawingAdded={addDrawing}
           onSelectDrawing={setActiveDrawingId}
-          onProjectNameChange={(name) => setProjectState(prev => ({ ...prev, projectName: name }))}
-          onProjectNumberChange={(num) => setProjectState(prev => ({ 
+          onProjectNameChange={(name) => setProjectState((prev: any) => ({ ...prev, projectName: name }))}
+          onProjectNumberChange={(num) => setProjectState((prev: any) => ({ 
             ...prev, 
             projectNumber: num 
           }))}        
@@ -636,7 +636,7 @@ export default function Workspace() {
         {showMaterialLibrary && (
           <MaterialLibrary
             materials={ps.materials}
-            onUpdateMaterials={(mats) => setProjectState(prev => ({ ...prev, materials: mats }))}
+            onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
             onClose={() => setShowMaterialLibrary(false)}
           />
         )}
