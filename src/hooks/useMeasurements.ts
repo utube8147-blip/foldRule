@@ -414,7 +414,7 @@ export function useMeasurements({
           
           // FIX: Use type assertion for Polygon check
           const measurementType = m.type as string;
-          if (measurementType === 'Polygon') {
+          if (measurementType === 'Polygon' || measurementType === 'Rectangle') {
             ctx.closePath();
             ctx.fill();
           }
