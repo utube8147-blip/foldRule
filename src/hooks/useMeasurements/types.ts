@@ -59,12 +59,9 @@ export interface DragState {
   measurementId: string;
   pointIndex: number;
   originalPoint: { x: number; y: number };
-  startCanvasX: number;
-  startCanvasY: number;
-  measurementType: string;
-  isGroupHeader: boolean;
   parentId?: string;
 }
+
 
 // ─── Helper to find point under cursor ────────────────────────────────────────
 

@@ -334,7 +334,8 @@ export function Viewer({
 
     if (appendToGroupId) {
       // Skip the dialog, go straight to appending
-      finishMeasurement(undefined, { appendToGroupId });
+      finishMeasurement();
+
       onAppendComplete?.();
       return;
     }
@@ -1178,23 +1179,21 @@ export function Viewer({
             onDismiss={() => setPendingSnapCandidates(null)}
           />
         )}
-
-        {/* Minimap */}
-        {pdf && pdfDimensions && (
-          <div className="sticky bottom-2 left-2 z-40 w-0 h-0 pointer-events-none">
-            <div className="pointer-events-auto">
-              <Minimap
-                pdf={pdf}
-                pageNumber={pageNumber}
-                containerRef={containerRef as React.RefObject<HTMLDivElement>}
-                pdfDimensions={pdfDimensions}
-                canvasPadding={CANVAS_PADDING}
-                activeTool={activeTool}
-              />
-            </div>
-          </div>
-        )}
       </div>
+
+            {/* Minimap — sibling to scroll container, positions against the outer relative flex div */}
+      {pdf && pdfDimensions && (
+        <div className="absolute bottom-12 left-2 z-40">
+          <Minimap
+            pdf={pdf}
+            pageNumber={pageNumber}
+            containerRef={containerRef as React.RefObject<HTMLDivElement>}
+            pdfDimensions={pdfDimensions}
+            canvasPadding={CANVAS_PADDING}
+            activeTool={activeTool}
+          />
+        </div>
+      )}
 
       {/* Footer */}
       {pdf && (

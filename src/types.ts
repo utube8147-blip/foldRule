@@ -63,14 +63,5 @@ export interface Drawing {
   pageCount: number;
 }
 
-export interface Material {
-  id: string;
-  name: string;
-  category: string;
-  unit: string;
-  unitRate: number;
-  supplier?: string;
-  sku?: string;
-}
 
 

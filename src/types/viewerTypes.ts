@@ -1,6 +1,21 @@
 // ─── viewerTypes.ts ───────────────────────────────────────────────────────────
 // All shared interfaces for the Viewer feature split.
 
+// ── FIX #7: Branded coordinate types ─────────────────────────────────────────
+// CanvasPoint is fully branded — passing a norm coord to a canvas drawing
+// function silently draws in the wrong position, so we enforce this strictly.
+// NormPoint is a plain structural alias — it stays compatible with all existing
+// { x: number; y: number } declarations (e.g. PendingSnapCandidate.snapTarget).
+declare const __canvasBrand: unique symbol;
+
+export type CanvasPoint = { x: number; y: number; readonly [__canvasBrand]: never };
+export type NormPoint   = { x: number; y: number };
+
+export const canvasPt = (x: number, y: number): CanvasPoint => ({ x, y } as CanvasPoint);
+export const normPt   = (x: number, y: number): NormPoint   => ({ x, y });
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export interface DetectedCorner {
   x: number; y: number;
   confidence: number;
@@ -31,7 +46,7 @@ export interface PageExtractionState {
 }
 
 export interface SnapResult {
-  point: { x: number; y: number };
+  point: CanvasPoint;   // was { x: number; y: number } — now branded
   snapped: boolean;
 }
 
@@ -43,7 +58,7 @@ export interface PendingSnapCandidate {
   pointIndex: number;
   measurementId: string;
   /** Stored in normalized [0,1] space — survives zoom changes */
-  snapTarget: { x: number; y: number };
+  snapTarget: NormPoint;   // structurally identical to { x: number; y: number } — no breaking change
 }
 
 export interface PdfDimensions {

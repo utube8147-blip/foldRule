@@ -7,6 +7,8 @@ import type { PdfDimensions } from '@/types/viewerTypes';
 const MINIMAP_W = 192;
 const MINIMAP_H = 140;
 
+const DRAWING_TOOLS = ['count', 'point', 'scale', 'area', 'perimeter'];
+
 interface MinimapProps {
   pdf: pdfjsLib.PDFDocumentProxy;
   pageNumber: number;
@@ -25,16 +27,17 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
   const [locked, setLocked]     = useState(false);
   const [hovering, setHovering] = useState(false);
 
-  // Determine if a drawing tool is active (tools that need to click on canvas)
-  const isDrawingToolActive = activeTool && ['rectangle', 'polygon', 'linear'].includes(activeTool);
+  const isDrawingToolActive = !!activeTool && DRAWING_TOOLS.includes(activeTool);
 
-  // panel is visible when locked OR (the mouse is inside the wrapper AND no drawing tool is active)
+  // Collapsed = drawing tool is active AND user hasn't locked the minimap open.
+  // When collapsed: wrapper is pointer-events-none (never blocks canvas clicks),
+  // panel is invisible, only the amber strip is shown as a position indicator.
+  const isCollapsed  = isDrawingToolActive && !locked;
   const panelVisible = locked || (hovering && !isDrawingToolActive);
 
-  // Sync ref so the toggle callback never has a stale closure
   const lockedRef = useRef(false);
 
-  const handleMouseEnter = useCallback(() => setHovering(true),  []);
+  const handleMouseEnter = useCallback(() => { if (!isCollapsed) setHovering(true);  }, [isCollapsed]);
   const handleMouseLeave = useCallback(() => setHovering(false), []);
 
   const handleToggleLock = useCallback(() => {
@@ -67,7 +70,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
     return () => { cancelled = true; };
   }, [pdf, pageNumber]);
 
-  // ── Overlay draw loop ─────────────────────────────────────────────────────
+  // ── Overlay draw loop — only runs when panel is visible ───────────────────
   useEffect(() => {
     if (!panelVisible) return;
     let rafId: number;
@@ -176,22 +179,27 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
     <div
       ref={wrapperRef}
       className="absolute bottom-2 left-2 z-40 select-none"
-      style={{ width: MINIMAP_W }}
+      style={{
+        width: MINIMAP_W,
+        // KEY FIX: when collapsed, the entire wrapper is click-through.
+        // Locked overrides this — the user explicitly pinned it open.
+        pointerEvents: isCollapsed ? 'none' : 'auto',
+      }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >
-      {/* Always-present invisible hit area so mouseenter fires before the panel is visible */}
+      {/* Always-present invisible hit area so mouseenter fires reliably */}
       <div
         className="absolute bottom-0 left-0"
         style={{ width: MINIMAP_W, height: panelVisible ? 0 : 20, zIndex: 1 }}
       />
 
-      {/* Panel — always mounted, visibility controlled by opacity/pointerEvents */}
+      {/* Full panel */}
       <div
         style={{
-          opacity:       panelVisible ? 1 : 0,
-          transform:     panelVisible ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(5px)',
-          pointerEvents: panelVisible ? 'auto' : 'none',
+          opacity:       isCollapsed ? 0 : panelVisible ? 1 : 0,
+          transform:     (!isCollapsed && panelVisible) ? 'scale(1) translateY(0)' : 'scale(0.94) translateY(5px)',
+          pointerEvents: isCollapsed ? 'none' : panelVisible ? 'auto' : 'none',
           transition:    'opacity 0.18s ease-out, transform 0.18s ease-out',
         }}
       >
@@ -225,7 +233,6 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
                 MINIMAP
               </span>
             </div>
-            {/* Lock button — uses onPointerDown so it fires before mouseleave can hide the panel */}
             <button
               onPointerDown={(e) => { e.stopPropagation(); handleToggleLock(); }}
               className={cn(
@@ -290,17 +297,18 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
         </div>
       </div>
 
-      {/* Hover trigger strip — thin amber line visible when unlocked & hidden */}
-      {!locked && (
-        <div
-          className="absolute bottom-0 left-0 transition-opacity duration-200"
-          style={{
-            width: MINIMAP_W, height: 3,
-            opacity: panelVisible ? 0 : 1,
-            background: 'linear-gradient(90deg,rgba(245,158,11,0.35) 0%,rgba(245,158,11,0.05) 100%)',
-          }}
-        />
-      )}
+      {/* Amber strip — visible when collapsed OR when panel is hidden and unlocked.
+          Always pointer-events-none so it never intercepts canvas clicks. */}
+      <div
+        className="absolute bottom-0 left-0 transition-opacity duration-200"
+        style={{
+          width:         MINIMAP_W,
+          height:        3,
+          pointerEvents: 'none',
+          opacity:       isCollapsed ? 1 : panelVisible ? 0 : 1,
+          background:    'linear-gradient(90deg,rgba(245,158,11,0.35) 0%,rgba(245,158,11,0.05) 100%)',
+        }}
+      />
     </div>
   );
 }
