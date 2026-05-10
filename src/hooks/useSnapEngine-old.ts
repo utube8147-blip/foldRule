@@ -1,4 +1,4 @@
-// ─── useSnapEngine2.ts ─────────────────────────────────────────────────────────
+// ─── useSnapEngine.ts ─────────────────────────────────────────────────────────
 // Encapsulates:
 //   • Inline Web Worker (Harris corner + line detection)
 //   • Session-level extraction cache
@@ -12,7 +12,7 @@ import { useRef, useState, useCallback, useEffect } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import {
   DetectedCorner, ExtractionResult, PageExtractionState,
-  SnapFlash, SnapResult, PdfDimensions,
+  SnapFlash, SnapResult, PdfDimensions, canvasPt,
 } from '../types/viewerTypes';
 
 // ─── Worker source (inlined so no extra build step) ──────────────────────────
@@ -62,15 +62,18 @@ export interface UseSnapEngineParams {
 // ─── Hook return ──────────────────────────────────────────────────────────────
 
 export interface UseSnapEngineReturn {
+  // State
   pageData: Map<number, PageExtractionState>;
   analysisStatus: 'idle' | 'analyzing' | 'done';
   analysisPage: { current: number; total: number } | null;
   snapFlashes: SnapFlash[];
+  // Callbacks
   startExtraction: (pdf: pdfjsLib.PDFDocumentProxy, file?: File) => void;
   getScaledCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
   snapToCorner: (rawX: number, rawY: number) => SnapResult;
   triggerSnapFlash: (x: number, y: number) => void;
   redrawPinCanvas: () => void;
+  // Refs callers can write to drive pin rendering
   cursorPointRef: React.MutableRefObject<{ x: number; y: number } | null>;
 }
 
@@ -86,6 +89,7 @@ export function useSnapEngine({
   confidenceFilter,
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
+  // ── Stable refs for settings (avoid stale closures in callbacks) ────────────
   const snapEnabledRef      = useRef(snapEnabled);
   const showPinsRef         = useRef(showPins);
   const snapThresholdRef    = useRef(snapThreshold);
@@ -95,11 +99,13 @@ export function useSnapEngine({
   useEffect(() => { snapThresholdRef.current    = snapThreshold;    }, [snapThreshold]);
   useEffect(() => { confidenceFilterRef.current = confidenceFilter; }, [confidenceFilter]);
 
+  // ── State ───────────────────────────────────────────────────────────────────
   const [pageData, setPageData]             = useState<Map<number, PageExtractionState>>(new Map());
   const [analysisStatus, setAnalysisStatus] = useState<'idle' | 'analyzing' | 'done'>('idle');
   const [analysisPage, setAnalysisPage]     = useState<{ current: number; total: number } | null>(null);
   const [snapFlashes, setSnapFlashes]       = useState<SnapFlash[]>([]);
 
+  // ── Internal refs ───────────────────────────────────────────────────────────
   const workerRef          = useRef<Worker | null>(null);
   const extractionQueueRef = useRef<Array<{ pageIndex: number; pdf: any; cacheKey: string }>>([]);
   const extractingRef      = useRef(false);
@@ -108,8 +114,10 @@ export function useSnapEngine({
   const pageDataRef        = useRef(pageData);
   useEffect(() => { pageDataRef.current = pageData; }, [pageData]);
 
+  // Exposed to callers so they can set cursor position and trigger redraw
   const cursorPointRef = useRef<{ x: number; y: number } | null>(null);
 
+  // ── processExtractionQueue (via ref to avoid circular deps) ─────────────────
   const processExtractionQueueRef = useRef<() => void>(() => {});
 
   const processExtractionQueue = useCallback(() => {
@@ -132,7 +140,7 @@ export function useSnapEngine({
           status: 'done',
           corners: cached.corners,
           lines: cached.lines,
-          intersections: cached.intersections ?? [],
+          intersections: cached.intersections,
           width: cached.width,
           height: cached.height,
         });
@@ -196,7 +204,7 @@ export function useSnapEngine({
             status: 'done',
             corners: result.corners,
             lines: result.lines,
-            intersections: result.intersections ?? [],
+            intersections: result.intersections,
             width: result.width,
             height: result.height,
           });
@@ -240,7 +248,7 @@ export function useSnapEngine({
           status: 'done',
           corners: cached.corners,
           lines: cached.lines,
-          intersections: cached.intersections ?? [],
+          intersections: cached.intersections,
           width: cached.width,
           height: cached.height,
         });
@@ -259,7 +267,9 @@ export function useSnapEngine({
     }
   }, []);
 
-  // ── getScaledCorners ─────────────────────────────────────────────────────────
+  // ── getScaledCorners — returns corners in canvas-pixel space ─────────────────
+  // Corner nx/ny are normalized [0,1]; multiply by current canvas dims to get pixels.
+  // Because canvas dims already encode zoom, the result is naturally zoom-proportional.
   const getScaledCorners = useCallback(
     (pageIdx: number): Array<{ x: number; y: number; confidence: number }> => {
       const dims = pdfDimensionsRef.current;
@@ -273,7 +283,7 @@ export function useSnapEngine({
     [pdfDimensionsRef],
   );
 
-  // ── snapToCorner ─────────────────────────────────────────────────────────────
+  // ── snapToCorner — all canvas-pixel space ────────────────────────────────────
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current) {
       return { point: { x: rawX, y: rawY }, snapped: false };
@@ -297,7 +307,9 @@ export function useSnapEngine({
     setTimeout(() => setSnapFlashes(prev => prev.filter(f => f.id !== id)), 700);
   }, []);
 
-  // ── redrawPinCanvas ──────────────────────────────────────────────────────────
+  // ── redrawPinCanvas — proximity-only corner dots ─────────────────────────────
+  // Only corners within VISIBLE_RADIUS of the cursor are drawn.
+  // VISIBLE_RADIUS is in canvas-pixel space, so it scales with zoom automatically.
   const redrawPinCanvas = useCallback(() => {
     const canvas = pinCanvasRef.current;
     if (!canvas || !pdfDimensionsRef.current) return;
@@ -307,157 +319,44 @@ export function useSnapEngine({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showPinsRef.current) return;
 
-    const pg = pageDataRef.current.get(pageNumberRef.current - 1);
-    if (!pg || pg.status !== 'done') return;
-
-    const dims = pdfDimensionsRef.current;
-    const scaleX = dims.w / pg.width;
-    const scaleY = dims.h / pg.height;
-    const cursor = cursorPointRef.current;
-    const thresh = snapThresholdRef.current;
-
-    // ── Draw lines ──────────────────────────────────────────────────────────
-    if (pg.lines && pg.lines.length > 0) {
-      pg.lines.forEach((line: any) => {
-        const x1 = (line.x1 !== undefined ? line.x1 : line.x) * scaleX;
-        const y1 = (line.y1 !== undefined ? line.y1 : line.y) * scaleY;
-        const x2 = (line.x2 !== undefined ? line.x2 : line.x + (line.length || 0)) * scaleX;
-        const y2 = (line.y2 !== undefined ? line.y2 : line.y) * scaleY;
-
-        let lineColor = 'rgba(96, 165, 250, 0.4)';
-        let angleCategory = '';
-
-        if (line.angle === 0 || (line.angle && Math.abs(line.angle) < 10)) {
-          lineColor = 'rgba(248, 113, 113, 0.5)';
-          angleCategory = 'H';
-        } else if (line.angle === 90 || (line.angle && Math.abs(line.angle - 90) < 10)) {
-          lineColor = 'rgba(74, 222, 128, 0.5)';
-          angleCategory = 'V';
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.strokeStyle = lineColor;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        if (cursor) {
-          const dx = x2 - x1;
-          const dy = y2 - y1;
-          const lenSq = dx * dx + dy * dy;
-          if (lenSq > 0) {
-            let t = ((cursor.x - x1) * dx + (cursor.y - y1) * dy) / lenSq;
-            t = Math.max(0, Math.min(1, t));
-            const projX = x1 + t * dx;
-            const projY = y1 + t * dy;
-            const dist = Math.hypot(cursor.x - projX, cursor.y - projY);
-
-            if (dist < thresh) {
-              ctx.beginPath();
-              ctx.moveTo(x1, y1);
-              ctx.lineTo(x2, y2);
-              ctx.strokeStyle = '#F59E0B';
-              ctx.lineWidth = 3.5;
-              ctx.stroke();
-
-              ctx.font = 'bold 8px monospace';
-              ctx.fillStyle = '#F59E0B';
-              ctx.fillText(`${angleCategory} ${line.angle || 0}°`, projX + 8, projY - 8);
-            }
-          }
-        }
-      });
-    }
-
-    // ── Draw intersections ──────────────────────────────────────────────────
-    if (pg.intersections && pg.intersections.length > 0) {
-      pg.intersections.forEach((intersection: any) => {
-        const ix = intersection.nx * dims.w;
-        const iy = intersection.ny * dims.h;
-
-        if (cursor) {
-          const dist = Math.hypot(cursor.x - ix, cursor.y - iy);
-          if (dist < thresh * 2) {
-            ctx.beginPath();
-            ctx.arc(ix, iy, 7, 0, Math.PI * 2);
-            ctx.fillStyle = '#F59E0B';
-            ctx.fill();
-            ctx.strokeStyle = '#FFFFFF';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-
-            ctx.font = 'bold 7px monospace';
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillText('junction', ix + 9, iy - 7);
-          }
-        }
-      });
-    }
-
-    // ── Draw corners ────────────────────────────────────────────────────────
     const corners = getScaledCorners(pageNumberRef.current);
+    const cursor  = cursorPointRef.current;
+    const thresh  = snapThresholdRef.current;
+    const VISIBLE_RADIUS = thresh * 4;
+
+    if (!cursor) return;
 
     for (const c of corners) {
-      const dist = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
-      const isInSnap = cursor ? dist < thresh : false;
-      const VISIBLE_RADIUS = thresh * 6;
+      const dist      = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+      const isInSnap  = dist < thresh;
+      const isVisible = dist < VISIBLE_RADIUS;
+      if (!isVisible) continue;
 
-      if (cursor && !isInSnap && dist >= VISIBLE_RADIUS) continue;
+      // Smooth fade: 0 at outer edge, 1 at snap boundary
+      const proximity = 1 - Math.min(1, Math.max(0, (dist - thresh) / (VISIBLE_RADIUS - thresh)));
 
-      let color;
-      let confidenceLabel = '';
-      if (c.confidence > 0.8) {
-        color = { fill: '34,197,94', stroke: '22,163,74' };
-        confidenceLabel = 'high';
-      } else if (c.confidence > 0.5) {
-        color = { fill: '59,130,246', stroke: '37,99,235' };
-        confidenceLabel = 'med';
-      } else {
-        color = { fill: '156,163,175', stroke: '107,114,128' };
-        confidenceLabel = 'low';
-      }
-
-      if (!cursor) {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 2, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${color.fill}, 0.2)`;
-        ctx.fill();
-        continue;
-      }
-
+      ctx.beginPath();
       if (isInSnap) {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${color.fill}, 0.85)`;
+        ctx.arc(c.x, c.y, 7, 0, Math.PI * 2);
+        ctx.fillStyle   = '#F59E0B';
         ctx.fill();
         ctx.strokeStyle = 'white';
-        ctx.lineWidth = 2;
+        ctx.lineWidth   = 1.5;
         ctx.stroke();
-
-        ctx.font = 'bold 8px monospace';
-        ctx.fillStyle = 'white';
-        ctx.fillText(`${Math.round(c.confidence * 100)}%`, c.x + 11, c.y - 8);
-
-        ctx.font = '7px monospace';
-        ctx.fillStyle = `rgb(${color.fill})`;
-        ctx.fillText(confidenceLabel, c.x + 11, c.y + 2);
       } else {
-        const proximity = 1 - (dist - thresh) / (VISIBLE_RADIUS - thresh);
-        const alpha = 0.25 + proximity * 0.5;
-        const radius = 3 + c.confidence * 3;
-
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${color.fill}, ${alpha * 0.6})`;
+        const alpha = 0.25 + proximity * 0.6;
+        const r     = 3 + c.confidence * 2;
+        ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+        ctx.fillStyle   = `rgba(96, 165, 250, ${alpha * 0.55})`;
         ctx.fill();
-        ctx.strokeStyle = `rgba(${color.stroke}, ${alpha})`;
-        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = `rgba(96, 165, 250, ${alpha})`;
+        ctx.lineWidth   = 1;
         ctx.stroke();
       }
     }
   }, [pinCanvasRef, pdfDimensionsRef, pageNumberRef, getScaledCorners]);
 
+  // Redraw whenever page or settings change
   useEffect(() => {
     redrawPinCanvas();
   }, [redrawPinCanvas, pageData, showPins, snapThreshold, confidenceFilter]);

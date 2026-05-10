@@ -11,7 +11,7 @@ import {
   Settings2, Check, X, Hash, MapPin, AlertTriangle,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useSnapEngine } from '@/hooks/useSnapEngine1';
+import { useSnapEngine } from '@/hooks/useSnapEngine-optimized';
 
 function cn(...classes: (string | boolean | undefined | null)[]) {
   return classes.filter(Boolean).join(' ');
@@ -261,8 +261,7 @@ export default function SnapPage() {
 
       if (pg && (pg.status === 'done' || pg.status === 'error')) {
         const corners   = pg.corners?.length    ?? 0;
-        // wallLines is the new field from useSnapEngine
-        const walls     = pg.wallLines?.length  ?? pg.walls?.length ?? 0;
+        const walls     = pg.wallLines?.length  ?? (pg as any).walls?.length ?? 0;
 
         setEngineStats({
           status: 'done',
@@ -323,7 +322,7 @@ export default function SnapPage() {
 
   const getSnapped = useCallback((raw: Point): Point => {
     if (!snapEnabled) return raw;
-    return snapEngine.getSnapPoint(raw);
+    return snapEngine.snapToCorner(raw).point;
   }, [snapEngine, snapEnabled]);
 
   const pushUndo = useCallback((e: UndoEntry) => {
@@ -345,11 +344,13 @@ export default function SnapPage() {
       setDrawnLines(prev => prev.filter(l => !ids.has(l.id)));
       setFilledAreas(prev => prev.filter(a => a.id !== entry.area.id));
     }
+    setTimeout(() => redrawOverlay(), 0);
   }, []);
 
   const switchTool = useCallback((mode: ToolMode) => {
     setToolMode(mode); setLinearStart(null); setRectStart(null);
     currentPolyRef.current = []; setCurrentPoly([]);
+    redrawOverlay();
   }, []);
 
   useEffect(() => {
@@ -365,6 +366,7 @@ export default function SnapPage() {
         setLinearStart(null); setRectStart(null);
         currentPolyRef.current = []; setCurrentPoly([]);
         if (calib.step === 'picking-end') setCalib(c => ({ ...c, step: 'idle', start: null }));
+        redrawOverlay();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -415,16 +417,18 @@ export default function SnapPage() {
     renderPdfPage(pageNumber, scale).then(d => { if (d) setPdfDimensions(d); });
   }, [pdfDoc, pageNumber, scale, renderPdfPage]);
 
+  // Canvas sizing without clearing the overlay
   useEffect(() => {
     if (!pdfDimensions) return;
     const { w, h } = pdfDimensions;
     [drawingCanvasRef, pinCanvasRef, overlayCanvasRef].forEach(ref => {
       if (!ref.current) return;
-      ref.current.width = w; ref.current.height = h;
+      ref.current.width = w; 
+      ref.current.height = h;
       ref.current.style.width  = `${w}px`;
       ref.current.style.height = `${h}px`;
-      ref.current.getContext('2d')?.clearRect(0, 0, w, h);
     });
+    setTimeout(() => redrawOverlay(), 0);
     snapEngine.redrawPinCanvas();
   }, [pdfDimensions, snapEngine]);
 
@@ -447,7 +451,7 @@ export default function SnapPage() {
   }, []);
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  OVERLAY DRAW
+  //  REDRAW OVERLAY FUNCTION
   // ─────────────────────────────────────────────────────────────────────────
   const redrawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
@@ -458,48 +462,34 @@ export default function SnapPage() {
 
     const cur = cursorRef.current;
 
-    const hoverSeg  = (a: Point, b: Point) => !!cur && distToSeg(cur, a, b) <= HOVER_DIST;
-    const hoverPt   = (p: Point)           => !!cur && ptDist(cur, p)        <= HOVER_DIST + 4;
-    const hoverPoly = (pts: Point[])       => !!cur && (inPoly(cur, pts) || pts.some(p => ptDist(cur, p) <= HOVER_DIST));
+    const hoverSeg = (a: Point, b: Point) => !!cur && distToSeg(cur, a, b) <= HOVER_DIST;
+    const hoverPt = (p: Point) => !!cur && ptDist(cur, p) <= HOVER_DIST + 4;
+    const hoverPoly = (pts: Point[]) => !!cur && (inPoly(cur, pts) || pts.some(p => ptDist(cur, p) <= HOVER_DIST));
 
     const pg = snapEngine.pageData?.get(pageNumber - 1);
     if (pg?.status === 'done') {
       const dims = pdfDimensions;
-      const scaleX = dims.w / (pg.width  || dims.w);
-      const scaleY = dims.h / (pg.height || dims.h);
 
-      // ─── Wall Lines (from new wallLines array) ─────────────────────────
-      // wallLines has nx1/ny1/nx2/ny2 (normalised) — multiply by canvas dims
-      // to get canvas-pixel coords, which are already zoom-proportional.
       const wallLines: any[] = pg.wallLines ?? [];
-
       wallLines.forEach((wall, idx) => {
-        // nx1/ny1/nx2/ny2 are stored in [0,1] normalised space
         const x1 = wall.nx1 * dims.w;
         const y1 = wall.ny1 * dims.h;
         const x2 = wall.nx2 * dims.w;
         const y2 = wall.ny2 * dims.h;
-
         const midX = (x1 + x2) / 2;
         const midY = (y1 + y2) / 2;
-
         if (!cur || Math.hypot(cur.x - midX, cur.y - midY) > WALL_PROXIMITY * 3) return;
-
         const distFromCursor = distToSeg(cur, { x: x1, y: y1 }, { x: x2, y: y2 });
         const isHovered = distFromCursor < HOVER_DIST * 2;
         const proximity = Math.max(0, 1 - Math.hypot(cur.x - midX, cur.y - midY) / (WALL_PROXIMITY * 3));
-
         const alpha = isHovered ? 0.9 : 0.25 + proximity * 0.35;
-        const lw    = isHovered ? 2.5 : 1.5;
-
+        const lw = isHovered ? 2.5 : 1.5;
         const pal = PALETTE[idx % PALETTE.length];
-
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.strokeStyle = pal.stroke + Math.round(alpha * 255).toString(16).padStart(2, '0');
         ctx.lineWidth = lw;
-        // Horizontal walls solid, vertical walls dashed to distinguish
         if (wall.angle === 90) {
           ctx.setLineDash([5, 3]);
         } else {
@@ -507,16 +497,12 @@ export default function SnapPage() {
         }
         ctx.stroke();
         ctx.setLineDash([]);
-
-        // Endpoint dots
         [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(pt => {
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, isHovered ? 4 : 2.5, 0, Math.PI * 2);
           ctx.fillStyle = pal.stroke;
           ctx.fill();
         });
-
-        // Hover label — show real-world length if calibrated
         if (isHovered) {
           const pxLen = Math.hypot(x2 - x1, y2 - y1);
           const label = fmtLen(pxLen);
@@ -524,22 +510,17 @@ export default function SnapPage() {
         }
       });
 
-      // ─── Wall Corners ──────────────────────────────────────────────────
       const wallCorners: any[] = pg.wallCorners ?? [];
       wallCorners.forEach((corner) => {
         const cx = corner.nx * dims.w;
         const cy = corner.ny * dims.h;
         if (!cur || ptDist(cur, { x: cx, y: cy }) > CORNER_PROXIMITY) return;
-
-        const dist    = ptDist(cur, { x: cx, y: cy });
-        const alpha   = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+        const dist = ptDist(cur, { x: cx, y: cy });
+        const alpha = Math.max(0, 1 - dist / CORNER_PROXIMITY);
         const isClose = dist < 20;
-        const size    = isClose ? 8 : 5;
-
+        const size = isClose ? 8 : 5;
         ctx.save();
-        ctx.strokeStyle = isClose
-          ? `rgba(20,184,166,${alpha})`       // teal — wall corner
-          : `rgba(20,184,166,${alpha * 0.7})`;
+        ctx.strokeStyle = isClose ? `rgba(20,184,166,${alpha})` : `rgba(20,184,166,${alpha * 0.7})`;
         ctx.lineWidth = isClose ? 2 : 1.2;
         ctx.beginPath(); ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size); ctx.stroke();
@@ -550,28 +531,21 @@ export default function SnapPage() {
         ctx.restore();
       });
 
-      // ─── Generic corner snap-point indicators near cursor ──────────────
       const corners = pg.corners ?? [];
       corners.forEach((corner: any) => {
         const cx = corner.nx * dims.w;
         const cy = corner.ny * dims.h;
         if (!cur || ptDist(cur, { x: cx, y: cy }) > CORNER_PROXIMITY) return;
-
-        // Skip if a wall corner is already drawn here
         const nearWall = wallCorners.some((wc: any) =>
           Math.hypot(wc.nx * dims.w - cx, wc.ny * dims.h - cy) < 16
         );
         if (nearWall) return;
-
-        const dist    = ptDist(cur, { x: cx, y: cy });
-        const alpha   = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+        const dist = ptDist(cur, { x: cx, y: cy });
+        const alpha = Math.max(0, 1 - dist / CORNER_PROXIMITY);
         const isClose = dist < 20;
-        const size    = isClose ? 7 : 4;
-
+        const size = isClose ? 7 : 4;
         ctx.save();
-        ctx.strokeStyle = isClose
-          ? `rgba(99,202,255,${alpha})`
-          : `rgba(99,202,255,${alpha * 0.7})`;
+        ctx.strokeStyle = isClose ? `rgba(99,202,255,${alpha})` : `rgba(99,202,255,${alpha * 0.7})`;
         ctx.lineWidth = isClose ? 1.5 : 1;
         ctx.beginPath(); ctx.moveTo(cx - size, cy); ctx.lineTo(cx + size, cy); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(cx, cy - size); ctx.lineTo(cx, cy + size); ctx.stroke();
@@ -583,57 +557,47 @@ export default function SnapPage() {
       });
     }
 
-    // ── User-drawn filled areas ───────────────────────────────────────────
+    // User-drawn filled areas
     filledAreas.filter(a => a.pageNum === pageNumber).forEach(area => {
       const pal = PALETTE[area.colorIndex % PALETTE.length];
       const isHovered = hoverPoly(area.points);
-
       ctx.beginPath();
       ctx.moveTo(area.points[0].x, area.points[0].y);
       area.points.forEach(p => ctx.lineTo(p.x, p.y));
       ctx.closePath();
-      ctx.fillStyle   = isHovered ? pal.stroke + '33' : pal.fill;
+      ctx.fillStyle = isHovered ? pal.stroke + '33' : pal.fill;
       ctx.strokeStyle = isHovered ? pal.stroke : pal.stroke + 'bb';
-      ctx.lineWidth   = isHovered ? 2 : 1.5;
+      ctx.lineWidth = isHovered ? 2 : 1.5;
       ctx.fill(); ctx.stroke();
-
       area.points.forEach(p => {
         ctx.beginPath(); ctx.arc(p.x, p.y, isHovered ? 4 : 2.5, 0, Math.PI * 2);
         ctx.fillStyle = pal.stroke; ctx.fill();
       });
-
       const c = centroid(area.points);
-      // Always show label; on hover show calibrated value, otherwise px
       const areaLabel = fmtArea(area.area);
       drawLabel(ctx, areaLabel, c.x, c.y, pal.label, 0);
-
-      // Extra perimeter label on hover
       if (isHovered) {
         const perim = area.points.reduce((s, p, i) => s + ptDist(p, area.points[(i + 1) % area.points.length]), 0);
         drawLabel(ctx, `P: ${fmtLen(perim)}`, c.x, c.y, pal.label, -16);
       }
     });
 
-    // ── User-drawn lines ──────────────────────────────────────────────────
+    // User-drawn lines
     drawnLines.filter(l => l.pageNum === pageNumber).forEach(line => {
       const pal = PALETTE[line.colorIndex % PALETTE.length];
       const isHovered = hoverSeg(line.start, line.end);
-
       ctx.beginPath(); ctx.moveTo(line.start.x, line.start.y); ctx.lineTo(line.end.x, line.end.y);
       ctx.strokeStyle = isHovered ? pal.stroke : pal.stroke + 'cc';
-      ctx.lineWidth   = isHovered ? 2.5 : 1.5; ctx.stroke();
-
+      ctx.lineWidth = isHovered ? 2.5 : 1.5; ctx.stroke();
       [line.start, line.end].forEach(p => {
         ctx.beginPath(); ctx.arc(p.x, p.y, isHovered ? 4.5 : 3, 0, Math.PI * 2);
         ctx.fillStyle = pal.stroke; ctx.fill();
       });
-
       const mx = (line.start.x + line.end.x) / 2, my = (line.start.y + line.end.y) / 2;
-      // Always show calibrated label — fmtLen handles both px and real-world
       drawLabel(ctx, fmtLen(ptDist(line.start, line.end)), mx, my, pal.label);
     });
 
-    // ── Count / point pins ────────────────────────────────────────────────
+    // Count / point pins
     countPins.filter(p => p.pageNum === pageNumber).forEach((pin, idx) => {
       const pal = PALETTE[pin.colorIndex % PALETTE.length];
       const isHovered = hoverPt(pin.point);
@@ -644,25 +608,22 @@ export default function SnapPage() {
       drawLabel(ctx, `#${idx + 1}`, pin.point.x, pin.point.y, pal.label, -18);
     });
 
-    // ── In-progress: polygon ──────────────────────────────────────────────
+    // In-progress polygon
     if (currentPoly.length >= 1) {
       const pal = PALETTE[nextColor([...filledAreas]) % PALETTE.length];
       const livePts: Point[] = cur ? [...currentPoly, cur] : [...currentPoly];
-
       if (livePts.length >= 3) {
         ctx.beginPath();
         ctx.moveTo(livePts[0].x, livePts[0].y);
         livePts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
         ctx.fillStyle = pal.fill; ctx.fill();
-
         ctx.beginPath();
         ctx.moveTo(livePts[0].x, livePts[0].y);
         livePts.forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
         ctx.strokeStyle = pal.stroke + 'cc'; ctx.lineWidth = 1.5;
         ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
-
         const c = centroid(livePts);
         drawLabel(ctx, fmtArea(polyArea(livePts)), c.x, c.y, pal.label, 0);
       } else {
@@ -671,14 +632,12 @@ export default function SnapPage() {
         ctx.strokeStyle = pal.stroke + 'cc'; ctx.lineWidth = 1.5;
         ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
       }
-
       if (cur && currentPoly.length >= 1) {
         let total = 0;
         for (let i = 1; i < currentPoly.length; i++) total += ptDist(currentPoly[i - 1], currentPoly[i]);
         total += ptDist(currentPoly[currentPoly.length - 1], cur);
         drawLabel(ctx, fmtLen(total), cur.x + 8, cur.y - 24, pal.label, 0);
       }
-
       currentPoly.forEach((p, i) => {
         ctx.beginPath(); ctx.arc(p.x, p.y, i === 0 ? 6 : 3.5, 0, Math.PI * 2);
         ctx.fillStyle = i === 0 ? pal.stroke : pal.stroke + 'bb'; ctx.fill();
@@ -689,7 +648,7 @@ export default function SnapPage() {
       });
     }
 
-    // ── In-progress: linear ───────────────────────────────────────────────
+    // In-progress linear
     if (linearStart && cur) {
       const pal = PALETTE[nextColor(drawnLines) % PALETTE.length];
       ctx.beginPath(); ctx.moveTo(linearStart.x, linearStart.y); ctx.lineTo(cur.x, cur.y);
@@ -697,32 +656,29 @@ export default function SnapPage() {
       ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
       ctx.beginPath(); ctx.arc(linearStart.x, linearStart.y, 4, 0, Math.PI * 2);
       ctx.fillStyle = pal.stroke; ctx.fill();
-      // Show calibrated length while drawing
       drawLabel(ctx, fmtLen(ptDist(linearStart, cur)),
         (linearStart.x + cur.x) / 2, (linearStart.y + cur.y) / 2, pal.label);
     }
 
-    // ── In-progress: rectangle ────────────────────────────────────────────
+    // In-progress rectangle
     if (rectStart && cur) {
       const pal = PALETTE[nextColor([...drawnLines, ...filledAreas]) % PALETTE.length];
-      const corners: Point[] = [rectStart, { x: cur.x, y: rectStart.y }, cur, { x: rectStart.x, y: cur.y }];
       ctx.beginPath();
       ctx.rect(Math.min(rectStart.x, cur.x), Math.min(rectStart.y, cur.y),
                Math.abs(cur.x - rectStart.x), Math.abs(cur.y - rectStart.y));
       ctx.strokeStyle = pal.stroke; ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 4]); ctx.stroke(); ctx.setLineDash([]);
       ctx.fillStyle = pal.fill; ctx.fill();
-      // Width × Height labels on edges
       const w = Math.abs(cur.x - rectStart.x);
       const h = Math.abs(cur.y - rectStart.y);
       const cx = (rectStart.x + cur.x) / 2;
       const cy = (rectStart.y + cur.y) / 2;
-      drawLabel(ctx, fmtArea(polyArea(corners)), cx, cy, pal.label, 0);
+      drawLabel(ctx, fmtArea(polyArea([rectStart, { x: cur.x, y: rectStart.y }, cur, { x: rectStart.x, y: cur.y }])), cx, cy, pal.label, 0);
       drawLabel(ctx, `W: ${fmtLen(w)}`, cx, Math.min(rectStart.y, cur.y), pal.label, -14);
       drawLabel(ctx, `H: ${fmtLen(h)}`, Math.max(rectStart.x, cur.x), cy, pal.label, -14);
     }
 
-    // ── Calibration preview ───────────────────────────────────────────────
+    // Calibration preview
     if (calib.step === 'picking-end' && calib.start && cur) {
       ctx.beginPath(); ctx.moveTo(calib.start.x, calib.start.y); ctx.lineTo(cur.x, cur.y);
       ctx.strokeStyle = '#34d399'; ctx.lineWidth = 2;
@@ -740,11 +696,19 @@ export default function SnapPage() {
     }
   }, [
     filledAreas, drawnLines, countPins, currentPoly, calib,
-    pixelsPerUnit, fmtLen, fmtArea, snapEngine.pageData, pageNumber,
-    linearStart, rectStart, snapThreshold, pdfDimensions,
+    fmtLen, fmtArea, snapEngine.pageData, pageNumber, pdfDimensions,
+    linearStart, rectStart, snapThreshold,
   ]);
 
-  useEffect(() => { redrawOverlay(); }, [redrawOverlay, cursor]);
+  // Force redraw whenever drawing state changes
+  useEffect(() => {
+    redrawOverlay();
+  }, [drawnLines, filledAreas, countPins, currentPoly, linearStart, rectStart, pageNumber]);
+
+  // Redraw on cursor move
+  useEffect(() => {
+    redrawOverlay();
+  }, [cursor]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!pdfDimensions) return;
@@ -753,6 +717,7 @@ export default function SnapPage() {
     snapEngine.cursorPointRef.current = raw;
     setCursorState({ ...raw });
     snapEngine.redrawPinCanvas();
+    redrawOverlay();
   }, [pdfDimensions, getCanvasPoint, snapEngine]);
 
   const handlePointerLeave = useCallback(() => {
@@ -760,6 +725,7 @@ export default function SnapPage() {
     snapEngine.cursorPointRef.current = null;
     setCursorState(null);
     snapEngine.redrawPinCanvas();
+    redrawOverlay();
   }, [snapEngine]);
 
   const handleCanvasClick = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -770,6 +736,7 @@ export default function SnapPage() {
     if (toolMode === 'calibrate') {
       if (calib.step === 'idle' || calib.step === 'done') {
         setCalib(c => ({ ...c, step: 'picking-end', start: pt, end: null }));
+        redrawOverlay();
       } else if (calib.step === 'picking-end' && calib.start) {
         setCalib(c => ({ ...c, step: 'entering-value', end: pt, pixelDistance: ptDist(calib.start!, pt) }));
       }
@@ -777,15 +744,25 @@ export default function SnapPage() {
     }
 
     if (toolMode === 'linear') {
-      if (!linearStart) { setLinearStart(pt); return; }
+      if (!linearStart) { 
+        setLinearStart(pt); 
+        redrawOverlay();
+        return; 
+      }
       const line: DrawnLine = { id: uid(), start: linearStart, end: pt, colorIndex: nextColor(drawnLines), pageNum: pageNumber };
       setDrawnLines(prev => [...prev, line]);
       pushUndo({ type: 'line', payload: line });
-      setLinearStart(null); return;
+      setLinearStart(null);
+      setTimeout(() => redrawOverlay(), 0);
+      return;
     }
 
     if (toolMode === 'rectangle') {
-      if (!rectStart) { setRectStart(pt); return; }
+      if (!rectStart) { 
+        setRectStart(pt); 
+        redrawOverlay();
+        return; 
+      }
       const corners: Point[] = [rectStart, { x: pt.x, y: rectStart.y }, pt, { x: rectStart.x, y: pt.y }];
       const ci = nextColor([...drawnLines, ...filledAreas]);
       const edges: DrawnLine[] = corners.map((p, i) => ({
@@ -795,28 +772,42 @@ export default function SnapPage() {
       setDrawnLines(prev => [...prev, ...edges]);
       setFilledAreas(prev => [...prev, area]);
       pushUndo({ type: 'rect', lines: edges, area });
-      setRectStart(null); return;
+      setRectStart(null);
+      setTimeout(() => redrawOverlay(), 0);
+      return;
     }
 
     if (toolMode === 'polygon') {
       const poly = currentPolyRef.current;
       if (poly.length === 0) {
-        currentPolyRef.current = [pt]; setCurrentPoly([pt]); return;
+        currentPolyRef.current = [pt]; 
+        setCurrentPoly([pt]);
+        redrawOverlay();
+        return;
       }
       if (poly.length >= 3 && ptDist(pt, poly[0]) < snapThreshold * 2) {
         const ci = nextColor(filledAreas);
         const area: FilledArea = { id: uid(), points: poly, area: polyArea(poly), colorIndex: ci, pageNum: pageNumber };
         setFilledAreas(prev => [...prev, area]);
         pushUndo({ type: 'area', payload: area });
-        currentPolyRef.current = []; setCurrentPoly([]); return;
+        currentPolyRef.current = []; 
+        setCurrentPoly([]);
+        setTimeout(() => redrawOverlay(), 0);
+        return;
       }
-      const np = [...poly, pt]; currentPolyRef.current = np; setCurrentPoly(np); return;
+      const np = [...poly, pt]; 
+      currentPolyRef.current = np; 
+      setCurrentPoly(np);
+      redrawOverlay();
+      return;
     }
 
     if (toolMode === 'count' || toolMode === 'point') {
       const pin: CountPin = { id: uid(), point: pt, colorIndex: nextColor(countPins), pageNum: pageNumber };
       setCountPins(prev => [...prev, pin]);
-      pushUndo({ type: 'pin', payload: pin }); return;
+      pushUndo({ type: 'pin', payload: pin });
+      setTimeout(() => redrawOverlay(), 0);
+      return;
     }
   }, [
     toolMode, calib, linearStart, rectStart, pdfDimensions,
@@ -832,9 +823,13 @@ export default function SnapPage() {
       const area: FilledArea = { id: uid(), points: poly, area: polyArea(poly), colorIndex: ci, pageNum: pageNumber };
       setFilledAreas(prev => [...prev, area]);
       pushUndo({ type: 'area', payload: area });
-      currentPolyRef.current = []; setCurrentPoly([]);
+      currentPolyRef.current = []; 
+      setCurrentPoly([]);
+      setTimeout(() => redrawOverlay(), 0);
     }
-    setLinearStart(null); setRectStart(null);
+    setLinearStart(null); 
+    setRectStart(null);
+    redrawOverlay();
   }, [toolMode, filledAreas, pushUndo, pageNumber]);
 
   const pageLines = drawnLines.filter(l => l.pageNum === pageNumber);
@@ -844,6 +839,14 @@ export default function SnapPage() {
   const totalArea = pageAreas.reduce((s, a) => s + a.area, 0);
 
   const cursorStyle = toolMode === 'pointer' ? 'default' : 'crosshair';
+
+  // Helper function to safely get button position
+  const getButtonPosition = (point: Point | undefined, offset: number = 15): { left: number; top: number } => {
+    if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') {
+      return { left: 0, top: 0 };
+    }
+    return { left: point.x + offset, top: point.y + offset };
+  };
 
   if (!pdfjsReady) return (
     <div className="h-screen flex items-center justify-center bg-[#0d0d0d] font-mono">
@@ -959,6 +962,7 @@ export default function SnapPage() {
             setDrawnLines([]); setFilledAreas([]); setCountPins([]);
             setCurrentPoly([]); setLinearStart(null); setRectStart(null);
             currentPolyRef.current = []; undoStack.current = []; setCanUndo(false);
+            redrawOverlay();
           }} className="flex items-center gap-1 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-widest border border-red-900 text-red-400 hover:bg-red-500/10 transition-all">
             <X className="w-3 h-3" /><span className="hidden sm:inline">Clear</span>
           </button>
@@ -1108,32 +1112,20 @@ export default function SnapPage() {
             onContextMenu={handleRightClick}
           />
 
-          {currentPoly.length >= 3 && cursor && (
-            <button
-              className="absolute z-40 flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-black font-black font-mono text-[9px] uppercase tracking-widest px-3 py-1.5 shadow-lg transition-all active:scale-95"
-              style={{ left: currentPoly[currentPoly.length - 1].x + 18, top: currentPoly[currentPoly.length - 1].y + 18 }}
-              onClick={e => { e.stopPropagation(); handleRightClick(e as any); }}>
-              <Check className="w-3 h-3" /> Finish ({currentPoly.length} pts)
-            </button>
-          )}
-
-          {engineStats.status === 'done' && engineStats.corners > 0 && (
-            <div className="absolute bottom-3 right-3 bg-black/80 border border-zinc-800 px-2.5 py-1.5 z-40 pointer-events-none">
-              <span className={cn('text-[9px] font-black font-mono', engineStats.corners >= WARN_CORNERS ? 'text-amber-400' : 'text-blue-400')}>
-                {engineStats.corners}
-              </span>
-              <span className="text-[9px] text-zinc-600 ml-1 uppercase tracking-widest font-bold">snap pts</span>
-              {engineStats.walls > 0 && (
-                <>
-                  <span className="text-zinc-700 mx-1">·</span>
-                  <span className={cn('text-[9px] font-black font-mono', engineStats.walls >= WARN_WALLS ? 'text-amber-400' : 'text-purple-400')}>
-                    {engineStats.walls}
-                  </span>
-                  <span className="text-[9px] text-zinc-600 ml-1 uppercase tracking-widest font-bold">walls</span>
-                </>
-              )}
-            </div>
-          )}
+          {/* Finish button for polygon */}
+          {currentPoly.length >= 3 && cursor && (() => {
+            const lastPoint = currentPoly[currentPoly.length - 1];
+            const pos = getButtonPosition(lastPoint, 18);
+            return (
+              <button
+                key="finish-polygon"
+                className="absolute z-40 flex items-center gap-1.5 bg-amber-400 hover:bg-amber-300 text-black font-black font-mono text-[9px] uppercase tracking-widest px-3 py-1.5 shadow-lg transition-all active:scale-95"
+                style={{ left: pos.left, top: pos.top }}
+                onClick={e => { e.stopPropagation(); handleRightClick(e as any); }}>
+                <Check className="w-3 h-3" /> Finish ({currentPoly.length} pts)
+              </button>
+            );
+          })()}
 
           {!pdfDoc && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">

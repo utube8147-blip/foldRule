@@ -83,7 +83,7 @@ export default function Workspace() {
     updateProjectMeta,
   } = useTakeoffContext();
 
-  const [leftCollapsed, setLeftCollapsed]             = useState(false);
+  const [leftCollapsed, setLeftCollapsed]             = useState(true);
   const [rightCollapsed, setRightCollapsed]           = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
   const [showExportModal, setShowExportModal]         = useState(false);

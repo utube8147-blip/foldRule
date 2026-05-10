@@ -40,6 +40,8 @@ import { SnapSettingsPanel } from './SnapSettingsPanel';
 
 // ─── Extracted modules ────────────────────────────────────────────────────────
 import { SnapCandidateDialog } from './Viewer/SnapCandidateDialog';
+import { useWallLineInteraction } from '@/hooks/useMeasurements/useWallLineInteraction';
+import { WallChainCommitDialog }  from './Viewer/Wallchaincommitdialog';
 
 import { useSnapEngine } from '@/hooks/useSnapEngine';
 import { useMeasurements } from '@/hooks/useMeasurements';
@@ -247,18 +249,19 @@ export function Viewer({
     confidenceFilter,
   });
 
-  const {
-    pageData,
-    analysisStatus,
-    analysisPage,
-    snapFlashes,
-    startExtraction,
-    getScaledCorners,
-    snapToCorner,
-    triggerSnapFlash,
-    redrawPinCanvas,
-    cursorPointRef,
-  } = snapEngine;
+const {
+  pageData,
+  analysisStatus,
+  analysisPage,
+  snapFlashes,
+  startExtraction,
+  getScaledCorners,
+  getScaledWallLines,   // ← ADD THIS
+  snapToCorner,
+  triggerSnapFlash,
+  redrawPinCanvas,
+  cursorPointRef,
+} = snapEngine;
 
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
