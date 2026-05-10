@@ -63,7 +63,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
         cvs.height = Math.round(vp.height);
         const ctx = cvs.getContext('2d');
         if (!ctx || cancelled) return;
-        await page.render({ canvasContext: ctx, viewport: vp, canvas: cvs }).promise;
+        await page.render({ canvasContext: ctx, viewport: vp }).promise;
       } catch { /* ignore */ }
     })();
 

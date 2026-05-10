@@ -21,6 +21,13 @@ import * as pdfjsLib from 'pdfjs-dist';
 import {
   ZoomIn, ZoomOut, Maximize, ChevronLeft, ChevronRight,
   FolderOpen, Check, Settings2, Undo2, Redo2, Target, Scaling,
+  MapPin,
+  Hash,
+  Square,
+  Minus,
+  Activity,
+  MousePointer,
+  Ruler
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
@@ -32,7 +39,6 @@ import { CountPinOverlay } from './CountPinOverlay';
 import { SnapSettingsPanel } from './SnapSettingsPanel';
 
 // ─── Extracted modules ────────────────────────────────────────────────────────
-import { pdfWorkerUrl, VIEWER_TOOLS } from './Viewer/constants';
 import { SnapCandidateDialog } from './Viewer/SnapCandidateDialog';
 
 import { useSnapEngine } from '@/hooks/useSnapEngine';
@@ -40,6 +46,20 @@ import { useMeasurements } from '@/hooks/useMeasurements';
 import { useTakeoffContext } from '@/context/TakeoffContext';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 import type { PdfDimensions } from '@/types/viewerTypes';
+
+export const pdfWorkerUrl =
+  `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+
+
+export const VIEWER_TOOLS = [
+  { id: 'select',    icon: MousePointer, label: 'Select',    shortcut: 'V' },
+  { id: 'scale',     icon: Ruler,        label: 'Calibrate', shortcut: 'C' },
+  { id: 'linear',    icon: Minus,        label: 'Linear',    shortcut: 'L' },
+  { id: 'rectangle', icon: Square,       label: 'Rectangle', shortcut: 'R' },
+  { id: 'polygon',   icon: Activity,     label: 'Polygon',   shortcut: 'P' },
+  { id: 'count',     icon: Hash,         label: 'Count',     shortcut: 'N' },
+  { id: 'point',     icon: MapPin,       label: 'Point',     shortcut: 'T' },
+] as const;
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
