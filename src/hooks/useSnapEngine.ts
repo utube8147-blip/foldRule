@@ -590,6 +590,7 @@ export function useSnapEngine({
   // ── redrawPinCanvas ──────────────────────────────────────────────────────────
   // Draws wall lines (green) + wall corners (teal) near cursor,
   // plus generic corners (blue) as fallback.
+  // Only corners within VISIBLE_RADIUS of the cursor are drawn.
   const redrawPinCanvas = useCallback(() => {
     const canvas = pinCanvasRef.current;
     if (!canvas || !pdfDimensionsRef.current) return;
@@ -602,48 +603,130 @@ export function useSnapEngine({
     const cursor     = cursorPointRef.current;
     const thresh     = snapThresholdRef.current;
     const VISIBLE_R  = thresh * 4;
+    const CORNER_PROXIMITY = 80;    // ← add this
 
-    // ── Draw wall lines near cursor ───────────────────────────────────────────
+    // ── Same palette as SnapPage ──────────────────────────────────────────────
+    const PALETTE = [
+      { stroke: '#f59e0b', label: '#fcd34d' },
+      { stroke: '#3b82f6', label: '#93c5fd' },
+      { stroke: '#10b981', label: '#6ee7b7' },
+      { stroke: '#ec4899', label: '#f9a8d4' },
+      { stroke: '#8b5cf6', label: '#c4b5fd' },
+      { stroke: '#f97316', label: '#fdba74' },
+      { stroke: '#06b6d4', label: '#67e8f9' },
+      { stroke: '#84cc16', label: '#bef264' },
+    ];
+
+    const WALL_PROXIMITY = 140;
+
+    // ── 1. Draw ALL wall lines permanently, boost on proximity ────────────────
     const wallLines = getScaledWallLines(pageNumberRef.current);
-    for (const l of wallLines) {
-      // Distance from cursor to line segment mid-point (cheap approximation)
-      if (!cursor) break;
-      const mx = (l.x1 + l.x2) / 2;
-      const my = (l.y1 + l.y2) / 2;
-      const dist = Math.hypot(cursor.x - mx, cursor.y - my);
-      // Show wall lines within a wider radius so the user can see the structure
-      if (dist > VISIBLE_R * 3) continue;
-      const alpha = Math.max(0.08, 0.45 - dist / (VISIBLE_R * 3) * 0.37);
+    wallLines.forEach((l, idx) => {
+      const pal  = PALETTE[idx % PALETTE.length];
+      const midX = (l.x1 + l.x2) / 2;
+      const midY = (l.y1 + l.y2) / 2;
+
+      // Base alpha — always visible
+      let alpha = 0.35;
+      let lw    = 1.5;
+      let isHovered = false;
+
+      if (cursor) {
+        const distMid = Math.hypot(cursor.x - midX, cursor.y - midY);
+        const distSeg = (() => {
+          const dx = l.x2 - l.x1, dy = l.y2 - l.y1, lenSq = dx * dx + dy * dy;
+          if (lenSq === 0) return distMid;
+          const t = Math.max(0, Math.min(1, ((cursor.x - l.x1) * dx + (cursor.y - l.y1) * dy) / lenSq));
+          return Math.hypot(cursor.x - (l.x1 + t * dx), cursor.y - (l.y1 + t * dy));
+        })();
+
+        isHovered = distSeg < 12;
+
+        if (isHovered) {
+          alpha = 0.9;
+          lw    = 2.5;
+        } else if (distMid < WALL_PROXIMITY * 3) {
+          const proximity = Math.max(0, 1 - distMid / (WALL_PROXIMITY * 3));
+          alpha = Math.max(alpha, 0.35 + proximity * 0.35);
+        }
+      }
+
+      // Convert hex color to rgba
+      const hexToRgba = (hex: string, a: number) => {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r},${g},${b},${a})`;
+      };
+
       ctx.beginPath();
       ctx.moveTo(l.x1, l.y1);
       ctx.lineTo(l.x2, l.y2);
-      ctx.strokeStyle = `rgba(52, 211, 153, ${alpha})`; // emerald-400
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 4]);
+      ctx.strokeStyle = hexToRgba(pal.stroke, alpha);
+      ctx.lineWidth   = lw;
+      // Vertical walls dashed, horizontal solid — same as SnapPage
+      ctx.setLineDash(l.angle === 90 ? [5, 3] : []);
       ctx.stroke();
       ctx.setLineDash([]);
-    }
 
-    // ── Draw wall corners near cursor ─────────────────────────────────────────
+      // Endpoint dots — always shown, bigger on hover
+      [{ x: l.x1, y: l.y1 }, { x: l.x2, y: l.y2 }].forEach(pt => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isHovered ? 4 : 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = hexToRgba(pal.stroke, alpha);
+        ctx.fill();
+      });
+
+      // Hover label showing length
+      if (isHovered) {
+        const pxLen = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
+        const label = `${Math.round(pxLen)} px`;
+        ctx.save();
+        ctx.font = 'bold 10px ui-monospace,monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const tw = ctx.measureText(label).width + 10;
+        ctx.fillStyle = 'rgba(0,0,0,0.82)';
+        ctx.fillRect(midX - tw / 2, midY - 21, tw, 14);
+        ctx.fillStyle = pal.label;
+        ctx.fillText(label, midX, midY - 14);
+        ctx.restore();
+      }
+    });
+
+    // ── 2. Wall corners — resting dot + proximity snap ring ──────────────────
     const wallCorners = getScaledWallCorners(pageNumberRef.current);
     for (const c of wallCorners) {
-      if (!cursor) break;
-      const dist     = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+      const dist     = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
       const isInSnap = dist < thresh;
-      if (dist > VISIBLE_R) continue;
+      const inRange  = dist < CORNER_PROXIMITY;
 
-      const proximity = 1 - Math.min(1, Math.max(0, (dist - thresh) / (VISIBLE_R - thresh)));
+      if (!cursor || !inRange) {
+        // Always-visible resting dot
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle   = 'rgba(20,184,166,0.4)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(20,184,166,0.65)';
+        ctx.lineWidth   = 1;
+        ctx.stroke();
+        continue;
+      }
 
-      ctx.beginPath();
+      const alpha     = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+      const isClose   = dist < 20;
+      const size      = isClose ? 8 : 5;
+
+      ctx.save();
       if (isInSnap) {
-        // Highlighted snap ring — teal for wall corners
+        ctx.beginPath();
         ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle   = '#14B8A6'; // teal-500
+        ctx.fillStyle   = '#14B8A6';
         ctx.fill();
         ctx.strokeStyle = 'white';
         ctx.lineWidth   = 2;
         ctx.stroke();
-        // Cross-hair lines to reinforce the corner
+        // Cross-hair
         ctx.beginPath();
         ctx.moveTo(c.x - 12, c.y); ctx.lineTo(c.x + 12, c.y);
         ctx.moveTo(c.x, c.y - 12); ctx.lineTo(c.x, c.y + 12);
@@ -651,48 +734,57 @@ export function useSnapEngine({
         ctx.lineWidth   = 1;
         ctx.stroke();
       } else {
-        const alpha = 0.30 + proximity * 0.65;
-        ctx.arc(c.x, c.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle   = `rgba(20, 184, 166, ${alpha * 0.6})`; // teal
-        ctx.fill();
-        ctx.strokeStyle = `rgba(20, 184, 166, ${alpha})`;
-        ctx.lineWidth   = 1.5;
-        ctx.stroke();
+        ctx.strokeStyle = isClose
+          ? `rgba(20,184,166,${alpha})`
+          : `rgba(20,184,166,${alpha * 0.7})`;
+        ctx.lineWidth = isClose ? 2 : 1.2;
+        ctx.beginPath(); ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
+        if (isClose) {
+          ctx.strokeStyle = `rgba(20,184,166,${alpha * 0.5})`;
+          ctx.beginPath(); ctx.arc(c.x, c.y, 12, 0, Math.PI * 2); ctx.stroke();
+        }
       }
+      ctx.restore();
     }
 
-    // ── Draw generic corners (blue) — only if no wall corner is nearby ────────
+    // ── 3. Generic corners (blue) — proximity only ────────────────────────────
     const corners = getScaledCorners(pageNumberRef.current);
     for (const c of corners) {
-      if (!cursor) break;
+      if (!cursor) continue;
       const dist     = Math.hypot(cursor.x - c.x, cursor.y - c.y);
       const isInSnap = dist < thresh;
       if (dist > VISIBLE_R) continue;
 
-      // Skip if a wall corner is already drawn close by
       const nearWall = wallCorners.some(wc => Math.hypot(wc.x - c.x, wc.y - c.y) < thresh);
       if (nearWall) continue;
 
-      const proximity = 1 - Math.min(1, Math.max(0, (dist - thresh) / (VISIBLE_R - thresh)));
+      const alpha  = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+      const isClose = dist < 20;
+      const size   = isClose ? 7 : 4;
 
-      ctx.beginPath();
+      ctx.save();
       if (isInSnap) {
+        ctx.beginPath();
         ctx.arc(c.x, c.y, 7, 0, Math.PI * 2);
-        ctx.fillStyle   = '#F59E0B'; // amber
+        ctx.fillStyle   = '#F59E0B';
         ctx.fill();
         ctx.strokeStyle = 'white';
         ctx.lineWidth   = 1.5;
         ctx.stroke();
       } else {
-        const alpha = 0.25 + proximity * 0.6;
-        const r     = 3 + c.confidence * 2;
-        ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-        ctx.fillStyle   = `rgba(96, 165, 250, ${alpha * 0.55})`;
-        ctx.fill();
-        ctx.strokeStyle = `rgba(96, 165, 250, ${alpha})`;
-        ctx.lineWidth   = 1;
-        ctx.stroke();
+        ctx.strokeStyle = isClose
+          ? `rgba(99,202,255,${alpha})`
+          : `rgba(99,202,255,${alpha * 0.7})`;
+        ctx.lineWidth = isClose ? 1.5 : 1;
+        ctx.beginPath(); ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
+        if (isClose) {
+          ctx.strokeStyle = `rgba(99,202,255,${alpha * 0.5})`;
+          ctx.beginPath(); ctx.arc(c.x, c.y, 10, 0, Math.PI * 2); ctx.stroke();
+        }
       }
+      ctx.restore();
     }
   }, [pinCanvasRef, pdfDimensionsRef, pageNumberRef, getScaledCorners, getScaledWallCorners, getScaledWallLines]);
 
