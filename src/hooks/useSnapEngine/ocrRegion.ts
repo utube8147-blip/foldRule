@@ -3,17 +3,25 @@
 // OCR helpers used by detectRoomsHybrid.
 //
 // FIXES vs previous version:
-//   1. normPolygonToBbox now uses size-aware padding instead of a flat 10%:
-//      padding is capped at MAX_PAD_PX (18px) so small rooms don't bleed into
-//      neighbouring rooms. Previous 10% on a small room could expand the crop
-//      by the full width of an adjacent room, confusing Tesseract completely.
-//   2. ocrRegionFromCanvas upscales the crop to OCR_MIN_SIZE before passing
-//      to Tesseract — small rooms at SCALE=0.4 were too tiny for reliable OCR.
-//   3. Confidence filter — any result whose best-word confidence is below
-//      MIN_WORD_CONFIDENCE (55) is returned as null, preventing garbage strings
-//      from reaching extractRoomLabel.
-//   4. OcrWorkerPool uses PSM.SPARSE_TEXT instead of SINGLE_BLOCK so it
-//      handles labels that are split across two lines (e.g. "LOBBY /\nCORRIDOR").
+//
+//   1. MIN_WORD_CONFIDENCE lowered 55 → 35.
+//      Architectural floor plan labels are often: light grey ink, thin strokes,
+//      small ALLCAPS serif text on pale room fill. At 55, valid reads like
+//      "DIRECTOR", "WC (M)", "SERVER RM" were silently rejected and fell back
+//      to heuristic labels. 35 is the practical floor for architectural OCR —
+//      below 35 the text is almost always noise or a fixture label.
+//
+//   2. ocrRegionFromCanvas accepts an optional `options` param so callers can
+//      override MIN_WORD_CONFIDENCE per-call (e.g. for a high-confidence pass
+//      followed by a low-confidence pass on remaining rooms).
+//
+//   3. normPolygonToBbox: padding cap MAX_PAD_PX raised 18 → 24 to give
+//      Tesseract a larger context crop on HiDPI canvases (where 18px is only
+//      ~0.75% of a 2400px-wide canvas).
+//
+//   4. OCR_MIN_SIZE raised 120 → 150. At OCR_CANVAS_SCALE=2 the input is
+//      already larger; this ensures small rooms get at least 150px in each
+//      dimension before recognition.
 
 import Tesseract from 'tesseract.js';
 
@@ -26,45 +34,47 @@ export interface BoundingBox {
   h: number;
 }
 
+export interface OcrOptions {
+  /**
+   * Minimum word confidence (0-100) to accept the result.
+   * Defaults to MIN_WORD_CONFIDENCE (35).
+   */
+  minConfidence?: number;
+}
+
 // ─── Tuning ──────────────────────────────────────────────────────────────────
 
-/**
- * Fractional padding added to each side of the OCR crop.
- * REDUCED from 0.10 to 0.05 — 10% on a small room was wide enough to pull in
- * an entire neighbouring room's pixels, causing Tesseract to read the wrong label.
- */
 const OCR_BBOX_PAD = 0.05;
 
 /**
  * Hard cap on padding in absolute canvas pixels.
- * Regardless of room size, the crop never expands by more than this many pixels
- * on each side. Prevents large-canvas plans from over-expanding small-room crops.
- * 18px at typical 800px canvas width ≈ 2.25% — safe for any room ≥ 36px wide.
+ * FIX: raised from 18 → 24 for HiDPI canvases (2× upscale from useRoomDetection).
  */
-const MAX_PAD_PX = 18;
+const MAX_PAD_PX = 24;
 
 /**
  * Minimum pixel size (width or height) for the OCR crop before upscaling.
- * Tesseract performs poorly on crops smaller than ~100px. We scale the crop
- * up to this size if either dimension is smaller.
+ * FIX: raised from 120 → 150 to give Tesseract more comfortable pixel density.
  */
-const OCR_MIN_SIZE = 120;
+const OCR_MIN_SIZE = 150;
 
 /**
- * Tesseract word-level confidence threshold (0–100).
- * Results below this are treated as noise and returned as null.
- * The region will fall back to areaHeuristicLabel.
+ * Default Tesseract word-level confidence threshold (0–100).
+ *
+ * FIX: lowered from 55 → 35.
+ * Architectural labels (light grey ALLCAPS on pale fill) rarely score above 55.
+ * At 55, "DIRECTOR", "WC (M)", "OPEN PLAN B" were all rejected as "low confidence"
+ * and the rooms fell back to generic heuristic labels ("Corridor").
+ * 35 is the empirical floor: below it the output is almost always garbage strings
+ * from Tesseract hallucinating text from wall noise or dimension lines.
  */
-const MIN_WORD_CONFIDENCE = 55;
+const MIN_WORD_CONFIDENCE = 35;
 
 // ─── BBox helpers ────────────────────────────────────────────────────────────
 
 /**
  * Convert a normalised polygon to an axis-aligned pixel bbox on a canvas of
  * dimensions (canvasW × canvasH), with size-aware padding on every side.
- *
- * FIXED: padding is now min(canvasDim * OCR_BBOX_PAD, MAX_PAD_PX) so small
- * rooms don't bleed their crop into adjacent rooms.
  */
 export function normPolygonToBbox(
   polygon: Array<{ nx: number; ny: number }>,
@@ -79,7 +89,6 @@ export function normPolygonToBbox(
     if (p.ny > maxNy) maxNy = p.ny;
   }
 
-  // Size-aware padding: proportional but capped so small rooms stay tight
   const padX = Math.min(canvasW * OCR_BBOX_PAD, MAX_PAD_PX);
   const padY = Math.min(canvasH * OCR_BBOX_PAD, MAX_PAD_PX);
 
@@ -156,11 +165,11 @@ async function createWorker(): Promise<Tesseract.Worker> {
 // ─── Region OCR ──────────────────────────────────────────────────────────────
 
 /**
- * Crop the bbox from the canvas, upscale it if needed, run Tesseract, and
- * return the recognised text string — or null if:
- *   - the AbortSignal was triggered
- *   - no worker was available (pool empty)
- *   - the best-word confidence is below MIN_WORD_CONFIDENCE
+ * Crop the bbox from the canvas, upscale if needed, run Tesseract.
+ * Returns the recognised text string — or null if:
+ *   - AbortSignal triggered
+ *   - No worker available
+ *   - Best-word confidence below threshold (default MIN_WORD_CONFIDENCE=35)
  *   - Tesseract threw an error
  */
 export async function ocrRegionFromCanvas(
@@ -168,29 +177,30 @@ export async function ocrRegionFromCanvas(
   bbox:    BoundingBox,
   pool:    OcrWorkerPool,
   signal?: AbortSignal,
+  options: OcrOptions = {},
 ): Promise<string | null> {
   if (signal?.aborted) return null;
 
   const worker = pool.get();
   if (!worker) return null;
 
-  try {
-    // Crop and optionally upscale so Tesseract has enough pixels to work with
-    const crop = cropAndUpscale(canvas, bbox);
+  const confidenceThreshold = options.minConfidence ?? MIN_WORD_CONFIDENCE;
 
+  try {
+    const crop = cropAndUpscale(canvas, bbox);
     const { data } = await worker.recognize(crop);
 
     if (signal?.aborted) return null;
 
-    // Filter by best-word confidence — discard low-confidence garbage
     const words = data.words ?? [];
     if (words.length === 0) return null;
 
     const bestConfidence = Math.max(...words.map(w => w.confidence));
-    if (bestConfidence < MIN_WORD_CONFIDENCE) {
+    if (bestConfidence < confidenceThreshold) {
       if (process.env.NODE_ENV !== 'production') {
         console.debug(
-          `[ocrRegion] Low confidence (${bestConfidence.toFixed(0)}) — discarding: "${data.text.trim()}"`,
+          `[ocrRegion] Low confidence (${bestConfidence.toFixed(0)} < ${confidenceThreshold}) ` +
+          `— discarding: "${data.text.trim()}"`,
         );
       }
       return null;
@@ -207,12 +217,9 @@ export async function ocrRegionFromCanvas(
 // ─── Canvas crop + upscale ───────────────────────────────────────────────────
 
 /**
- * Crop a BoundingBox from the source canvas and return it as an
- * HTMLCanvasElement or OffscreenCanvas, upscaled to OCR_MIN_SIZE if either
- * dimension is too small for Tesseract to read reliably.
- *
- * We use a white background so dark text on a light floor is preserved even
- * after upscaling.
+ * Crop a BoundingBox from the source canvas and return it upscaled to
+ * OCR_MIN_SIZE if either dimension is too small for Tesseract to read reliably.
+ * Uses a white background so dark text on light floor is preserved.
  */
 function cropAndUpscale(
   source: OffscreenCanvas | HTMLCanvasElement,

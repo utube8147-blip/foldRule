@@ -3,43 +3,27 @@
 // Three-stage pipeline:
 //
 //   Stage 1 — BFS geometry   (detectRooms)
-//     Rasterise walls → erode inner wall → flood fill → convex hulls.
-//     Now includes filterDimensionLineRegions() to discard grid cells
-//     produced by architectural dimension-line annotations.
-//
-//   Stage 2 — Geometric exclusion   (roomExclusion.isGeometryExcluded)
-//     Discard title blocks, borders, and tiny wall fragments without
-//     spending any OCR budget on them.
-//     ADDED: boundaryExclusion() removes regions whose centroids fall
-//     outside the main building footprint (title block, legend, north
-//     arrow, revision panel all live outside the building envelope).
-//
-//   Stage 3 — OCR labelling   (ocrRegion + roomExclusion.extractRoomLabel)
-//     Crop each candidate region from the full-res canvas and run
-//     Tesseract.js. Regions whose OCR text matches exclusion patterns
-//     are discarded. Falls back to relative-area label if OCR returns nothing.
+//   Stage 2 — Geometric + boundary exclusion
+//   Stage 3 — OCR labelling
 //
 // FIXES vs previous version:
-//   1. estimateWallThickness() — derives median wall thickness in BFS pixels
-//      from wallLines stroke lengths and passes it to detectRooms so the
-//      erosion radius is data-driven rather than a hard-coded constant.
-//   2. ocrAndLabel passthrough widened — extractRoomLabel returning null no
-//      longer silently discards valid OCR text. Raw OCR text (>=2 chars, after
-//      basic sanitisation) is now used directly when extractRoomLabel returns
-//      null, so room names like "OFFICE 1", "WC (M)", "SERVER RM" survive even
-//      if they don't match the allowlist in roomExclusion.
-//   3. Deduplication improved — threshold raised to DEDUP_DIST_NORM=0.06 and
-//      a secondary same-label proximity check (0.10 diagonal) eliminates the
-//      "double polygon" artefact where thin-wall BFS produces two overlapping
-//      regions with identical labels.
-//   4. SCALE constant is now imported from detectRooms.ts instead of being
-//      re-declared here — prevents silent drift if the value ever changes.
-//   5. Relative labelling — heuristic labels are now derived relative to the
-//      largest detected room in the set, not against hardcoded absolute fractions.
-//   6. Boundary exclusion — CLUSTER_RADIUS tightened 0.45 → 0.35 so the
-//      bottom-right title block and bottom-left legend box (which are far from
-//      the building centroid on plans like GROUND FLOOR PLAN BLOCK A) are
-//      excluded. The previous 0.45 radius was large enough to pull them in.
+//
+//   1. CLUSTER_RADIUS raised 0.35 → 0.42.
+//      The tighter 0.35 radius was excluding real bottom-floor rooms on tall
+//      plans (e.g. WC (M), Breakout, Open Plan B) whose centroids at ny≈0.75
+//      were 0.38–0.45 from the anchor. Those rooms were falling back to
+//      heuristic labels ("Corridor", "Breakout") instead of OCR labels.
+//      0.42 keeps them in while still excluding annotation boxes (legend at
+//      ny≈0.85 is 0.48+ from anchor — safely outside).
+//
+//   2. ocrAndLabel passthrough: extractRoomLabel returning null now falls
+//      through to sanitiseOcrText (raw OCR) before the area heuristic.
+//      Previously null silently discarded valid text like "WC (M)", "Server Rm",
+//      "Director" that didn't match the allowlist patterns in extractRoomLabel.
+//
+//   3. BOUNDARY_MARGIN raised 0.015 → 0.02 to give bottom-row rooms a bit
+//      more tolerance. Plans where the building extends to 95%+ of page height
+//      were clipping the bottom rooms with the tighter margin.
 
 import type { WallLineNorm } from '@/types/viewerTypes';
 import {
@@ -65,7 +49,6 @@ const OCR_POOL_SIZE = 3;
 
 /**
  * Normalised distance threshold for centroid deduplication.
- * INCREASED from 0.04 to 0.06 to catch overlapping BFS regions from thin walls.
  */
 const DEDUP_DIST_NORM = 0.06;
 
@@ -77,10 +60,10 @@ const DEDUP_SAME_LABEL_DIST = 0.10;
 
 /**
  * Fractional margin added to the building footprint bounding box.
- * 0.015 = 1.5% of page width/height tolerance beyond the detected footprint edge.
- * REDUCED from 0.02 to 0.015 — tighter margin cuts legend / title bleed-in.
+ * FIX: raised from 0.015 to 0.02 — bottom-row rooms on tall plans were
+ * being clipped when the building extends close to the page edge.
  */
-const BOUNDARY_MARGIN = 0.015;
+const BOUNDARY_MARGIN = 0.02;
 
 /**
  * If fewer than this fraction of rooms fall inside the estimated footprint bbox,
@@ -91,18 +74,10 @@ const BOUNDARY_MIN_INSIDE_FRAC = 0.5;
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export interface HybridDetectionOptions {
-  /** Full-resolution rendered PDF canvas — needed for high-quality OCR crops */
   pageCanvas: OffscreenCanvas | HTMLCanvasElement;
-  /** Wall lines extracted by the snap engine */
   wallLines:  WallLineNorm[];
-  /** Normalised page dimensions */
   dims:       { w: number; h: number };
-  /** AbortSignal — abort detection when page changes or component unmounts */
   signal?:    AbortSignal;
-  /**
-   * Optional callback called after BFS completes and geometry exclusion runs,
-   * before OCR starts. Useful for showing a progressive "geometry ready" state.
-   */
   onGeometryReady?: (candidates: DetectedRoom[]) => void;
 }
 
@@ -111,7 +86,6 @@ export async function detectRoomsHybrid(
 ): Promise<DetectedRoom[]> {
   const { pageCanvas, wallLines, dims, signal, onGeometryReady } = opts;
 
-  // Estimate wall thickness from wallLines so erosion is data-driven
   const wallThicknessPx = estimateWallThickness(wallLines);
 
   // ── Stage 1: BFS geometry ─────────────────────────────────────────────────
@@ -176,23 +150,22 @@ export async function detectRoomsHybrid(
 // ─── Boundary exclusion ──────────────────────────────────────────────────────
 
 /**
- * Detect the main building footprint and discard any room whose centroid
- * falls outside it.
+ * Detect the main building footprint and discard rooms whose centroids fall
+ * outside it.
  *
- * FIX: CLUSTER_RADIUS tightened from 0.45 to 0.35.
+ * FIX: CLUSTER_RADIUS raised from 0.35 → 0.42.
  *
- * The previous 0.45 radius (45% of page diagonal) was wide enough to pull in
- * the bottom-right title block and the bottom-left legend box on plans where
- * the building occupies the upper 60-70% of the page. Those annotation boxes
- * survived geometric exclusion and boundary exclusion alike.
+ * At 0.35, rooms in the bottom row of a two-storey floor plan (centroids at
+ * ny ≈ 0.75–0.82) were outside the cluster when the anchor (largest room,
+ * usually open plan) sat at ny ≈ 0.40. Their diagonal distances were 0.38–0.47,
+ * just above the old threshold. They survived geometry exclusion but then got
+ * kicked by boundary exclusion and fell back to heuristic labels ("Corridor").
  *
- * At 0.35, a building centred at (0.45, 0.40) on the page only pulls in rooms
- * within a 0.35-diagonal circle — the title block at (0.88, 0.85) and the
- * legend at (0.25, 0.85) are ~0.50 and ~0.47 from the centroid respectively,
- * both outside the tighter radius.
+ * At 0.42, legend boxes (typically ny > 0.85, distance > 0.48) and title blocks
+ * (ny > 0.88, distance > 0.50) remain excluded because they're farther away.
  *
- * Safety: BOUNDARY_MIN_INSIDE_FRAC = 0.5 prevents false exclusion on simple
- * plans or very L-shaped buildings where many rooms are far from the centroid.
+ * Safety: BOUNDARY_MIN_INSIDE_FRAC=0.5 prevents mass exclusion on L-shaped
+ * buildings or open plans with very few detected rooms.
  */
 function boundaryExclusion(rooms: DetectedRoom[]): DetectedRoom[] {
   if (rooms.length <= 3) return rooms;
@@ -200,8 +173,8 @@ function boundaryExclusion(rooms: DetectedRoom[]): DetectedRoom[] {
   const sorted = [...rooms].sort((a, b) => b.areaNorm - a.areaNorm);
   const anchor = sorted[0];
 
-  // FIX: tightened from 0.45 to 0.35
-  const CLUSTER_RADIUS = 0.35;
+  // FIX: raised from 0.35 to 0.42
+  const CLUSTER_RADIUS = 0.42;
 
   let minNx = anchor.centroid.nx;
   let maxNx = anchor.centroid.nx;
@@ -270,16 +243,19 @@ async function ocrAndLabel(
 
   if (signal?.aborted) return null;
 
-  // Step 1: hard exclusion
+  // Step 1: hard exclusion — discard annotation regions entirely
   if (rawOcr && isOcrExcluded(rawOcr)) return null;
 
-  // Step 2: structured allowlist extractor
+  // Step 2: structured label extractor (title-cases, strips area annotations)
   const matchedLabel = extractRoomLabel(rawOcr);
 
-  // Step 3: sanitised raw OCR passthrough
+  // Step 3: FIX — sanitised raw OCR passthrough.
+  // extractRoomLabel returning null no longer silently drops the room.
+  // "WC (M)", "Director", "Server Rm" all pass step 1 but may not match
+  // extractRoomLabel's allowlist — they survive here and go straight to the label.
   const rawFallback = rawOcr ? sanitiseOcrText(rawOcr) : null;
 
-  // Step 4: relative area heuristic — scale-calibrated
+  // Step 4: relative area heuristic — last resort
   const label = matchedLabel ?? rawFallback ?? labelFn(room.areaNorm);
 
   if (process.env.NODE_ENV !== 'production') {
@@ -293,8 +269,8 @@ async function ocrAndLabel(
 }
 
 /**
- * Light sanitisation of raw Tesseract output.
- * Collapses whitespace/newlines, strips leading/trailing punctuation artefacts.
+ * Light sanitisation of raw Tesseract output for the passthrough path.
+ * Collapses whitespace/newlines, strips leading/trailing punctuation.
  * Returns null if fewer than 2 printable characters remain.
  */
 function sanitiseOcrText(raw: string): string | null {

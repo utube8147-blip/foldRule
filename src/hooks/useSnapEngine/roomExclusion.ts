@@ -3,32 +3,24 @@
 // Filters and label extractors used by the hybrid detection pipeline.
 //
 // FIXES vs previous version:
-//   1. isGeometryExcluded — adds aspect-ratio check so thin corridor-like
-//      slivers (very wide or very tall, likely title bands or page borders)
-//      are excluded without OCR.
-//   2. isOcrExcluded — expanded pattern list covers:
-//      stair cores, lift shafts, north arrows, scale bars, legends,
-//      drawing titles, WC / toilet labels, and partial-word garbage
-//      (single/double chars that Tesseract hallucinates from noise).
-//   3. extractRoomLabel — normalises whitespace, strips area annotations
-//      (e.g. "110 m²" or "110 m2"), and handles split labels like
-//      "LOBBY /\nCORRIDOR" → "Lobby / Corridor".
 //
-// FIX — legend box, title block, north arrow survive boundaryExclusion:
-//   isGeometryExcluded now checks for two additional patterns:
+//   1. isOcrExcluded — WC / toilet patterns NARROWED to exact-match only.
+//      Previously /\bw\.?c\.?\b/i and /\btoilet/i killed valid room labels
+//      like "WC (M)", "WC (F)", "Toilet Block". These ARE real rooms and must
+//      appear on the overlay. New patterns only exclude bare "WC" or "WC." with
+//      nothing else in the string (fixture labels, not room names).
 //
-//   a) areaNorm < 0.005 (was 0.002) — legend and title cells on this plan
-//      occupy ~0.3–0.8% of page area. Raising the floor eliminates them
-//      without touching real rooms (smallest real room ≈ WC at ~1.5%).
+//   2. isOcrExcluded — removed /\bcore\b/i which was over-broad and could kill
+//      labels like "Server Room Core". Replaced with /\bstair\s*core\b/i.
 //
-//   b) "Corner hugging" — regions whose centroid is within 0.12 of any
-//      page corner are almost certainly annotation boxes (legend top-left,
-//      title block bottom-right, north arrow top-right, scale bar
-//      bottom-left). Real rooms are never jammed into page corners.
+//   3. extractRoomLabel — relaxed: returning null no longer discards the region.
+//      The caller (ocrAndLabel in detectRoomsHybrid) falls through to
+//      sanitiseOcrText → area heuristic, so rooms with unusual names survive.
 //
-//   c) Dimension-strip shape — a region whose bbox height is < 0.06 of the
-//      page AND whose bbox top edge is within 0.08 of the page top is
-//      almost certainly the dimension-line annotation band, not a room.
+//   4. isGeometryExcluded — aspect ratio limits widened slightly:
+//      was aspect > 15 || < 0.067, now > 18 || < 0.055.
+//      Some narrow-but-real corridor rooms on dense office plans have aspect
+//      ratios up to 1:16 or 16:1 and were being incorrectly excluded.
 
 // ─── Geometry exclusion ──────────────────────────────────────────────────────
 
@@ -43,9 +35,8 @@ export interface RoomLike {
  * before spending any OCR budget on it.
  */
 export function isGeometryExcluded(room: RoomLike): boolean {
-  // FIX: raised from 0.002 to 0.005.
-  // Legend cells and title block sub-regions on typical A1 plans are 0.3-0.8%.
-  // The smallest real room (WC / server room) is rarely below 1.5%.
+  // Too small — legend cells and title sub-regions are 0.3-0.8%
+  // Smallest real room (WC / server room) is rarely below 1.5%
   if (room.areaNorm < 0.005) return true;
 
   // Too large — probably the entire page interior or an outer border
@@ -67,8 +58,9 @@ export function isGeometryExcluded(room: RoomLike): boolean {
 
   const aspect = bboxW / bboxH;
 
-  // Very thin horizontal or vertical bands are likely title blocks or borders
-  if (aspect > 15 || aspect < 0.067) return true;
+  // FIX: widened from 15/0.067 to 18/0.055.
+  // Narrow corridor rooms (e.g. 1:16 ratio) were being excluded.
+  if (aspect > 18 || aspect < 0.055) return true;
 
   // Region hugs the very edge of the page — likely a border or legend box
   const edgeMargin = 0.01;
@@ -79,10 +71,7 @@ export function isGeometryExcluded(room: RoomLike): boolean {
     maxNy > 1 - edgeMargin;
   if (touchesEdge) return true;
 
-  // FIX a) Corner-hugging annotation boxes.
-  // Regions whose centroid is very close to any page corner are almost
-  // certainly legend boxes, north arrows, title blocks, or scale bars.
-  // Real rooms on a floor plan are never centred at a page corner.
+  // Corner-hugging annotation boxes (legend, north arrow, title block)
   const cx = room.centroid.nx;
   const cy = room.centroid.ny;
   const CORNER_DIST = 0.12;
@@ -93,19 +82,16 @@ export function isGeometryExcluded(room: RoomLike): boolean {
     (cx > 1 - CORNER_DIST   && cy > 1 - CORNER_DIST);     // bottom-right
   if (nearCorner) return true;
 
-  // FIX b) Dimension-annotation strip at the top of the drawing.
-  // Many architectural plans have a dimension band along the top/left edge
-  // showing bay widths (13.000, 15.000 etc.) between gridlines.
-  // These form very flat rectangles near the top of the page.
+  // Dimension-annotation strip at the top of the drawing
   const isDimensionStrip =
-    bboxH < 0.06 &&          // very flat vertically
-    minNy < 0.08;             // sits near the top of the page
+    bboxH < 0.06 &&
+    minNy < 0.08;
   if (isDimensionStrip) return true;
 
-  // FIX c) Same check for left-edge dimension strips (vertical bay labels)
+  // Left-edge dimension strips (vertical bay labels)
   const isLeftDimensionStrip =
-    bboxW < 0.06 &&           // very narrow horizontally
-    minNx < 0.08;             // sits near the left edge of the page
+    bboxW < 0.06 &&
+    minNx < 0.08;
   if (isLeftDimensionStrip) return true;
 
   return false;
@@ -115,17 +101,23 @@ export function isGeometryExcluded(room: RoomLike): boolean {
 
 /**
  * Patterns whose presence in the OCR text means the region is NOT a room.
- * Each pattern is tested case-insensitively against the full trimmed text.
+ *
+ * CHANGE NOTES:
+ *   - /\bcore\b/i removed — too broad, killed "Server Room Core"
+ *   - /\bstair\s*core\b/i added — more specific
+ *   - WC/toilet patterns narrowed to exact-match (see below)
+ *   - /\bjanitor/i, /\bcleaner/i, /\butility/i removed —
+ *     these are valid room categories in some building types
  */
 const OCR_EXCLUSION_PATTERNS: RegExp[] = [
-  // Drawing infrastructure
+  // Drawing infrastructure — structural elements, not occupiable rooms
   /\bstair/i,
   /\blift\b/i,
   /\belevator/i,
-  /\bcore\b/i,
+  /\bstair\s*core\b/i,
   /\bshaft/i,
-  /\bduct/i,
-  /\briser/i,
+  /\bduct\b/i,
+  /\briser\b/i,
 
   // Annotations / legend
   /\bnorth\b/i,
@@ -141,24 +133,22 @@ const OCR_EXCLUSION_PATTERNS: RegExp[] = [
   /\bnts\b/i,
   /\bdo\s+not\s+scale/i,
 
-  // Title block / drawing info keywords that leak from the title panel
+  // Title block keywords
   /\bground\s+floor/i,
   /\barchitectural\s+plan/i,
   /\bblock\s+[a-z]/i,
   /\bscale\s*1\s*:/i,
-  /april|january|february|march|may|june|july|august|september|october|november|december/i,
+  /april|january|february|march|june|july|august|september|october|november|december/i,
   /\b20\d{2}\b/,              // years like 2024, 2025
 
-  // Toilet / utility labels
-  /\bw\.?c\.?\b/i,
-  /\btoilet/i,
-  /\bwashroom/i,
-  /\brestroom/i,
-  /\bjanitor/i,
-  /\bcleaner/i,
-  /\butility/i,
+  // FIX: WC / toilet — exact-match only so "WC (M)", "WC (F)" survive.
+  // A bare "WC" or "WC." with nothing else is a fixture label, not a room name.
+  /^w\.?c\.?\.?$/i,           // bare WC, WC., W.C, W.C. — fixture label
+  /^(gents|ladies)\s+wc$/i,   // "Gents WC" as standalone = fixture, not room
+  // NOTE: "WC (M)", "WC (F)", "Toilet Block", "Washroom" are intentionally
+  //       NOT excluded — they are valid room labels.
 
-  // Dimension / measurement strings that OCR picks up from annotation bands
+  // Dimension / measurement strings from annotation bands
   /^\d+[\.,]\d{3}$/,          // e.g. "13.000" or "15,000"
   /^\d+\s*m\s*$/i,            // e.g. "13 m"
 
@@ -180,11 +170,8 @@ export function isOcrExcluded(rawOcr: string): boolean {
 /**
  * Extracts a clean room label from raw Tesseract output.
  *
- * Steps:
- *   1. Strip area annotations like "110 m²", "260 m2", "80 sqm"
- *   2. Normalise whitespace and line breaks
- *   3. Title-case the result
- *   4. Return null if nothing meaningful remains
+ * Returns null if the text is noise or matches an exclusion pattern —
+ * the caller should then try sanitiseOcrText before falling back to heuristics.
  */
 export function extractRoomLabel(rawOcr: string | null | undefined): string | null {
   if (!rawOcr) return null;
@@ -195,13 +182,19 @@ export function extractRoomLabel(rawOcr: string | null | undefined): string | nu
   text = text.replace(/\d+[\.,]?\d*\s*(?:m[²2]|sqm|sq\.?m|ft[²2]|sf)\b/gi, '');
 
   // Strip standalone numbers (dimension callouts, grid refs, years)
-  text = text.replace(/(?:^|\s)\d+(?:[.,]\d+)?(?=\s|$)/g, '');
+  // BUT: preserve numbers that are part of room names like "OFFICE 1", "ROOM 2B"
+  // Only strip if the number is the entire token (surrounded by spaces or string bounds)
+  text = text.replace(/(?:^|\s)(\d+(?:[.,]\d+)?)(?=\s|$)/g, (match, num) => {
+    // Keep if it looks like a room number suffix (single digit / digit+letter)
+    if (/^\d{1,2}[A-Za-z]?$/.test(num)) return match;
+    return ' ';
+  });
 
   // Collapse line breaks and extra whitespace
   text = text.replace(/[\r\n]+/g, ' / ').replace(/\s{2,}/g, ' ').trim();
 
   // Remove leading/trailing punctuation artefacts
-  text = text.replace(/^[^a-zA-Z]+/, '').replace(/[^a-zA-Z)]+$/, '').trim();
+  text = text.replace(/^[^a-zA-Z(]+/, '').replace(/[^a-zA-Z0-9)]+$/, '').trim();
 
   if (text.length < 2) return null;
 
@@ -210,13 +203,14 @@ export function extractRoomLabel(rawOcr: string | null | undefined): string | nu
 
   // Title-case: capitalise first letter of each word, lowercase the rest
   // Preserve "/" separators (e.g. "LOBBY / CORRIDOR" → "Lobby / Corridor")
+  // Preserve parenthetical suffixes like "(M)", "(F)"
   text = text
     .split(/\s+/)
-    .map(word =>
-      word === '/'
-        ? '/'
-        : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase(),
-    )
+    .map(word => {
+      if (word === '/') return '/';
+      if (/^\([A-Za-z]\)$/.test(word)) return word.toUpperCase(); // (M) → (M)
+      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+    })
     .join(' ');
 
   return text;

@@ -1,4 +1,4 @@
-// ─── useSnapEngine1.ts ─────────────────────────────────────────────────────────
+// ─── useSnapEngine.ts ─────────────────────────────────────────────────────────
 // Encapsulates:
 //   • Inline Web Worker (Harris corner + line detection + wall detection)
 //   • Session-level extraction cache

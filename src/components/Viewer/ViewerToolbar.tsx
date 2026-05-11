@@ -200,7 +200,7 @@ export function ViewerToolbar({
         )}
 
         {/* Room detection toggle - available when analysis is done, regardless of snap state */}
-        {/* {isAnalysisDone && (
+        {isAnalysisDone && (
           <button
             onClick={() => setShowRooms(!showRooms)}
             className={cn(
@@ -214,7 +214,7 @@ export function ViewerToolbar({
             <Layers className="w-3 h-3" />
             {detectingRooms ? 'DETECTING...' : showRooms ? 'ROOMS ON' : 'ROOMS OFF'}
           </button>
-        )} */}
+        )}
 
         {/* Separator */}
         <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
