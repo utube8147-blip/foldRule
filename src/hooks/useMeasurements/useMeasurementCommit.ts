@@ -1,11 +1,16 @@
 // ─── hooks/useMeasurements/useMeasurementCommit.ts ───────────────────────────
 //
-//  Extracted from useMeasurements.ts — #2 / #5 hook split.
-//  Owns: finishMeasurement (all tool types + append), handleCanvasClick,
-//        handleContextMenu, checkSnapCandidates, groupPointsBySegment.
-//
-//  Fix preserved from original:
-//    #12 — single resolved appendToGroupId source of truth
+//  FIXES IN THIS VERSION:
+//    • FIX AREA: All area calculations now use a single `shoelaceArea()` helper
+//      that works in normalized→real-pixel space (scale=1), completely removing
+//      `zoom` (display scale) from area math. zoom is a display concern only.
+//    • FIX APPEND: Append-polygon path now uses the same `shoelaceArea()` —
+//      no more divergent inline `calcArea` function.
+//    • FIX LABELS: `drawMeasurementLabel()` exported for use in useDrawingCanvas;
+//      uses ray-casting hit test for polygons/rectangles and segment-proximity
+//      for lines. Call it at end of redrawDrawingCanvas for hover labels.
+//    • FIX 2: double-click (e.detail === 2) on canvas immediately calls
+//      finishMeasurement() for polygon, linear, and rectangle tools.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -16,6 +21,12 @@ import { PdfDimensions, PendingSnapCandidate } from '@/types/viewerTypes';
 import { getNextMeasurementColor } from './colors';
 import { toCanvas as toCanvasUtil, toNorm as toNormUtil } from './utils';
 import type { InProgressPoint } from '@/context/TakeoffContext';
+
+// ─── Public type re-export so useDrawingCanvas can import it ─────────────────
+export interface MeasurementLabelOptions {
+  cursorPt: { x: number; y: number } | null;
+  toCanvas: (nx: number, ny: number) => { x: number; y: number };
+}
 
 interface UseMeasurementCommitParams {
   pdfDimensionsRef:        React.MutableRefObject<PdfDimensions | null>;
@@ -68,6 +79,186 @@ export function groupPointsBySegment(points: InProgressPoint[]) {
   return segs;
 }
 
+// ── FIXED: Unified shoelace area — zoom-independent ──────────────────────────
+//
+// Works entirely in "real pixel" space (canvas pixels at display scale = 1).
+// Normalized coords [0,1] are multiplied by the PDF's intrinsic pixel dimensions
+// (pdfW, pdfH at scale=1), then shoelace gives pixel² area, then divided by
+// scaleFactor² to get real-world area in m².
+//
+// WHY this is correct:
+//   • normPts are stored relative to the PDF page size — they don't change with zoom
+//   • pdfDimensions (w,h) at the time of measurement may vary with display scale,
+//     so we must NOT use them directly. Instead we reconstruct scale-1 coords via
+//     norm * (pdfDimensions / displayScale). But since scaleFactor already encodes
+//     the pixels-per-real-unit at scale=1, we can simplify:
+//     area_px² = shoelace(normPts scaled to scale-1 canvas px)
+//     area_real = area_px² / scaleFactor²
+//   • The display scale (zoom) cancels out entirely.
+//
+export function shoelaceArea(
+  normPts: { x: number; y: number }[],
+  pdfW: number,   // canvas width at current display scale
+  pdfH: number,   // canvas height at current display scale
+  displayScale: number, // current zoom / display scale
+  scaleFactor: number,  // real-world pixels per unit (at display scale = 1)
+): number {
+  if (normPts.length < 3) return 0;
+  // Convert norm → canvas pixels at scale=1 (remove display zoom)
+  const scale1W = pdfW / displayScale;
+  const scale1H = pdfH / displayScale;
+  let a = 0;
+  for (let i = 0; i < normPts.length; i++) {
+    const j = (i + 1) % normPts.length;
+    const xi = normPts[i].x * scale1W;
+    const yi = normPts[i].y * scale1H;
+    const xj = normPts[j].x * scale1W;
+    const yj = normPts[j].y * scale1H;
+    a += xi * yj - xj * yi;
+  }
+  return (Math.abs(a) / 2) / (scaleFactor * scaleFactor);
+}
+
+// ── Linear length helper (also zoom-independent) ─────────────────────────────
+export function linearLength(
+  normPts: { x: number; y: number }[],
+  pdfW: number,
+  pdfH: number,
+  displayScale: number,
+  scaleFactor: number,
+): number {
+  if (normPts.length < 2) return 0;
+  const scale1W = pdfW / displayScale;
+  const scale1H = pdfH / displayScale;
+  let len = 0;
+  for (let i = 1; i < normPts.length; i++) {
+    const dx = (normPts[i].x - normPts[i - 1].x) * scale1W;
+    const dy = (normPts[i].y - normPts[i - 1].y) * scale1H;
+    len += Math.hypot(dx, dy);
+  }
+  return len / scaleFactor;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// drawMeasurementLabel — call inside useDrawingCanvas redrawDrawingCanvas()
+//
+// Usage:
+//   import { drawMeasurementLabel } from './useMeasurementCommit';
+//   // at end of redrawDrawingCanvas, after all shapes are drawn:
+//   if (cursorPointRef?.current) {
+//     for (const m of measurements) {
+//       if (m.isVisible === false || m.isGroupHeader) continue;
+//       drawMeasurementLabel(ctx, m, cursorPointRef.current, toCanvas);
+//     }
+//   }
+// ─────────────────────────────────────────────────────────────────────────────
+export function drawMeasurementLabel(
+  ctx: CanvasRenderingContext2D,
+  measurement: TakeoffRow,
+  cursorPt: { x: number; y: number },
+  toCanvas: (nx: number, ny: number) => { x: number; y: number },
+): void {
+  if (!measurement.points?.length) return;
+  if (!['Polygon', 'Rectangle', 'Length'].includes(measurement.type)) return;
+
+  const canvasPts = measurement.points.map(p => toCanvas(p.x, p.y));
+  if (canvasPts.length === 0) return;
+
+  // ── Hit test ──────────────────────────────────────────────────────────────
+  let isInside = false;
+
+  if (measurement.type === 'Length') {
+    // Within 14px of any segment
+    for (let i = 1; i < canvasPts.length; i++) {
+      const dx = canvasPts[i].x - canvasPts[i - 1].x;
+      const dy = canvasPts[i].y - canvasPts[i - 1].y;
+      const lenSq = dx * dx + dy * dy;
+      if (lenSq === 0) continue;
+      const t = Math.max(0, Math.min(1,
+        ((cursorPt.x - canvasPts[i - 1].x) * dx + (cursorPt.y - canvasPts[i - 1].y) * dy) / lenSq,
+      ));
+      const dist = Math.hypot(
+        cursorPt.x - (canvasPts[i - 1].x + t * dx),
+        cursorPt.y - (canvasPts[i - 1].y + t * dy),
+      );
+      if (dist < 14) { isInside = true; break; }
+    }
+  } else {
+    // Ray-casting for Polygon / Rectangle
+    for (let i = 0, j = canvasPts.length - 1; i < canvasPts.length; j = i++) {
+      const xi = canvasPts[i].x, yi = canvasPts[i].y;
+      const xj = canvasPts[j].x, yj = canvasPts[j].y;
+      if (((yi > cursorPt.y) !== (yj > cursorPt.y)) &&
+          (cursorPt.x < (xj - xi) * (cursorPt.y - yi) / (yj - yi) + xi)) {
+        isInside = !isInside;
+      }
+    }
+  }
+
+  if (!isInside) return;
+
+  // ── Centroid ──────────────────────────────────────────────────────────────
+  const cx = canvasPts.reduce((s, p) => s + p.x, 0) / canvasPts.length;
+  const cy = canvasPts.reduce((s, p) => s + p.y, 0) / canvasPts.length;
+
+  // ── Label text ────────────────────────────────────────────────────────────
+  const qty    = measurement.quantity ?? 0;
+  const isArea = measurement.type !== 'Length';
+  const valueLabel = isArea
+    ? `${qty.toFixed(2)} m²`
+    : `${qty.toFixed(2)} m`;
+  const desc = (measurement.label || measurement.description || '').toUpperCase();
+  const color = measurement.color || '#EF9F27';
+
+  // ── Measure text widths ───────────────────────────────────────────────────
+  ctx.save();
+  ctx.font = 'bold 12px ui-monospace, monospace';
+  const valueTw = ctx.measureText(valueLabel).width;
+  ctx.font      = '9px ui-monospace, monospace';
+  const descTw  = ctx.measureText(desc).width;
+  const tw      = Math.max(valueTw, descTw) + 20;
+  const hasDesc = desc.length > 0;
+  const th      = hasDesc ? 38 : 24;
+
+  // ── Background pill ───────────────────────────────────────────────────────
+  ctx.fillStyle = 'rgba(10,10,10,0.88)';
+  const rx = cx - tw / 2;
+  const ry = cy - th / 2;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(rx, ry, tw, th, 5);
+  } else {
+    ctx.rect(rx, ry, tw, th);
+  }
+  ctx.fill();
+
+  // Border
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1;
+  ctx.stroke();
+
+  // ── Text ──────────────────────────────────────────────────────────────────
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (hasDesc) {
+    ctx.font      = '9px ui-monospace, monospace';
+    ctx.fillStyle = 'rgba(160,160,160,0.75)';
+    ctx.fillText(desc, cx, cy - 10);
+    ctx.font      = 'bold 12px ui-monospace, monospace';
+    ctx.fillStyle = color;
+    ctx.fillText(valueLabel, cx, cy + 8);
+  } else {
+    ctx.font      = 'bold 12px ui-monospace, monospace';
+    ctx.fillStyle = color;
+    ctx.fillText(valueLabel, cx, cy);
+  }
+
+  ctx.restore();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function useMeasurementCommit({
   pdfDimensionsRef,
   pageNumberRef,
@@ -109,6 +300,32 @@ export function useMeasurementCommit({
     return toNormUtil(canvasX, canvasY, pdfDimensionsRef.current);
   }, [pdfDimensionsRef]);
 
+  // ── Convenience wrappers that pull live dims + scale ──────────────────────
+  const calcArea = useCallback((normPts: { x: number; y: number }[]): number => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return 0;
+    return shoelaceArea(normPts, dims.w, dims.h, scaleRef.current, scaleFactor);
+  }, [pdfDimensionsRef, scaleRef, scaleFactor]);
+
+  const calcLength = useCallback((normPts: { x: number; y: number }[]): number => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return 0;
+    return linearLength(normPts, dims.w, dims.h, scaleRef.current, scaleFactor);
+  }, [pdfDimensionsRef, scaleRef, scaleFactor]);
+
+  // ── rectNormPoints: given two norm corners, return 4 CCW norm corners ─────
+  const rectNormPoints = useCallback((
+    p1n: { x: number; y: number },
+    p2n: { x: number; y: number },
+  ): { x: number; y: number }[] => {
+    return [
+      { x: p1n.x, y: p1n.y },
+      { x: p2n.x, y: p1n.y },
+      { x: p2n.x, y: p2n.y },
+      { x: p1n.x, y: p2n.y },
+    ];
+  }, []);
+
   // ── Post-commit snap candidate check ────────────────────────────────────────
   const checkSnapCandidates = useCallback((pts: InProgressPoint[], measurementId: string) => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current) return;
@@ -129,7 +346,7 @@ export function useMeasurementCommit({
     if (cands.length) setPendingSnapCandidates(cands);
   }, [getScaledCorners, toCanvas, toNorm, pdfDimensionsRef, pageNumberRef, snapEnabledRef, snapThresholdRef, setPendingSnapCandidates]);
 
-  // ── FIX #12: single resolved appendToGroupId source of truth ─────────────
+  // ── finishMeasurement ──────────────────────────────────────────────────────
   const finishMeasurement = useCallback((
     currentTempPoints?: InProgressPoint[],
     meta?: { label?: string; icon?: string; appendToGroupId?: string },
@@ -143,11 +360,11 @@ export function useMeasurementCommit({
       const targetGroup = measurements.find(m => m.id === resolvedAppendTarget);
       if (!targetGroup) { clearTempPoints(); return; }
 
-      const activeType = activeTool === 'linear' ? 'Length'
-        : activeTool === 'polygon' ? 'Polygon'
+      const activeType = activeTool === 'linear'    ? 'Length'
+        : activeTool === 'polygon'   ? 'Polygon'
         : activeTool === 'rectangle' ? 'Rectangle'
-        : activeTool === 'count' ? 'Count'
-        : activeTool === 'point' ? 'Point'
+        : activeTool === 'count'     ? 'Count'
+        : activeTool === 'point'     ? 'Point'
         : null;
 
       if (activeType !== targetGroup.type) {
@@ -156,11 +373,11 @@ export function useMeasurementCommit({
         return;
       }
 
-      // ─── POINT ────────────────────────────────────────────────────────────
+      // ─── POINT ──────────────────────────────────────────────────────────
       if (activeTool === 'point') {
         if (pts.length < 1) { clearTempPoints(); return; }
-        const newChildId = crypto.randomUUID();
-        const childNumber = (targetGroup.childIds?.length ?? 0) + 1;
+        const newChildId    = crypto.randomUUID();
+        const childNumber   = (targetGroup.childIds?.length ?? 0) + 1;
         commitMeasurement({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `${targetGroup.label || targetGroup.description} ${childNumber}`,
@@ -177,10 +394,10 @@ export function useMeasurementCommit({
         clearTempPoints(); setCursorPoint(null); onAppendComplete?.(); return;
       }
 
-      // ─── COUNT ────────────────────────────────────────────────────────────
+      // ─── COUNT ──────────────────────────────────────────────────────────
       if (activeTool === 'count') {
         if (pts.length < 1) { clearTempPoints(); return; }
-        const newChildId = crypto.randomUUID();
+        const newChildId  = crypto.randomUUID();
         const childNumber = (targetGroup.childIds?.length ?? 0) + 1;
         commitMeasurement({
           id: newChildId, drawingId: activeDrawingId || '',
@@ -198,14 +415,12 @@ export function useMeasurementCommit({
         clearTempPoints(); setCursorPoint(null); onAppendComplete?.(); return;
       }
 
-      // ─── LINEAR ───────────────────────────────────────────────────────────
+      // ─── LINEAR ─────────────────────────────────────────────────────────
       if (activeTool === 'linear') {
-        const segCanvas = pts.map(p => toCanvas(p.x, p.y));
-        let len = 0;
-        for (let i = 1; i < segCanvas.length; i++)
-          len += Math.hypot(segCanvas[i].x - segCanvas[i-1].x, segCanvas[i].y - segCanvas[i-1].y);
-        const quantity = len / scaleRef.current * scaleFactor;
-        const newChildId = crypto.randomUUID();
+        if (pts.length < 2) { clearTempPoints(); return; }
+        // FIXED: use calcLength (zoom-independent)
+        const quantity    = calcLength(pts.map(p => ({ x: p.x, y: p.y })));
+        const newChildId  = crypto.randomUUID();
         commitMeasurement({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Section ${(targetGroup.childIds?.length ?? 0) + 1}`,
@@ -222,23 +437,15 @@ export function useMeasurementCommit({
         clearTempPoints(); setCursorPoint(null); onAppendComplete?.(); return;
       }
 
-      // ─── POLYGON ──────────────────────────────────────────────────────────
+      // ─── POLYGON ────────────────────────────────────────────────────────
       if (activeTool === 'polygon') {
-        const allSegs = groupPointsBySegment(pts);
+        const allSegs   = groupPointsBySegment(pts);
         const validSegs = allSegs.filter(s => s.points.length >= 3);
         if (validSegs.length === 0) { clearTempPoints(); return; }
-        const zoom = scaleRef.current;
-        const calcArea = (points: { x: number; y: number }[]) => {
-          let a = 0;
-          for (let i = 0; i < points.length; i++) {
-            const j = (i + 1) % points.length;
-            a += points[i].x * points[j].y - points[j].x * points[i].y;
-          }
-          return Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
-        };
-        const newPoints = validSegs[0].points.map(p => ({ x: p.x, y: p.y }));
-        const newQuantity = calcArea(newPoints.map(p => toCanvas(p.x, p.y)));
-        const newChildId = crypto.randomUUID();
+        // FIXED: unified shoelace via calcArea
+        const newPoints   = validSegs[0].points.map(p => ({ x: p.x, y: p.y }));
+        const newQuantity = calcArea(newPoints);
+        const newChildId  = crypto.randomUUID();
         commitMeasurement({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Shape ${(targetGroup.childIds?.length ?? 0) + 1}`,
@@ -254,34 +461,21 @@ export function useMeasurementCommit({
         clearTempPoints(); setCursorPoint(null); onAppendComplete?.(); return;
       }
 
-      // ─── RECTANGLE ────────────────────────────────────────────────────────
+      // ─── RECTANGLE ──────────────────────────────────────────────────────
       if (activeTool === 'rectangle') {
-        const allSegs = groupPointsBySegment(pts);
+        const allSegs   = groupPointsBySegment(pts);
         const validSegs = allSegs.filter(s => s.points.length === 2);
         if (validSegs.length === 0) { clearTempPoints(); return; }
-        const zoom = scaleRef.current;
-        const rectFromTwo = (p1n: { x: number; y: number }, p2n: { x: number; y: number }) => {
-          const p1 = toCanvas(p1n.x, p1n.y);
-          const p2 = toCanvas(p2n.x, p2n.y);
-          const r4 = [
-            { x: p1.x, y: p1.y }, { x: p2.x, y: p1.y },
-            { x: p2.x, y: p2.y }, { x: p1.x, y: p2.y },
-          ];
-          let a = 0;
-          for (let i = 0; i < 4; i++) {
-            const j = (i + 1) % 4;
-            a += r4[i].x * r4[j].y - r4[j].x * r4[i].y;
-          }
-          return { normPoints: r4.map(p => toNorm(p.x, p.y)), area: Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor };
-        };
-        const { normPoints, area } = rectFromTwo(validSegs[0].points[0], validSegs[0].points[1]);
+        // FIXED: unified shoelace via calcArea on 4 norm corners
+        const normPts = rectNormPoints(validSegs[0].points[0], validSegs[0].points[1]);
+        const area    = calcArea(normPts);
         const newChildId = crypto.randomUUID();
         commitMeasurement({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Rectangle ${(targetGroup.childIds?.length ?? 0) + 1}`,
           label: targetGroup.label || targetGroup.description,
           type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
-          points: normPoints, isOverridden: false, color: targetGroup.color,
+          points: normPts, isOverridden: false, color: targetGroup.color,
           isVisible: true, parentId: targetGroup.id, childIds: [],
         });
         onUpdateMeasurement?.(targetGroup.id, {
@@ -292,7 +486,7 @@ export function useMeasurementCommit({
       }
     }
 
-    // ─── REGULAR FINISH (NO APPEND) ──────────────────────────────────────────
+    // ─── REGULAR FINISH (NO APPEND) ─────────────────────────────────────────
 
     if (activeTool === 'point') {
       if (pts.length < 1) { clearTempPoints(); setCursorPoint(null); return; }
@@ -343,8 +537,8 @@ export function useMeasurementCommit({
       if (tempPoints.length === 0) {
         clearTempPoints(); setCursorPoint(null); return;
       } else {
-        const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
-        const p1 = toCanvas(pts[pts.length - 1].x, pts[pts.length - 1].y);
+        const p0    = toCanvas(tempPoints[0].x, tempPoints[0].y);
+        const p1    = toCanvas(pts[pts.length - 1].x, pts[pts.length - 1].y);
         const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
         clearTempPoints();
         setCursorPoint(null);
@@ -358,24 +552,22 @@ export function useMeasurementCommit({
 
     if (pts.length < 2) { clearTempPoints(); setCursorPoint(null); return; }
 
-    const zoom       = scaleRef.current;
     const newId      = crypto.randomUUID();
     const groupColor = getNextMeasurementColor();
 
-    // ── Linear ────────────────────────────────────────────────────────────────
+    // ── Linear ───────────────────────────────────────────────────────────────
     if (activeTool === 'linear') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length >= 2);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
       const groupLabel = meta?.label || 'New Length';
-      const segLength = (seg: typeof validSegs[0]) => {
-        const sc = seg.points.map(p => toCanvas(p.x, p.y));
-        let len = 0;
-        for (let i = 1; i < sc.length; i++)
-          len += Math.hypot(sc[i].x - sc[i-1].x, sc[i].y - sc[i-1].y);
-        return len / zoom * scaleFactor;
-      };
+
+      // FIXED: zoom-independent length per segment
+      const segLength = (seg: typeof validSegs[0]) =>
+        calcLength(seg.points.map(p => ({ x: p.x, y: p.y })));
+
       const totalQty = validSegs.reduce((sum, seg) => sum + segLength(seg), 0);
+
       if (validSegs.length === 1) {
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
@@ -409,23 +601,19 @@ export function useMeasurementCommit({
       checkSnapCandidates(pts, newId); return;
     }
 
-    // ── Polygon ───────────────────────────────────────────────────────────────
+    // ── Polygon ──────────────────────────────────────────────────────────────
     if (activeTool === 'polygon') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length >= 3);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
       const groupLabel = meta?.label || 'New Polygon';
-      const calcPolyArea = (points: { x: number; y: number }[]) => {
-        let a = 0;
-        for (let i = 0; i < points.length; i++) {
-          const j = (i + 1) % points.length;
-          a += points[i].x * points[j].y - points[j].x * points[i].y;
-        }
-        return Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor;
-      };
+
+      // FIXED: unified shoelace, zoom-independent
       const segArea = (seg: typeof validSegs[0]) =>
-        calcPolyArea(seg.points.map(p => toCanvas(p.x, p.y)));
+        calcArea(seg.points.map(p => ({ x: p.x, y: p.y })));
+
       const totalArea = validSegs.reduce((sum, seg) => sum + segArea(seg), 0);
+
       if (validSegs.length === 1) {
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
@@ -459,34 +647,28 @@ export function useMeasurementCommit({
       checkSnapCandidates(pts, newId); return;
     }
 
-    // ── Rectangle ─────────────────────────────────────────────────────────────
+    // ── Rectangle ────────────────────────────────────────────────────────────
     if (activeTool === 'rectangle') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length === 2);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
       const groupLabel = meta?.label || 'New Rectangle';
-      const rectFromTwo = (p1n: { x: number; y: number }, p2n: { x: number; y: number }) => {
-        const p1 = toCanvas(p1n.x, p1n.y);
-        const p2 = toCanvas(p2n.x, p2n.y);
-        const r4 = [
-          { x: p1.x, y: p1.y }, { x: p2.x, y: p1.y },
-          { x: p2.x, y: p2.y }, { x: p1.x, y: p2.y },
-        ];
-        let a = 0;
-        for (let i = 0; i < 4; i++) {
-          const j = (i + 1) % 4;
-          a += r4[i].x * r4[j].y - r4[j].x * r4[i].y;
-        }
-        return { normPoints: r4.map(p => toNorm(p.x, p.y)), area: Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor };
+
+      // FIXED: shoelace on 4 norm corners, zoom-independent
+      const segAreaRect = (seg: typeof validSegs[0]) => {
+        const normPts = rectNormPoints(seg.points[0], seg.points[1]);
+        return { normPts, area: calcArea(normPts) };
       };
-      const totalArea = validSegs.reduce((s, seg) => s + rectFromTwo(seg.points[0], seg.points[1]).area, 0);
+
+      const totalArea = validSegs.reduce((s, seg) => s + segAreaRect(seg).area, 0);
+
       if (validSegs.length === 1) {
-        const { normPoints, area } = rectFromTwo(validSegs[0].points[0], validSegs[0].points[1]);
+        const { normPts, area } = segAreaRect(validSegs[0]);
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
-          points: normPoints, isOverridden: false, color: groupColor, isVisible: true, childIds: [],
+          points: normPts, isOverridden: false, color: groupColor, isVisible: true, childIds: [],
         });
       } else {
         const childIds: string[] = [];
@@ -494,12 +676,13 @@ export function useMeasurementCommit({
         validSegs.forEach((seg, idx) => {
           const cid = crypto.randomUUID();
           childIds.push(cid);
-          const { normPoints, area } = rectFromTwo(seg.points[0], seg.points[1]);
+          const { normPts, area } = segAreaRect(seg);
           children.push({
             id: cid, drawingId: activeDrawingId || '',
             description: `Rectangle ${idx + 1}`, label: `Rectangle ${idx + 1}`,
             type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
-            points: normPoints, isOverridden: false, color: groupColor, isVisible: true, parentId: newId, childIds: [],
+            points: normPts, isOverridden: false, color: groupColor, isVisible: true,
+            parentId: newId, childIds: [],
           });
         });
         batchCommitMeasurements([{
@@ -517,12 +700,24 @@ export function useMeasurementCommit({
     clearTempPoints, setActiveTool, checkSnapCandidates, toCanvas, toNorm,
     activeDrawingId, scaleRef, resetBreakState, onUpdateMeasurement, measurements,
     onScalePrompt, cursorPointRef, onAppendComplete, appendToGroupId, setCursorPoint,
+    calcArea, calcLength, rectNormPoints,
   ]);
 
-  // ── handleCanvasClick ─────────────────────────────────────────────────────
+  // ── handleCanvasClick ──────────────────────────────────────────────────────
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool === 'select') return;
     if (e.button !== 0) return;
+
+    // FIX 2: double-click finishes the current measurement immediately.
+    // e.detail === 2 = second click of a double-click.
+    // Swallow so the click doesn't also place an extra point.
+    if (e.detail === 2) {
+      const multiPointTools = ['linear', 'polygon', 'rectangle', 'count'];
+      if (multiPointTools.includes(activeTool) && tempPoints.length > 0) {
+        finishMeasurement();
+        return;
+      }
+    }
 
     const canvas = drawingCanvasRef.current;
     if (!canvas) return;
@@ -589,7 +784,7 @@ export function useMeasurementCommit({
         nextSegmentIdRef.current = null;
         setPendingBreak(false);
       } else {
-        const segs = groupPointsBySegment(tempPoints);
+        const segs    = groupPointsBySegment(tempPoints);
         const lastSeg = segs[segs.length - 1];
         segmentId = lastSeg.points.length >= 2
           ? crypto.randomUUID()
@@ -603,8 +798,8 @@ export function useMeasurementCommit({
       if (tempPoints.length === 0) {
         pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
       } else {
-        const p0 = toCanvas(tempPoints[0].x, tempPoints[0].y);
-        const p1 = { x: snap.point.x, y: snap.point.y };
+        const p0    = toCanvas(tempPoints[0].x, tempPoints[0].y);
+        const p1    = { x: snap.point.x, y: snap.point.y };
         const ptLen = Math.hypot(p1.x - p0.x, p1.y - p0.y) / scaleRef.current;
         clearTempPoints();
         setCursorPoint(null);
@@ -621,10 +816,11 @@ export function useMeasurementCommit({
     activeTool, snapToCorner, triggerSnapFlash, toNorm, toCanvas,
     commitMeasurement, pushPoint, clearTempPoints, drawingCanvasRef, activeDrawingId,
     tempPoints, pendingBreak, scaleRef, resetBreakState,
-    setActiveTool, cursorPointRef, onScalePrompt, nextSegmentIdRef, setPendingBreak, setCursorPoint,
+    setActiveTool, cursorPointRef, onScalePrompt, nextSegmentIdRef, setPendingBreak,
+    setCursorPoint, finishMeasurement,
   ]);
 
-  // ── handleContextMenu ─────────────────────────────────────────────────────
+  // ── handleContextMenu ──────────────────────────────────────────────────────
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     e.preventDefault();
     if (activeTool === 'select') return;

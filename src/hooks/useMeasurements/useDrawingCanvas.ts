@@ -1,13 +1,16 @@
 // ─── hooks/useMeasurements/useDrawingCanvas.ts ────────────────────────────────
 //
-//  Extracted from useMeasurements.ts — #2 / #5 hook split.
-//  Owns all canvas drawing: committed measurements, drag preview, in-progress
-//  temp point drawing, and the RAF-throttled pointer move handler.
-//
-//  Fixes preserved from original:
-//    #1  — RAF cleanup on every effect re-run
-//    #9  — drawCommittedMeasurements is a single shared helper (no duplication)
-//    #10 — RAF throttle on pointer move (200+ Hz → ~60 Hz)
+//  CHANGES FROM PREVIOUS VERSION:
+//    • REMOVED: always-on drawMeasurementLabels() — labels were rendering on
+//      every committed measurement at all times, causing clutter.
+//    • ADDED: drawHoverLabel() — renders a label ONLY when the cursor is
+//      hovering over a specific measurement. Uses:
+//        - Ray-casting hit test for Polygon / Rectangle
+//        - Segment-proximity (≤14px) hit test for Length / linear
+//        - Radial proximity (≤16px) hit test for Count / Point pins
+//      Label shows: description (small, dimmed) + quantity + unit (large, colored)
+//      at the polygon centroid / line midpoint / pin position.
+//    • All existing drawing logic is UNCHANGED.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -36,6 +39,203 @@ interface UseDrawingCanvasParams {
   snapEnabledRef:    React.MutableRefObject<boolean>;
 }
 
+// ─── Centroid helpers ─────────────────────────────────────────────────────────
+
+function pointCloudCentroid(pts: { x: number; y: number }[]): { x: number; y: number } {
+  const n = pts.length;
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / n,
+    y: pts.reduce((s, p) => s + p.y, 0) / n,
+  };
+}
+
+function polygonCentroid(pts: { x: number; y: number }[]): { x: number; y: number } {
+  let area = 0, cx = 0, cy = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const j     = (i + 1) % n;
+    const cross = pts[i].x * pts[j].y - pts[j].x * pts[i].y;
+    area += cross;
+    cx   += (pts[i].x + pts[j].x) * cross;
+    cy   += (pts[i].y + pts[j].y) * cross;
+  }
+  area /= 2;
+  if (Math.abs(area) < 1e-6) return pointCloudCentroid(pts);
+  return { x: cx / (6 * area), y: cy / (6 * area) };
+}
+
+// ─── Hit tests ────────────────────────────────────────────────────────────────
+
+/** Ray-casting point-in-polygon test */
+function pointInPolygon(
+  pt: { x: number; y: number },
+  poly: { x: number; y: number }[],
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if (((yi > pt.y) !== (yj > pt.y)) &&
+        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Minimum distance from point to a polyline segment */
+function distToSegment(
+  pt: { x: number; y: number },
+  a:  { x: number; y: number },
+  b:  { x: number; y: number },
+): number {
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(pt.x - a.x, pt.y - a.y);
+  const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / lenSq));
+  return Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy));
+}
+
+/** Returns true if cursor is "over" the given committed measurement */
+function isCursorOverMeasurement(
+  cursor:  { x: number; y: number },
+  m:       TakeoffRow,
+  canvasPts: { x: number; y: number }[],
+): boolean {
+  if (canvasPts.length === 0) return false;
+
+  switch (m.type) {
+    case 'Polygon':
+    case 'Rectangle':
+      return pointInPolygon(cursor, canvasPts);
+
+    case 'Length':
+      for (let i = 1; i < canvasPts.length; i++) {
+        if (distToSegment(cursor, canvasPts[i - 1], canvasPts[i]) <= 14) return true;
+      }
+      return false;
+
+    case 'Count':
+    case 'Point':
+      return canvasPts.some(p => Math.hypot(cursor.x - p.x, cursor.y - p.y) <= 16);
+
+    default:
+      return false;
+  }
+}
+
+// ─── Hover label renderer ─────────────────────────────────────────────────────
+
+function drawHoverLabel(
+  ctx:       CanvasRenderingContext2D,
+  m:         TakeoffRow,
+  canvasPts: { x: number; y: number }[],
+): void {
+  // Determine label anchor
+  let anchor: { x: number; y: number };
+  if (m.type === 'Polygon' || m.type === 'Rectangle') {
+    anchor = polygonCentroid(canvasPts);
+  } else if (m.type === 'Length') {
+    anchor = pointCloudCentroid(canvasPts);
+  } else {
+    // Count / Point — label above the first pin
+    anchor = { x: canvasPts[0].x, y: canvasPts[0].y - 20 };
+  }
+
+  const qty   = m.quantity ?? 0;
+  const unit  = m.unit     ?? '';
+  const desc  = (m.label || m.description || '').toUpperCase();
+  const color = m.color || '#EF9F27';
+
+  const valueText = qty > 0 ? `${qty.toFixed(2)} ${unit}`.trim() : '';
+  if (!valueText && !desc) return;
+
+  // Measure both lines
+  ctx.save();
+
+  const VALUE_FONT = 'bold 12px ui-monospace, monospace';
+  const DESC_FONT  = '9px ui-monospace, monospace';
+  const hasDesc    = desc.length > 0;
+  const hasValue   = valueText.length > 0;
+
+  ctx.font = VALUE_FONT;
+  const valueTw = hasValue ? ctx.measureText(valueText).width : 0;
+  ctx.font = DESC_FONT;
+  const descTw  = hasDesc  ? ctx.measureText(desc).width      : 0;
+
+  const PAD_X = 10;
+  const PAD_Y = 6;
+  const LINE_GAP = 4;
+  const VALUE_H = 14;
+  const DESC_H  = 11;
+
+  const innerW = Math.max(valueTw, descTw);
+  const innerH = (hasDesc && hasValue)
+    ? DESC_H + LINE_GAP + VALUE_H
+    : hasValue ? VALUE_H : DESC_H;
+
+  const boxW = innerW + PAD_X * 2;
+  const boxH = innerH + PAD_Y * 2;
+  const bx   = anchor.x - boxW / 2;
+  const by   = anchor.y - boxH / 2;
+
+  // Background
+  ctx.fillStyle = 'rgba(8,8,8,0.90)';
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(bx, by, boxW, boxH, 5);
+  } else {
+    ctx.rect(bx, by, boxW, boxH);
+  }
+  ctx.fill();
+
+  // Colored border
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = 1.2;
+  ctx.stroke();
+
+  // Left accent bar
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (ctx.roundRect) {
+    ctx.roundRect(bx, by + 4, 3, boxH - 8, 2);
+  } else {
+    ctx.rect(bx, by + 4, 3, boxH - 8);
+  }
+  ctx.fill();
+
+  // Text
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (hasDesc && hasValue) {
+    // Two-line layout: desc top, value bottom
+    const descY  = by + PAD_Y + DESC_H / 2;
+    const valueY = by + PAD_Y + DESC_H + LINE_GAP + VALUE_H / 2;
+
+    ctx.font      = DESC_FONT;
+    ctx.fillStyle = 'rgba(180,180,180,0.70)';
+    ctx.fillText(desc, anchor.x, descY);
+
+    ctx.font      = VALUE_FONT;
+    ctx.fillStyle = color;
+    ctx.fillText(valueText, anchor.x, valueY);
+
+  } else if (hasValue) {
+    ctx.font      = VALUE_FONT;
+    ctx.fillStyle = color;
+    ctx.fillText(valueText, anchor.x, anchor.y);
+  } else {
+    ctx.font      = DESC_FONT;
+    ctx.fillStyle = 'rgba(180,180,180,0.85)';
+    ctx.fillText(desc, anchor.x, anchor.y);
+  }
+
+  ctx.restore();
+}
+
+// ─── Main hook ────────────────────────────────────────────────────────────────
+
 export function useDrawingCanvas({
   drawingCanvasRef,
   pdfDimensionsRef,
@@ -55,20 +255,18 @@ export function useDrawingCanvas({
 
   const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
 
-  // FIX #10 — RAF ref for pointer move throttle
   const pointerRafRef = useRef<number | null>(null);
-  // FIX #1 — RAF ref for main draw effect
-  const rafIdRef = useRef<number | null>(null);
+  const rafIdRef      = useRef<number | null>(null);
 
-    const toCanvas = useCallback((normX: number, normY: number) => {
+  const toCanvas = useCallback((normX: number, normY: number) => {
     return toCanvasUtil(normX, normY, pdfDimensionsRef.current);
-    }, [pdfDimensionsRef]);
+  }, [pdfDimensionsRef]);
 
   const toNorm = useCallback((canvasX: number, canvasY: number) => {
     return toNormUtil(canvasX, canvasY, pdfDimensionsRef.current);
   }, [pdfDimensionsRef]);
 
-  // ── FIX #9: single shared draw helper — used by both redrawDrawingCanvas and main effect ──
+  // ── drawCommittedMeasurements — unchanged ─────────────────────────────────
   const drawCommittedMeasurements = useCallback((
     ctx: CanvasRenderingContext2D,
     overridePoint?: { measurementId: string; pointIndex: number; point: { x: number; y: number } },
@@ -127,7 +325,7 @@ export function useDrawingCanvas({
           ctx.stroke();
 
           const activeOverride = overridePoint ?? (dragStateRef.current ?? null);
-          const isActivePoint = activeOverride
+          const isActivePoint  = activeOverride
             && 'measurementId' in activeOverride
             && activeOverride.measurementId === m.id
             && ('pointIndex' in activeOverride ? activeOverride.pointIndex === idx : false);
@@ -146,7 +344,36 @@ export function useDrawingCanvas({
     });
   }, [measurements, toCanvas, activeTool, dragStateRef]);
 
-  // ── Imperative redraw for drag preview ────────────────────────────────────
+  // ── drawHoverLabels — called after committed measurements ─────────────────
+  // Only renders a label for the ONE measurement the cursor is currently over.
+  // If cursor is over multiple (overlapping shapes), the topmost (last in array)
+  // wins, matching visual z-order.
+  const drawHoverLabels = useCallback((
+    ctx:    CanvasRenderingContext2D,
+    cursor: { x: number; y: number } | null,
+  ) => {
+    if (!cursor) return;
+
+    // Find last (topmost) measurement cursor is over
+    let target: { m: TakeoffRow; pts: { x: number; y: number }[] } | null = null;
+
+    for (const m of measurements) {
+      if (m.isGroupHeader)      continue;
+      if (!m.isVisible)         continue;
+      if (!m.points?.length)    continue;
+
+      const pts = m.points.map(p => toCanvas(p.x, p.y));
+      if (isCursorOverMeasurement(cursor, m, pts)) {
+        target = { m, pts };   // keep updating — last hit wins (topmost)
+      }
+    }
+
+    if (target) {
+      drawHoverLabel(ctx, target.m, target.pts);
+    }
+  }, [measurements, toCanvas]);
+
+  // ── Imperative redraw — used by drag system ───────────────────────────────
   const redrawDrawingCanvas = useCallback((draggedPointCanvas?: { x: number; y: number }) => {
     const canvas = drawingCanvasRef.current;
     const dims   = pdfDimensionsRef.current;
@@ -164,6 +391,10 @@ export function useDrawingCanvas({
 
     drawCommittedMeasurements(ctx, override);
 
+    // Hover label — use live cursorPointRef (not React state) since this
+    // is called imperatively during drag, outside the RAF render cycle
+    drawHoverLabels(ctx, cursorPointRef.current);
+
     if (draggedPointCanvas) {
       ctx.save();
       ctx.beginPath();
@@ -176,11 +407,10 @@ export function useDrawingCanvas({
       ctx.fill();
       ctx.restore();
     }
-  }, [drawingCanvasRef, pdfDimensionsRef, drawCommittedMeasurements, dragStateRef]);
+  }, [drawingCanvasRef, pdfDimensionsRef, drawCommittedMeasurements, dragStateRef, drawHoverLabels, cursorPointRef]);
 
-  // ── FIX #10: RAF-throttled pointer move ───────────────────────────────────
+  // ── RAF-throttled pointer move ────────────────────────────────────────────
   const handleCanvasPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    // drag move is handled by usePointDrag — don't intercept it here
     if (dragStateRef.current?.isDragging) return;
     if (activeTool === 'select' || isPanning) return;
 
@@ -188,14 +418,13 @@ export function useDrawingCanvas({
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
 
-    // capture coords synchronously — synthetic event is pooled and nullified before RAF fires
     const rawX = (e.clientX - rect.left) * (canvas.width  / rect.width);
     const rawY = (e.clientY - rect.top)  * (canvas.height / rect.height);
 
     if (pointerRafRef.current !== null) cancelAnimationFrame(pointerRafRef.current);
 
     pointerRafRef.current = requestAnimationFrame(() => {
-      pointerRafRef.current = null;
+      pointerRafRef.current  = null;
       cursorPointRef.current = { x: rawX, y: rawY };
       redrawPinCanvas();
       const snap = snapToCorner(rawX, rawY);
@@ -204,9 +433,8 @@ export function useDrawingCanvas({
     });
   }, [activeTool, isPanning, snapToCorner, redrawPinCanvas, cursorPointRef, drawingCanvasRef, dragStateRef]);
 
-  // ── FIX #1: main draw effect with RAF cleanup ─────────────────────────────
+  // ── Main RAF draw effect ──────────────────────────────────────────────────
   useEffect(() => {
-    // cancel any pending frame before scheduling a new one
     if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
 
     rafIdRef.current = requestAnimationFrame(() => {
@@ -228,7 +456,10 @@ export function useDrawingCanvas({
 
       drawCommittedMeasurements(ctx, override);
 
-      // amber drag handle dot
+      // ── Hover label — uses React cursorPoint state (RAF-synced) ──────────
+      drawHoverLabels(ctx, cursorPoint);
+
+      // Amber drag handle dot
       if (dragStateRef.current && cursorPoint) {
         ctx.save();
         ctx.beginPath();
@@ -242,6 +473,7 @@ export function useDrawingCanvas({
         ctx.restore();
       }
 
+      // ── In-progress drawing ───────────────────────────────────────────────
       if (!dragStateRef.current) {
         const tempPx = tempPoints.map(p => ({
           ...toCanvas(p.x, p.y),
@@ -336,7 +568,7 @@ export function useDrawingCanvas({
         if (activeTool === 'linear' || activeTool === 'polygon' || activeTool === 'rectangle') {
           for (const seg of segGroups) {
             if (seg.pts.length === 0) continue;
-            const isLastSeg = seg === segGroups[segGroups.length - 1];
+            const isLastSeg     = seg === segGroups[segGroups.length - 1];
             const showRubberBand = isLastSeg && !!cursorPoint && !pendingBreak;
 
             if (activeTool === 'rectangle') {
@@ -492,10 +724,9 @@ export function useDrawingCanvas({
   }, [
     measurements, tempPoints, cursorPoint, activeTool, scaleFactor,
     toCanvas, pdfDimensionsRef, scaleRef, drawingCanvasRef, pendingBreak,
-    drawCommittedMeasurements, dragStateRef,
+    drawCommittedMeasurements, dragStateRef, drawHoverLabels,
   ]);
 
-  // cleanup pointer RAF on unmount
   useEffect(() => {
     return () => {
       if (pointerRafRef.current !== null) cancelAnimationFrame(pointerRafRef.current);

@@ -14,6 +14,10 @@
 //    - Drawing references (list of referenced drawing numbers)
 //    - Scope notes        (general assumptions, excluded items)
 //
+//  ADDED: displayUnit / setDisplayUnit — unit conversion toggle (m/cm/mm/ft/in)
+//         Stored here so any consumer (sidebar, canvas labels, BOQ export)
+//         reads the same value without prop-drilling.
+//
 //  All new fields are optional — zero impact on existing consumers.
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,14 +26,15 @@ import React, {
   createContext, useCallback, useContext, useRef, useState,
 } from 'react';
 import { TakeoffRow, Drawing } from '@/types';
+import type { DisplayUnit } from '@/hooks/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
 export type Stakeholders = {
-  mainContractor?:   string;   // e.g. "ARCO GROUP"
-  designConsultant?: string;   // e.g. "HOPKINS ARCHITECTS"
-  supervision?:      string;   // e.g. "DEWAN ARCHITECTS + ENGINEERS"
-  client?:           string;   // optional — client / employer name
-  projectManager?:   string;   // optional — PM firm
+  mainContractor?:   string;
+  designConsultant?: string;
+  supervision?:      string;
+  client?:           string;
+  projectManager?:   string;
 };
 
 // ─── Scope assumption entry ───────────────────────────────────────────────────
@@ -48,8 +53,6 @@ export type ExcludedItem = {
 
 // ─── Project State ────────────────────────────────────────────────────────────
 export type ProjectState = {
-
-  // ── Core (pre-existing, required) ─────────────────────────────────────────
   projectName:     string;
   projectNumber:   string;
   unit:            string;
@@ -58,34 +61,25 @@ export type ProjectState = {
   measurements:    TakeoffRow[];
   materials:       unknown[];
 
-  // ── Project Identity (optional) ───────────────────────────────────────────
-  projectLocation?:  string;   // e.g. "EXPO CITY DUBAI"
-  projectPhase?:     string;   // e.g. "Phase-01 – Mobility District"
-  kitchenType?:      string;   // e.g. "C01"
-  totalUnits?:       number;   // e.g. 58  — multiply per-unit qty by this for project total
+  projectLocation?:  string;
+  projectPhase?:     string;
+  kitchenType?:      string;
+  totalUnits?:       number;
 
-  // ── Document Metadata (optional) ──────────────────────────────────────────
-  documentTitle?:    string;   // e.g. "BILL OF QUANTITIES – KITCHEN FITOUT"
-  documentDate?:     string;   // ISO-8601 date  e.g. "2026-03-21"
-  revision?:         string;   // e.g. "Rev 1 – First Issue"
-  currency?:         string;   // ISO-4217 code  e.g. "AED", "USD"
-  vatPercent?:       number;   // e.g. 5  (stored as %, applied as / 100 when calculating)
+  documentTitle?:    string;
+  documentDate?:     string;
+  revision?:         string;
+  currency?:         string;
+  vatPercent?:       number;
 
-  // ── Stakeholders (optional) ───────────────────────────────────────────────
   stakeholders?:     Stakeholders;
-
-  // ── Drawing References (optional) ─────────────────────────────────────────
-  drawingReferences?: string[];  // e.g. ["C5128-SDW-2TR5600-FO-6000001", ...]
-
-  // ── Scope Notes (optional) ────────────────────────────────────────────────
-  generalAssumptions?:   ScopeAssumption[];   // general BOQ assumptions
-  excludedItems?:        ExcludedItem[];       // items explicitly out-of-scope
+  drawingReferences?: string[];
+  generalAssumptions?:   ScopeAssumption[];
+  excludedItems?:        ExcludedItem[];
 };
 
-// ── InProgressPoint (re-exported so Viewer/useMeasurements can import from here)
 export type InProgressPoint = { x: number; y: number; snapped: boolean; segmentId?: string };
 
-// ── PendingMeasurement — metadata for restored measurements during undo
 export type PendingMeasurement = {
   id: string;
   type: 'Length' | 'Area' | 'Polygon' | 'Rectangle' | 'Count' | 'Point';
@@ -93,7 +87,6 @@ export type PendingMeasurement = {
   description: string;
 };
 
-// ── Undo entry — full before/after snapshot of both arrays ───────────────────
 type UndoEntry = {
   measurementsBefore: TakeoffRow[];
   tempPointsBefore:   InProgressPoint[];
@@ -109,59 +102,54 @@ interface TakeoffContextValue {
   projectState:        ProjectState;
   setProjectState:     React.Dispatch<React.SetStateAction<ProjectState>>;
 
-  // Tool selection
   activeTool:          string;
   setActiveTool:       (t: string) => void;
   selectedId:          string | null;
   setSelectedId:       (id: string | null) => void;
 
-  // Drawing management
   addDrawing:          (name: string, fileUrl: string, file?: File) => void;
   setActiveDrawingId:  (id: string) => void;
   updateDrawingScale:  (id: string, factor: number) => void;
 
-  // ── Committed measurements ────────────────────────────────────────────────
   addMeasurement:      (m: TakeoffRow) => void;
   updateMeasurement:   (id: string, updates: Partial<TakeoffRow>) => void;
   deleteMeasurement:   (id: string) => void;
   clearAll:            () => void;
   toggleVisibility:    (id?: string) => void;
 
-  // ── Group management ──────────────────────────────────────────────────────
   createGroup:         (groupName: string, measurementIds: string[], groupType?: string) => string;
   deleteGroup:         (groupId: string, deleteChildren?: boolean) => void;
   ungroupMeasurements: (groupId: string) => void;
   toggleGroupExpanded: (groupId: string) => void;
 
-  // ── In-progress drawing points ────────────────────────────────────────────
   tempPoints:          InProgressPoint[];
   pendingMeasurement:  PendingMeasurement | null;
   setPendingMeasurement: (m: PendingMeasurement | null) => void;
 
-  pushPoint:           (point: InProgressPoint) => void;
-  commitMeasurement:   (m: TakeoffRow) => void;
+  pushPoint:               (point: InProgressPoint) => void;
+  commitMeasurement:       (m: TakeoffRow) => void;
   batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
-  clearTempPoints:     () => void;
+  clearTempPoints:         () => void;
 
-  // ── Undo / Redo ───────────────────────────────────────────────────────────
-  undo:                () => void;
-  redo:                () => void;
-  canUndo:             boolean;
-  canRedo:             boolean;
+  undo:    () => void;
+  redo:    () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 
-  // ── Metadata helpers ──────────────────────────────────────────────────────
-  updateProjectMeta:   (updates: Partial<Omit<ProjectState,
+  updateProjectMeta: (updates: Partial<Omit<ProjectState,
     'drawings' | 'activeDrawingId' | 'measurements' | 'materials'
   >>) => void;
 
-  // ── Helper to get effective quantity (computes from children for groups) ──
   getEffectiveQuantity: (measurement: TakeoffRow) => number;
-  getEffectiveUnit: (measurement: TakeoffRow) => string;
+  getEffectiveUnit:     (measurement: TakeoffRow) => string;
+
+  // ── NEW: unit conversion ──────────────────────────────────────────────────
+  displayUnit:    DisplayUnit;
+  setDisplayUnit: (unit: DisplayUnit) => void;
 }
 
 // ─── Default project state ────────────────────────────────────────────────────
 const defaultProject = (): ProjectState => ({
-  // ── Core (required) ───────────────────────────────────────────────────────
   projectName:     'New Project',
   projectNumber:   '',
   unit:            'm',
@@ -169,21 +157,15 @@ const defaultProject = (): ProjectState => ({
   activeDrawingId: null,
   measurements:    [],
   materials:       [],
-
-  // ── Project Identity ──────────────────────────────────────────────────────
   projectLocation:  undefined,
   projectPhase:     undefined,
   kitchenType:      undefined,
   totalUnits:       undefined,
-
-  // ── Document Metadata ─────────────────────────────────────────────────────
   documentTitle:    undefined,
   documentDate:     undefined,
   revision:         undefined,
   currency:         undefined,
   vatPercent:       undefined,
-
-  // ── Stakeholders ──────────────────────────────────────────────────────────
   stakeholders: {
     mainContractor:   undefined,
     designConsultant: undefined,
@@ -191,11 +173,7 @@ const defaultProject = (): ProjectState => ({
     client:           undefined,
     projectManager:   undefined,
   },
-
-  // ── Drawing References ────────────────────────────────────────────────────
-  drawingReferences: undefined,
-
-  // ── Scope Notes ───────────────────────────────────────────────────────────
+  drawingReferences:  undefined,
   generalAssumptions: undefined,
   excludedItems:      undefined,
 });
@@ -208,8 +186,11 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   const [activeTool,   setActiveTool]   = useState<string>('select');
   const [selectedId,   setSelectedId]   = useState<string | null>(null);
 
-  const [tempPoints, setTempPoints] = useState<InProgressPoint[]>([]);
-  const [pendingMeasurement, setPendingMeasurement] = useState<PendingMeasurement | null>(null);
+  const [tempPoints,          setTempPoints]          = useState<InProgressPoint[]>([]);
+  const [pendingMeasurement,  setPendingMeasurement]  = useState<PendingMeasurement | null>(null);
+
+  // ── NEW: display unit state ───────────────────────────────────────────────
+  const [displayUnit, setDisplayUnit] = useState<DisplayUnit>('m');
 
   const [undoPast,   setUndoPast]   = useState<UndoEntry[]>([]);
   const [undoFuture, setUndoFuture] = useState<UndoEntry[]>([]);
@@ -252,7 +233,6 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     });
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
-  // ── Helper to recalculate parent total based on children ───────────────────
   const recalculateParentTotal = useCallback((parentId: string, measurements: TakeoffRow[]): TakeoffRow[] => {
     const parentIndex = measurements.findIndex(m => m.id === parentId);
     if (parentIndex === -1) return measurements;
@@ -282,7 +262,6 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     return updatedMeasurements;
   }, []);
 
-  // ── Get effective quantity (computes from children for groups) ─────────────
   const getEffectiveQuantity = useCallback((measurement: TakeoffRow): number => {
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
       const childIds = measurement.childIds as string[];
@@ -301,9 +280,6 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     return measurement.unit || '';
   }, []);
 
-  // ── Metadata update helper ─────────────────────────────────────────────────
-  // Intentionally NOT pushed into undo/redo — metadata changes shouldn't be
-  // undone via Ctrl+Z alongside measurement edits.
   const updateProjectMeta = useCallback((
     updates: Partial<Omit<ProjectState, 'drawings' | 'activeDrawingId' | 'measurements' | 'materials'>>
   ) => {
@@ -389,7 +365,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     });
   }, [pushEntry, syncedSetTempPoints]);
 
-  // ── commitMeasurement — single commit ──────────────────────────────────────
+  // ── commitMeasurement ──────────────────────────────────────────────────────
   const commitMeasurement = useCallback((m: TakeoffRow) => {
     const mBefore = measurementsRef.current;
     let mAfter = [...mBefore, m];
@@ -415,7 +391,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     }
   }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
-  // ── batchCommitMeasurements — eliminates race condition ───────────────────
+  // ── batchCommitMeasurements ────────────────────────────────────────────────
   const batchCommitMeasurements = useCallback((measurements: TakeoffRow[]) => {
     if (measurements.length === 0) return;
 
@@ -730,6 +706,9 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     updateProjectMeta,
     getEffectiveQuantity,
     getEffectiveUnit,
+    // ── NEW ──────────────────────────────────────────────────────────────────
+    displayUnit,
+    setDisplayUnit,
   };
 
   return (

@@ -1,6 +1,6 @@
 // components/TakeoffTable.tsx
 import React, { useState, useMemo, useCallback } from 'react';
-import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X } from 'lucide-react';
+import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check } from 'lucide-react';
 import { cn, formatCurrency } from '../lib/utils';
 import { TakeoffRow, Material } from '../types';
 
@@ -12,7 +12,7 @@ interface TakeoffTableProps {
   onAddManual: () => void;
   onToggleVisibility: (id?: string) => void;
   onExpand?: () => void;
-  onAddSegmentToGroup?: (groupId: string, groupType: string) => void; // ← ADD groupType parameter
+  onAddSegmentToGroup?: (groupId: string, groupType: string) => void;
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
 
@@ -28,13 +28,13 @@ interface ConfirmDialogProps {
   type?: 'danger' | 'warning' | 'info';
 }
 
-function ConfirmDialog({ 
-  isOpen, 
-  title, 
-  message, 
-  confirmText = 'Delete', 
+function ConfirmDialog({
+  isOpen,
+  title,
+  message,
+  confirmText = 'Delete',
   cancelText = 'Cancel',
-  onConfirm, 
+  onConfirm,
   onCancel,
   type = 'danger'
 }: ConfirmDialogProps) {
@@ -62,11 +62,10 @@ function ConfirmDialog({
 
   return (
     <>
-      <div 
+      <div
         className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 animate-in fade-in duration-200"
         onClick={onCancel}
       />
-      
       <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-96 animate-in zoom-in-95 fade-in duration-200">
         <div className={cn("bg-stone-900 border rounded-lg shadow-2xl", style.border)}>
           <div className="flex items-center justify-between p-4 border-b border-stone-800">
@@ -78,11 +77,9 @@ function ConfirmDialog({
               <X className="w-4 h-4" />
             </button>
           </div>
-          
           <div className="p-4">
             <p className="text-xs text-zinc-400 leading-relaxed font-mono">{message}</p>
           </div>
-          
           <div className="flex items-center justify-end gap-2 p-4 border-t border-stone-800 bg-stone-900/50 rounded-b-lg">
             <button onClick={onCancel} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors">
               {cancelText}
@@ -93,7 +90,6 @@ function ConfirmDialog({
           </div>
         </div>
       </div>
-      
       <style>{`
         @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
         @keyframes zoom-in-95 { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
@@ -104,6 +100,38 @@ function ConfirmDialog({
     </>
   );
 }
+
+// ─── useCopyToClipboard hook ─────────────────────────────────────────────
+function useCopyToClipboard() {
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const timerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const copy = useCallback((id: string, text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setCopiedId(id);
+      timerRef.current = setTimeout(() => setCopiedId(null), 1500);
+    }).catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      setCopiedId(id);
+      timerRef.current = setTimeout(() => setCopiedId(null), 1500);
+    });
+  }, []);
+
+  React.useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current); }, []);
+
+  return { copiedId, copy };
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function TakeoffTable({
   measurements,
@@ -121,12 +149,14 @@ export function TakeoffTable({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  
+
   const [confirmDialog, setConfirmDialog] = useState<{
     isOpen: boolean;
     groupName: string;
     groupId: string;
   }>({ isOpen: false, groupName: '', groupId: '' });
+
+  const { copiedId, copy } = useCopyToClipboard();
 
   const stopEditing = () => {
     setEditingId(null);
@@ -146,7 +176,7 @@ export function TakeoffTable({
   };
 
   const getMaterial = (materialId?: string) => materials.find((m) => m.id === materialId);
-  
+
   const toggleRowExpand = (id: string) => {
     setExpandedRows((prev) => {
       const next = new Set(prev);
@@ -192,19 +222,12 @@ export function TakeoffTable({
   const totalCost = measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0);
   const allVisible = measurements.every((m) => m.isVisible !== false);
 
-  // ── Helper to batch update group children ─────────────────────────────────
   const batchUpdateGroup = useCallback((groupId: string, items: TakeoffRow[], updates: Partial<TakeoffRow>) => {
     if (!batchUpdateMeasurements) {
-      // Fallback to individual updates if batch update not available
       items.forEach(item => onUpdate(item.id, updates));
       return;
     }
-    
-    const batchUpdates = items.map(item => ({
-      id: item.id,
-      updates,
-    }));
-    batchUpdateMeasurements(batchUpdates);
+    batchUpdateMeasurements(items.map(item => ({ id: item.id, updates })));
   }, [batchUpdateMeasurements, onUpdate]);
 
   const renderEditableText = (
@@ -235,7 +258,16 @@ export function TakeoffTable({
     }
 
     return (
-      <span onClick={(e) => startEditing(row.id, field, e)} className={cn('cursor-text hover:text-amber-accent transition-colors', className)}>
+      <span 
+        onClick={(e) => startEditing(row.id, field, e)} 
+        className={cn('cursor-text hover:text-amber-accent transition-colors block truncate max-w-[200px]', className)}
+        style={{ 
+          display: 'block',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap'
+        }}
+      >
         {type === 'number' && typeof value === 'number' ? value.toFixed(3) : (value as string)}
       </span>
     );
@@ -244,6 +276,8 @@ export function TakeoffTable({
   const renderEditableQuantity = (row: TakeoffRow) => {
     const isEditing = editingId === row.id && editingField === 'quantity';
     const value = row.quantity;
+    const isCopied = copiedId === row.id;
+    const copyText = `${value.toFixed(3)} ${row.unit ?? ''}`.trim();
 
     if (isEditing) {
       return (
@@ -265,8 +299,26 @@ export function TakeoffTable({
     }
 
     return (
-      <div className="flex items-center justify-end gap-1">
-        <span onClick={(e) => startEditing(row.id, 'quantity', e)} className="cursor-text hover:text-amber-accent transition-colors font-mono font-bold text-amber-accent">
+      <div className="flex items-center justify-end gap-1 group/qty">
+        <button
+          onClick={(e) => { e.stopPropagation(); copy(row.id, copyText); }}
+          className={cn(
+            'opacity-0 group-hover/qty:opacity-100 transition-all duration-150 p-0.5 -ml-8 rounded',
+            isCopied
+              ? 'text-green-400 opacity-100'
+              : 'text-zinc-600 hover:text-amber-400',
+          )}
+          title={`Copy: ${copyText}`}
+        >
+          {isCopied
+            ? <Check className="w-2.5 h-2.5" />
+            : <Copy className="w-2.5 h-2.5" />}
+        </button>
+
+        <span
+          onClick={(e) => startEditing(row.id, 'quantity', e)}
+          className="cursor-text hover:text-amber-accent transition-colors font-mono font-bold text-amber-accent"
+        >
           {value.toFixed(3)}
         </span>
         {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
@@ -303,7 +355,7 @@ export function TakeoffTable({
           <option value="">— None —</option>
           {materials.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.code || m.id.slice(0,6)} – {m.name} ({formatCurrency(getMaterialTotal(m))}/{m.unit})
+              {m.code || m.id.slice(0, 6)} – {m.name} ({formatCurrency(getMaterialTotal(m))}/{m.unit})
             </option>
           ))}
         </select>
@@ -314,8 +366,8 @@ export function TakeoffTable({
       <span onClick={(e) => startEditing(row.id, 'materialId', e)} className="cursor-pointer hover:text-amber-accent transition-colors">
         {matched ? (
           <span className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0,6)}</span>
-            <span className="text-[8px] text-zinc-500 leading-tight">{matched.name}</span>
+            <span className="text-[10px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0, 6)}</span>
+            <span className="text-[8px] text-zinc-500 leading-tight truncate max-w-[150px]">{matched.name}</span>
           </span>
         ) : (
           <span className="text-[10px] text-zinc-600 italic">— assign —</span>
@@ -354,7 +406,7 @@ export function TakeoffTable({
             {row.label && (
               <div className="flex items-start gap-3">
                 <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
-                <span className="text-[9px] text-zinc-400 font-mono">{row.label}</span>
+                <span className="text-[9px] text-zinc-400 font-mono truncate">{row.label}</span>
               </div>
             )}
             <div className="flex items-start gap-3">
@@ -375,7 +427,7 @@ export function TakeoffTable({
             {row.notes && (
               <div className="flex items-start gap-3">
                 <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Notes</span>
-                <span className="text-[9px] text-zinc-500 font-mono">{row.notes}</span>
+                <span className="text-[9px] text-zinc-500 font-mono truncate">{row.notes}</span>
               </div>
             )}
           </div>
@@ -422,7 +474,7 @@ export function TakeoffTable({
           <thead className="bg-stone-900/80 sticky top-0 z-20">
             <tr className="border-b border-industrial-border text-zinc-500 uppercase tracking-tighter">
               <th className="p-2 text-center w-8 border-r border-industrial-border">#</th>
-              <th className="p-2 border-r border-industrial-border text-left">Description</th>
+              <th className="p-2 border-r border-industrial-border text-left max-w-[150px]">Description</th>
               <th className="p-2 text-right pr-3">Qty / Actions</th>
             </tr>
           </thead>
@@ -433,7 +485,9 @@ export function TakeoffTable({
               const groupTotalQuantity = calculateGroupTotal(items, 'quantity');
               const isEditingGroup = editingGroupId === groupId;
               const allItemsVisible = items.every(item => item.isVisible !== false);
-              
+              const groupCopyText = `${groupTotalQuantity.toFixed(3)} ${items[0]?.unit ?? ''}`.trim();
+              const isGroupCopied = copiedId === `group-${groupId}`;
+
               return (
                 <React.Fragment key={groupId}>
                   <tr
@@ -443,7 +497,7 @@ export function TakeoffTable({
                     <td className="p-2 text-center border-r border-industrial-border text-amber-500 font-bold whitespace-nowrap">
                       {groupIdx + 1}
                     </td>
-                    <td className="p-2 border-r border-industrial-border">
+                    <td className="p-2 border-r border-industrial-border max-w-[150px]">
                       <div className="flex items-center gap-2">
                         {isGroupExpanded ? <ChevronDown className="w-3 h-3 text-amber-500 shrink-0" /> : <ChevronRight className="w-3 h-3 text-amber-500 shrink-0" />}
                         <FolderOpen className="w-3 h-3 text-amber-500/60 shrink-0" />
@@ -459,11 +513,18 @@ export function TakeoffTable({
                             }}
                             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                             onClick={(e) => e.stopPropagation()}
-                            className="bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
+                            className="bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200 flex-1 min-w-0"
                           />
                         ) : (
                           <span
                             className="text-[11px] font-bold text-amber-500 uppercase tracking-wider truncate cursor-text hover:text-amber-300 transition-colors"
+                            style={{
+                              display: 'block',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                              maxWidth: '180px'
+                            }}
                             onClick={(e) => startEditingGroup(groupId, e)}
                           >
                             {header.groupName || header.description}
@@ -474,10 +535,22 @@ export function TakeoffTable({
                     </td>
                     <td className="p-2 text-right pr-3">
                       <div className="flex items-center justify-end gap-3">
-                        <span className="font-bold text-amber-500 whitespace-nowrap">
-                          {groupTotalQuantity.toFixed(3)} {items[0]?.unit || ''}
-                        </span>
-                        
+                        <div className="flex items-center gap-1 group/gqty">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); copy(`group-${groupId}`, groupCopyText); }}
+                            className={cn(
+                              'opacity-0 group-hover/gqty:opacity-100 transition-all duration-150 p-0.5 -ml-12 rounded',
+                              isGroupCopied ? 'text-green-400 opacity-100' : 'text-zinc-600 hover:text-amber-400',
+                            )}
+                            title={`Copy: ${groupCopyText}`}
+                          >
+                            {isGroupCopied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
+                          </button>
+                          <span className="font-bold text-amber-500 whitespace-nowrap">
+                            {groupTotalQuantity.toFixed(3)} {items[0]?.unit || ''}
+                          </span>
+                        </div>
+
                         <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                           <label className="cursor-pointer">
                             <input
@@ -487,7 +560,6 @@ export function TakeoffTable({
                                 e.stopPropagation();
                                 const color = e.target.value;
                                 onUpdate(header.id, { color });
-                                // Batch update all children at once
                                 batchUpdateGroup(groupId, items, { color });
                               }}
                               onClick={(e) => e.stopPropagation()}
@@ -495,13 +567,12 @@ export function TakeoffTable({
                             />
                             <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: header.color || '#EF9F27' }} />
                           </label>
-                          
+
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               const newVisibility = !allItemsVisible;
                               onToggleVisibility(header.id);
-                              // Batch update all children at once
                               batchUpdateGroup(groupId, items, { isVisible: newVisibility });
                             }}
                             className={cn('transition-colors', allItemsVisible ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
@@ -509,16 +580,12 @@ export function TakeoffTable({
                             {allItemsVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                           </button>
                           <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onAddSegmentToGroup?.(groupId, header.type);  // ← Pass the type
-                            }}
+                            onClick={(e) => { e.stopPropagation(); onAddSegmentToGroup?.(groupId, header.type); }}
                             className="text-zinc-600 hover:text-blue-400 transition-colors"
                             title="Add segment to this group"
                           >
                             <Plus className="w-3 h-3" />
                           </button>
-                          
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
@@ -548,7 +615,7 @@ export function TakeoffTable({
                           <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[9px] whitespace-nowrap">
                             {groupIdx + 1}.{itemIdx + 1}
                           </td>
-                          <td className="p-2 border-r border-industrial-border pl-7">
+                          <td className="p-2 border-r border-industrial-border pl-7 max-w-[150px]">
                             <div className="flex items-center gap-2">
                               <Package className="w-2.5 h-2.5 text-zinc-600 shrink-0" />
                               {editingId === item.id && editingField === 'description' ? (
@@ -564,17 +631,23 @@ export function TakeoffTable({
                               ) : (
                                 <span
                                   className="truncate text-zinc-200 cursor-text hover:text-amber-accent transition-colors flex-1 min-w-0"
+                                  style={{
+                                    display: 'block',
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap'
+                                  }}
                                   onClick={(e) => startEditing(item.id, 'description', e)}
                                 >
                                   {item.description || <span className="text-zinc-600 italic">No description</span>}
                                 </span>
                               )}
-                              <span className="text-zinc-700">
+                              <span className="text-zinc-700 shrink-0">
                                 {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                               </span>
                             </div>
                           </td>
-                          <td className="p-2 text-right pr-3">
+                          <td className="p-2 text-right pr-1">
                             <div className="flex items-center justify-end gap-3">
                               {renderEditableQuantity(item)}
                               {renderRowActions(item)}
@@ -600,7 +673,7 @@ export function TakeoffTable({
                     <td className="p-2 text-center border-r border-industrial-border text-zinc-600 font-bold whitespace-nowrap">
                       {(organizedData.groups.size + idx + 1).toString().padStart(2, '0')}
                     </td>
-                    <td className="p-2 border-r border-industrial-border font-medium">
+                    <td className="p-2 border-r border-industrial-border font-medium max-w-[150px]">
                       <div className="flex items-center gap-2">
                         {editingId === row.id && editingField === 'description' ? (
                           <input
@@ -615,17 +688,23 @@ export function TakeoffTable({
                         ) : (
                           <span
                             className="truncate text-zinc-200 cursor-text hover:text-amber-accent transition-colors flex-1 min-w-0"
+                            style={{
+                              display: 'block',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap'
+                            }}
                             onClick={(e) => startEditing(row.id, 'description', e)}
                           >
                             {row.description || <span className="text-zinc-600 italic">No description</span>}
                           </span>
                         )}
-                        <span className="text-zinc-700">
+                        <span className="text-zinc-700 shrink-0">
                           {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                         </span>
                       </div>
                     </td>
-                    <td className="p-2 text-right pr-3">
+                    <td className="p-2 text-right pr-1">
                       <div className="flex items-center justify-end gap-3">
                         {renderEditableQuantity(row)}
                         {renderRowActions(row)}
