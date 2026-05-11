@@ -517,7 +517,7 @@ export default function Workspace() {
                 <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
                   <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
-                    {api.currentPageCorners} corners detected
+                    {api.currentPageCorners} corners de
                   </span>
                 </div>
               )}
@@ -608,7 +608,7 @@ export default function Workspace() {
                 showPresetDrawer={showPresetDrawer}
                 onClosePresetDrawer={() => setShowPresetDrawer(false)}
                 onSelectPreset={handlePresetSelect}
-                hideToolbar={true}
+                hideToolbar={false}  // ← Change from true to false (or remove this line)
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}

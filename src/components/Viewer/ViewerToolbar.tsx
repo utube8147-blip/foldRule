@@ -8,6 +8,8 @@
 //  ADDED: unit conversion dropdown (m / cm / mm / ft / in) next to scale.
 //         Reads/writes displayUnit from TakeoffContext — no prop needed.
 //
+//  ADDED: room detection toggle button
+//
 //  All state lives in Viewer.tsx — this is purely presentational.
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -15,7 +17,8 @@
 import React from 'react';
 import {
   ZoomIn, ZoomOut, Maximize,
-  Undo2, Redo2, Target, Scaling, Settings2,
+  Undo2, Redo2, Target, Settings2,
+  Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
@@ -55,6 +58,11 @@ interface ViewerToolbarProps {
   MIN_ZOOM:         number;
   MAX_ZOOM:         number;
   ZOOM_SENSITIVITY: number;
+
+  // ── Room detection props ─────────────────────────────────────────────────
+  showRooms:       boolean;
+  setShowRooms:    (v: boolean) => void;
+  detectingRooms:  boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -68,10 +76,12 @@ export function ViewerToolbar({
   analysisStatus, analysisPage, currentPageCorners,
   scale, setScale, fitToScreen,
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
+  showRooms, setShowRooms, detectingRooms,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
+  const isAnalysisDone = analysisStatus === 'done';
 
-  // ── NEW: pull displayUnit from context — no prop drilling needed ──────────
+  // ── pull displayUnit from context ────────────────────────────────────────
   const { displayUnit, setDisplayUnit } = useTakeoffContext();
 
   return (
@@ -145,9 +155,10 @@ export function ViewerToolbar({
       </div>
 
       {/* ── Centre: Status + Snap + Scale ── */}
-      <div className="flex flex-row items-center gap-2 flex-1 justify-center flex-wrap">
+      <div className="flex flex-row items-center gap-2 flex-1 justify-center">
 
-        {isAnalyzing && analysisPage && (
+        {/* Only show analysis when snap is ON */}
+        {snapEnabled && isAnalyzing && analysisPage && (
           <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
             <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
             <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
@@ -156,42 +167,57 @@ export function ViewerToolbar({
           </div>
         )}
 
-        {analysisStatus === 'done' && (
-          <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
-            <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-            <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
-              {currentPageCorners} corners detected
-            </span>
-          </div>
-        )}
-
+        {/* Main Snap toggle - always visible */}
         <button
           onClick={() => setSnapEnabled(!snapEnabled)}
           className={cn(
-            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
+            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
             snapEnabled
               ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
-              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+              : 'bg-amber-500/10 border-amber-500/50 text-amber-400 hover:bg-amber-500/20',
           )}
-          title="Toggle corner snapping"
+          title={snapEnabled ? "Snap is ON - Click to disable" : "Snap is OFF - Click to enable analysis"}
         >
           <Target className="w-3 h-3" />
-          {snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
+          {snapEnabled ? 'SNAP ACTIVE' : 'SNAP INACTIVE'}
         </button>
 
-        <button
-          onClick={() => setShowSnapSettings(!showSnapSettings)}
-          className={cn(
-            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-            showSnapSettings
-              ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
-              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-          )}
-          title="Snap settings"
-        >
-          <Settings2 className="w-3 h-3" />
-          SNAP
-        </button>
+        {/* Snap Settings - only when snap is ON AND analysis is done */}
+        {snapEnabled && isAnalysisDone && (
+          <button
+            onClick={() => setShowSnapSettings(!showSnapSettings)}
+            className={cn(
+              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
+              showSnapSettings
+                ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
+                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+            )}
+            title="Snap settings"
+          >
+            <Settings2 className="w-3 h-3" />
+            SNAP SETTINGS
+          </button>
+        )}
+
+        {/* Room detection toggle - available when analysis is done, regardless of snap state */}
+        {/* {isAnalysisDone && (
+          <button
+            onClick={() => setShowRooms(!showRooms)}
+            className={cn(
+              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
+              showRooms
+                ? 'bg-blue-500/10 border-blue-500/50 text-blue-400 hover:bg-blue-500/20'
+                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+            )}
+            title="Toggle room detection overlay"
+          >
+            <Layers className="w-3 h-3" />
+            {detectingRooms ? 'DETECTING...' : showRooms ? 'ROOMS ON' : 'ROOMS OFF'}
+          </button>
+        )} */}
+
+        {/* Separator */}
+        <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
 
         {/* Scale display */}
         <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
@@ -201,7 +227,7 @@ export function ViewerToolbar({
           </span>
         </div>
 
-        {/* ── NEW: Unit conversion dropdown ─────────────────────────────────── */}
+        {/* Unit conversion dropdown */}
         <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-1 py-0.5" title="Display unit">
           <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-tighter pl-1">Unit:</span>
           <select
@@ -216,8 +242,8 @@ export function ViewerToolbar({
             ))}
           </select>
         </div>
-        {/* ── END NEW ───────────────────────────────────────────────────────── */}
 
+        {/* Draw Calibration button */}
         <button
           onClick={() => setActiveTool('scale')}
           className={cn(
@@ -228,13 +254,6 @@ export function ViewerToolbar({
           )}
         >
           DRAW CALIBRATION
-        </button>
-
-        <button
-          onClick={handleManualScale}
-          className="text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black"
-        >
-          MANUAL SCALE
         </button>
       </div>
 

@@ -7,12 +7,24 @@
 //    • ViewerCanvas   — canvas stack + PDF scroll area
 //    • ViewerDialogs  — all modals / overlays
 //
-//  CHANGES:
-//    • FIX 1: Escape with no tempPoints now switches to 'select' tool (was a no-op)
-//    • FIX 1: Escape hint in the status bar updated to reflect both behaviours
-//    • FIX 2: double-click to finish — handled here via onDoubleClick on the
-//             container; useMeasurementCommit also needs e.detail===2 guard
-//             (see useMeasurementCommit.ts patch below)
+//  CHANGES vs previous version:
+//    • FIX 1: Escape with no tempPoints now switches to 'select' tool
+//    • FIX 2: double-click to finish supported via onDoubleClick
+//    • FEATURE: Auto room detection (useRoomDetection + roomCanvasRef)
+//              Toggle via showRooms state, passed to ViewerCanvas
+//              Clicking a detected room auto-creates a polygon measurement
+//    • ADDED: externalShowRooms prop to allow parent control of room visibility
+//    • FIX 3: Room detection is now scale-independent — zooming no longer
+//              re-triggers detection. Uses pdfIntrinsicDims (scale=1) for
+//              detection; pdfDimensions (scaled) only for visual rendering.
+//    • FIX 4: Pass pdfCanvasRef.current as externalCanvas to useRoomDetection.
+//              Previously no canvas was passed, so resolvePdfCanvas() fell back
+//              to document.querySelectorAll('canvas') which could pick
+//              roomCanvasRef — the canvas with "CORRIDOR" UI pills already
+//              painted on it. Tesseract then read those UI labels instead of
+//              the actual PDF room names (OFFICE, STIFFS, etc.).
+//              Passing pdfCanvasRef.current makes resolvePdfCanvas() short-
+//              circuit immediately, skipping the DOM query entirely.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -27,7 +39,10 @@ import { Minimap }           from './Minimap';
 import { SnapSettingsPanel } from './SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/useSnapEngine';
 import { useMeasurements }   from '@/hooks/useMeasurements';
+import { useRoomDetection }  from '@/hooks/useRoomDetection';
+import { drawRoomsOnCanvas } from '@/hooks/useSnapEngine/drawRoomsOnCanvas';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
+import type { DetectedRoom } from '@/hooks/useSnapEngine/detectRooms';
 
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
@@ -54,12 +69,18 @@ export function Viewer({
   appendToGroupId: propAppendToGroupId,
   onAppendComplete,
   onToolbarReady,
-}: import('./Viewer/ViewerConstants').ViewerProps) {
+  externalShowRooms,
+  onExternalShowRoomsChange,
+}: import('./Viewer/ViewerConstants').ViewerProps & {
+  externalShowRooms?: boolean;
+  onExternalShowRoomsChange?: (show: boolean) => void;
+}) {
 
   // ── Refs ───────────────────────────────────────────────────────────────────
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
   const pinCanvasRef     = useRef<HTMLCanvasElement>(null);
+  const roomCanvasRef    = useRef<HTMLCanvasElement>(null);
   const containerRef     = useRef<HTMLDivElement>(null);
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -70,8 +91,33 @@ export function Viewer({
   const [isPanning, setIsPanning]   = useState(false);
   const [spaceHeld, setSpaceHeld]   = useState(false);
   const spaceHeldRef                = useRef(false);
+
+  // pdfDimensions: logical CSS-pixel size at current zoom — used for rendering
   const [pdfDimensions, setPdfDimensions] = useState<PdfDimensions | null>(null);
 
+  // pdfIntrinsicDims: page size at scale=1, stable across zoom — used for detection
+  // Room detection must be scale-independent; using scaled dims causes re-detection
+  // on every zoom because pdfDimensions.w/h change with the scale factor.
+  const [pdfIntrinsicDims, setPdfIntrinsicDims] = useState<PdfDimensions | null>(null);
+
+  // ── Room detection state ───────────────────────────────────────────────────
+  const [internalShowRooms, setInternalShowRooms] = useState(false);
+  const showRooms = externalShowRooms !== undefined ? externalShowRooms : internalShowRooms;
+
+  const setShowRooms = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
+    const newValue = typeof value === 'function'
+      ? value(externalShowRooms !== undefined ? externalShowRooms : internalShowRooms)
+      : value;
+    if (externalShowRooms !== undefined && onExternalShowRoomsChange) {
+      onExternalShowRoomsChange(newValue);
+    } else {
+      setInternalShowRooms(newValue);
+    }
+  }, [externalShowRooms, internalShowRooms, onExternalShowRoomsChange]);
+
+  const [hoveredRoomId, setHoveredRoomId] = useState<string | null>(null);
+
+  // ── Stable refs ────────────────────────────────────────────────────────────
   const pdfDimensionsRef = useRef<PdfDimensions | null>(null);
   useEffect(() => { pdfDimensionsRef.current = pdfDimensions; }, [pdfDimensions]);
   const pageNumberRef = useRef(pageNumber);
@@ -135,6 +181,65 @@ export function Viewer({
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   const setActiveToolString = useCallback((t: string) => setActiveTool(t as ToolType), [setActiveTool]);
+
+  // ── Room detection ─────────────────────────────────────────────────────────
+  //
+  // KEY: pass pdfIntrinsicDims (scale=1, stable) NOT pdfDimensions (scale-dependent).
+  // Zooming changes pdfDimensions.w/h which would re-trigger detection on every
+  // zoom step. Intrinsic dims are fixed for the lifetime of the current page.
+  //
+  // FIX: pass pdfCanvasRef.current as the fifth argument (externalCanvas).
+  // Without this, useRoomDetection fell back to document.querySelectorAll('canvas')
+  // which is a near-tie between all four overlay canvases. roomCanvasRef —
+  // which already has "CORRIDOR" pills painted on it — could win the scoring,
+  // causing Tesseract to read those UI labels instead of the PDF room names.
+  // Passing pdfCanvasRef.current makes resolvePdfCanvas() return immediately
+  // without touching the DOM, guaranteeing OCR reads clean PDF pixels.
+  const {
+    rooms,
+    geometryCandidates,
+    phase: roomPhase,
+    detecting: detectingRooms,
+    error: roomError,
+    forceRedetect,
+  } = useRoomDetection(
+    pageData,
+    pdfIntrinsicDims,       // ← stable, scale-independent
+    pageNumber,
+    showRooms,
+    pdfCanvasRef.current,   // ← FIX: pass clean PDF canvas; skip DOM query
+  );
+
+  // Log detection errors in dev
+  useEffect(() => {
+    if (roomError) console.error('[Viewer] Room detection error:', roomError);
+  }, [roomError]);
+
+  // Redraw room canvas on any relevant change.
+  // drawRoomsOnCanvas still uses pdfDimensions (scaled) so polygons render
+  // at the correct visual size — that's intentional and correct.
+  useEffect(() => {
+    const canvas = roomCanvasRef.current;
+    if (!canvas || !pdfDimensions) return;
+
+    if (!showRooms) {
+      canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    // Show geometry outlines immediately while OCR is still running
+    const displayRooms = rooms.length > 0 ? rooms : geometryCandidates;
+    drawRoomsOnCanvas(canvas, displayRooms, pdfDimensions, hoveredRoomId);
+  }, [rooms, geometryCandidates, showRooms, pdfDimensions, hoveredRoomId]);
+
+  // Auto-create a polygon measurement when user clicks a detected room
+  const handleRoomClick = useCallback((room: DetectedRoom) => {
+    if (!pdfDimensions) return;
+    const pts = room.polygon.map(p => ({ x: p.nx, y: p.ny, snapped: false }));
+    pts.forEach(p => pushPoint(p));
+    commitMeasurement({ type: 'polygon', label: room.label, pageNumber });
+    clearTempPoints();
+  }, [pdfDimensions, pushPoint, commitMeasurement, clearTempPoints, pageNumber]);
 
   // ── Calibration ────────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
@@ -244,11 +349,14 @@ export function Viewer({
     pdf, pageNumber,
     fitToScreen: () => fitToScreen(), handleManualScale,
     canUndo, canRedo, handleUndo, handleRedo,
+    showRooms, setShowRooms, detectingRooms,
+    roomPhase, forceRedetect,
   }), [
     activeTool, setActiveTool, scale, scaleFactor,
     snapEnabled, showSnapSettings, showPins, snapThreshold, confidenceFilter,
     analysisStatus, analysisPage, pageData, pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
+    showRooms, detectingRooms, roomPhase, forceRedetect,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -261,7 +369,7 @@ export function Viewer({
   // ── PDF load ───────────────────────────────────────────────────────────────
   useEffect(() => {
     let mounted = true;
-    if (!activeDrawingUrl) { setPdf(null); setPdfDimensions(null); return; }
+    if (!activeDrawingUrl) { setPdf(null); setPdfDimensions(null); setPdfIntrinsicDims(null); return; }
     setLoading(true);
 
     const onLoad = async (doc: pdfjsLib.PDFDocumentProxy) => {
@@ -312,12 +420,28 @@ export function Viewer({
         const ctx    = canvas.getContext('2d'); if (!ctx) return;
         canvas.width = physVP.width; canvas.height = physVP.height;
         canvas.style.width = `${logVP.width}px`; canvas.style.height = `${logVP.height}px`;
-        for (const ref of [drawingCanvasRef, pinCanvasRef]) {
+
+        // Size all overlay canvases to match logical viewport
+        for (const ref of [drawingCanvasRef, pinCanvasRef, roomCanvasRef]) {
           const c = ref.current; if (!c) continue;
           c.width = logVP.width; c.height = logVP.height;
           c.style.width = `${logVP.width}px`; c.style.height = `${logVP.height}px`;
         }
+
+        // Scaled dims for rendering/interaction
         setPdfDimensions({ w: logVP.width, h: logVP.height });
+
+        // Intrinsic dims (scale=1) for room detection — stable across zoom.
+        // Only set when the page actually changes, not on every zoom.
+        // Because getViewport is cheap and synchronous we compute it here;
+        // React will bail out of the re-render if the values haven't changed.
+        const intrinsicVP = page.getViewport({ scale: 1 });
+        setPdfIntrinsicDims(prev =>
+          prev?.w === intrinsicVP.width && prev?.h === intrinsicVP.height
+            ? prev  // same object reference → no re-render, no detection re-run
+            : { w: intrinsicVP.width, h: intrinsicVP.height },
+        );
+
         task = page.render({ canvasContext: ctx, viewport: physVP, canvas: canvas as any } as any);
         await task.promise;
       } catch (err: any) { if (err?.name !== 'RenderingCancelledException') console.error(err); }
@@ -418,11 +542,18 @@ export function Viewer({
   }, [startPan]);
 
   // ── Wrap dims ──────────────────────────────────────────────────────────────
-  const wrapDims = pdf && pdfDimensions && containerRef.current ? (() => {
-    const vw = containerRef.current.clientWidth;
-    const vh = containerRef.current.clientHeight;
-    return { width: Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3), height: Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3) };
-  })() : undefined;
+  const [wrapDims, setWrapDims] = useState<{ width: number; height: number } | undefined>();
+  useEffect(() => {
+    if (!pdf || !pdfDimensions) { setWrapDims(undefined); return; }
+    const el = containerRef.current;
+    if (!el) return;
+    const vw = el.clientWidth  || el.offsetWidth  || window.innerWidth;
+    const vh = el.clientHeight || el.offsetHeight || window.innerHeight;
+    setWrapDims({
+      width:  Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw  * 3),
+      height: Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3),
+    });
+  }, [pdf, pdfDimensions]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -441,6 +572,9 @@ export function Viewer({
           currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
           scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
           MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
+          showRooms={showRooms}
+          setShowRooms={setShowRooms}
+          detectingRooms={detectingRooms}
         />
       )}
 
@@ -458,20 +592,10 @@ export function Viewer({
         className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
         onKeyDown={e => {
           if (e.code === 'Space') e.preventDefault();
-
-          // ── FIX 1: Escape ─────────────────────────────────────────────────
-          // If drawing: finish the current measurement (same as before).
-          // If idle:    switch to the select tool so users can exit any active
-          //             drawing tool without clicking the toolbar.
           if (e.key === 'Escape') {
-            if (tempPoints.length > 0) {
-              handleFinishMeasurement();
-            } else {
-              setActiveTool('select');
-            }
+            if (tempPoints.length > 0) { handleFinishMeasurement(); }
+            else { setActiveTool('select'); }
           }
-
-          // Enter to finish (existing)
           if (e.key === 'Enter') { e.preventDefault(); if (tempPoints.length > 0) handleFinishMeasurement(); }
         }}
         onPointerDown={handlePointerDown}
@@ -482,11 +606,17 @@ export function Viewer({
       >
         <div className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')} style={wrapDims}>
           <ViewerCanvas
-            pdfCanvasRef={pdfCanvasRef} drawingCanvasRef={drawingCanvasRef} pinCanvasRef={pinCanvasRef}
+            pdfCanvasRef={pdfCanvasRef}
+            drawingCanvasRef={drawingCanvasRef}
+            pinCanvasRef={pinCanvasRef}
+            roomCanvasRef={roomCanvasRef}
             pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
             activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
             tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
             snapFlashes={snapFlashes} toCanvas={toCanvas}
+            showRooms={showRooms} rooms={rooms}
+            hoveredRoomId={hoveredRoomId} setHoveredRoomId={setHoveredRoomId}
+            onRoomClick={handleRoomClick}
             handleCanvasClick={handleCanvasClick} handleContextMenu={handleContextMenu}
             handleCanvasPointerMove={handleCanvasPointerMove}
             handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
@@ -518,6 +648,25 @@ export function Viewer({
         </div>
       )}
 
+      {/* Room detection phase badge */}
+      {showRooms && roomPhase !== 'idle' && roomPhase !== 'done' && (
+        <div
+          style={{
+            position: 'absolute', bottom: 48, left: '50%',
+            transform: 'translateX(-50%)',
+            background: 'rgba(0,0,0,0.7)', color: '#fff',
+            padding: '4px 12px', borderRadius: 4,
+            fontSize: 11, fontFamily: 'monospace',
+            zIndex: 50, pointerEvents: 'none',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {roomPhase === 'geometry' && '🔍 Detecting rooms…'}
+          {roomPhase === 'ocr'      && '🔤 Reading labels…'}
+          {roomPhase === 'error'    && '❌ Detection failed — check console'}
+        </div>
+      )}
+
       {pdf && (
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
@@ -531,7 +680,6 @@ export function Viewer({
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
-          {/* ── FIX 1: updated hint to reflect Escape-to-select behaviour ── */}
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
             <span>Double-click or right-click to finish · ESC to cancel / select · Enter to finish · Space+drag to pan</span>
             <div className="w-px h-3 bg-industrial-border" />

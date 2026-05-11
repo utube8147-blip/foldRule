@@ -9,7 +9,8 @@ import { Navbar } from '@/components/Navbar';
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
-
+import { ViewerToolbar } from '@/components/Viewer/ViewerToolbar';
+import { Layers } from 'lucide-react';
 
 const Viewer = dynamic(
   () => import('@/components/Viewer').then(m => m.Viewer),
@@ -25,11 +26,6 @@ import { useTakeoffContext } from '@/context/TakeoffContext';
 import {
   PanelRightClose,
   Sidebar as SidebarIcon,
-  ZoomIn,
-  ZoomOut,
-  Maximize,
-  Target,
-  Settings2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
@@ -93,6 +89,11 @@ export default function Workspace() {
   const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
 
   const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
+
+  // ── State for toolbar props that need to be managed at workspace level ──
+  const [snapEnabled, setSnapEnabled] = useState(false);
+  const [showSnapSettings, setShowSnapSettings] = useState(false);
+  const [showRooms, setShowRooms] = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -378,7 +379,7 @@ export default function Workspace() {
     fetch('/api/export', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }), // ← sends the user's chosen filename
+      body: JSON.stringify({ filename }),
     })
       .then(async res => {
         if (!res.ok) {
@@ -386,7 +387,6 @@ export default function Workspace() {
           throw new Error(err.details || err.error || `HTTP ${res.status}`);
         }
 
-        // Use the filename the user typed, falling back to Content-Disposition
         const disposition = res.headers.get('Content-Disposition');
         const match       = disposition?.match(/filename="(.+)"/);
         const finalName   = filename || match?.[1] || `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
@@ -478,119 +478,40 @@ export default function Workspace() {
 
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
-          {/* Viewer toolbar */}
-          <div className="flex-shrink-0 h-12 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-4 z-30 shadow-sm">
-
-            <div className="flex gap-1 flex-shrink-0">
-              {api?.tools.map(tool => (
-                <button
-                  key={tool.id}
-                  onClick={() => api.setActiveTool(tool.id as any)}
-                  className={cn(
-                    'w-9 h-9 flex items-center justify-center transition-all relative group border',
-                    api.activeTool === tool.id
-                      ? 'bg-zinc-800 border-amber-400 text-amber-400'
-                      : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
-                  )}
-                  title={`${tool.label} (${tool.shortcut})`}
-                >
-                  <tool.icon className="w-4 h-4" />
-                  <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-                    {tool.label} [{tool.shortcut}]
-                  </div>
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 flex-1 justify-center flex-wrap mx-4">
-
-              {api?.analysisStatus === 'analyzing' && api.analysisPage && (
-                <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                  <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
-                    Analyzing… {api.analysisPage.current}/{api.analysisPage.total}
-                  </span>
-                </div>
-              )}
-
-              {api?.analysisStatus === 'done' && (
-                <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                  <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
-                    {api.currentPageCorners} corners detected
-                  </span>
-                </div>
-              )}
-
-              <button
-                onClick={() => api?.setSnapEnabled(s => !s)}
-                className={cn(
-                  'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-                  api?.snapEnabled
-                    ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
-                    : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-                )}
-              >
-                <Target className="w-3 h-3" />
-                {api?.snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
-              </button>
-
-              <button
-                onClick={() => api?.setShowSnapSettings(s => !s)}
-                className={cn(
-                  'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-                  api?.showSnapSettings
-                    ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
-                    : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-                )}
-              >
-                <Settings2 className="w-3 h-3" />
-                SNAP
-              </button>
-
-              <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
-                <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
-                <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
-                  {currentScaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${currentScaleFactor.toFixed(4)}m`}
-                </span>
-              </div>
-
-              <button
-                onClick={() => api?.setActiveTool('scale')}
-                className={cn(
-                  'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
-                  api?.activeTool === 'scale'
-                    ? 'bg-amber-400 text-black border-amber-400'
-                    : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
-                )}
-              >
-                DRAW CALIBRATION
-              </button>
-
-              <button
-                onClick={() => api?.handleManualScale()}
-                className="text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black"
-              >
-                MANUAL SCALE
-              </button>
-            </div>
-
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button onClick={() => api?.setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">
-                {api ? `${Math.round(api.scale * 100)}%` : '—'}
-              </span>
-              <button onClick={() => api?.setScale(s => s + 0.1)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <ZoomIn className="w-4 h-4" />
-              </button>
-              <div className="w-px h-4 bg-industrial-border mx-1" />
-              <button onClick={() => api?.fitToScreen()} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <Maximize className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+          {/* ── ViewerToolbar Component ── */}
+          <ViewerToolbar
+            activeTool={activeTool as ToolType}
+            setActiveTool={setActiveTool as (tool: ToolType) => void}
+            canUndo={api?.canUndo ?? false}
+            canRedo={api?.canRedo ?? false}
+            handleUndo={() => api?.handleUndo?.()}
+            handleRedo={() => api?.handleRedo?.()}
+            tempPointsCount={0}
+            snapEnabled={snapEnabled}
+            setSnapEnabled={setSnapEnabled}
+            showSnapSettings={showSnapSettings}
+            setShowSnapSettings={setShowSnapSettings}
+            scaleFactor={currentScaleFactor}
+            handleManualScale={() => api?.handleManualScale?.()}
+            analysisStatus={api?.analysisStatus ?? 'idle'}
+            analysisPage={api?.analysisPage ?? null}
+            currentPageCorners={api?.currentPageCorners ?? 0}
+            scale={api?.scale ?? 1}
+            setScale={(s) => {
+              if (typeof s === 'function') {
+                api?.setScale?.(s);
+              } else {
+                api?.setScale?.(s);
+              }
+            }}
+            fitToScreen={() => api?.fitToScreen?.()}
+            MIN_ZOOM={0.1}
+            MAX_ZOOM={5}
+            ZOOM_SENSITIVITY={0.1}
+            showRooms={showRooms}
+            setShowRooms={setShowRooms}
+            detectingRooms={api?.detectingRooms ?? false}
+          />
 
           <div className="flex flex-1 overflow-hidden relative min-h-0">
 
@@ -612,6 +533,7 @@ export default function Workspace() {
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}
+                externalShowRooms={showRooms}  // Pass room visibility to Viewer
               />
             </div>
 
@@ -671,7 +593,7 @@ export default function Workspace() {
           <ExportModal
             projectState={ps}
             onClose={() => setShowExportModal(false)}
-            onExport={executeExport}  // ← now typed as (filename: string) => void
+            onExport={executeExport}
           />
         )}
       </AnimatePresence>

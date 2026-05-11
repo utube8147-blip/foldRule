@@ -1,27 +1,31 @@
 'use client';
 
 // ─── ViewerCanvas.tsx ─────────────────────────────────────────────────────────
-//
-//  Renders:
-//    • The PDF canvas (pdfCanvasRef)
-//    • The drawing canvas (drawingCanvasRef) — pointer events live here
-//    • The pin/snap canvas (pinCanvasRef)
-//    • CountPinOverlay
-//    • Snap-flash animations
-//    • "Finish" floating buttons for in-progress measurements
-//    • File upload empty state + loading spinner
-//
-//  All state and refs are owned by Viewer.tsx and passed as props.
-//
-// ─────────────────────────────────────────────────────────────────────────────
-
 import React from 'react';
 import { FolderOpen, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
+import type { DetectedRoom } from '@/hooks/useSnapEngine/detectRooms';
 import { CountPinOverlay } from '../CountPinOverlay';
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Ray-casting point-in-polygon test (normalised or canvas coords, consistent) */
+function pointInPolygon(
+  x: number, y: number,
+  poly: Array<{ x: number; y: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const xi = poly[i].x, yi = poly[i].y;
+    const xj = poly[j].x, yj = poly[j].y;
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -32,37 +36,45 @@ interface SnapFlash {
 }
 
 interface ViewerCanvasProps {
-  // Refs - accept nullable types from useRef
+  // Refs
   pdfCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
   drawingCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   pinCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
+  roomCanvasRef:    React.RefObject<HTMLCanvasElement | null>;
 
   // State
-  pdf:            any; // PDFDocumentProxy
-  loading:        boolean;
-  pdfDimensions:  PdfDimensions | null;
-  activeTool:     ToolType;
-  showPins:       boolean;
-  isPanning:      boolean;
-  spaceHeld:      boolean;
-  tempPoints:     InProgressPoint[];
-  measurements:   TakeoffRow[];
+  pdf:             any;
+  loading:         boolean;
+  pdfDimensions:   PdfDimensions | null;
+  activeTool:      ToolType;
+  showPins:        boolean;
+  isPanning:       boolean;
+  spaceHeld:       boolean;
+  tempPoints:      InProgressPoint[];
+  measurements:    TakeoffRow[];
   activeDrawingId: string | null;
-  snapFlashes:    SnapFlash[];
+  snapFlashes:     SnapFlash[];
+
+  // Room detection
+  showRooms:       boolean;
+  rooms:           DetectedRoom[];
+  hoveredRoomId:   string | null;
+  setHoveredRoomId:(id: string | null) => void;
+  onRoomClick:     (room: DetectedRoom) => void;
 
   // Geometry helper
   toCanvas: (x: number, y: number) => { x: number; y: number };
 
   // Canvas event handlers
-  handleCanvasClick:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
-  handleContextMenu:        (e: React.MouseEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerMove:  (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  handleCanvasPointerDown:  (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined;
-  handleCanvasPointerUp:    (e: React.PointerEvent<HTMLCanvasElement>) => void;
+  handleCanvasClick:              (e: React.MouseEvent<HTMLCanvasElement>)   => void;
+  handleContextMenu:              (e: React.MouseEvent<HTMLCanvasElement>)   => void;
+  handleCanvasPointerMove:        (e: React.PointerEvent<HTMLCanvasElement>) => void;
+  handleCanvasPointerDown:        (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined;
+  handleCanvasPointerUp:          (e: React.PointerEvent<HTMLCanvasElement>) => void;
   handleDrawingCanvasPointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  setCursorPoint:           (p: any) => void;
-  cursorPointRef:           React.RefObject<any>;
-  redrawPinCanvas:          () => void;
+  setCursorPoint:                 (p: any) => void;
+  cursorPointRef:                 React.RefObject<any>;
+  redrawPinCanvas:                () => void;
 
   // Finish action
   handleFinishMeasurement: () => void;
@@ -78,11 +90,12 @@ interface ViewerCanvasProps {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ViewerCanvas({
-  pdfCanvasRef, drawingCanvasRef, pinCanvasRef,
+  pdfCanvasRef, drawingCanvasRef, pinCanvasRef, roomCanvasRef,
   pdf, loading, pdfDimensions,
   activeTool, showPins, isPanning, spaceHeld,
   tempPoints, measurements, activeDrawingId,
   snapFlashes, toCanvas,
+  showRooms, rooms, hoveredRoomId, setHoveredRoomId, onRoomClick,
   handleCanvasClick, handleContextMenu,
   handleCanvasPointerMove, handleCanvasPointerDown,
   handleCanvasPointerUp, handleDrawingCanvasPointerDown,
@@ -99,6 +112,33 @@ export function ViewerCanvas({
     : isPanning
     ? 'cursor-grabbing'
     : 'cursor-grab';
+
+  // Room canvas pointer move — hit-test rooms and update hover state
+  const handleRoomPointerMove = React.useCallback((
+    e: React.PointerEvent<HTMLCanvasElement>,
+  ) => {
+    if (!showRooms || !pdfDimensions || !rooms.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx   = e.clientX - rect.left;
+    const my   = e.clientY - rect.top;
+
+    const hit = rooms.find(r => {
+      const pts = r.polygon.map(p => ({
+        x: p.nx * pdfDimensions.w,
+        y: p.ny * pdfDimensions.h,
+      }));
+      return pointInPolygon(mx, my, pts);
+    });
+    setHoveredRoomId(hit?.id ?? null);
+  }, [showRooms, pdfDimensions, rooms, setHoveredRoomId]);
+
+  const handleRoomClick = React.useCallback((
+    e: React.MouseEvent<HTMLCanvasElement>,
+  ) => {
+    if (!showRooms || !hoveredRoomId) return;
+    const room = rooms.find(r => r.id === hoveredRoomId);
+    if (room) { e.stopPropagation(); onRoomClick(room); }
+  }, [showRooms, hoveredRoomId, rooms, onRoomClick]);
 
   return (
     <>
@@ -138,28 +178,48 @@ export function ViewerCanvas({
       )}
 
       {/* ── Canvas stack (only when PDF loaded) ── */}
-      {pdf && pdfDimensions && (
+      {/* FIX: We render the wrapper as long as `pdf` exists. Dimensions fall back safely. */}
+      {pdf && (
         <div
           className="relative shadow-2xl border border-industrial-border bg-white"
-          style={(() => {
+          style={pdfDimensions ? (() => {
             const vw = containerRef.current?.clientWidth ?? 0;
             const vh = containerRef.current?.clientHeight ?? 0;
             const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw * 3);
             const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
             const left = Math.round((wrapW - pdfDimensions.w) / 2);
-            const top = Math.round((wrapH - pdfDimensions.h) / 2);
+            const top  = Math.round((wrapH - pdfDimensions.h) / 2);
             return {
               position: 'absolute' as const,
               left, top,
-              width: pdfDimensions.w,
+              width:  pdfDimensions.w,
               height: pdfDimensions.h,
             };
-          })()}
+          })() : {}}
         >
-          {/* Layer 0 — PDF raster */}
-          <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
+          {/* ── Layer 0: PDF raster ────────────────────────────────────────── */}
+          <canvas
+            ref={pdfCanvasRef}
+            className="absolute inset-0 z-0 pointer-events-none"
+          />
 
-          {/* Layer 1 — Drawing / measurement canvas */}
+          {/* ── Layer 1: Room detection overlay ───────────────────────────── */}
+          {/* FIXED: Removed w-full h-full classes to allow proper sizing from inline styles */}
+          <canvas
+            ref={roomCanvasRef}
+            className="absolute inset-0 z-15"
+            style={{
+              opacity:       showRooms ? 1 : 0,
+              transition:    'opacity 0.2s',
+              pointerEvents: showRooms ? 'auto' : 'none',
+              cursor:        showRooms && hoveredRoomId ? 'pointer' : 'default',
+            }}
+            onPointerMove={handleRoomPointerMove}
+            onPointerLeave={() => setHoveredRoomId(null)}
+            onClick={handleRoomClick}
+          />
+
+          {/* ── Layer 2: Drawing / measurement canvas ─────────────────────── */}
           <canvas
             ref={drawingCanvasRef}
             onClick={handleCanvasClick}
@@ -181,17 +241,17 @@ export function ViewerCanvas({
             )}
           />
 
-          {/* Layer 2 — Snap pin canvas */}
+          {/* ── Layer 3: Snap pin canvas ───────────────────────────────────── */}
           <canvas
             ref={pinCanvasRef}
             className="absolute inset-0 z-20 w-full h-full pointer-events-none"
             style={{
-              opacity: showPins && activeTool !== 'select' ? 1 : 0,
+              opacity:    showPins && activeTool !== 'select' ? 1 : 0,
               transition: 'opacity 0.2s',
             }}
           />
 
-          {/* Layer 3 — Count pin overlay (DOM) */}
+          {/* ── Layer 4: Count pin overlay (DOM) ──────────────────────────── */}
           <CountPinOverlay
             measurements={measurements}
             pdfDimensions={pdfDimensions}
@@ -200,7 +260,7 @@ export function ViewerCanvas({
             activeTool={activeTool}
           />
 
-          {/* Snap flash animations */}
+          {/* ── Layer 5: Snap flash animations ────────────────────────────── */}
           {snapFlashes.map(flash => (
             <div
               key={flash.id}
@@ -214,7 +274,7 @@ export function ViewerCanvas({
             </div>
           ))}
 
-          {/* ── Finish button — Count tool ── */}
+          {/* ── Layer 6: Finish button — Count tool ───────────────────────── */}
           {tempPoints.length > 0 && activeTool === 'count' && (() => {
             const last = toCanvas(
               tempPoints[tempPoints.length - 1].x,
@@ -233,7 +293,7 @@ export function ViewerCanvas({
             );
           })()}
 
-          {/* ── Finish button — Polygon / Rectangle / Linear ── */}
+          {/* ── Layer 6: Finish button — Polygon / Rectangle / Linear ─────── */}
           {tempPoints.length > 1 &&
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
             (() => {
