@@ -1,271 +1,69 @@
-// ─── useSnapEngine.ts ─────────────────────────────────────────────────────────
-// Encapsulates:
-//   • Inline Web Worker (Harris corner + line detection + wall detection)
-//   • Session-level extraction cache
-//   • Per-page extraction queue
-//   • snapToCorner() — canvas-pixel space
-//   • getScaledCorners() — canvas-pixel space
-//   • getScaledWallCorners() — wall-specific corners in canvas-pixel space
-//   • getScaledWallLines() — wall-specific lines in canvas-pixel space
-//   • redrawPinCanvas() — proximity-only corner dots
-//   • Snap flash animation state
+// useSnapEngine.tsx (SVG-only version with DOOR DETECTION)
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
-import {
-  DetectedCorner, ExtractionResult, PageExtractionState,
-  SnapFlash, SnapResult, PdfDimensions,
-} from './viewerTypes';
+import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
+import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
+import type { ExtractionResult, PageExtractionState, SnapFlash, SnapResult, PdfDimensions } from './viewerTypes';
 
-// ─── Wall-specific types ───────────────────────────────────────────────────────
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
 
-export interface WallLine {
-  x1: number; y1: number;
-  x2: number; y2: number;
-  angle: number;       // degrees: 0 = horizontal, 90 = vertical
-  length: number;
-  /** Normalised coords [0,1] for both endpoints */
-  nx1: number; ny1: number;
-  nx2: number; ny2: number;
+function closestPointOnSegment(
+  px: number, py: number,
+  x1: number, y1: number,
+  x2: number, y2: number,
+): { x: number; y: number } {
+  const ax = px - x1, ay = py - y1;
+  const bx = x2 - x1, by = y2 - y1;
+  const dot = ax * bx + ay * by;
+  const len2 = bx * bx + by * by;
+  if (len2 === 0) return { x: x1, y: y1 };
+  const t = Math.max(0, Math.min(1, dot / len2));
+  return { x: x1 + t * bx, y: y1 + t * by };
 }
 
-export interface WallCorner {
-  x: number; y: number;
-  confidence: number;
-  nx: number; ny: number;
-  /** Which wall lines meet here (indices into wallLines array) */
-  lineIndices: number[];
+function closestPointOnPolygonEdge(
+  x: number, y: number,
+  points: Array<{ x: number; y: number }>,
+): { x: number; y: number; dist: number } {
+  let best = { x, y, dist: Infinity };
+  for (let i = 0; i < points.length; i++) {
+    const j = (i + 1) % points.length;
+    const c = closestPointOnSegment(x, y, points[i].x, points[i].y, points[j].x, points[j].y);
+    const d = Math.hypot(c.x - x, c.y - y);
+    if (d < best.dist) best = { x: c.x, y: c.y, dist: d };
+  }
+  return best;
 }
 
-// ─── Worker source (inlined so no extra build step) ──────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-function getWorkerSource(): string {
-  return `
-function gaussianBlur(data,w,h){const kernel=[2,4,5,4,2,4,9,12,9,4,5,12,15,12,5,4,9,12,9,4,2,4,5,4,2];const kSum=159;const out=new Float32Array(w*h);for(let y=2;y<h-2;y++){for(let x=2;x<w-2;x++){let v=0,ki=0;for(let ky=-2;ky<=2;ky++){for(let kx=-2;kx<=2;kx++){const idx=((y+ky)*w+(x+kx))*4;v+=(0.299*data[idx]+0.587*data[idx+1]+0.114*data[idx+2])*kernel[ki++];}}out[y*w+x]=v/kSum;}}return out;}
+export type { ExtractionResult, PageExtractionState, SnapFlash, SnapResult, PdfDimensions };
 
-function sobelGradients(gray,w,h){const gx=new Float32Array(w*h);const gy=new Float32Array(w*h);for(let y=1;y<h-1;y++){for(let x=1;x<w-1;x++){const tl=gray[(y-1)*w+(x-1)],tc=gray[(y-1)*w+x],tr=gray[(y-1)*w+(x+1)];const ml=gray[y*w+(x-1)],mr=gray[y*w+(x+1)];const bl=gray[(y+1)*w+(x-1)],bc=gray[(y+1)*w+x],br=gray[(y+1)*w+(x+1)];gx[y*w+x]=-tl-2*ml-bl+tr+2*mr+br;gy[y*w+x]=-tl-2*tc-tr+bl+2*bc+br;}}return{gx,gy};}
+// ─── Colour legend ────────────────────────────────────────────────────────────
 
-function harrisResponse(gx,gy,w,h,k){k=k===undefined?0.05:k;const R=new Float32Array(w*h);const win=3;for(let y=win;y<h-win;y++){for(let x=win;x<w-win;x++){let Ixx=0,Iyy=0,Ixy=0;for(let wy=-win;wy<=win;wy++){for(let wx=-win;wx<=win;wx++){const i=(y+wy)*w+(x+wx);Ixx+=gx[i]*gx[i];Iyy+=gy[i]*gy[i];Ixy+=gx[i]*gy[i];}}const det=Ixx*Iyy-Ixy*Ixy;const trace=Ixx+Iyy;R[y*w+x]=det-k*trace*trace;}}return R;}
-
-function nonMaxSuppression(R,w,h,win){win=win===undefined?10:win;let maxR=0;for(let i=0;i<R.length;i++)if(R[i]>maxR)maxR=R[i];const threshold=maxR*0.01;const corners=[];for(let y=win;y<h-win;y++){for(let x=win;x<w-win;x++){const r=R[y*w+x];if(r<threshold)continue;let isMax=true;outer:for(let wy=-win;wy<=win;wy++){for(let wx=-win;wx<=win;wx++){if(wy===0&&wx===0)continue;if(R[(y+wy)*w+(x+wx)]>=r){isMax=false;break outer;}}}if(isMax){corners.push({x,y,confidence:Math.min(1,r/(maxR*0.1)),nx:x/w,ny:y/h});}}}return corners;}
-
-function detectLines(gx,gy,w,h){const mag=new Float32Array(w*h);let maxMag=0;for(let i=0;i<w*h;i++){mag[i]=Math.sqrt(gx[i]*gx[i]+gy[i]*gy[i]);if(mag[i]>maxMag)maxMag=mag[i];}const threshold=maxMag*0.15;const lines=[];for(let y=0;y<h;y+=4){let s=-1;for(let x=0;x<w;x++){if(mag[y*w+x]>threshold){if(s===-1)s=x;}else{if(s!==-1&&x-s>30)lines.push({x1:s,y1:y,x2:x-1,y2:y,angle:0,length:x-1-s});s=-1;}}}for(let x=0;x<w;x+=4){let s=-1;for(let y=0;y<h;y++){if(mag[y*w+x]>threshold){if(s===-1)s=y;}else{if(s!==-1&&y-s>30)lines.push({x1:x,y1:s,x2:x,y2:y-1,angle:90,length:y-1-s});s=-1;}}}return lines;}
-
-function findIntersections(lines,imgW,imgH){const hLines=lines.filter(function(l){return l.angle===0;});const vLines=lines.filter(function(l){return l.angle===90;});const result=[];for(var hi=0;hi<hLines.length;hi++){var hl=hLines[hi];for(var vi=0;vi<vLines.length;vi++){var vl=vLines[vi];var ix=vl.x1,iy=hl.y1;if(ix>=Math.min(hl.x1,hl.x2)&&ix<=Math.max(hl.x1,hl.x2)&&iy>=Math.min(vl.y1,vl.y2)&&iy<=Math.max(vl.y1,vl.y2)){var tooClose=result.some(function(r){return Math.hypot(r.x-ix,r.y-iy)<20;});if(!tooClose)result.push({x:ix,y:iy,confidence:1.0,nx:ix/imgW,ny:iy/imgH});}}}return result;}
-
-// ─── Wall detection helpers ──────────────────────────────────────────────────
-// Strategy:
-//   1. Build an edge-magnitude map from the Sobel gradients.
-//   2. Scan horizontal and vertical scanlines (denser than generic line detect).
-//   3. Keep only LONG, strong runs — these are structural walls.
-//   4. Merge nearby parallel runs into single wall segments.
-//   5. Find intersections between H-wall and V-wall segments → wall corners.
-
-function detectWallLines(gx,gy,w,h,imgW,imgH){
-  // Build magnitude map
-  var mag=new Float32Array(w*h);
-  var maxMag=0;
-  for(var i=0;i<w*h;i++){
-    mag[i]=Math.sqrt(gx[i]*gx[i]+gy[i]*gy[i]);
-    if(mag[i]>maxMag)maxMag=mag[i];
-  }
-
-  // Walls need a stronger, longer edge than generic lines
-  // minLength: at least 8% of the dimension; threshold: top 20% of magnitude
-  var hThresh = maxMag * 0.20;
-  var vThresh = maxMag * 0.20;
-  var minHLen = Math.floor(w * 0.08);
-  var minVLen = Math.floor(h * 0.08);
-
-  var rawH=[], rawV=[];
-
-  // Horizontal scan (every 2px for better coverage)
-  for(var y=2;y<h-2;y+=2){
-    var s=-1;
-    for(var x=0;x<w;x++){
-      if(mag[y*w+x]>hThresh){
-        if(s===-1)s=x;
-      } else {
-        if(s!==-1){
-          var len=x-1-s;
-          if(len>=minHLen) rawH.push({x1:s,y1:y,x2:x-1,y2:y,length:len});
-          s=-1;
-        }
-      }
-    }
-    if(s!==-1){var len=w-1-s;if(len>=minHLen)rawH.push({x1:s,y1:y,x2:w-1,y2:y,length:len});}
-  }
-
-  // Vertical scan (every 2px)
-  for(var x=2;x<w-2;x+=2){
-    var s=-1;
-    for(var y=0;y<h;y++){
-      if(mag[y*w+x]>vThresh){
-        if(s===-1)s=y;
-      } else {
-        if(s!==-1){
-          var len=y-1-s;
-          if(len>=minVLen) rawV.push({x1:x,y1:s,x2:x,y2:y-1,length:len});
-          s=-1;
-        }
-      }
-    }
-    if(s!==-1){var len=h-1-s;if(len>=minVLen)rawV.push({x1:x,y1:s,x2:x,y2:h-1,length:len});}
-  }
-
-  // Merge nearby parallel segments: group by coordinate band (±BAND pixels)
-  var BAND=6;
-
-  function mergeGroup(group,isHorizontal){
-    // For H lines: group by y; pick the span that covers the most x range
-    // For V lines: group by x; pick the span that covers the most y range
-    if(group.length===0)return null;
-    var coord=isHorizontal
-      ? Math.round(group.reduce(function(s,l){return s+l.y1;},0)/group.length)
-      : Math.round(group.reduce(function(s,l){return s+l.x1;},0)/group.length);
-    var mn=Infinity,mx=-Infinity;
-    group.forEach(function(l){
-      var a=isHorizontal?l.x1:l.y1;
-      var b=isHorizontal?l.x2:l.y2;
-      if(a<mn)mn=a;if(b>mx)mx=b;
-    });
-    var len=mx-mn;
-    if(isHorizontal){
-      return{x1:mn,y1:coord,x2:mx,y2:coord,angle:0,length:len,nx1:mn/imgW,ny1:coord/imgH,nx2:mx/imgW,ny2:coord/imgH};
-    } else {
-      return{x1:coord,y1:mn,x2:coord,y2:mx,angle:90,length:len,nx1:coord/imgW,ny1:mn/imgH,nx2:coord/imgW,ny2:mx/imgH};
-    }
-  }
-
-  function clusterAndMerge(raw,isHorizontal,minFinalLen){
-    // Sort by primary coord
-    raw.sort(function(a,b){return (isHorizontal?a.y1:a.x1)-(isHorizontal?b.y1:b.x1);});
-    var merged=[];
-    var i=0;
-    while(i<raw.length){
-      var group=[raw[i]];
-      var coord=isHorizontal?raw[i].y1:raw[i].x1;
-      var j=i+1;
-      while(j<raw.length){
-        var c2=isHorizontal?raw[j].y1:raw[j].x1;
-        if(Math.abs(c2-coord)<=BAND){group.push(raw[j]);j++;}
-        else break;
-      }
-      var seg=mergeGroup(group,isHorizontal);
-      if(seg&&seg.length>=minFinalLen)merged.push(seg);
-      i=j;
-    }
-    return merged;
-  }
-
-  var minFinalH=Math.floor(w*0.12);
-  var minFinalV=Math.floor(h*0.12);
-  var wallH=clusterAndMerge(rawH,true,minFinalH);
-  var wallV=clusterAndMerge(rawV,false,minFinalV);
-
-  return{wallH:wallH,wallV:wallV};
-}
-
-function findWallCorners(wallH,wallV,imgW,imgH){
-  var corners=[];
-  var SNAP=12; // px tolerance for T/L intersections
-  for(var hi=0;hi<wallH.length;hi++){
-    var hl=wallH[hi];
-    for(var vi=0;vi<wallV.length;vi++){
-      var vl=wallV[vi];
-      var ix=vl.x1;
-      var iy=hl.y1;
-      // Check if ix falls on horizontal segment and iy falls on vertical segment
-      var onH=(ix>=Math.min(hl.x1,hl.x2)-SNAP && ix<=Math.max(hl.x1,hl.x2)+SNAP);
-      var onV=(iy>=Math.min(vl.y1,vl.y2)-SNAP && iy<=Math.max(vl.y1,vl.y2)+SNAP);
-      if(onH&&onV){
-        var tooClose=corners.some(function(c){return Math.hypot(c.x-ix,c.y-iy)<18;});
-        if(!tooClose){
-          // Confidence: longer wall lines = more confident corner
-          var conf=Math.min(1,(hl.length+vl.length)/(imgW+imgH)*2);
-          corners.push({x:ix,y:iy,confidence:conf,nx:ix/imgW,ny:iy/imgH,lineIndices:[hi,vi]});
-        }
-      }
-    }
-  }
-  return corners;
-}
-
-self.onmessage=function(e){
-  var data=e.data;
-  var imageData=data.imageData;
-  var pageIndex=data.pageIndex;
-  var width=data.width;
-  var height=data.height;
-  try{
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'blurring'});
-    var blurred=gaussianBlur(imageData.data,width,height);
-
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'gradients'});
-    var grads=sobelGradients(blurred,width,height);
-
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'harris'});
-    var R=harrisResponse(grads.gx,grads.gy,width,height);
-
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'suppression'});
-    var corners=nonMaxSuppression(R,width,height);
-
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'lines'});
-    var lines=detectLines(grads.gx,grads.gy,width,height);
-    var intersections=findIntersections(lines,width,height);
-
-    self.postMessage({type:'progress',pageIndex:pageIndex,step:'walls'});
-    var wallResult=detectWallLines(grads.gx,grads.gy,width,height,width,height);
-    var wallLines=wallResult.wallH.concat(wallResult.wallV);
-    var wallCorners=findWallCorners(wallResult.wallH,wallResult.wallV,width,height);
-
-    var mergedCorners=intersections.slice();
-    for(var i=0;i<corners.length;i++){
-      var c=corners[i];
-      var nearInt=intersections.some(function(pt){return Math.hypot(pt.x-c.x,pt.y-c.y)<15;});
-      if(!nearInt)mergedCorners.push(c);
-    }
-
-    self.postMessage({
-      type:'result',
-      result:{
-        pageIndex:pageIndex,
-        corners:mergedCorners.sort(function(a,b){return b.confidence-a.confidence;}).slice(0,2000),
-        lines:lines,
-        intersections:intersections,
-        width:width,
-        height:height,
-        // ── NEW wall-specific outputs ──
-        wallLines:wallLines,
-        wallCorners:wallCorners.sort(function(a,b){return b.confidence-a.confidence;}),
-      }
-    });
-  }catch(err){
-    self.postMessage({type:'error',pageIndex:pageIndex,error:String(err)});
-  }
+const SVG_SNAP_COLOURS: Record<SvgSnapPoint['type'], { dot: string; ring: string; fill: string }> = {
+  endpoint:     { dot: 'rgba(245,158,11,0.85)',  ring: 'rgba(245,158,11,0.5)',  fill: '#f59e0b' },
+  midpoint:     { dot: 'rgba(16,185,129,0.85)',  ring: 'rgba(16,185,129,0.5)',  fill: '#10b981' },
+  centroid:     { dot: 'rgba(139,92,246,0.85)',  ring: 'rgba(139,92,246,0.5)',  fill: '#8b5cf6' },
+  intersection: { dot: 'rgba(244,63,94,0.85)',   ring: 'rgba(244,63,94,0.5)',   fill: '#f43f5e' },
+  'arc-center': { dot: 'rgba(34,211,238,0.90)',  ring: 'rgba(34,211,238,0.45)', fill: '#22d3ee' },
 };
-`;
-}
 
-// ─── Session cache (module-level, survives re-renders) ────────────────────────
+const SVG_LINE_COLOUR     = { stroke: 'rgba(56,189,248,0.55)',  fill: '#38bdf8' };
+const SVG_AREA_COLOUR     = { stroke: 'rgba(251,146,60,0.55)',  fill: '#fb923c' };
+const SVG_DOOR_LINE_COLOUR = { stroke: 'rgba(34,197,94,0.85)',   fill: '#22c55e' };  // Green for doors
 
-const sessionCache = new Map<string, Map<number, ExtractionResult>>();
+// ─── Door detection helper ─────────────────────────────────────────────────────
 
-function fileHash(file: File): string {
-  return `${file.name}_${file.size}_${file.lastModified}`;
-}
-
-function makeEmptyPageState(): PageExtractionState {
-  return {
-    status: 'idle',
-    corners: [],
-    lines: [],
-    intersections: [],
-    width: 0,
-    height: 0,
-    wallLines: [],
-    wallCorners: [],
-  };
+function isDoorShape(shapeId: string | undefined): boolean {
+  if (!shapeId) return false;
+  const doorKeywords = [
+    'door', 'Door', 'DOOR',
+    'door-swing', 'door-leaf',
+    'swing', 'arc', 'threshold',
+    'entry', 'entrance'
+  ];
+  return doorKeywords.some(keyword => shapeId.includes(keyword));
 }
 
 // ─── Hook params ──────────────────────────────────────────────────────────────
@@ -278,34 +76,29 @@ export interface UseSnapEngineParams {
   showPins: boolean;
   snapThreshold: number;
   confidenceFilter: number;
+  svgSnapPoints?: SvgSnapPoint[];
+  svgLines?: SvgLine[];
+  svgAreas?: SvgArea[];
 }
 
-// ─── Hook return ──────────────────────────────────────────────────────────────
+// ─── Hook return (matches original interface) ─────────────────────────────────
 
 export interface UseSnapEngineReturn {
-  // State
   pageData: Map<number, PageExtractionState>;
   analysisStatus: 'idle' | 'analyzing' | 'done';
   analysisPage: { current: number; total: number } | null;
   snapFlashes: SnapFlash[];
-  // Callbacks
-  startExtraction: (pdf: pdfjsLib.PDFDocumentProxy, file?: File) => void;
+  startExtraction: (pdf: any, file?: File) => void;
   getScaledCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
-  /** Wall corners in canvas-pixel space for the given page */
   getScaledWallCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number; lineIndices: number[] }>;
-  /** Wall lines in canvas-pixel space for the given page */
-  getScaledWallLines: (pageIdx: number) => Array<{
-    x1: number; y1: number; x2: number; y2: number;
-    angle: number; length: number;
-  }>;
+  getScaledWallLines: (pageIdx: number) => Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }>;
   snapToCorner: (rawX: number, rawY: number) => SnapResult;
   triggerSnapFlash: (x: number, y: number) => void;
   redrawPinCanvas: () => void;
-  // Refs callers can write to drive pin rendering
   cursorPointRef: React.MutableRefObject<{ x: number; y: number } | null>;
 }
 
-// ─── useSnapEngine ────────────────────────────────────────────────────────────
+// ─── useSnapEngine ─────────────────────────────────────────────────────────────
 
 export function useSnapEngine({
   pinCanvasRef,
@@ -315,282 +108,151 @@ export function useSnapEngine({
   showPins,
   snapThreshold,
   confidenceFilter,
+  svgSnapPoints = [],
+  svgLines = [],
+  svgAreas = [],
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
-  // ── Stable refs for settings (avoid stale closures in callbacks) ────────────
+  // ── Stable setting refs ────────────────────────────────────────────────────
   const snapEnabledRef      = useRef(snapEnabled);
   const showPinsRef         = useRef(showPins);
   const snapThresholdRef    = useRef(snapThreshold);
   const confidenceFilterRef = useRef(confidenceFilter);
+  const svgSnapPointsRef    = useRef<SvgSnapPoint[]>(svgSnapPoints);
+  const svgLinesRef         = useRef<SvgLine[]>(svgLines);
+  const svgAreasRef         = useRef<SvgArea[]>(svgAreas);
+
   useEffect(() => { snapEnabledRef.current      = snapEnabled;      }, [snapEnabled]);
   useEffect(() => { showPinsRef.current         = showPins;         }, [showPins]);
   useEffect(() => { snapThresholdRef.current    = snapThreshold;    }, [snapThreshold]);
   useEffect(() => { confidenceFilterRef.current = confidenceFilter; }, [confidenceFilter]);
+  useEffect(() => { svgSnapPointsRef.current    = svgSnapPoints;    }, [svgSnapPoints]);
+  useEffect(() => { svgLinesRef.current         = svgLines;         }, [svgLines]);
+  useEffect(() => { svgAreasRef.current         = svgAreas;         }, [svgAreas]);
 
-  // ── State ───────────────────────────────────────────────────────────────────
-  const [pageData, setPageData]             = useState<Map<number, PageExtractionState>>(new Map());
+  // ── Empty state (no raster analysis) ───────────────────────────────────────
+  const [pageData, setPageData] = useState<Map<number, PageExtractionState>>(new Map());
   const [analysisStatus, setAnalysisStatus] = useState<'idle' | 'analyzing' | 'done'>('idle');
-  const [analysisPage, setAnalysisPage]     = useState<{ current: number; total: number } | null>(null);
-  const [snapFlashes, setSnapFlashes]       = useState<SnapFlash[]>([]);
-
-  // ── Internal refs ───────────────────────────────────────────────────────────
-  const workerRef          = useRef<Worker | null>(null);
-  const extractionQueueRef = useRef<Array<{ pageIndex: number; pdf: any; cacheKey: string }>>([]);
-  const extractingRef      = useRef(false);
-  const cacheKeyRef        = useRef('');
-  const flashIdRef         = useRef(0);
-  const pageDataRef        = useRef(pageData);
-  useEffect(() => { pageDataRef.current = pageData; }, [pageData]);
-
+  const [analysisPage, setAnalysisPage] = useState<{ current: number; total: number } | null>(null);
+  const [snapFlashes, setSnapFlashes] = useState<SnapFlash[]>([]);
+  
   const cursorPointRef = useRef<{ x: number; y: number } | null>(null);
+  const flashIdRef = useRef(0);
 
-  // ── processExtractionQueue ──────────────────────────────────────────────────
-  const processExtractionQueueRef = useRef<() => void>(() => {});
+  // ── Empty page state maker ─────────────────────────────────────────────────
+  const makeEmptyPageState = (): PageExtractionState => ({
+    status: 'idle',
+    corners: [],
+    lines: [],
+    intersections: [],
+    width: 0,
+    height: 0,
+    wallLines: [],
+    wallCorners: [],
+  });
 
-  const processExtractionQueue = useCallback(() => {
-    if (extractingRef.current || extractionQueueRef.current.length === 0) {
-      if (extractionQueueRef.current.length === 0) {
-        setAnalysisStatus('done');
-        setAnalysisPage(null);
-      }
-      return;
-    }
-
-    const item = extractionQueueRef.current.shift()!;
-    extractingRef.current = true;
-
-    const cached = sessionCache.get(item.cacheKey)?.get(item.pageIndex);
-    if (cached) {
-      setPageData(prev => {
-        const next = new Map(prev);
-        next.set(item.pageIndex, {
-          status: 'done',
-          corners: cached.corners,
-          lines: cached.lines,
-          intersections: cached.intersections,
-          width: cached.width,
-          height: cached.height,
-          wallLines: cached.wallLines ?? [],
-          wallCorners: cached.wallCorners ?? [],
-        });
-        return next;
-      });
-      extractingRef.current = false;
-      processExtractionQueueRef.current();
-      return;
-    }
-
-    (async () => {
-      try {
-        const page     = await item.pdf.getPage(item.pageIndex + 1);
-        const viewport = page.getViewport({ scale: 1.5 });
-        const canvas   = new OffscreenCanvas(viewport.width, viewport.height);
-        const ctx      = canvas.getContext('2d') as any;
-        await page.render({ canvasContext: ctx, viewport }).promise;
-        const imageData = ctx.getImageData(0, 0, viewport.width, viewport.height);
-        workerRef.current?.postMessage(
-          { imageData, pageIndex: item.pageIndex, width: viewport.width, height: viewport.height },
-          [imageData.data.buffer],
-        );
-      } catch (err) {
-        console.error('Extraction render error:', err);
-        extractingRef.current = false;
-        processExtractionQueueRef.current();
-      }
-    })();
+  // ── No-op startExtraction (does nothing, but satisfies interface) ───────────
+  const startExtraction = useCallback((pdf: any, file?: File) => {
+    console.log('[useSnapEngine] SVG-only mode - raster extraction disabled');
+    setAnalysisStatus('done');
+    setAnalysisPage(null);
   }, []);
 
-  useEffect(() => { processExtractionQueueRef.current = processExtractionQueue; }, [processExtractionQueue]);
-
-  // ── Worker lifecycle ────────────────────────────────────────────────────────
-  useEffect(() => {
-    const blob = new Blob([getWorkerSource()], { type: 'application/javascript' });
-    const url  = URL.createObjectURL(blob);
-    workerRef.current = new Worker(url);
-
-    workerRef.current.onmessage = (e) => {
-      const msg = e.data;
-
-      if (msg.type === 'progress') {
-        setPageData(prev => {
-          const next = new Map(prev);
-          const ex   = next.get(msg.pageIndex) ?? makeEmptyPageState();
-          next.set(msg.pageIndex, { ...ex, status: 'processing', step: msg.step });
-          return next;
-        });
-        setAnalysisPage(prev => prev ? { ...prev, current: msg.pageIndex + 1 } : null);
-
-      } else if (msg.type === 'result') {
-        const result = msg.result;
-        const key = cacheKeyRef.current;
-        if (key) {
-          if (!sessionCache.has(key)) sessionCache.set(key, new Map());
-          sessionCache.get(key)!.set(result.pageIndex, result);
-        }
-        setPageData(prev => {
-          const next = new Map(prev);
-          next.set(result.pageIndex, {
-            status: 'done',
-            corners: result.corners,
-            lines: result.lines,
-            intersections: result.intersections,
-            width: result.width,
-            height: result.height,
-            wallLines: result.wallLines ?? [],
-            wallCorners: result.wallCorners ?? [],
-          });
-          return next;
-        });
-        extractingRef.current = false;
-        processExtractionQueueRef.current();
-
-      } else if (msg.type === 'error') {
-        console.error('Worker error page', msg.pageIndex, msg.error);
-        setPageData(prev => {
-          const next = new Map(prev);
-          const ex   = next.get(msg.pageIndex) ?? makeEmptyPageState();
-          next.set(msg.pageIndex, { ...ex, status: 'error' });
-          return next;
-        });
-        extractingRef.current = false;
-        processExtractionQueueRef.current();
-      }
-    };
-
-    return () => { workerRef.current?.terminate(); URL.revokeObjectURL(url); };
+  // ── Empty scaled getters (return empty arrays) ─────────────────────────────
+  const getScaledCorners = useCallback((): Array<{ x: number; y: number; confidence: number }> => {
+    return [];
   }, []);
 
-  // ── startExtraction ─────────────────────────────────────────────────────────
-  const startExtraction = useCallback((pdfDoc: pdfjsLib.PDFDocumentProxy, file?: File) => {
-    const numPages = pdfDoc.numPages;
-    const cacheKey = file ? fileHash(file) : `pdf_${numPages}_${Date.now()}`;
-    cacheKeyRef.current = cacheKey;
-
-    setAnalysisStatus('analyzing');
-    setAnalysisPage({ current: 1, total: numPages });
-    extractionQueueRef.current = [];
-    extractingRef.current = false;
-
-    const initial = new Map<number, PageExtractionState>();
-    for (let i = 0; i < numPages; i++) {
-      const cached = sessionCache.get(cacheKey)?.get(i);
-      if (cached) {
-        initial.set(i, {
-          status: 'done',
-          corners: cached.corners,
-          lines: cached.lines,
-          intersections: cached.intersections,
-          width: cached.width,
-          height: cached.height,
-          wallLines: (cached as any).wallLines ?? [],
-          wallCorners: (cached as any).wallCorners ?? [],
-        });
-      } else {
-        initial.set(i, makeEmptyPageState());
-        extractionQueueRef.current.push({ pageIndex: i, pdf: pdfDoc, cacheKey });
-      }
-    }
-    setPageData(initial);
-
-    if (extractionQueueRef.current.length === 0) {
-      setAnalysisStatus('done');
-      setAnalysisPage(null);
-    } else {
-      processExtractionQueueRef.current();
-    }
+  const getScaledWallCorners = useCallback((): Array<{ x: number; y: number; confidence: number; lineIndices: number[] }> => {
+    return [];
   }, []);
 
-  // ── getScaledCorners ─────────────────────────────────────────────────────────
-  const getScaledCorners = useCallback(
-    (pageIdx: number): Array<{ x: number; y: number; confidence: number }> => {
-      const dims = pdfDimensionsRef.current;
-      if (!dims) return [];
-      const pg = pageDataRef.current.get(pageIdx - 1);
-      if (!pg || pg.status !== 'done') return [];
-      return pg.corners
-        .filter(c => c.confidence >= confidenceFilterRef.current)
-        .map(c => ({ x: c.nx * dims.w, y: c.ny * dims.h, confidence: c.confidence }));
-    },
-    [pdfDimensionsRef],
-  );
+  const getScaledWallLines = useCallback((): Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }> => {
+    return [];
+  }, []);
 
-  // ── getScaledWallCorners — wall corners in canvas-pixel space ────────────────
-  const getScaledWallCorners = useCallback(
-    (pageIdx: number): Array<{ x: number; y: number; confidence: number; lineIndices: number[] }> => {
-      const dims = pdfDimensionsRef.current;
-      if (!dims) return [];
-      const pg = pageDataRef.current.get(pageIdx - 1);
-      if (!pg || pg.status !== 'done') return [];
-      return (pg.wallCorners ?? []).map(c => ({
-        x: c.nx * dims.w,
-        y: c.ny * dims.h,
-        confidence: c.confidence,
-        lineIndices: c.lineIndices,
-      }));
-    },
-    [pdfDimensionsRef],
-  );
+  // ── SVG candidate helpers ──────────────────────────────────────────────────
+  const getSvgPointCandidates = useCallback(() => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return [];
+    return svgSnapPointsRef.current.map(p => ({
+      x: p.nx * dims.w,
+      y: p.ny * dims.h,
+      type: p.type,
+      strokeWidth: p.strokeWidth,
+      shapeId: p.shapeId,
+    }));
+  }, [pdfDimensionsRef]);
 
-  // ── getScaledWallLines — wall lines in canvas-pixel space ────────────────────
-  const getScaledWallLines = useCallback(
-    (pageIdx: number): Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }> => {
-      const dims = pdfDimensionsRef.current;
-      if (!dims) return [];
-      const pg = pageDataRef.current.get(pageIdx - 1);
-      if (!pg || pg.status !== 'done') return [];
-      return (pg.wallLines ?? []).map(l => ({
-        x1: l.nx1 * dims.w,
-        y1: l.ny1 * dims.h,
-        x2: l.nx2 * dims.w,
-        y2: l.ny2 * dims.h,
-        angle: l.angle,
-        length: l.length,
-      }));
-    },
-    [pdfDimensionsRef],
-  );
-
-  // ── snapToCorner — snaps to wall corners first, then generic corners ─────────
+  // ── snapToCorner (SVG only) ────────────────────────────────────────────────
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current) {
       return { point: { x: rawX, y: rawY }, snapped: false };
     }
 
-    // Prefer wall corners (structural) over generic Harris corners
-    const wallCorners = getScaledWallCorners(pageNumberRef.current);
-    let bestCorner: { x: number; y: number } | null = null;
-    let bestDist = snapThresholdRef.current;
+    const thresh = snapThresholdRef.current;
+    let bestPoint: { x: number; y: number } | null = null;
+    let bestDist = thresh;
 
-    for (const c of wallCorners) {
+    // Tier 1: SVG discrete snap points  
+    for (const c of getSvgPointCandidates()) {
+      // Skip non-arc-center points inside door areas
+      if (c.type !== 'arc-center') {
+        const insideDoor = svgAreasRef.current
+          .filter(a => a.label === 'door' || a.isDoor)
+          .some(da => {
+            const pad = 20;
+            return c.x >= da.bounds.minX - pad && c.x <= da.bounds.maxX + pad &&
+                  c.y >= da.bounds.minY - pad && c.y <= da.bounds.maxY + pad;
+          });
+        if (insideDoor) continue;
+      }
       const dist = Math.hypot(rawX - c.x, rawY - c.y);
-      if (dist < bestDist) { bestDist = dist; bestCorner = c; }
+      if (dist < bestDist) { bestDist = dist; bestPoint = { x: c.x, y: c.y }; }
     }
 
-    // Fall back to generic corners if no wall corner close enough
-    if (!bestCorner) {
-      const corners = getScaledCorners(pageNumberRef.current);
-      for (const c of corners) {
-        const dist = Math.hypot(rawX - c.x, rawY - c.y);
-        if (dist < bestDist) { bestDist = dist; bestCorner = c; }
+    // Tier 2: SVG lines (skip door lines for snapping)
+    if (!bestPoint) {
+      for (const line of svgLinesRef.current) {
+        // Skip door lines - users should snap to arc-center, not points along the arc
+        if (isDoorShape(line.shapeId)) continue;
+        
+        const closest = closestPointOnSegment(rawX, rawY, line.x1, line.y1, line.x2, line.y2);
+        const dist = Math.hypot(rawX - closest.x, rawY - closest.y);
+        if (dist < bestDist) { bestDist = dist; bestPoint = closest; }
       }
     }
 
-    return bestCorner
-      ? { point: { x: bestCorner.x, y: bestCorner.y }, snapped: true }
-      : { point: { x: rawX, y: rawY }, snapped: false };
-  }, [getScaledWallCorners, getScaledCorners, pdfDimensionsRef, pageNumberRef]);
+    // Tier 3: SVG areas (skip door areas for snapping)
+    if (!bestPoint) {
+      for (const area of svgAreasRef.current) {
+        if (isDoorShape(area.shapeId)) continue;
+        
+        if (
+          rawX < area.bounds.minX - thresh || rawX > area.bounds.maxX + thresh ||
+          rawY < area.bounds.minY - thresh || rawY > area.bounds.maxY + thresh
+        ) continue;
+        const onEdge = closestPointOnPolygonEdge(rawX, rawY, area.points);
+        if (onEdge.dist < bestDist) {
+          bestDist = onEdge.dist;
+          bestPoint = { x: onEdge.x, y: onEdge.y };
+        }
+      }
+    }
 
-  // ── triggerSnapFlash ─────────────────────────────────────────────────────────
+    return bestPoint
+      ? { point: { x: bestPoint.x, y: bestPoint.y }, snapped: true }
+      : { point: { x: rawX, y: rawY }, snapped: false };
+  }, [getSvgPointCandidates]);
+
+  // ── triggerSnapFlash ───────────────────────────────────────────────────────
   const triggerSnapFlash = useCallback((x: number, y: number) => {
     const id = ++flashIdRef.current;
     setSnapFlashes(prev => [...prev, { x, y, id }]);
     setTimeout(() => setSnapFlashes(prev => prev.filter(f => f.id !== id)), 700);
   }, []);
 
-  // ── redrawPinCanvas ──────────────────────────────────────────────────────────
-  // Draws wall lines (green) + wall corners (teal) near cursor,
-  // plus generic corners (blue) as fallback.
-  // Only corners within VISIBLE_RADIUS of the cursor are drawn.
+  // ── redrawPinCanvas (SVG only with DOOR RENDERING) ─────────────────────────
   const redrawPinCanvas = useCallback(() => {
     const canvas = pinCanvasRef.current;
     if (!canvas || !pdfDimensionsRef.current) return;
@@ -600,198 +262,321 @@ export function useSnapEngine({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showPinsRef.current) return;
 
-    const cursor     = cursorPointRef.current;
-    const thresh     = snapThresholdRef.current;
-    const VISIBLE_R  = thresh * 4;
-    const CORNER_PROXIMITY = 80;    // ← add this
+    const cursor = cursorPointRef.current;
+    const thresh = snapThresholdRef.current;
+    const CORNER_PROXIMITY = 80;
 
-    // ── Same palette as SnapPage ──────────────────────────────────────────────
-    const PALETTE = [
-      { stroke: '#f59e0b', label: '#fcd34d' },
-      { stroke: '#3b82f6', label: '#93c5fd' },
-      { stroke: '#10b981', label: '#6ee7b7' },
-      { stroke: '#ec4899', label: '#f9a8d4' },
-      { stroke: '#8b5cf6', label: '#c4b5fd' },
-      { stroke: '#f97316', label: '#fdba74' },
-      { stroke: '#06b6d4', label: '#67e8f9' },
-      { stroke: '#84cc16', label: '#bef264' },
-    ];
+    // ── Layer 1: SVG lines (with door detection for styling) ─────────────────
+    // for (const line of svgLinesRef.current) {
+    //   const isDoor = isDoorShape(line.shapeId);
+      
+    //   // Choose styling based on door detection
+    //   const colour = isDoor ? SVG_DOOR_LINE_COLOUR : SVG_LINE_COLOUR;
+    //   const dashPattern = isDoor ? [8, 6] : [];  // Dashed line for doors
+      
+    //   let distSeg = Infinity;
+    //   let snapPt = { x: (line.x1 + line.x2) / 2, y: (line.y1 + line.y2) / 2 };
 
-    const WALL_PROXIMITY = 140;
+    //   if (cursor) {
+    //     const c = closestPointOnSegment(cursor.x, cursor.y, line.x1, line.y1, line.x2, line.y2);
+    //     distSeg = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+    //     snapPt = c;
+    //   }
 
-    // ── 1. Draw ALL wall lines permanently, boost on proximity ────────────────
-    const wallLines = getScaledWallLines(pageNumberRef.current);
-    wallLines.forEach((l, idx) => {
-      const pal  = PALETTE[idx % PALETTE.length];
-      const midX = (l.x1 + l.x2) / 2;
-      const midY = (l.y1 + l.y2) / 2;
+    //   const isSnapping = !isDoor && distSeg < thresh;  // Don't show snap UI on doors
+    //   const isProximity = distSeg < CORNER_PROXIMITY * 2;
+    //   const alpha = isSnapping ? 0.95 : isProximity ? 0.65 : (isDoor ? 0.7 : 0.35);
+    //   const lw = isSnapping ? 2.5 : isProximity ? 1.8 : (isDoor ? 2 : 1);
 
-      // Base alpha — always visible
-      let alpha = 0.35;
-      let lw    = 1.5;
-      let isHovered = false;
+    //   ctx.save();
+      
+    //   // Apply dashed pattern for doors
+    //   if (dashPattern.length) {
+    //     ctx.setLineDash(dashPattern);
+    //   }
+      
+    //   ctx.beginPath();
+    //   ctx.moveTo(line.x1, line.y1);
+    //   ctx.lineTo(line.x2, line.y2);
+    //   ctx.strokeStyle = colour.stroke.replace(/[\d.]+\)$/, `${alpha})`);
+    //   ctx.lineWidth = lw;
+    //   ctx.stroke();
+      
+    //   // Reset dash pattern
+    //   if (dashPattern.length) {
+    //     ctx.setLineDash([]);
+    //   }
 
-      if (cursor) {
-        const distMid = Math.hypot(cursor.x - midX, cursor.y - midY);
-        const distSeg = (() => {
-          const dx = l.x2 - l.x1, dy = l.y2 - l.y1, lenSq = dx * dx + dy * dy;
-          if (lenSq === 0) return distMid;
-          const t = Math.max(0, Math.min(1, ((cursor.x - l.x1) * dx + (cursor.y - l.y1) * dy) / lenSq));
-          return Math.hypot(cursor.x - (l.x1 + t * dx), cursor.y - (l.y1 + t * dy));
+    //   // Show label on hover (only for non-door lines, or show DOOR label)
+    //   if (isSnapping && cursor && !isDoor) {
+    //     ctx.beginPath();
+    //     ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
+    //     ctx.fillStyle = colour.fill;
+    //     ctx.fill();
+    //     ctx.strokeStyle = 'white';
+    //     ctx.lineWidth = 1.5;
+    //     ctx.stroke();
+    //     ctx.font = 'bold 9px ui-monospace,monospace';
+    //     ctx.textAlign = 'center';
+    //     ctx.textBaseline = 'middle';
+    //     const label = line.label ? line.label.toUpperCase() : 'LINE';
+    //     const tw = ctx.measureText(label).width + 8;
+    //     ctx.fillStyle = 'rgba(0,0,0,0.80)';
+    //     ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23, tw, 13);
+    //     ctx.fillStyle = colour.fill;
+    //     ctx.fillText(label, snapPt.x, snapPt.y - 16);
+    //   } else if (isDoor && cursor && distSeg < thresh) {
+    //     // Show "DOOR" label when hovering over door swing
+    //     ctx.beginPath();
+    //     ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
+    //     ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
+    //     ctx.fill();
+    //     ctx.strokeStyle = 'white';
+    //     ctx.lineWidth = 1.5;
+    //     ctx.stroke();
+    //     ctx.font = 'bold 9px ui-monospace,monospace';
+    //     ctx.textAlign = 'center';
+    //     ctx.textBaseline = 'middle';
+    //     ctx.fillStyle = 'rgba(0,0,0,0.80)';
+    //     ctx.fillRect(snapPt.x - 28, snapPt.y - 23, 56, 13);
+    //     ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
+    //     ctx.fillText('DOOR', snapPt.x, snapPt.y - 16);
+    //   }
+    //   ctx.restore();
+    // }
+
+    // ── Layer 2: SVG area outlines ────────────────────────────────────────────────
+    for (const area of svgAreasRef.current) {
+      if (area.points.length < 3) continue;
+
+      const isDoor = area.label === 'door' || !!area.isDoor;
+
+      ctx.save();
+
+      if (isDoor) {
+        // Door has exactly 3 points: [pivot, arcStart, arcEnd]
+        // Draw: door leaf line + proper arc for the swing
+        const pivot    = area.points[0];
+        const arcStart = area.points[1];
+        const arcEnd   = area.points[2];
+
+        const radius     = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
+        const startAngle = Math.atan2(arcStart.y - pivot.y, arcStart.x - pivot.x);
+        const endAngle   = Math.atan2(arcEnd.y   - pivot.y, arcEnd.x   - pivot.x);
+
+        // Determine arc direction — pick the shorter sweep
+        let angleDiff = endAngle - startAngle;
+        if (angleDiff >  Math.PI) angleDiff -= Math.PI * 2;
+        if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        const anticlockwise = angleDiff < 0;
+
+        const isHovered = cursor && (() => {
+          // Check if cursor is near the arc
+          const toCursor = Math.hypot(cursor.x - pivot.x, cursor.y - pivot.y);
+          return Math.abs(toCursor - radius) < CORNER_PROXIMITY;
         })();
 
-        isHovered = distSeg < 12;
+        const alpha = isHovered ? 0.95 : 0.75;
+        const lw    = isHovered ? 2.5  : 1.8;
 
-        if (isHovered) {
-          alpha = 0.9;
-          lw    = 2.5;
-        } else if (distMid < WALL_PROXIMITY * 3) {
-          const proximity = Math.max(0, 1 - distMid / (WALL_PROXIMITY * 3));
-          alpha = Math.max(alpha, 0.35 + proximity * 0.35);
+        // Door leaf
+        ctx.beginPath();
+        ctx.moveTo(pivot.x, pivot.y);
+        ctx.lineTo(arcStart.x, arcStart.y);
+        ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
+        ctx.lineWidth = lw + 0.5;
+        ctx.stroke();
+
+        // Door swing arc — single smooth curve
+        ctx.beginPath();
+        ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle, anticlockwise);
+        ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
+        ctx.lineWidth = lw;
+        ctx.setLineDash([6, 4]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Closing line (arc end back to pivot — optional, shows door opening)
+        ctx.beginPath();
+        ctx.moveTo(pivot.x, pivot.y);
+        ctx.lineTo(arcEnd.x, arcEnd.y);
+        ctx.strokeStyle = `rgba(34,197,94,${alpha * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Hover label
+        if (isHovered && cursor) {
+          const midAngle = startAngle + angleDiff / 2;
+          const labelX   = pivot.x + Math.cos(midAngle) * radius * 0.6;
+          const labelY   = pivot.y + Math.sin(midAngle) * radius * 0.6;
+          ctx.beginPath();
+          ctx.arc(labelX, labelY, 7, 0, Math.PI * 2);
+          ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
+          ctx.fill();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.font = 'bold 9px ui-monospace,monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = 'rgba(0,0,0,0.80)';
+          ctx.fillRect(labelX - 24, labelY - 23, 48, 13);
+          ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
+          ctx.fillText('DOOR', labelX, labelY - 16);
+        }
+
+      } else {
+        // Non-door area — existing logic unchanged
+        const colour = SVG_AREA_COLOUR;
+
+        const centroidX = area.points.reduce((s, p) => s + p.x, 0) / area.points.length;
+        const centroidY = area.points.reduce((s, p) => s + p.y, 0) / area.points.length;
+
+        let distEdge = Infinity;
+        let snapPt = { x: centroidX, y: centroidY };
+
+        if (cursor) {
+          const e = closestPointOnPolygonEdge(cursor.x, cursor.y, area.points);
+          distEdge = e.dist;
+          snapPt = { x: e.x, y: e.y };
+        }
+
+        const isSnapping  = distEdge < thresh;
+        const isProximity = distEdge < CORNER_PROXIMITY * 2;
+        const alpha = isSnapping ? 0.95 : isProximity ? 0.65 : 0.25;
+        const lw    = isSnapping ? 2.5  : isProximity ? 1.8  : 1;
+
+        ctx.beginPath();
+        ctx.moveTo(area.points[0].x, area.points[0].y);
+        area.points.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.closePath();
+        ctx.strokeStyle = colour.stroke.replace(/[\d.]+\)$/, `${alpha})`);
+        ctx.lineWidth = lw;
+        ctx.stroke();
+
+        if (isSnapping && cursor) {
+          ctx.beginPath();
+          ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
+          ctx.fillStyle = colour.fill;
+          ctx.fill();
+          ctx.strokeStyle = 'white';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.font = 'bold 9px ui-monospace,monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          const label = area.label ? area.label.toUpperCase() : 'AREA';
+          const tw = ctx.measureText(label).width + 8;
+          ctx.fillStyle = 'rgba(0,0,0,0.80)';
+          ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23, tw, 13);
+          ctx.fillStyle = colour.fill;
+          ctx.fillText(label, snapPt.x, snapPt.y - 16);
         }
       }
 
-      // Convert hex color to rgba
-      const hexToRgba = (hex: string, a: number) => {
-        const r = parseInt(hex.slice(1, 3), 16);
-        const g = parseInt(hex.slice(3, 5), 16);
-        const b = parseInt(hex.slice(5, 7), 16);
-        return `rgba(${r},${g},${b},${a})`;
-      };
+      ctx.restore();
+    }
 
-      ctx.beginPath();
-      ctx.moveTo(l.x1, l.y1);
-      ctx.lineTo(l.x2, l.y2);
-      ctx.strokeStyle = hexToRgba(pal.stroke, alpha);
-      ctx.lineWidth   = lw;
-      // Vertical walls dashed, horizontal solid — same as SnapPage
-      ctx.setLineDash(l.angle === 90 ? [5, 3] : []);
-      ctx.stroke();
-      ctx.setLineDash([]);
+    // ── Layer 3: SVG discrete snap points (arc-center only for doors) ────────
+    const svgCandidates = getSvgPointCandidates();
+    const doorAreas = svgAreasRef.current.filter(a => a.label === 'door' || a.isDoor);
 
-      // Endpoint dots — always shown, bigger on hover
-      [{ x: l.x1, y: l.y1 }, { x: l.x2, y: l.y2 }].forEach(pt => {
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, isHovered ? 4 : 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = hexToRgba(pal.stroke, alpha);
-        ctx.fill();
-      });
+    for (const c of svgCandidates) {
+      const col = SVG_SNAP_COLOURS[c.type];
+      if (!col) continue;
 
-      // Hover label showing length
-      if (isHovered) {
-        const pxLen = Math.hypot(l.x2 - l.x1, l.y2 - l.y1);
-        const label = `${Math.round(pxLen)} px`;
-        ctx.save();
-        ctx.font = 'bold 10px ui-monospace,monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const tw = ctx.measureText(label).width + 10;
-        ctx.fillStyle = 'rgba(0,0,0,0.82)';
-        ctx.fillRect(midX - tw / 2, midY - 21, tw, 14);
-        ctx.fillStyle = pal.label;
-        ctx.fillText(label, midX, midY - 14);
-        ctx.restore();
+      // Suppress all non-arc-center points that lie inside a door area bounding box
+      if (c.type !== 'arc-center') {
+        const insideDoor = doorAreas.some(da => {
+          const pad = 20;
+          return (
+            c.x >= da.bounds.minX - pad && c.x <= da.bounds.maxX + pad &&
+            c.y >= da.bounds.minY - pad && c.y <= da.bounds.maxY + pad
+          );
+        });
+        if (insideDoor) continue;
       }
-    });
 
-    // ── 2. Wall corners — resting dot + proximity snap ring ──────────────────
-    const wallCorners = getScaledWallCorners(pageNumberRef.current);
-    for (const c of wallCorners) {
-      const dist     = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
+      const dist = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
       const isInSnap = dist < thresh;
-      const inRange  = dist < CORNER_PROXIMITY;
+      const inRange = dist < CORNER_PROXIMITY;
+
+      // Other snap point types (endpoint, midpoint, centroid, intersection)
+      // Skip rendering these if they belong to a door shape
+      const isDoorPoint = c.shapeId?.toLowerCase().includes('door') ||
+                          c.shapeId?.toLowerCase().includes('swing');
+      
+      if (isDoorPoint) {
+        // Door endpoints/midpoints are filtered out (don't render)
+        continue;
+      }
 
       if (!cursor || !inRange) {
-        // Always-visible resting dot
         ctx.beginPath();
-        ctx.arc(c.x, c.y, 2.5, 0, Math.PI * 2);
-        ctx.fillStyle   = 'rgba(20,184,166,0.4)';
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(20,184,166,0.65)';
-        ctx.lineWidth   = 1;
+        ctx.arc(c.x, c.y, 2, 0, Math.PI * 2);
+        ctx.strokeStyle = col.dot;
+        ctx.lineWidth = 1.2;
         ctx.stroke();
         continue;
       }
 
-      const alpha     = Math.max(0, 1 - dist / CORNER_PROXIMITY);
-      const isClose   = dist < 20;
-      const size      = isClose ? 8 : 5;
+      const alpha = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+      const isClose = dist < 20;
+      const size = isClose ? 7 : 4;
 
       ctx.save();
       if (isInSnap) {
         ctx.beginPath();
         ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle   = '#14B8A6';
+        ctx.fillStyle = col.fill;
         ctx.fill();
         ctx.strokeStyle = 'white';
-        ctx.lineWidth   = 2;
+        ctx.lineWidth = 2;
         ctx.stroke();
-        // Cross-hair
         ctx.beginPath();
-        ctx.moveTo(c.x - 12, c.y); ctx.lineTo(c.x + 12, c.y);
-        ctx.moveTo(c.x, c.y - 12); ctx.lineTo(c.x, c.y + 12);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-        ctx.lineWidth   = 1;
+        ctx.moveTo(c.x - 12, c.y);
+        ctx.lineTo(c.x + 12, c.y);
+        ctx.moveTo(c.x, c.y - 12);
+        ctx.lineTo(c.x, c.y + 12);
+        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+        ctx.lineWidth = 1;
         ctx.stroke();
+        ctx.font = 'bold 9px ui-monospace,monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const label = c.type.toUpperCase();
+        const tw = ctx.measureText(label).width + 8;
+        ctx.fillStyle = 'rgba(0,0,0,0.80)';
+        ctx.fillRect(c.x - tw / 2, c.y - 23, tw, 13);
+        ctx.fillStyle = col.fill;
+        ctx.fillText(label, c.x, c.y - 16);
       } else {
-        ctx.strokeStyle = isClose
-          ? `rgba(20,184,166,${alpha})`
-          : `rgba(20,184,166,${alpha * 0.7})`;
-        ctx.lineWidth = isClose ? 2 : 1.2;
-        ctx.beginPath(); ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
-        if (isClose) {
-          ctx.strokeStyle = `rgba(20,184,166,${alpha * 0.5})`;
-          ctx.beginPath(); ctx.arc(c.x, c.y, 12, 0, Math.PI * 2); ctx.stroke();
-        }
-      }
-      ctx.restore();
-    }
-
-    // ── 3. Generic corners (blue) — proximity only ────────────────────────────
-    const corners = getScaledCorners(pageNumberRef.current);
-    for (const c of corners) {
-      if (!cursor) continue;
-      const dist     = Math.hypot(cursor.x - c.x, cursor.y - c.y);
-      const isInSnap = dist < thresh;
-      if (dist > VISIBLE_R) continue;
-
-      const nearWall = wallCorners.some(wc => Math.hypot(wc.x - c.x, wc.y - c.y) < thresh);
-      if (nearWall) continue;
-
-      const alpha  = Math.max(0, 1 - dist / CORNER_PROXIMITY);
-      const isClose = dist < 20;
-      const size   = isClose ? 7 : 4;
-
-      ctx.save();
-      if (isInSnap) {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 7, 0, Math.PI * 2);
-        ctx.fillStyle   = '#F59E0B';
-        ctx.fill();
-        ctx.strokeStyle = 'white';
-        ctx.lineWidth   = 1.5;
-        ctx.stroke();
-      } else {
-        ctx.strokeStyle = isClose
-          ? `rgba(99,202,255,${alpha})`
-          : `rgba(99,202,255,${alpha * 0.7})`;
+        const rgbaStroke = col.dot.replace(/[\d.]+\)$/, `${alpha})`);
+        ctx.strokeStyle = rgbaStroke;
         ctx.lineWidth = isClose ? 1.5 : 1;
-        ctx.beginPath(); ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(c.x - size, c.y);
+        ctx.lineTo(c.x + size, c.y);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(c.x, c.y - size);
+        ctx.lineTo(c.x, c.y + size);
+        ctx.stroke();
         if (isClose) {
-          ctx.strokeStyle = `rgba(99,202,255,${alpha * 0.5})`;
-          ctx.beginPath(); ctx.arc(c.x, c.y, 10, 0, Math.PI * 2); ctx.stroke();
+          ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${alpha * 0.5})`);
+          ctx.beginPath();
+          ctx.arc(c.x, c.y, 11, 0, Math.PI * 2);
+          ctx.stroke();
         }
       }
       ctx.restore();
     }
-  }, [pinCanvasRef, pdfDimensionsRef, pageNumberRef, getScaledCorners, getScaledWallCorners, getScaledWallLines]);
+  }, [pinCanvasRef, pdfDimensionsRef, getSvgPointCandidates]);
 
-  // Redraw whenever page or settings change
+  // Redraw on changes
   useEffect(() => {
     redrawPinCanvas();
-  }, [redrawPinCanvas, pageData, showPins, snapThreshold, confidenceFilter]);
+  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas]);
 
   return {
     pageData,
