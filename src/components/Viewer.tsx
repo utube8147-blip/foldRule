@@ -838,16 +838,90 @@ export function Viewer({
             </button>
           </div>
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
-            <span>Double-click or right-click to finish · ESC to cancel / select · Enter to finish · Space+drag to pan</span>
-            <div className="w-px h-3 bg-industrial-border" />
-            {svgSnapPoints.length > 0 && <><span className="text-purple-400">{svgSnapPoints.length} SVG snap pts</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {svgLines.length > 0 && <><span className="text-sky-400">{svgLines.length} SVG lines</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {svgRooms.length > 0 && <><span className="text-green-400">{svgRooms.length} SVG rooms</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {svgPillars.length > 0 && <><span className="text-amber-400">{svgPillars.length} PILLARS</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {svgWindows.length > 0 && <><span className="text-cyan-400">{svgWindows.length} WINDOWS</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {svgDoorAreas.length > 0 && <><span className="text-emerald-400">{svgDoorAreas.length} doors</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {wallSegments.length > 0 && <><span className="text-blue-400">{wallSegments.length} wall segments</span><div className="w-px h-3 bg-industrial-border" /></>}
-            {walls.length > 0 && <><span className="text-emerald-400">{walls.length} walls paired</span><div className="w-px h-3 bg-industrial-border" /></>}
+          {!showRooms && (
+            <span>
+              Double-click or right-click to finish · ESC to cancel / select ·
+              Enter to finish 
+            </span>
+          )}
+
+          {showRooms && (
+            <>
+              <div className="w-px h-3 bg-industrial-border" />
+
+              {svgSnapPoints.length > 0 && (
+                <>
+                  <span className="text-purple-400">
+                    {svgSnapPoints.length} SVG snap pts
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {svgLines.length > 0 && (
+                <>
+                  <span className="text-sky-400">
+                    {svgLines.length} SVG lines
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {svgRooms.length > 0 && (
+                <>
+                  <span className="text-green-400">
+                    {svgRooms.length} SVG rooms
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {svgPillars.length > 0 && (
+                <>
+                  <span className="text-amber-400">
+                    {svgPillars.length} PILLARS
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {svgWindows.length > 0 && (
+                <>
+                  <span className="text-cyan-400">
+                    {svgWindows.length} WINDOWS
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {svgDoorAreas.length > 0 && (
+                <>
+                  <span className="text-emerald-400">
+                    {svgDoorAreas.length} doors
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {wallSegments.length > 0 && (
+                <>
+                  <span className="text-blue-400">
+                    {wallSegments.length} wall segments
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {walls.length > 0 && (
+                <>
+                  <span className="text-emerald-400">
+                    {walls.length} walls paired
+                  </span>
+                  <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+            </>
+          )}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>
