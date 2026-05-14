@@ -2,12 +2,14 @@
 
 // ─── ViewerCanvas.tsx ─────────────────────────────────────────────────────────
 //
-// CHANGES:
-//   • drawSvgAreaCanvas now renders non-door SVG areas with category-based
-//     colored fills only — label pills removed (fills only, no pills)
-//   • Category color map + getRoomCategory inlined so no cross-file import needed
-//   • Door rendering uses polyline approach (no arc() trig) — interpolated pts
-//   • Room label canvas kept for detected (raster) rooms
+// CHANGES vs original:
+//   • drawSvgAreaCanvas + all label/category logic extracted to:
+//       - svgLabelUtils.ts       (matchesLabel, isSvgDoor/Pillar/Window, colors)
+//       - drawSvgAreaCanvas.ts   (the canvas drawing function)
+//   • roundRect polyfill removed from this file (lives in drawSvgAreaCanvas.ts)
+//   • ROOM_CATEGORY / CATEGORY_COLORS / getRoomCategory removed (in svgLabelUtils.ts)
+//   • drawRoomLabelsCanvas kept here — it only renders raster-detected rooms and
+//     uses CATEGORY_COLORS imported from svgLabelUtils.ts
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
@@ -21,6 +23,9 @@ import { CountPinOverlay } from '../CountPinOverlay';
 import { SVG_SNAP_COLOURS } from '@/hooks/useSvgSnapPoints';
 import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
 import type { SvgArea } from '@/hooks/useSvgInteraction';
+
+import { drawSvgAreaCanvas }          from '@/hooks/drawSvgAreaCanvas';
+import { getRoomCategory, CATEGORY_COLORS } from '@/lib/svgLabelUtils';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -36,85 +41,6 @@ function pointInPolygon(
       inside = !inside;
   }
   return inside;
-}
-
-// ─── Room category system (mirrors drawRoomsOnCanvas) ────────────────────────
-
-const ROOM_CATEGORY: Record<string, string> = {
-  OFFICE: 'office', DIRECTOR: 'office', STUDY: 'office', PRIVATE_OFFICE: 'office',
-  OPEN_OFFICE: 'open', WORKSPACE: 'open', COWORKING: 'open', OPEN_PLAN: 'open',
-  OPEN_PLAN_A: 'open', OPEN_PLAN_B: 'open',
-  MEETING: 'meeting', BOARDROOM: 'meeting', CONFERENCE: 'meeting',
-  BREAKOUT: 'meeting', TRAINING: 'meeting', SEMINAR: 'meeting',
-  CORRIDOR: 'circulation', HALLWAY: 'circulation', HALL: 'circulation',
-  LOBBY: 'circulation', FOYER: 'circulation', ENTRANCE: 'circulation',
-  ENTRY: 'circulation', RECEPTION: 'circulation', STAIRS: 'circulation',
-  STAIRWELL: 'circulation', LIFT: 'circulation', ELEVATOR: 'circulation',
-  PASSAGE: 'circulation', STAIR: 'circulation', CORE: 'circulation',
-  KITCHEN: 'wet', KITCHENETTE: 'wet', BREAKROOM: 'wet', PANTRY: 'wet',
-  CANTEEN: 'wet', CAFETERIA: 'wet', BATHROOM: 'wet', WC: 'wet',
-  TOILET: 'wet', RESTROOM: 'wet', SHOWER: 'wet', LAUNDRY: 'wet',
-  STORAGE: 'utility', STORE: 'utility', STOREROOM: 'utility',
-  ARCHIVE: 'utility', PLANT: 'utility', UTILITY: 'utility',
-  ELECTRICAL: 'utility', SERVER: 'utility', COMMS: 'utility',
-  BEDROOM: 'living', LIVING: 'living', LOUNGE: 'living', DINING: 'living',
-  FAMILY: 'living',
-  BALCONY: 'outdoor', PATIO: 'outdoor', TERRACE: 'outdoor',
-  GARAGE: 'outdoor', CARPARK: 'outdoor', PARKING: 'outdoor',
-  RETAIL: 'retail', SHOP: 'retail', SALES: 'retail', SHOWROOM: 'retail',
-};
-
-const CATEGORY_COLORS: Record<string, { fill: string; stroke: string; pill: string }> = {
-  office:      { fill: 'rgba(59,130,246,0.15)',  stroke: 'rgba(59,130,246,0.70)',  pill: 'rgba(29,78,216,0.92)'   },
-  meeting:     { fill: 'rgba(139,92,246,0.15)',  stroke: 'rgba(139,92,246,0.70)',  pill: 'rgba(76,29,149,0.92)'   },
-  circulation: { fill: 'rgba(245,158,11,0.15)',  stroke: 'rgba(245,158,11,0.70)',  pill: 'rgba(120,53,15,0.92)'   },
-  wet:         { fill: 'rgba(20,184,166,0.15)',  stroke: 'rgba(20,184,166,0.70)',  pill: 'rgba(15,118,110,0.92)'  },
-  utility:     { fill: 'rgba(244,63,94,0.15)',   stroke: 'rgba(244,63,94,0.70)',   pill: 'rgba(136,19,55,0.92)'   },
-  living:      { fill: 'rgba(34,197,94,0.15)',   stroke: 'rgba(34,197,94,0.70)',   pill: 'rgba(20,83,45,0.92)'    },
-  outdoor:     { fill: 'rgba(168,162,158,0.15)', stroke: 'rgba(168,162,158,0.70)', pill: 'rgba(87,83,78,0.92)'    },
-  open:        { fill: 'rgba(99,102,241,0.15)',  stroke: 'rgba(99,102,241,0.70)',  pill: 'rgba(49,46,129,0.92)'   },
-  medical:     { fill: 'rgba(236,72,153,0.15)',  stroke: 'rgba(236,72,153,0.70)',  pill: 'rgba(157,23,77,0.92)'   },
-  retail:      { fill: 'rgba(251,191,36,0.15)',  stroke: 'rgba(251,191,36,0.70)',  pill: 'rgba(146,64,14,0.92)'   },
-  default:     { fill: 'rgba(156,163,175,0.12)', stroke: 'rgba(156,163,175,0.60)', pill: 'rgba(55,65,81,0.92)'    },
-};
-
-function getRoomCategory(label: string): string {
-  if (!label) return 'default';
-  const up = label.toUpperCase().trim().replace(/[\s/\-]+/g, '_');
-
-  // Exact match
-  if (ROOM_CATEGORY[up]) return ROOM_CATEGORY[up];
-
-  // Starts-with / contains
-  for (const [key, cat] of Object.entries(ROOM_CATEGORY)) {
-    if (up === key || up.startsWith(key + '_') || up.startsWith(key + ' ') || up.includes(key)) {
-      return cat;
-    }
-  }
-  return 'default';
-}
-
-// roundRect polyfill
-if (
-  typeof CanvasRenderingContext2D !== 'undefined' &&
-  !(CanvasRenderingContext2D.prototype as any).roundRect
-) {
-  (CanvasRenderingContext2D.prototype as any).roundRect = function (
-    x: number, y: number, w: number, h: number, r: number,
-  ) {
-    if (w < 2 * r) r = w / 2;
-    if (h < 2 * r) r = h / 2;
-    this.moveTo(x + r, y);
-    this.lineTo(x + w - r, y);
-    this.quadraticCurveTo(x + w, y, x + w, y + r);
-    this.lineTo(x + w, y + h - r);
-    this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    this.lineTo(x + r, y + h);
-    this.quadraticCurveTo(x, y + h, x, y + h - r);
-    this.lineTo(x, y + r);
-    this.quadraticCurveTo(x, y, x + r, y);
-    return this;
-  };
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -214,99 +140,7 @@ function drawSvgSnapDebugCanvas(
   }
 }
 
-// ─── SVG area canvas ──────────────────────────────────────────────────────────
-// Renders ALL svgAreas:
-//   • label === 'door'  → green door swing (polyline, no arc())
-//   • everything else   → category-colored room fill only (no label pill)
-
-function drawSvgAreaCanvas(
-  canvas: HTMLCanvasElement,
-  areas: SvgArea[],
-  pdfDimensions: PdfDimensions,
-  showSvgOverlay: boolean,
-) {
-  const { w, h } = pdfDimensions;
-  canvas.width = w; canvas.height = h;
-  canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  ctx.clearRect(0, 0, w, h);
-
-  // ── Pass 1: room fills only (no label pills) ──────────────────────────────
-  for (const area of areas) {
-    if (area.label === 'door' || area.points.length < 3) continue;
-
-    const label = area.label ?? '';
-    const colors = CATEGORY_COLORS[getRoomCategory(label)] ?? CATEGORY_COLORS.default;
-
-    ctx.beginPath();
-    ctx.moveTo(area.points[0].x, area.points[0].y);
-    for (let i = 1; i < area.points.length; i++) ctx.lineTo(area.points[i].x, area.points[i].y);
-    ctx.closePath();
-    ctx.fillStyle = colors.fill;
-    ctx.fill();
-    ctx.strokeStyle = colors.stroke;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }
-
-  // ── Pass 2: doors (rendered last / on top) ────────────────────────────────
-  if (!showSvgOverlay) return;
-
-  for (const area of areas) {
-    if (area.label !== 'door' || area.points.length < 3) continue;
-
-    const pivot  = area.points[0];
-    const arcPts = area.points.slice(1);
-    if (arcPts.length < 2) continue;
-
-    const arcStart = arcPts[0];
-
-    // Filled pie slice
-    ctx.beginPath();
-    ctx.moveTo(pivot.x, pivot.y);
-    for (const p of arcPts) ctx.lineTo(p.x, p.y);
-    ctx.closePath();
-    ctx.fillStyle = 'rgba(34,197,94,0.18)';
-    ctx.fill();
-
-    // Door leaf
-    ctx.beginPath();
-    ctx.moveTo(pivot.x, pivot.y);
-    ctx.lineTo(arcStart.x, arcStart.y);
-    ctx.strokeStyle = 'rgba(34,197,94,0.90)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([]);
-    ctx.stroke();
-
-    // Swing arc — polyline through interpolated points (dashed)
-    ctx.beginPath();
-    ctx.moveTo(arcPts[0].x, arcPts[0].y);
-    for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
-    ctx.strokeStyle = 'rgba(34,197,94,0.70)';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 5]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
-    // 🚪 badge at arc midpoint
-    const mid = arcPts[Math.floor(arcPts.length / 2)];
-    ctx.beginPath();
-    ctx.arc(mid.x, mid.y, 10, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(34,197,94,0.75)';
-    ctx.fill();
-    ctx.strokeStyle = 'white';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = 'white';
-    ctx.font = 'bold 12px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🚪', mid.x, mid.y);
-  }
-}
-
-// ─── Room labels canvas (for raster-detected rooms only) ─────────────────────
+// ─── Room labels canvas (raster-detected rooms only) ─────────────────────────
 
 function drawRoomLabelsCanvas(
   canvas: HTMLCanvasElement,
@@ -327,7 +161,7 @@ function drawRoomLabelsCanvas(
     for (const p of room.polygon) { cx += p.nx * w; cy += p.ny * h; }
     cx /= room.polygon.length; cy /= room.polygon.length;
 
-    const label = room.label || `ROOM`;
+    const label  = room.label || 'ROOM';
     const colors = CATEGORY_COLORS[getRoomCategory(label)] ?? CATEGORY_COLORS.default;
 
     ctx.font = 'bold 11px ui-monospace,SFMono-Regular,Menlo,monospace';
@@ -341,8 +175,8 @@ function drawRoomLabelsCanvas(
     ctx.fill();
     ctx.shadowBlur = 0;
 
-    ctx.fillStyle = '#ffffff';
-    ctx.textAlign = 'center';
+    ctx.fillStyle    = '#ffffff';
+    ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, cx, cy);
   }
@@ -400,7 +234,7 @@ export function ViewerCanvas({
     img.src = url;
   }, [svgContent, pdfDimensions, showSvgOverlay]);
 
-  // ── SVG area canvas (rooms + doors) ──────────────────────────────────────
+  // ── SVG area canvas — delegates to extracted drawSvgAreaCanvas ────────────
   React.useEffect(() => {
     const canvas = svgAreaCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -517,7 +351,7 @@ export function ViewerCanvas({
             />
           )}
 
-          {/* Layer 1.6: SVG area canvas — room fills + doors (no label pills) */}
+          {/* Layer 1.6: SVG area canvas — room fills + doors + pillars + windows */}
           <canvas
             ref={svgAreaCanvasRef}
             className="absolute inset-0 z-[16] pointer-events-none"
@@ -541,19 +375,12 @@ export function ViewerCanvas({
             }}
           />
 
-          {/* Layer 1.8: Raster room fills (drawRoomsOnCanvas — from useRoomDetection) */}
+          {/* Layer 1.8: Raster room fills */}
           <canvas
             ref={roomCanvasRef}
             className="absolute inset-0 z-[18] pointer-events-none"
             style={{ opacity: showRooms ? 1 : 0, transition: 'opacity 0.2s' }}
           />
-
-          {/* Layer 1.9: Raster room label pills */}
-          {/* <canvas
-            ref={roomLabelCanvasRef}
-            className="absolute inset-0 z-[19] pointer-events-none"
-            style={{ opacity: showRooms && rooms.length > 0 ? 1 : 0, transition: 'opacity 0.2s' }}
-          /> */}
 
           {/* Layer 2: Wall overlay */}
           <canvas

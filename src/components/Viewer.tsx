@@ -1,5 +1,14 @@
 'use client';
 
+// ─── Viewer.tsx ───────────────────────────────────────────────────────────────
+//
+// CHANGES vs original:
+//   • isSvgDoor / isSvgPillar / isSvgWindow imported from svgLabelUtils.ts
+//   • All svgRooms / svgPillars / svgWindows / svgDoorAreas useMemos now use
+//     those guards — no more raw string comparisons against 'pillar'/'window'
+//   • STRUCTURAL_LABELS import from detectRoomAreas no longer needed here
+// ─────────────────────────────────────────────────────────────────────────────
+
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFPageProxy } from 'pdfjs-dist';
@@ -20,6 +29,9 @@ import type { DetectedRoom } from '@/hooks/useSnapEngine/detectRooms';
 import { useSvgSnapPoints }  from '@/hooks/useSvgSnapPoints';
 import { useSvgInteraction } from '@/hooks/useSvgInteraction';
 import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
+
+// ── NEW: extracted label guards (fixes the pillar/window capitalisation bug) ──
+import { isSvgDoor, isSvgPillar, isSvgWindow, isSvgStructural } from '@/lib/svgLabelUtils';
 
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
@@ -156,10 +168,7 @@ export function Viewer({
 
     if (file && (file.type === 'image/svg+xml' || file.name?.toLowerCase().endsWith('.svg'))) {
       const reader = new FileReader();
-      reader.onload = (e) => {
-        if (cancelled) return;
-        setSvgContent(e.target?.result as string);
-      };
+      reader.onload = (e) => { if (cancelled) return; setSvgContent(e.target?.result as string); };
       reader.onerror = () => { if (!cancelled) setSvgContent(null); };
       reader.readAsText(file);
       return () => { cancelled = true; };
@@ -187,13 +196,11 @@ export function Viewer({
   const svgSnapPoints = useSvgSnapPoints(svgContent, pdfIntrinsicDims);
 
   // ── SVG lines + areas ──────────────────────────────────────────────────────
-  // FIX: pass pdfIntrinsicDims (zoom-independent) + detectScale = MAX_ZOOM
-  // Detection runs once at intrinsic × MAX_ZOOM canvas size, stores nx/ny [0,1]
   const { elements: svgElements } = useSvgInteraction({
     svgContent,
-    pdfIntrinsicDims,                            // ← was pdfDimensions
-    detectScale: MAX_ZOOM,                        // ← NEW: fixed detection scale
-    enabled: !!svgContent && !!pdfIntrinsicDims,  // ← was pdfDimensions
+    pdfIntrinsicDims,
+    detectScale: MAX_ZOOM,
+    enabled: !!svgContent && !!pdfIntrinsicDims,
   });
 
   const svgLines = useMemo(
@@ -205,33 +212,51 @@ export function Viewer({
     [svgElements],
   );
 
-  // ── SVG rooms (non-door areas → DetectedRoom) ─────────────────────────────
-  // FIX: area.points are now { nx, ny } — no division by pdfDimensions needed
+  // ── SVG ROOMS — excludes doors, pillars, windows ───────────────────────────
+  // FIX: was using raw string comparisons ('pillar', 'window') which never matched
+  //      STRUCTURAL_LABELS values ('Pillar', 'Window').  Now uses isSvgStructural().
   const svgRooms = useMemo<DetectedRoom[]>(() => {
     return svgAreas
       .filter(a => {
-        if (a.points.length < 3) return false;
-        if (a.label === 'door') return false;
-        
-        // Add filtering similar to detectRoomAreas
+        if (a.points.length < 3)       return false;
+        if (isSvgStructural(a))        return false;   // ← replaces 3 separate string checks
+
         const MIN_AREA_N = 800 / (pdfDimensions?.w * pdfDimensions?.h || 1);
-        if (a.areaN < MIN_AREA_N) return false;
-        
-        const aspect = (a.bounds.maxNX - a.bounds.minNX) / 
-                      (a.bounds.maxNY - a.bounds.minNY);
+        if (a.areaN < MIN_AREA_N)      return false;
+
+        const aspect = (a.bounds.maxNX - a.bounds.minNX) /
+                       (a.bounds.maxNY - a.bounds.minNY);
         if (aspect < 0.08 || aspect > 12.0) return false;
-        
+
         return true;
       })
       .map((area, i) => ({
-        id: `svg-room-${i}`,
-        label: area.label ?? `Room ${i + 1}`,
-        polygon: area.points.map(p => ({ nx: p.nx, ny: p.ny })),
+        id:       `svg-room-${i}`,
+        label:    area.label ?? `Room ${i + 1}`,
+        polygon:  area.points.map(p => ({ nx: p.nx, ny: p.ny })),
         areaNorm: area.areaN,
       }));
   }, [svgAreas, pdfDimensions]);
 
-  const svgDoorAreas = useMemo(() => svgAreas.filter(a => a.label === 'door'), [svgAreas]);
+  // ── SVG PILLARS ────────────────────────────────────────────────────────────
+  // FIX: was `matchesLabel(a.label, 'pillar')` or attribute checks inline.
+  //      Now uses isSvgPillar() which handles all casing variants.
+  const svgPillars = useMemo(
+    () => svgAreas.filter(isSvgPillar),
+    [svgAreas],
+  );
+
+  // ── SVG WINDOWS ────────────────────────────────────────────────────────────
+  const svgWindows = useMemo(
+    () => svgAreas.filter(isSvgWindow),
+    [svgAreas],
+  );
+
+  // ── SVG DOORS ──────────────────────────────────────────────────────────────
+  const svgDoorAreas = useMemo(
+    () => svgAreas.filter(isSvgDoor),
+    [svgAreas],
+  );
 
   useEffect(() => {
     if (svgRooms.length > 0) setShowRooms(true);
@@ -256,8 +281,6 @@ export function Viewer({
   const setActiveToolString = useCallback((t: string) => setActiveTool(t as ToolType), [setActiveTool]);
 
   // ── Room detection ─────────────────────────────────────────────────────────
-  // FIX: useRoomDetection should use pdfIntrinsicDims not pdfDimensions
-  // so detection doesn't re-run on zoom (handled inside useRoomDetection)
   const {
     rooms, geometryCandidates, wallSegments, walls,
     phase: roomPhase, detecting: detectingRooms, error: roomError, forceRedetect,
@@ -275,7 +298,6 @@ export function Viewer({
   useEffect(() => { if (roomError) console.error('[Viewer] Room detection error:', roomError); }, [roomError]);
 
   // ── Wall canvas ────────────────────────────────────────────────────────────
-  // FIX: pdfDimensions removed from deps — canvas.width/height read at draw time
   useEffect(() => {
     const canvas = wallCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -289,10 +311,9 @@ export function Viewer({
       curveColor: 'rgba(16, 185, 129, 0.70)',
       wallsOnly:  false,
     });
-  }, [wallSegments, showWalls, pdfRenderCount]); // ← pdfDimensions removed
+  }, [wallSegments, showWalls, pdfRenderCount]);
 
   // ── Room canvas ────────────────────────────────────────────────────────────
-  // FIX: pdfDimensions removed from deps — canvas.width/height read at draw time
   useEffect(() => {
     const canvas = roomCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -302,20 +323,25 @@ export function Viewer({
     }
     const displayRooms = mergedRooms.length > 0 ? mergedRooms : geometryCandidates;
     drawRoomsOnCanvas(canvas, displayRooms, { w: canvas.width, h: canvas.height }, hoveredRoomId);
-  }, [mergedRooms, geometryCandidates, showRooms, hoveredRoomId, pdfRenderCount]); // ← pdfDimensions removed
+  }, [mergedRooms, geometryCandidates, showRooms, hoveredRoomId, pdfRenderCount]);
 
   // ── Debug logging ──────────────────────────────────────────────────────────
   useEffect(() => {
-    if (svgSnapPoints.length > 0) {
+    if (svgSnapPoints.length > 0)
       console.log('[Viewer] SVG snap points:', svgSnapPoints.length);
-    }
   }, [svgSnapPoints]);
 
   useEffect(() => {
-    if (mergedRooms.length > 0) {
-      console.log(`[Viewer] Rooms (${svgRooms.length > 0 ? 'SVG' : 'detected'}):`,
+    if (svgPillars.length > 0)
+      console.log(`[Viewer] SVG PILLARS: ${svgPillars.length} (not rooms)`);
+    if (svgWindows.length > 0)
+      console.log(`[Viewer] SVG WINDOWS: ${svgWindows.length} (not rooms)`);
+  }, [svgPillars.length, svgWindows.length]);
+
+  useEffect(() => {
+    if (mergedRooms.length > 0)
+      console.log(`[Viewer] ROOMS (${svgRooms.length > 0 ? 'SVG' : 'detected'}):`,
         mergedRooms.map(r => r.label));
-    }
   }, [mergedRooms, svgRooms.length]);
 
   // ── SVG debug keyboard shortcuts ───────────────────────────────────────────
@@ -331,7 +357,6 @@ export function Viewer({
   // ── Room click → polygon measurement ──────────────────────────────────────
   const handleRoomClick = useCallback((room: DetectedRoom) => {
     if (!pdfDimensions) return;
-    // polygon points are nx/ny [0,1] — push directly
     room.polygon
       .map(p => ({ x: p.nx, y: p.ny, snapped: false }))
       .forEach(p => pushPoint(p));
@@ -458,6 +483,8 @@ export function Viewer({
     svgLineCount:      svgLines.length,
     svgAreaCount:      svgAreas.length,
     svgRoomCount:      svgRooms.length,
+    svgPillarCount:    svgPillars.length,
+    svgWindowCount:    svgWindows.length,
   }), [
     activeTool, setActiveTool, scale, scaleFactor,
     snapEnabled, showSnapSettings, showPins, snapThreshold, confidenceFilter,
@@ -468,6 +495,7 @@ export function Viewer({
     showVectors, vectorPathCount,
     showSvgOverlay, showSvgSnapDebug, svgSnapPoints.length,
     svgLines.length, svgAreas.length, svgRooms.length,
+    svgPillars.length, svgWindows.length,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -541,7 +569,6 @@ export function Viewer({
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
-        // Resize all overlay canvases to match the new logical viewport
         for (const ref of [
           drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef,
           vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
@@ -552,16 +579,12 @@ export function Viewer({
           c.style.height = `${logVP.height}px`;
         }
 
-        // FIX: stabilize pdfDimensions — only create new object when value changes
-        // This prevents downstream effects that depend on pdfDimensions from
-        // re-running purely due to zoom (since the object reference would change).
         setPdfDimensions(prev =>
           prev?.w === logVP.width && prev?.h === logVP.height
             ? prev
             : { w: logVP.width, h: logVP.height }
         );
 
-        // pdfIntrinsicDims already has this guard — unchanged
         const intrinsicVP = page.getViewport({ scale: 1 });
         setPdfIntrinsicDims(prev =>
           prev?.w === intrinsicVP.width && prev?.h === intrinsicVP.height
@@ -571,7 +594,6 @@ export function Viewer({
 
         task = page.render({ canvasContext: ctx, viewport: physVP, canvas: canvas as any } as any);
         await task.promise;
-        // Increment render count — canvas effects use this as their trigger
         if (active) setPdfRenderCount(c => c + 1);
 
       } catch (err: any) {
@@ -691,7 +713,7 @@ export function Viewer({
     });
   }, [pdf, pdfDimensions]);
 
-  // ─── Render ────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full">
 
@@ -756,7 +778,6 @@ export function Viewer({
             svgAreaCanvasRef={svgAreaCanvasRef}
             roomLabelCanvasRef={roomLabelCanvasRef}
             pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
-            pdfRenderCount={pdfRenderCount}
             activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
             tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
             snapFlashes={snapFlashes} toCanvas={toCanvas}
@@ -822,6 +843,8 @@ export function Viewer({
             {svgSnapPoints.length > 0 && <><span className="text-purple-400">{svgSnapPoints.length} SVG snap pts</span><div className="w-px h-3 bg-industrial-border" /></>}
             {svgLines.length > 0 && <><span className="text-sky-400">{svgLines.length} SVG lines</span><div className="w-px h-3 bg-industrial-border" /></>}
             {svgRooms.length > 0 && <><span className="text-green-400">{svgRooms.length} SVG rooms</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {svgPillars.length > 0 && <><span className="text-amber-400">{svgPillars.length} PILLARS</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {svgWindows.length > 0 && <><span className="text-cyan-400">{svgWindows.length} WINDOWS</span><div className="w-px h-3 bg-industrial-border" /></>}
             {svgDoorAreas.length > 0 && <><span className="text-emerald-400">{svgDoorAreas.length} doors</span><div className="w-px h-3 bg-industrial-border" /></>}
             {wallSegments.length > 0 && <><span className="text-blue-400">{wallSegments.length} wall segments</span><div className="w-px h-3 bg-industrial-border" /></>}
             {walls.length > 0 && <><span className="text-emerald-400">{walls.length} walls paired</span><div className="w-px h-3 bg-industrial-border" /></>}

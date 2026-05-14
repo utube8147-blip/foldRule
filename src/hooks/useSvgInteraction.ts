@@ -6,6 +6,12 @@
 //   • All SvgLine, SvgArea, SvgPoint coords are now NORMALIZED (nx,ny not px,py)
 //   • Consumers multiply nx × currentCanvasW at render/snap time — zero reprocessing on zoom
 //   • pdfDimensions is NOT a dependency of this hook — only pdfIntrinsicDims is
+//
+// STRUCTURAL ELEMENT FIX:
+//   • detectRooms() now returns { rooms, pillars, windows, all }
+//   • Pillars get label="Pillar", windows get label="Window"
+//   • Both are added to extractedElements so they render with correct labels
+//   • Deduplication only runs against rooms, not structural elements
 
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
@@ -13,8 +19,8 @@ import {
   isFullPageShape,
   resolveStrokeWidth,
 } from './svgDecorationFilter';
-import { detectDoorSymbols }            from './detectDoorSymbols';
-import { detectRoomAreas, resolveRoomLabel } from './detectRoomAreas';
+import { detectDoorSymbols }                                from './detectDoorSymbols';
+import { detectRooms, resolveRoomLabel, STRUCTURAL_LABELS } from './detectRoomAreas';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -435,10 +441,6 @@ const MAX_ASPECT_RATIO     = 14;
 
 // ─── Pixel → normalized helpers ──────────────────────────────────────────────
 
-function pxToN(px: number, py: number, dw: number, dh: number) {
-  return { nx: px / dw, ny: py / dh };
-}
-
 // Expand legacy pixel-based SvgArea from detectDoorSymbols/detectRoomAreas into normalized form
 function normalizeAreaPoints(
   pixelPoints: Array<{ x: number; y: number }>,
@@ -688,8 +690,13 @@ export function useSvgInteraction({
       extractedElements.push(...doorAreas);
 
       // ── Wall-graph room detection ────────────────────────────────────────
-      const wallRoomsRaw = detectRoomAreas(svgRoot, svgEl, vbt, idCounter, dw, dh);
-      const wallRooms: SvgArea[] = wallRoomsRaw.map(wr => {
+      // detectRooms() now returns { rooms, pillars, windows, all }
+      const wallDetectionResult = detectRooms(svgRoot, svgEl, vbt, idCounter, dw, dh);
+
+      // Helper: normalize a pixel-space SvgArea from detectRooms into normalized form.
+      // NOTE: detectRooms stores raw pixel coords in .points and raw pixel² in .areaN
+      // (the field is named areaN but holds px² at this stage — divide by dw*dh here).
+      const normalizeWallArea = (wr: SvgArea): SvgArea => {
         const pixPts = (wr as any).points as Array<{ x: number; y: number }>;
         const normPts = normalizeAreaPoints(pixPts, dw, dh);
         const normBounds = {
@@ -702,23 +709,34 @@ export function useSvgInteraction({
           ...wr,
           points: normPts,
           bounds: normBounds,
-          areaN: (wr as any).area / (dw * dh),
+          // areaN from detectRooms is actually px² — normalize it here
+          areaN: (wr as any).areaN / (dw * dh),
         } as SvgArea;
-      });
-      idCounter += wallRooms.length;
+      };
 
-      // Deduplicate wall rooms against explicit closed-path areas (all in normalized space)
+      // Normalize all three buckets
+      const wallRoomsNorm:   SvgArea[] = wallDetectionResult.rooms.map(normalizeWallArea);
+      const wallPillarsNorm: SvgArea[] = wallDetectionResult.pillars.map(normalizeWallArea);
+      const wallWindowsNorm: SvgArea[] = wallDetectionResult.windows.map(normalizeWallArea);
+
+      idCounter += wallDetectionResult.all.length;
+
+      // Deduplicate ROOMS only against existing explicit closed-path areas.
+      // Pillars and windows are structural — always keep them all.
       const existingAreas = extractedElements.filter(e => e.type === 'area') as SvgArea[];
-      const deduped = wallRooms.filter(wr =>
+
+      const dedupedRooms = wallRoomsNorm.filter(wr =>
         !existingAreas.some(ea => {
           const overlapNX = Math.max(0,
             Math.min(wr.bounds.maxNX, ea.bounds.maxNX) - Math.max(wr.bounds.minNX, ea.bounds.minNX));
           const overlapNY = Math.max(0,
             Math.min(wr.bounds.maxNY, ea.bounds.maxNY) - Math.max(wr.bounds.minNY, ea.bounds.minNY));
-          return (overlapNX * overlapNY) / wr.areaN > 0.8;
+          return wr.areaN > 0 && (overlapNX * overlapNY) / wr.areaN > 0.8;
         }),
       );
-      extractedElements.push(...deduped);
+
+      // Push rooms (deduped), pillars, and windows into the element list
+      extractedElements.push(...dedupedRooms, ...wallPillarsNorm, ...wallWindowsNorm);
 
       // ── Index + publish ──────────────────────────────────────────────────
       const index = new Map<string, SvgElement>();
@@ -730,13 +748,15 @@ export function useSvgInteraction({
       const pts        = extractedElements.filter(e => e.type === 'point').length;
       const lns        = extractedElements.filter(e => e.type === 'line').length;
       const ars        = extractedElements.filter(e => e.type === 'area').length;
-      const labelled   = deduped.filter(r => r.label).length;
-      const explicitAr = ars - deduped.length - doorAreas.length;
+      const labelled   = dedupedRooms.filter(r => r.label).length;
+      const explicitAr = ars - dedupedRooms.length - doorAreas.length
+                           - wallPillarsNorm.length - wallWindowsNorm.length;
       console.log(
         `[useSvgInteraction] detected at ${dw}×${dh} (${detectScale}× MAX_ZOOM) | ` +
         `points=${pts} lines=${lns} areas=${ars} ` +
         `(${doorAreas.length} doors + ${explicitAr} explicit + ` +
-        `${deduped.length} wall-graph rooms, ${labelled}/${deduped.length} labelled) ` +
+        `${dedupedRooms.length} rooms [${labelled} labelled] + ` +
+        `${wallPillarsNorm.length} pillars + ${wallWindowsNorm.length} windows) ` +
         `| all coords normalized [0,1]`,
       );
 

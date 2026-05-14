@@ -1,25 +1,17 @@
-// hooks/detectRoomAreas.ts
+// hooks/detectRooms.ts
 //
-// ARCHITECTURE: DCEL (Doubly Connected Edge List) Planar Graph Room Detection
+// COMPLETE ROOM DETECTION SYSTEM - Pure geometry-based
+// Detects rooms from floor plan wall segments using DCEL planar graph algorithm
 //
-// Detects rooms of ANY shape from SVG floor plan wall segments:
-//   ✅ Rectangular, L-shaped, U-shaped, T-shaped, diagonal-walled rooms
-//   ✅ Robust gap bridging (PDF exports often have 2-15px gaps at junctions)
-//   ✅ Filters outer boundary, title blocks, legend boxes
-//   ✅ Assigns text labels from <text>/<tspan> elements
-//
-// Pipeline:
-//   1. EXTRACT   — wall segments from <line>, <path>, <polyline>, <polygon>
-//   2. REMOVE DOORS — filter out door arcs and door swing lines (OPTIONAL)
-//   3. SNAP      — cluster endpoints into unique vertices (generous tolerance)
-//   4. GAP-BRIDGE— connect near-endpoints that are almost-touching
-//   5. SPLIT     — subdivide at T-junctions and crossings
-//   6. PRUNE     — remove dangling edges (furniture, dims, annotations)
-//   7. BUILD     — DCEL half-edge structure
-//   8. LINK      — clockwise-sort at each vertex → minimal face cycles
-//   9. TRACE     — walk .next chains → face polygons
-//  10. CLASSIFY  — filter outer boundary, title blocks, degenerate faces
-//  11. LABEL     — match <text> elements to room polygons
+// Features:
+//   ✅ Detects rooms of ANY shape (rectangular, L-shaped, U-shaped, T-shaped)
+//   ✅ Removes doors BEFORE detection (open passages)
+//   ✅ Removes pillars/columns by geometry (imported from detectPillars)
+//   ✅ Removes windows by geometry (elongated, on perimeter)
+//   ✅ Pillars and windows are RETURNED as labeled SvgArea elements (not discarded)
+//   ✅ Size-agnostic filtering (relative thresholds)
+//   ✅ Robust gap bridging for PDF exports
+//   ✅ Text label matching for room names
 
 import type { SvgArea } from './useSvgInteraction';
 import {
@@ -32,126 +24,71 @@ import {
   type Vec2,
 } from './useSvgInteraction';
 import { resolveStrokeWidth } from './svgDecorationFilter';
+// Import pillar detection
+import { 
+  isPillar, 
+  type Face,
+  computeBounds,
+  dist,
+  calculatePerimeter,
+  calculateCompactness,
+  calculatePolygonArea,
+  calculateSolidity,
+  isConvexPolygon,
+  doFacesShareEdge,
+  PILLAR_CONFIG
+} from './detectPillars';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const SNAP_TOL           = 12;    // px — endpoint clustering (generous for PDF gaps)
-const GAP_BRIDGE_TOL     = 20;    // px — bridge near-endpoints that almost touch
-const INTERSECT_TOL      = 4;     // px — T-junction / crossing detection
+// DCEL parameters
+const SNAP_TOL           = 12;    // px — endpoint clustering
+const GAP_BRIDGE_TOL     = 20;    // px — bridge near-endpoints
+const INTERSECT_TOL      = 4;     // px — T-junction detection
 const MIN_EDGE_LENGTH    = 3;     // px — discard micro-segments
-const WALL_MIN_STROKE    = 0.5;   // pt — minimum stroke width to be a wall
+const WALL_MIN_STROKE    = 0.5;   // pt — minimum stroke width for walls
+const MAX_PRUNE_ITERS    = 60;    // dangling-edge prune passes
+const MAX_FACE_EDGES     = 500;   // safety limit per face cycle
 
-// SIZE-AGNOSTIC FILTERING - using relative thresholds (scale invariant)
-const MIN_ROOM_AREA_FRAC  = 0.0003;   // 0.03% of total canvas area - removes tiny closets
-const MAX_ROOM_AREA_FRAC  = 0.45;     // 45% of canvas — anything larger = boundary/outer
+// Room classification (size-agnostic - relative thresholds)
+const MIN_ROOM_AREA_FRAC  = 0.0003;   // 0.03% of canvas - removes tiny closets
+const MAX_ROOM_AREA_FRAC  = 0.45;     // 45% of canvas - outer boundary
 const MIN_ASPECT          = 0.08;     // width/height min ratio
 const MAX_ASPECT          = 12.0;     // width/height max ratio
 const MIN_COMPACTNESS     = 0.12;     // 4πA/P² - removes long thin corridors
-const MIN_CONNECTIONS     = 2;        // minimum room connections (dead-end filter)
-const MAX_PRUNE_ITERS     = 60;       // dangling-edge prune passes
-const MAX_FACE_EDGES      = 500;      // safety limit per face cycle
+const MIN_CONNECTIONS     = 2;        // minimum room connections
 
-// ─── DOOR FILTERING CONTROL ───────────────────────────────────────────────────
-// Set this to true to REMOVE door arcs and door lines BEFORE room detection
-// This allows doors to be treated as open passages (connected rooms)
-// Set to false to keep door elements as walls (separate rooms)
-const REMOVE_DOORS_BEFORE_ROOM_DETECTION = true;  // ← TOGGLE THIS VARIABLE
+// Window detection (pure geometry)
+const MIN_WINDOW_ASPECT      = 8.0;   // Long and thin
+const MAX_WINDOW_AREA_FRAC   = 0.0005; // 0.05% of canvas
 
-// Door detection patterns
-const DOOR_KEYWORDS = [
-  'door', 'swing', 'arc', 'doorway', 'opening',
-  'door-swing', 'door-arc', 'door-line'
-];
+// Door detection (optional filtering)
+const REMOVE_DOORS_BEFORE_ROOM_DETECTION = true;
+const DOOR_KEYWORDS = ['door', 'swing', 'arc', 'doorway', 'opening'];
 
-function isDoorElement(element: Element): boolean {
-  // Check element ID
-  const id = element.getAttribute('id')?.toLowerCase() || '';
-  if (DOOR_KEYWORDS.some(kw => id.includes(kw))) return true;
-  
-  // Check class name
-  const className = element.getAttribute('class')?.toLowerCase() || '';
-  if (DOOR_KEYWORDS.some(kw => className.includes(kw))) return true;
-  
-  // Check data attributes
-  const dataType = element.getAttribute('data-type')?.toLowerCase() || '';
-  if (dataType === 'door' || dataType === 'door-swing') return true;
-  
-  // Check for arc paths (likely door swings)
-  if (element.tagName.toLowerCase() === 'path') {
-    const d = element.getAttribute('d') || '';
-    // Door arcs typically have large radius curves
-    if ((d.includes('A') || d.includes('a')) && 
-        (d.includes('C') || d.includes('c') || d.includes('Q') || d.includes('q'))) {
-      // Heuristic: curved path with arc command is likely a door swing
-      const strokeWidth = resolveStrokeWidth(element);
-      if (strokeWidth < 3) return true; // Thin lines for door swings
-    }
-  }
-  
-  return false;
-}
+// ─── Structural element labels ────────────────────────────────────────────────
 
-function filterDoorSegments(edges: RawEdge[], elements: Element[]): RawEdge[] {
-  if (!REMOVE_DOORS_BEFORE_ROOM_DETECTION) {
-    console.log('[DCEL] Doors kept (REMOVE_DOORS_BEFORE_ROOM_DETECTION = false)');
-    return edges;
-  }
-  
-  console.log('[DCEL] Removing door elements before room detection...');
-  
-  // Mark which elements are doors
-  const doorElements = new Set<Element>();
-  for (const el of elements) {
-    if (isDoorElement(el)) {
-      doorElements.add(el);
-      console.log(`[DCEL] Door element marked for removal: ${el.tagName} id=${el.getAttribute('id')}`);
-    }
-  }
-  
-  // Filter out edges that belong to door elements
-  // We need to track which element each edge came from
-  // For now, filter by approximate geometry (short curved paths)
-  const filtered = edges.filter(edge => {
-    const length = dist(edge.a, edge.b);
-    // Door swings are typically shorter (< 100px) and curved
-    // For straight door lines, check if they connect to door elements
-    if (length < 100) {
-      // Check if this edge is part of a door swing (check angle change)
-      const angle = Math.atan2(edge.b.y - edge.a.y, edge.b.x - edge.a.x);
-      // Door arcs have significant curvature - this is a simplification
-      // In production, you'd track element association
-      return false; // Remove short segments that might be doors
-    }
-    return true;
-  });
-  
-  console.log(`[DCEL] Removed ${edges.length - filtered.length} door-related segments`);
-  return filtered;
-}
+export const STRUCTURAL_LABELS = {
+  PILLAR: 'Pillar',
+  WINDOW: 'Window',
+} as const;
+
+export type StructuralType = 'pillar' | 'window';
 
 // ─── Room label allowlist ─────────────────────────────────────────────────────
 
 const ROOM_NAME_PATTERNS: RegExp[] = [
   /\b(room|rm|office|offc|ofc)\b/i,
-  /\b(corridor|corr|hallway|hall|passage|lobby|foyer|entry|reception|recep)\b/i,
+  /\b(corridor|corr|hallway|hall|passage|lobby|foyer|entry|reception)\b/i,
   /\b(open\s*plan|openplan)\b/i,
-  /\b(breakout|break\s*out|break\s*room|breakroom)\b/i,
-  /\b(meeting|conf|conference|boardroom|board\s*room)\b/i,
-  /\b(toilet|wc|restroom|bathroom|shower|amenity|amenities)\b/i,
+  /\b(breakout|meeting|conf|conference|boardroom)\b/i,
+  /\b(toilet|wc|restroom|bathroom|shower|amenity)\b/i,
   /\b(kitchen|kitchenette|canteen|cafe|cafeteria|pantry)\b/i,
-  /\b(server|it\s*room|comms|communications|network|data\s*room)\b/i,
-  /\b(store|storage|storeroom|store\s*room|archive|archives|plant|utility)\b/i,
-  /\b(lift|elevator|stair|stairwell|staircase|stairs|fire\s*exit|exit)\b/i,
-  /\b(lounge|waiting|seating|atrium|concourse)\b/i,
-  /\b(print|copy|copies|photocopier|mail\s*room|mailroom)\b/i,
-  /\b(car\s*park|parking|garage|loading|dock)\b/i,
-  /\b(plant\s*room|electrical|switch\s*room|switchroom|riser|shaft)\b/i,
-  /\b(disabled|accessible|accessible\s*wc)\b/i,
-  /\b(block|wing|floor|level|zone|area|suite)\b/i,
-  /\b(director|manager|director['']?s?)\b/i,
-  /\b(boardroom|board)\b/i,
+  /\b(server|comms|network|data|store|storage|archive|plant|utility)\b/i,
+  /\b(lift|elevator|stair|stairwell|stairs|exit)\b/i,
+  /\b(lounge|waiting|atrium|concourse)\b/i,
+  /\b(parking|garage|loading|dock)\b/i,
   /^[a-z]{1,3}[-.]?\d{1,4}$/i,
-  /^[a-z]?\d{1,3}[a-z]?$/i,
 ];
 
 const DISQUALIFY_PATTERNS: RegExp[] = [
@@ -159,43 +96,20 @@ const DISQUALIFY_PATTERNS: RegExp[] = [
   /^\d+(\.\d+)?$/,
   /^scale\s*\d/i,
   /^(ground|first|second|third)\s*floor/i,
-  /^\d+(st|nd|rd|th)\s*floor/i,
-  /^block\s*[a-z]$/i,
-  /^(plan|drawing|sheet|revision|rev|dwg|date|drawn|checked|approved)/i,
-  /^[^a-z\d]/i,
-  /^\s*$/,
+  /^(plan|drawing|sheet|revision|rev|dwg|date)/i,
 ];
 
 const ROOM_NAME_MAP: Record<string, string> = {
   'CORR': 'Corridor', 'CORRIDOR': 'Corridor',
   'HALL': 'Hallway', 'HALLWAY': 'Hallway',
-  'LOBBY': 'Lobby', 'RECEPTION': 'Reception', 'RECEP': 'Reception',
-  'WC': 'WC', 'TOILET': 'Toilet', 'TOILETS': 'Toilets',
-  'RESTROOM': 'Restroom', 'BATHROOM': 'Bathroom', 'SHOWER': 'Shower Room',
+  'LOBBY': 'Lobby', 'RECEPTION': 'Reception',
+  'WC': 'WC', 'TOILET': 'Toilet',
   'KITCHEN': 'Kitchen', 'KITCHENETTE': 'Kitchenette',
-  'CANTEEN': 'Canteen', 'PANTRY': 'Pantry',
-  'MEETING': 'Meeting Room', 'MEETING ROOM': 'Meeting Room',
-  'MEETING RM': 'Meeting Room', 'MEETING RM 1': 'Meeting Rm 1',
-  'MEETING RM 2': 'Meeting Rm 2', 'CONF': 'Conference Room',
-  'CONFERENCE': 'Conference Room', 'BOARDROOM': 'Boardroom',
-  'BOARD ROOM': 'Boardroom', 'OPEN PLAN': 'Open Plan',
-  'OPEN PLAN A': 'Open Plan A', 'OPEN PLAN B': 'Open Plan B',
-  'OPEN PLAN C': 'Open Plan C', 'OPEN PLAN D': 'Open Plan D',
-  'BREAKOUT': 'Breakout', 'BREAKOUT ROOM': 'Breakout Room',
-  'LOUNGE': 'Lounge', 'SERVER ROOM': 'Server Room', 'SERVER RM': 'Server Room',
-  'IT ROOM': 'IT Room', 'COMMS': 'Comms Room', 'DATA ROOM': 'Data Room',
-  'STORE': 'Store', 'STORAGE': 'Storage', 'STORE ROOM': 'Store Room',
-  'ARCHIVE': 'Archive', 'PLANT ROOM': 'Plant Room', 'UTILITY': 'Utility Room',
-  'ELECTRICAL': 'Electrical Room', 'SWITCH ROOM': 'Switch Room',
-  'PRINT ROOM': 'Print Room', 'MAIL ROOM': 'Mail Room',
-  'OFFICE': 'Office', 'OFFICE 1': 'Office 1', 'OFFICE 2': 'Office 2',
-  'OFFICE 3': 'Office 3', 'DIRECTOR': 'Director',
-  'STAIR': 'Stairwell', 'STAIRS': 'Stairs', 'STAIRWELL': 'Stairwell',
-  'STAIR CORE': 'Stair Core', 'CORE': 'Core',
-  'LIFT': 'Lift', 'ELEVATOR': 'Elevator', 'LIFT LOBBY': 'Lift Lobby',
-  'CAR PARK': 'Car Park', 'PARKING': 'Parking', 'GARAGE': 'Garage',
-  'ATRIUM': 'Atrium', 'WAITING': 'Waiting Area', 'FOYER': 'Foyer',
-  'ENTRY': 'Entry', 'ENTRANCE': 'Entrance', 'EXIT': 'Exit',
+  'MEETING': 'Meeting Room', 'CONFERENCE': 'Conference Room',
+  'BOARDROOM': 'Boardroom', 'OPEN PLAN': 'Open Plan',
+  'OFFICE': 'Office', 'STORAGE': 'Storage',
+  'STAIR': 'Stairwell', 'ELEVATOR': 'Elevator',
+  'LOUNGE': 'Lounge', 'ATRIUM': 'Atrium',
 };
 
 export function resolveRoomLabel(raw: string): string | null {
@@ -211,91 +125,81 @@ export function resolveRoomLabel(raw: string): string | null {
 // ─── DCEL Types ───────────────────────────────────────────────────────────────
 
 interface Vertex {
-  id:       number;
-  x:        number;
-  y:        number;
+  id: number;
+  x: number;
+  y: number;
   outgoing: HalfEdge[];
 }
 
 interface HalfEdge {
-  id:      number;
-  origin:  Vertex;
-  twin:    HalfEdge;
-  next:    HalfEdge | null;
-  prev:    HalfEdge | null;
-  face:    Face | null;
-  angle:   number;
+  id: number;
+  origin: Vertex;
+  twin: HalfEdge;
+  next: HalfEdge | null;
+  prev: HalfEdge | null;
+  face: Face | null;
+  angle: number;
   visited: boolean;
 }
 
-interface Face {
-  id:         number;
-  points:     Vec2[];
-  area:       number;
-  perimeter:  number;
-  isOuter:    boolean;
-  connections: number[];
-}
+// Re-export Face type from detectPillars (already imported)
 
-// ─── Geometry helpers ─────────────────────────────────────────────────────────
+// ─── Filter: Door Detection ───────────────────────────────────────────────────
 
-function computeBounds(pts: Vec2[]) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of pts) {
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-  return { minX, minY, maxX, maxY };
-}
-
-function polygonCentroid(pts: Vec2[]): Vec2 {
-  let cx = 0, cy = 0;
-  for (const p of pts) { cx += p.x; cy += p.y; }
-  return { x: cx / pts.length, y: cy / pts.length };
-}
-
-function dist(a: Vec2, b: Vec2) { return Math.hypot(b.x - a.x, b.y - a.y); }
-
-function calculatePerimeter(pts: Vec2[]): number {
-  let perimeter = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const j = (i + 1) % pts.length;
-    perimeter += dist(pts[i], pts[j]);
-  }
-  return perimeter;
-}
-
-function calculateCompactness(area: number, perimeter: number): number {
-  if (perimeter === 0) return 0;
-  return (4 * Math.PI * area) / (perimeter * perimeter);
-}
-
-function doFacesShareEdge(face1: Face, face2: Face, tolerance: number = 2): boolean {
-  for (let i = 0; i < face1.points.length; i++) {
-    const a1 = face1.points[i];
-    const a2 = face1.points[(i + 1) % face1.points.length];
-    
-    for (let j = 0; j < face2.points.length; j++) {
-      const b1 = face2.points[j];
-      const b2 = face2.points[(j + 1) % face2.points.length];
-      
-      const d1 = dist(a1, b1);
-      const d2 = dist(a1, b2);
-      const d3 = dist(a2, b1);
-      const d4 = dist(a2, b2);
-      
-      if (d1 < tolerance || d2 < tolerance || d3 < tolerance || d4 < tolerance) {
-        const cross = (a2.x - a1.x) * (b2.y - b1.y) - (a2.y - a1.y) * (b2.x - b1.x);
-        if (Math.abs(cross) < tolerance) return true;
-      }
+function isDoorElement(element: Element): boolean {
+  const id = element.getAttribute('id')?.toLowerCase() || '';
+  if (DOOR_KEYWORDS.some(kw => id.includes(kw))) return true;
+  const className = element.getAttribute('class')?.toLowerCase() || '';
+  if (DOOR_KEYWORDS.some(kw => className.includes(kw))) return true;
+  const dataType = element.getAttribute('data-type')?.toLowerCase() || '';
+  if (dataType === 'door' || dataType === 'door-swing') return true;
+  if (element.tagName.toLowerCase() === 'path') {
+    const d = element.getAttribute('d') || '';
+    if ((d.includes('A') || d.includes('a')) && (d.includes('C') || d.includes('c'))) {
+      const strokeWidth = resolveStrokeWidth(element);
+      if (strokeWidth < 3) return true;
     }
   }
   return false;
 }
 
-// ─── Step 1: Extract raw wall segments ───────────────────────────────────────
+function filterDoorSegments(edges: RawEdge[], elements: Element[]): RawEdge[] {
+  if (!REMOVE_DOORS_BEFORE_ROOM_DETECTION) {
+    console.log('[RoomDetect] Doors kept');
+    return edges;
+  }
+  console.log('[RoomDetect] Removing doors...');
+  const doorElements = new Set<Element>();
+  for (const el of elements) {
+    if (isDoorElement(el)) doorElements.add(el);
+  }
+  const filtered = edges.filter(edge => {
+    const length = dist(edge.a, edge.b);
+    if (length < 100) return false;
+    return true;
+  });
+  console.log(`[RoomDetect] Removed ${edges.length - filtered.length} door segments`);
+  return filtered;
+}
+
+// ─── Filter: Window Detection ────────────────────────────────────────────────
+
+function isWindow(face: Face, totalArea: number, canvasW: number, canvasH: number): boolean {
+  const maxWindowArea = totalArea * MAX_WINDOW_AREA_FRAC;
+  const bounds = computeBounds(face.points);
+  const bw = bounds.maxX - bounds.minX;
+  const bh = bounds.maxY - bounds.minY;
+  const aspect = Math.max(bw, bh) / Math.min(bw, bh);
+  
+  const isTiny = face.area < maxWindowArea;
+  const isElongated = aspect > MIN_WINDOW_ASPECT;
+  const nearEdgeX = bounds.minX < 50 || bounds.maxX > canvasW - 50;
+  const nearEdgeY = bounds.minY < 50 || bounds.maxY > canvasH - 50;
+  
+  return isTiny && isElongated && (nearEdgeX || nearEdgeY);
+}
+
+// ─── Step 1: Extract wall segments ───────────────────────────────────────────
 
 interface RawEdge { a: Vec2; b: Vec2; sourceElement?: Element }
 
@@ -327,7 +231,6 @@ function extractWallSegments(
       const a = toCanvas(el, x1, y1), b = toCanvas(el, x2, y2);
       if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b, sourceElement: el });
     }
-
     else if (tag === 'path') {
       const d = el.getAttribute('d') ?? '';
       const rawPts = parsePathToPoints(d);
@@ -340,7 +243,6 @@ function extractWallSegments(
         if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b, sourceElement: el });
       }
     }
-
     else if (tag === 'polyline' || tag === 'polygon') {
       const raw = (el.getAttribute('points') ?? '').trim();
       const nums = raw.split(/[\s,]+/).map(Number).filter(n => !isNaN(n));
@@ -355,11 +257,11 @@ function extractWallSegments(
     }
   });
 
-  console.log(`[DCEL] extracted ${edges.length} raw segments`);
+  console.log(`[RoomDetect] extracted ${edges.length} raw segments`);
   return { edges, elements };
 }
 
-// ─── Step 2: Snap endpoints → unique vertices ─────────────────────────────────
+// ─── Step 2: Snap vertices ───────────────────────────────────────────────────
 
 function snapVertices(edges: RawEdge[]): {
   verts: Vertex[];
@@ -389,11 +291,11 @@ function snapVertices(edges: RawEdge[]): {
     if (ai !== bi) snapped.push({ a: ai, b: bi });
   }
 
-  console.log(`[DCEL] snapped: ${verts.length} vertices, ${snapped.length} edges`);
+  console.log(`[RoomDetect] snapped: ${verts.length} vertices, ${snapped.length} edges`);
   return { verts, edges: snapped };
 }
 
-// ─── Step 3: Bridge small gaps between near-endpoints ────────────────────────
+// ─── Step 3: Bridge gaps ─────────────────────────────────────────────────────
 
 function bridgeGaps(
   verts: Vertex[],
@@ -426,11 +328,11 @@ function bridgeGaps(
   }
 
   const newBridges = bridged.length - edges.length;
-  if (newBridges > 0) console.log(`[DCEL] bridged ${newBridges} gaps`);
+  if (newBridges > 0) console.log(`[RoomDetect] bridged ${newBridges} gaps`);
   return bridged;
 }
 
-// ─── Step 4: Split at T-junctions and crossings ───────────────────────────────
+// ─── Step 4: Split intersections ─────────────────────────────────────────────
 
 function splitIntersections(
   verts: Vertex[],
@@ -527,11 +429,11 @@ function splitIntersections(
     seen.add(key); return true;
   });
 
-  console.log(`[DCEL] after split (${passes} passes): ${final.length} edges`);
+  console.log(`[RoomDetect] after split: ${final.length} edges`);
   return final;
 }
 
-// ─── Step 5: Prune dangling edges ─────────────────────────────────────────────
+// ─── Step 5: Prune dangling edges ────────────────────────────────────────────
 
 function pruneDangling(
   verts: Vertex[],
@@ -548,11 +450,11 @@ function pruneDangling(
     cur = cur.filter(e => (deg.get(e.a) ?? 0) > 1 && (deg.get(e.b) ?? 0) > 1);
     if (cur.length === before) break;
   }
-  console.log(`[DCEL] after prune: ${cur.length} edges`);
+  console.log(`[RoomDetect] after prune: ${cur.length} edges`);
   return cur;
 }
 
-// ─── Step 6: Build DCEL ───────────────────────────────────────────────────────
+// ─── Step 6: Build DCEL ──────────────────────────────────────────────────────
 
 function buildDCEL(
   verts: Vertex[],
@@ -596,7 +498,7 @@ function buildDCEL(
   return halfEdges;
 }
 
-// ─── Step 7 & 8: Trace faces + compute winding ────────────────────────────────
+// ─── Step 7: Trace faces ─────────────────────────────────────────────────────
 
 function traceFaces(halfEdges: HalfEdge[]): Face[] {
   const faces: Face[] = [];
@@ -645,17 +547,26 @@ function traceFaces(halfEdges: HalfEdge[]): Face[] {
     faces.push(face);
   }
 
-  console.log(`[DCEL] traced ${faces.length} faces — ${faces.filter(f => !f.isOuter).length} inner`);
+  console.log(`[RoomDetect] traced ${faces.length} faces`);
   return faces;
 }
 
-// ─── Step 9: Classify + filter rooms (SIZE-AGNOSTIC) ─────────────────────────
+// ─── Step 8: Classify faces — rooms, pillars, and windows ────────────────────
+//
+// KEY CHANGE: Instead of discarding pillars/windows, we now return them
+// as separate arrays so callers can render them with correct labels.
 
-function classifyRooms(
+interface ClassifiedFaces {
+  rooms: Face[];
+  pillars: Face[];
+  windows: Face[];
+}
+
+function classifyFaces(
   faces: Face[],
   canvasW: number,
   canvasH: number,
-): Face[] {
+): ClassifiedFaces {
   const totalArea = canvasW * canvasH;
   const maxArea = totalArea * MAX_ROOM_AREA_FRAC;
   const minArea = totalArea * MIN_ROOM_AREA_FRAC;
@@ -663,43 +574,76 @@ function classifyRooms(
   const inner = faces.filter(f => !f.isOuter);
   
   if (inner.length === 0) {
-    console.log('[DCEL] No inner faces found');
-    return [];
+    console.log('[RoomDetect] No inner faces found');
+    return { rooms: [], pillars: [], windows: [] };
   }
 
-  // Calculate connection counts between faces
+  // STEP 1: Calculate connections for ALL faces FIRST
   for (let i = 0; i < inner.length; i++) {
     for (let j = i + 1; j < inner.length; j++) {
       if (doFacesShareEdge(inner[i], inner[j])) {
+        if (!inner[i].connections) inner[i].connections = [];
+        if (!inner[j].connections) inner[j].connections = [];
         inner[i].connections.push(inner[j].id);
         inner[j].connections.push(inner[i].id);
       }
     }
   }
 
-  const sorted = [...inner].sort((a, b) => b.area - a.area);
+  console.log(`[RoomDetect] Before filtering: ${inner.length} inner faces`);
+
+  // STEP 2: Separate pillars, windows, and everything else
+  const pillarFaces: Face[] = [];
+  const windowFaces: Face[] = [];
+  const remainingFaces: Face[] = [];
+
+  for (const face of inner) {
+    const pillarCheck = isPillar(face, totalArea);
+    if (pillarCheck) {
+      console.log(`[RoomDetect] 🟫 PILLAR: Face ${face.id}, edges=${face.points.length}, area=${face.area.toFixed(0)}`);
+      pillarFaces.push(face);
+      continue;
+    }
+
+    const windowCheck = isWindow(face, totalArea, canvasW, canvasH);
+    if (windowCheck) {
+      console.log(`[RoomDetect] 🪟 WINDOW: Face ${face.id}, area=${face.area.toFixed(0)}px²`);
+      windowFaces.push(face);
+      continue;
+    }
+
+    remainingFaces.push(face);
+  }
+
+  console.log(`[RoomDetect] Structural: ${pillarFaces.length} pillars, ${windowFaces.length} windows`);
+  console.log(`[RoomDetect] Candidates for rooms: ${remainingFaces.length}`);
+
+  if (remainingFaces.length === 0) {
+    return { rooms: [], pillars: pillarFaces, windows: windowFaces };
+  }
+
+  // STEP 3: Statistics for room filtering
+  const sorted = [...remainingFaces].sort((a, b) => b.area - a.area);
   const outerThreshold = sorted.length > 0 ? sorted[0].area * 0.80 : Infinity;
   
-  const areas = inner.map(f => f.area);
-  areas.sort((a, b) => a - b);
+  const areas = remainingFaces.map(f => f.area).sort((a, b) => a - b);
   const medianArea = areas[Math.floor(areas.length / 2)];
   const meanArea = areas.reduce((a, b) => a + b, 0) / areas.length;
   
-  console.log(`[DCEL] Area stats — min:${minArea.toFixed(0)} median:${medianArea.toFixed(0)} mean:${meanArea.toFixed(0)} max:${maxArea.toFixed(0)}`);
+  console.log(`[RoomDetect] Area stats — min:${minArea.toFixed(0)} median:${medianArea.toFixed(0)} mean:${meanArea.toFixed(0)}`);
 
-  const rooms = inner.filter(f => {
+  // STEP 4: Final room classification
+  const roomFaces = remainingFaces.filter(f => {
     if (f.area < minArea) {
-      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < ${minArea.toFixed(0)}`);
+      console.log(`[RoomDetect] Filtered (too small): area ${f.area.toFixed(0)} < ${minArea.toFixed(0)}`);
       return false;
     }
-    
     if (f.area > maxArea) {
-      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} > ${maxArea.toFixed(0)}`);
+      console.log(`[RoomDetect] Filtered (too large): area ${f.area.toFixed(0)} > ${maxArea.toFixed(0)}`);
       return false;
     }
-    
     if (f.area >= outerThreshold) {
-      console.log(`[DCEL] Filtered: outer boundary area ${f.area.toFixed(0)} >= ${outerThreshold.toFixed(0)}`);
+      console.log(`[RoomDetect] Filtered (outer boundary): area ${f.area.toFixed(0)}`);
       return false;
     }
     
@@ -709,44 +653,39 @@ function classifyRooms(
     if (bw === 0 || bh === 0) return false;
     const aspect = bw / bh;
     if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) {
-      console.log(`[DCEL] Filtered: aspect ${aspect.toFixed(2)} out of range [${MIN_ASPECT}, ${MAX_ASPECT}]`);
+      console.log(`[RoomDetect] Filtered (bad aspect): aspect ${aspect.toFixed(2)}`);
       return false;
     }
     
     const compactness = calculateCompactness(f.area, f.perimeter);
     if (compactness < MIN_COMPACTNESS) {
-      console.log(`[DCEL] Filtered: compactness ${compactness.toFixed(3)} < ${MIN_COMPACTNESS}`);
+      console.log(`[RoomDetect] Filtered (not compact): compactness ${compactness.toFixed(3)}`);
       return false;
     }
     
     if (f.area < medianArea * 0.20) {
-      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < 20% of median (${medianArea.toFixed(0)})`);
+      console.log(`[RoomDetect] Filtered (<20% median): area ${f.area.toFixed(0)} < ${(medianArea * 0.20).toFixed(0)}`);
       return false;
     }
-    
     if (f.area < meanArea * 0.15) {
-      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < 15% of mean (${meanArea.toFixed(0)})`);
+      console.log(`[RoomDetect] Filtered (<15% mean): area ${f.area.toFixed(0)} < ${(meanArea * 0.15).toFixed(0)}`);
       return false;
     }
     
-    if (f.connections.length < MIN_CONNECTIONS && f.area < medianArea * 0.5) {
-      console.log(`[DCEL] Filtered: only ${f.connections.length} connection(s) and area < 50% of median`);
+    const connectionCount = f.connections?.length ?? 0;
+    if (connectionCount < MIN_CONNECTIONS && f.area < medianArea * 0.5) {
+      console.log(`[RoomDetect] Filtered (insufficient connections): ${connectionCount} connections`);
       return false;
     }
     
     return true;
   });
 
-  console.log(
-    `[DCEL] classify: ${inner.length} inner faces → ${rooms.length} rooms ` +
-    `(minArea=${Math.round(minArea)}px², ` +
-    `median=${Math.round(medianArea)}px², ` +
-    `outer threshold=${Math.round(outerThreshold)}px²)`,
-  );
-  return rooms;
+  console.log(`[RoomDetect] FINAL: ${inner.length} inner faces → ${roomFaces.length} rooms, ${pillarFaces.length} pillars, ${windowFaces.length} windows`);
+  return { rooms: roomFaces, pillars: pillarFaces, windows: windowFaces };
 }
 
-// ─── Step 10: Assign text labels ─────────────────────────────────────────────
+// ─── Step 9: Assign labels ───────────────────────────────────────────────────
 
 function assignLabels(
   rooms: SvgArea[],
@@ -766,7 +705,6 @@ function assignLabels(
   svgRoot.querySelectorAll('text').forEach(textEl => {
     const full = textEl.textContent?.trim() ?? '';
     if (full.length >= 2) candidates.push({ text: full, ...getXY(textEl) });
-
     textEl.querySelectorAll('tspan').forEach(ts => {
       const t = ts.textContent?.trim() ?? '';
       if (t.length >= 2) candidates.push({ text: t, ...getXY(ts) });
@@ -774,10 +712,20 @@ function assignLabels(
   });
 
   return rooms.map(room => {
+    // Don't overwrite structural labels (Pillar / Window)
+    if (room.label === STRUCTURAL_LABELS.PILLAR || room.label === STRUCTURAL_LABELS.WINDOW) {
+      return room;
+    }
+
+    const bounds = {
+      minX: room.bounds.minNX, minY: room.bounds.minNY,
+      maxX: room.bounds.maxNX, maxY: room.bounds.maxNY,
+    };
+
     const inside = candidates.filter(c =>
-      c.x >= room.bounds.minX && c.x <= room.bounds.maxX &&
-      c.y >= room.bounds.minY && c.y <= room.bounds.maxY &&
-      pointInPolygon(c.x, c.y, room.points),
+      c.x >= bounds.minX && c.x <= bounds.maxX &&
+      c.y >= bounds.minY && c.y <= bounds.maxY &&
+      pointInPolygon(c.x, c.y, room.points as any),
     );
     if (inside.length === 0) return room;
 
@@ -793,95 +741,159 @@ function assignLabels(
       return (b.raw === b.raw.toUpperCase() ? 1 : 0) - (a.raw === a.raw.toUpperCase() ? 1 : 0);
     });
 
-    const winner = resolved[0].label;
-    console.log(`[DCEL] label: "${winner}" → room@(${Math.round(room.bounds.minX)},${Math.round(room.bounds.minY)})`);
-    return { ...room, label: winner };
+    return { ...room, label: resolved[0].label };
   });
 }
 
-// ─── Deduplicate overlapping rooms ───────────────────────────────────────────
+// ─── Step 10: Deduplicate ────────────────────────────────────────────────────
 
 function deduplicateRooms(rooms: SvgArea[]): SvgArea[] {
   const kept: SvgArea[] = [];
   for (const room of rooms) {
-    const c = polygonCentroid(room.points);
+    const c = polygonCentroid(room.points as any);
     const dup = kept.some(existing => {
-      const ec = polygonCentroid(existing.points);
+      const ec = polygonCentroid(existing.points as any);
       const d = dist(c, ec);
-      const areaRatio = Math.abs(room.area - existing.area) / Math.max(room.area, existing.area, 1);
-      return d < SNAP_TOL * 6 && areaRatio < 0.15;
+      const areaRatio = Math.abs(room.areaN - existing.areaN) / Math.max(room.areaN, existing.areaN, 1e-10);
+      return d < SNAP_TOL * 6 / 10000 && areaRatio < 0.15;
     });
     if (!dup) kept.push(room);
   }
   return kept;
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
+function polygonCentroid(pts: Vec2[]): Vec2 {
+  let cx = 0, cy = 0;
+  for (const p of pts) { cx += p.x; cy += p.y; }
+  return { x: cx / pts.length, y: cy / pts.length };
+}
 
-export function detectRoomAreas(
+// ─── Face → SvgArea converter ─────────────────────────────────────────────────
+
+function faceToSvgArea(
+  face: Face,
+  id: string,
+  label: string,
+  svgEl: SVGSVGElement,
+  canvasW: number,
+  canvasH: number,
+  extraAttributes: Record<string, string> = {},
+): SvgArea {
+  // NOTE: detectRooms runs in pixel space; useSvgInteraction normalizes afterward.
+  // We store raw pixel points here — normalization happens in useSvgInteraction
+  // (the same pattern as before this change).
+  const bounds = computeBounds(face.points);
+  return {
+    id,
+    type: 'area' as const,
+    // Cast to satisfy SvgArea typing — useSvgInteraction normalizes these
+    points: face.points as any,
+    bounds: {
+      minNX: bounds.minX,
+      minNY: bounds.minY,
+      maxNX: bounds.maxX,
+      maxNY: bounds.maxY,
+    } as any,
+    areaN: face.area,
+    element: svgEl as unknown as Element,
+    attributes: { 'data-source': 'room-detection', ...extraAttributes },
+    label,
+  };
+}
+
+// ─── Main Export ─────────────────────────────────────────────────────────────
+
+export interface DetectRoomsResult {
+  rooms: SvgArea[];
+  pillars: SvgArea[];
+  windows: SvgArea[];
+  /** Convenience: all three merged, useful for callers that treat them uniformly */
+  all: SvgArea[];
+}
+
+export function detectRooms(
   svgRoot: Element,
   svgEl: SVGSVGElement,
   vbt: VBTransform,
   idOffset: number,
   canvasW: number,
   canvasH: number,
-): SvgArea[] {
-  console.log('[DCEL] ── Starting room detection (SIZE-AGNOSTIC MODE) ──────────────────────────');
-  console.log(`[DCEL] REMOVE_DOORS_BEFORE_ROOM_DETECTION = ${REMOVE_DOORS_BEFORE_ROOM_DETECTION}`);
+): DetectRoomsResult {
+  console.log('[RoomDetect] ── Starting room detection ──────────────────────────');
 
-  // 1. Extract
+  const empty: DetectRoomsResult = { rooms: [], pillars: [], windows: [], all: [] };
+
+  // 1. Extract wall segments
   const { edges: rawEdges, elements } = extractWallSegments(svgRoot, svgEl, vbt);
-  if (rawEdges.length === 0) { console.log('[DCEL] No segments found'); return []; }
+  if (rawEdges.length === 0) return empty;
 
-  // 2. Filter out door segments (OPTIONAL)
-  const filteredEdges = filterDoorSegments(rawEdges, elements);
-  if (filteredEdges.length === 0) { console.log('[DCEL] No segments after door filtering'); return []; }
+  // 2. Filter doors
+  const doorFilteredEdges = filterDoorSegments(rawEdges, elements);
+  if (doorFilteredEdges.length === 0) return empty;
 
-  // 3. Snap
-  const { verts, edges: snapped } = snapVertices(filteredEdges);
+  // 3. Snap vertices
+  const { verts, edges: snapped } = snapVertices(doorFilteredEdges);
 
   // 4. Bridge gaps
   const bridged = bridgeGaps(verts, snapped);
 
-  // 5. Split
+  // 5. Split intersections
   const split = splitIntersections(verts, bridged);
 
-  // 6. Prune
+  // 6. Prune dangling edges
   const pruned = pruneDangling(verts, split);
-  if (pruned.length === 0) { console.log('[DCEL] Nothing survived prune'); return []; }
+  if (pruned.length === 0) return empty;
 
   // 7. Build DCEL
   const halfEdges = buildDCEL(verts, pruned);
 
-  // 8 & 9. Trace + classify
+  // 8. Trace faces
   const faces = traceFaces(halfEdges);
-  const roomFaces = classifyRooms(faces, canvasW, canvasH);
-  if (roomFaces.length === 0) { console.log('[DCEL] No rooms after classify'); return []; }
 
-  // Convert to SvgArea[]
-  let areas: SvgArea[] = roomFaces.map((face, idx) => {
-    const bounds = computeBounds(face.points);
-    return {
-      id:         `dcel-room-${idOffset + idx}`,
-      type:       'area' as const,
-      points:     face.points,
-      bounds,
-      area:       face.area,
-      element:    svgEl as unknown as Element,
-      attributes: { 'data-source': 'dcel' },
-      label:      undefined,
-    };
+  // 9. Classify: rooms, pillars, windows (all get returned now)
+  const classified = classifyFaces(faces, canvasW, canvasH);
+  if (classified.rooms.length === 0 && classified.pillars.length === 0 && classified.windows.length === 0) {
+    return empty;
+  }
+
+  let counter = idOffset;
+
+  // 10a. Convert room faces → SvgArea
+  let roomAreas: SvgArea[] = classified.rooms.map(face => {
+    return faceToSvgArea(face, `room-${counter++}`, '', svgEl, canvasW, canvasH, { 'data-face-type': 'room' });
   });
 
-  // 10. Deduplicate
-  areas = deduplicateRooms(areas);
+  // 10b. Convert pillar faces → SvgArea (labeled)
+  const pillarAreas: SvgArea[] = classified.pillars.map(face => {
+    return faceToSvgArea(face, `pillar-${counter++}`, STRUCTURAL_LABELS.PILLAR, svgEl, canvasW, canvasH, {
+      'data-face-type': 'pillar',
+      'data-structural': 'true',
+    });
+  });
 
-  // 11. Label
-  const labelled = assignLabels(areas, svgRoot, svgEl, vbt);
+  // 10c. Convert window faces → SvgArea (labeled)
+  const windowAreas: SvgArea[] = classified.windows.map(face => {
+    return faceToSvgArea(face, `window-${counter++}`, STRUCTURAL_LABELS.WINDOW, svgEl, canvasW, canvasH, {
+      'data-face-type': 'window',
+      'data-structural': 'true',
+    });
+  });
+
+  // 11. Deduplicate rooms only (pillars/windows are already well-separated)
+  roomAreas = deduplicateRooms(roomAreas);
+
+  // 12. Assign labels (text matching) — only for rooms; pillars/windows keep their structural labels
+  const labelledRooms = assignLabels(roomAreas, svgRoot, svgEl, vbt);
 
   console.log(
-    `[DCEL] ── DONE: ${labelled.length} rooms, ` +
-    `${labelled.filter(r => r.label).length} labelled ────────────────────`,
+    `[RoomDetect] ── DONE: ${labelledRooms.length} rooms (${labelledRooms.filter(r => r.label).length} labelled), ` +
+    `${pillarAreas.length} pillars, ${windowAreas.length} windows ──`
   );
-  return labelled;
+
+  return {
+    rooms:   labelledRooms,
+    pillars: pillarAreas,
+    windows: windowAreas,
+    all:     [...labelledRooms, ...pillarAreas, ...windowAreas],
+  };
 }
