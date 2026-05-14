@@ -1,20 +1,5 @@
 'use client';
 
-// ─── Viewer.tsx ───────────────────────────────────────────────────────────────
-//
-//  Root component. Owns all state and hooks; delegates rendering to:
-//    • ViewerToolbar  — top bar
-//    • ViewerCanvas   — canvas stack + PDF scroll area
-//    • ViewerDialogs  — all modals / overlays
-//
-//  CHANGES in this version:
-//    • SVG areas (non-door) are treated as room polygons via svgRooms
-//    • mergedRooms: svgRooms take priority, fall back to detected rooms
-//    • Room canvas draws mergedRooms (not raw detected rooms)
-//    • svgAreaCanvasRef now renders DOORS ONLY (non-door areas go via room system)
-//    • showRooms auto-enables when svgRooms are present
-// ─────────────────────────────────────────────────────────────────────────────
-
 import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFPageProxy } from 'pdfjs-dist';
@@ -48,8 +33,6 @@ import {
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
 export function Viewer({
   activeTool, setActiveTool,
   measurements,
@@ -69,15 +52,16 @@ export function Viewer({
 }) {
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
-  const pinCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const roomCanvasRef    = useRef<HTMLCanvasElement>(null);
-  const wallCanvasRef    = useRef<HTMLCanvasElement>(null);
-  const vectorCanvasRef  = useRef<HTMLCanvasElement>(null);
-  const svgAreaCanvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef     = useRef<HTMLDivElement>(null);
-
+  const pdfCanvasRef      = useRef<HTMLCanvasElement>(null);
+  const drawingCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const pinCanvasRef      = useRef<HTMLCanvasElement>(null);
+  const roomCanvasRef     = useRef<HTMLCanvasElement>(null);
+  const wallCanvasRef     = useRef<HTMLCanvasElement>(null);
+  const vectorCanvasRef   = useRef<HTMLCanvasElement>(null);
+  const svgAreaCanvasRef  = useRef<HTMLCanvasElement>(null);
+  // NEW: separate canvas for room label pills so they always render above fills
+  const roomLabelCanvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef      = useRef<HTMLDivElement>(null);
   const currentPdfPageRef = useRef<PDFPageProxy | null>(null);
 
   // ── State ──────────────────────────────────────────────────────────────────
@@ -91,8 +75,7 @@ export function Viewer({
 
   const [pdfDimensions, setPdfDimensions]       = useState<PdfDimensions | null>(null);
   const [pdfIntrinsicDims, setPdfIntrinsicDims] = useState<PdfDimensions | null>(null);
-
-  const [pdfRenderCount, setPdfRenderCount] = useState(0);
+  const [pdfRenderCount, setPdfRenderCount]     = useState(0);
 
   // ── Room + wall visibility ─────────────────────────────────────────────────
   const [internalShowRooms, setInternalShowRooms] = useState(false);
@@ -112,8 +95,7 @@ export function Viewer({
   const [showWalls,   setShowWalls]   = useState(true);
   const [showVectors, setShowVectors] = useState(false);
   const [vectorPathCount, setVectorPathCount] = useState(0);
-
-  const [hoveredRoomId, setHoveredRoomId] = useState<string | null>(null);
+  const [hoveredRoomId, setHoveredRoomId]     = useState<string | null>(null);
 
   // ── SVG overlay state ──────────────────────────────────────────────────────
   const [svgContent, setSvgContent]             = useState<string | null>(null);
@@ -132,8 +114,8 @@ export function Viewer({
   const onScaleSetRef = useRef(onScaleSet);
   useEffect(() => { onScaleSetRef.current = onScaleSet; }, [onScaleSet]);
 
-  const activeDrawingId  = activeDrawing?.id     ?? null;
-  const activeDrawingUrl = activeDrawing?.fileUrl ?? null;
+  const activeDrawingId      = activeDrawing?.id     ?? null;
+  const activeDrawingUrl     = activeDrawing?.fileUrl ?? null;
   const activeDrawingFileRef = useRef<File | undefined>(activeDrawing?.file);
   useEffect(() => { activeDrawingFileRef.current = activeDrawing?.file; }, [activeDrawing?.file]);
   const startExtractionRef = useRef<((...args: any[]) => void) | null>(null);
@@ -146,14 +128,13 @@ export function Viewer({
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
   // ── Dialog state ───────────────────────────────────────────────────────────
-  const [showCalibrationDialog, setShowCalibrationDialog] = useState(false);
-  const [pendingPtLen,          setPendingPtLen]          = useState(0);
-  const [calibrationInput,      setCalibrationInput]      = useState('');
+  const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
+  const [pendingPtLen,           setPendingPtLen]           = useState(0);
+  const [calibrationInput,       setCalibrationInput]       = useState('');
   const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<
     { id: string; type: string; description: string } | null>(null);
 
-  // ── Stable callbacks ───────────────────────────────────────────────────────
   const onUpdateMeasurement = useCallback(
     (id: string, updates: Partial<TakeoffRow>) => onUpdateMeasurementProp?.(id, updates),
     [onUpdateMeasurementProp],
@@ -172,90 +153,55 @@ export function Viewer({
   // ── SVG content extraction ─────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-
     const file = activeDrawingFileRef.current;
 
     if (file && (file.type === 'image/svg+xml' || file.name?.toLowerCase().endsWith('.svg'))) {
       const reader = new FileReader();
       reader.onload = (e) => {
         if (cancelled) return;
-        const text = e.target?.result as string;
-        setSvgContent(text);
-        console.log('[Viewer] SVG content loaded from uploaded file, length:', text?.length);
+        setSvgContent(e.target?.result as string);
       };
-      reader.onerror = () => {
-        if (cancelled) return;
-        console.error('[Viewer] Failed to read SVG file');
-        setSvgContent(null);
-      };
+      reader.onerror = () => { if (!cancelled) setSvgContent(null); };
       reader.readAsText(file);
       return () => { cancelled = true; };
     }
 
     if (activeDrawingUrl?.toLowerCase().endsWith('.svg')) {
       fetch(activeDrawingUrl)
-        .then(res => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.text();
-        })
-        .then(text => {
-          if (cancelled) return;
-          setSvgContent(text);
-          console.log('[Viewer] SVG content loaded from drawing URL, length:', text.length);
-        })
-        .catch(err => {
-          if (cancelled) return;
-          console.error('[Viewer] Failed to fetch SVG from drawing URL:', err);
-          setSvgContent(null);
-        });
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+        .then(t => { if (!cancelled) setSvgContent(t); })
+        .catch(() => { if (!cancelled) setSvgContent(null); });
       return () => { cancelled = true; };
     }
 
-    if (!activeDrawingUrl && !file) {
-      setSvgContent(null);
-      return;
-    }
+    if (!activeDrawingUrl && !file) { setSvgContent(null); return; }
 
     fetch('/svg-overlay.svg')
-      .then(res => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.text();
-      })
-      .then(text => {
-        if (cancelled) return;
-        setSvgContent(text);
-        console.log('[Viewer] SVG overlay loaded from /svg-overlay.svg, length:', text.length);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        console.warn('[Viewer] /svg-overlay.svg not found or failed to load:', err);
-        setSvgContent(null);
-      });
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
+      .then(t => { if (!cancelled) setSvgContent(t); })
+      .catch(() => { if (!cancelled) setSvgContent(null); });
 
     return () => { cancelled = true; };
   }, [activeDrawingId, activeDrawingUrl]);
 
-  // ── SVG snap points (normalised nx/ny) ────────────────────────────────────
+  // ── SVG snap points ────────────────────────────────────────────────────────
   const svgSnapPoints = useSvgSnapPoints(svgContent, pdfIntrinsicDims);
 
-  // ── SVG lines + areas (canvas-pixel space) ────────────────────────────────
+  // ── SVG lines + areas ──────────────────────────────────────────────────────
   const { elements: svgElements } = useSvgInteraction({
-    svgContent,
-    pdfDimensions,
-    enabled: !!svgContent && !!pdfDimensions,
+    svgContent, pdfDimensions, enabled: !!svgContent && !!pdfDimensions,
   });
 
   const svgLines = useMemo(
     () => svgElements.filter((el): el is SvgLine => el.type === 'line'),
     [svgElements],
   );
-
   const svgAreas = useMemo(
     () => svgElements.filter((el): el is SvgArea => el.type === 'area'),
     [svgElements],
   );
 
-  // ── SVG rooms: non-door areas become DetectedRoom polygons ────────────────
+  // ── SVG rooms (non-door areas → DetectedRoom) ─────────────────────────────
   const svgRooms = useMemo<DetectedRoom[]>(() => {
     if (!pdfDimensions) return [];
     return svgAreas
@@ -265,33 +211,23 @@ export function Viewer({
           nx: p.x / pdfDimensions.w,
           ny: p.y / pdfDimensions.h,
         }));
-
-        // Shoelace formula → normalised area
         let s = 0;
         for (let j = 0, k = polygon.length - 1; j < polygon.length; k = j++) {
           s += (polygon[k].nx + polygon[j].nx) * (polygon[k].ny - polygon[j].ny);
         }
-
         return {
-          id:     `svg-room-${i}`,
-          label:  area.label ?? `Room ${i + 1}`,
+          id:      `svg-room-${i}`,
+          label:   area.label ?? `Room ${i + 1}`,
           polygon,
-          area:   Math.abs(s) / 2,
+          areaNorm: Math.abs(s) / 2,
         } satisfies DetectedRoom;
       });
   }, [svgAreas, pdfDimensions]);
 
-  // ── Door-only areas for the svgAreaCanvas layer ───────────────────────────
-  const svgDoorAreas = useMemo(
-    () => svgAreas.filter(a => a.label === 'door'),
-    [svgAreas],
-  );
+  const svgDoorAreas = useMemo(() => svgAreas.filter(a => a.label === 'door'), [svgAreas]);
 
-  // ── Auto-enable rooms when SVG rooms are present ──────────────────────────
   useEffect(() => {
-    if (svgRooms.length > 0) {
-      setShowRooms(true);
-    }
+    if (svgRooms.length > 0) setShowRooms(true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [svgRooms.length]);
 
@@ -305,60 +241,39 @@ export function Viewer({
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
     pageNumberRef:    pageNumberRef    as React.RefObject<number>,
     snapEnabled, showPins, snapThreshold, confidenceFilter,
-    svgSnapPoints,
-    svgLines,
-    svgAreas,
+    svgSnapPoints, svgLines, svgAreas,
   });
 
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   const setActiveToolString = useCallback((t: string) => setActiveTool(t as ToolType), [setActiveTool]);
 
-  // ── Room detection (PDF-based, used as fallback) ───────────────────────────
+  // ── Room detection ─────────────────────────────────────────────────────────
   const {
-    rooms,
-    geometryCandidates,
-    wallSegments,
-    walls,
-    phase: roomPhase,
-    detecting: detectingRooms,
-    error: roomError,
-    forceRedetect,
+    rooms, geometryCandidates, wallSegments, walls,
+    phase: roomPhase, detecting: detectingRooms, error: roomError, forceRedetect,
   } = useRoomDetection(
-    pageData,
-    pdfIntrinsicDims,
-    pageNumber,
-    showRooms,
-    pdfCanvasRef.current,
-    currentPdfPageRef.current,
+    pageData, pdfIntrinsicDims, pageNumber, showRooms,
+    pdfCanvasRef.current, currentPdfPageRef.current,
   );
 
-  // ── Merge: SVG rooms take priority over PDF-detected rooms ────────────────
   const mergedRooms = useMemo(
     () => svgRooms.length > 0 ? svgRooms : rooms,
     [svgRooms, rooms],
   );
 
-  useEffect(() => {
-    setVectorPathCount(wallSegments.length);
-  }, [wallSegments.length]);
+  useEffect(() => { setVectorPathCount(wallSegments.length); }, [wallSegments.length]);
+  useEffect(() => { if (roomError) console.error('[Viewer] Room detection error:', roomError); }, [roomError]);
 
-  useEffect(() => {
-    if (roomError) console.error('[Viewer] Room detection error:', roomError);
-  }, [roomError]);
-
-  // ── Wall canvas drawing ────────────────────────────────────────────────────
+  // ── Wall canvas ────────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = wallCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
-
     if (!showWalls || wallSegments.length === 0) {
       canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
-
-    const canvasDims = { w: canvas.width, h: canvas.height };
-    drawWallsOnCanvas(canvas, wallSegments, canvasDims, {
+    drawWallsOnCanvas(canvas, wallSegments, { w: canvas.width, h: canvas.height }, {
       wallColor:  'rgba(59, 130, 246, 0.75)',
       thinColor:  'rgba(148, 163, 184, 0.30)',
       curveColor: 'rgba(16, 185, 129, 0.70)',
@@ -366,141 +281,105 @@ export function Viewer({
     });
   }, [wallSegments, showWalls, pdfDimensions, pdfRenderCount]);
 
-  // ── Room canvas drawing — uses mergedRooms ────────────────────────────────
+  // ── Room canvas (fills + strokes + labels all in one call) ────────────────
   useEffect(() => {
     const canvas = roomCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
-
     if (!showRooms) {
       canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
-
-    // SVG rooms take priority; fall back to detected/geometry candidates
     const displayRooms = mergedRooms.length > 0 ? mergedRooms : geometryCandidates;
-    const canvasDims   = { w: canvas.width, h: canvas.height };
-    drawRoomsOnCanvas(canvas, displayRooms, canvasDims, hoveredRoomId);
+    drawRoomsOnCanvas(canvas, displayRooms, { w: canvas.width, h: canvas.height }, hoveredRoomId);
   }, [mergedRooms, geometryCandidates, showRooms, pdfDimensions, hoveredRoomId, pdfRenderCount]);
 
-  // ── SVG area canvas — DOORS ONLY ──────────────────────────────────────────
-  //    Non-door areas are now handled by the room canvas via mergedRooms.
-  useEffect(() => {
-    const canvas = svgAreaCanvasRef.current;
-    if (!canvas || !pdfDimensions) return;
+  // ── SVG door areas canvas ─────────────────────────────────────────────────
+  // useEffect(() => {
+  //   const canvas = svgAreaCanvasRef.current;
+  //   if (!canvas || !pdfDimensions) return;
+  //   const ctx = canvas.getContext('2d');
+  //   if (!ctx) return;
+  //   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  //   if (!showSvgOverlay || svgDoorAreas.length === 0) return;
 
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  //   for (const area of svgDoorAreas) {
+  //     if (area.points.length < 3) continue;
+  //     const pivot  = area.points[0];
+  //     const arcPts = area.points.slice(1);
+  //     const arcStart = arcPts[0];
 
-    if (!showSvgOverlay || svgDoorAreas.length === 0) return;
+  //     // Filled pie slice
+  //     ctx.beginPath();
+  //     ctx.moveTo(pivot.x, pivot.y);
+  //     for (const p of arcPts) ctx.lineTo(p.x, p.y);
+  //     ctx.closePath();
+  //     ctx.fillStyle = 'rgba(34, 197, 94, 0.18)';
+  //     ctx.fill();
 
-    for (const area of svgDoorAreas) {
-      if (area.points.length < 3) continue;
+  //     // Door leaf
+  //     ctx.beginPath();
+  //     ctx.moveTo(pivot.x, pivot.y);
+  //     ctx.lineTo(arcStart.x, arcStart.y);
+  //     ctx.strokeStyle = 'rgba(34, 197, 94, 0.9)';
+  //     ctx.lineWidth   = 2;
+  //     ctx.setLineDash([]);
+  //     ctx.stroke();
 
-      const pivot    = area.points[0];
-      const arcStart = area.points[1];
-      const arcEnd   = area.points[area.points.length - 1];
-      const radius   = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
-      const startAngle = Math.atan2(arcStart.y - pivot.y, arcStart.x - pivot.x);
-      const endAngle   = Math.atan2(arcEnd.y   - pivot.y, arcEnd.x   - pivot.x);
+  //     // Swing arc (polyline, dashed)
+  //     ctx.beginPath();
+  //     ctx.moveTo(arcPts[0].x, arcPts[0].y);
+  //     for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
+  //     ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
+  //     ctx.lineWidth   = 1.5;
+  //     ctx.setLineDash([5, 5]);
+  //     ctx.stroke();
+  //     ctx.setLineDash([]);
 
-      // Filled pie-slice
-      ctx.beginPath();
-      ctx.moveTo(pivot.x, pivot.y);
-      ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(34, 197, 94, 0.18)';
-      ctx.fill();
-
-      // Door leaf
-      ctx.beginPath();
-      ctx.moveTo(pivot.x, pivot.y);
-      ctx.lineTo(arcStart.x, arcStart.y);
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.9)';
-      ctx.lineWidth   = 2;
-      ctx.setLineDash([]);
-      ctx.stroke();
-
-      // Swing arc (dashed)
-      ctx.beginPath();
-      ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle);
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Badge at midpoint of swing
-      const midAngle = (startAngle + endAngle) / 2;
-      const midX = pivot.x + Math.cos(midAngle) * (radius * 0.55);
-      const midY = pivot.y + Math.sin(midAngle) * (radius * 0.55);
-      ctx.beginPath();
-      ctx.arc(midX, midY, 10, 0, Math.PI * 2);
-      ctx.fillStyle   = 'rgba(34, 197, 94, 0.75)';
-      ctx.fill();
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth   = 1.5;
-      ctx.stroke();
-      ctx.fillStyle       = 'white';
-      ctx.font            = 'bold 12px monospace';
-      ctx.textAlign       = 'center';
-      ctx.textBaseline    = 'middle';
-      ctx.fillText('🚪', midX, midY);
-    }
-  }, [svgDoorAreas, showSvgOverlay, pdfDimensions, pdfRenderCount]);
+  //     // Badge at arc midpoint
+  //     const mid = arcPts[Math.floor(arcPts.length / 2)];
+  //     ctx.beginPath();
+  //     ctx.arc(mid.x, mid.y, 10, 0, Math.PI * 2);
+  //     ctx.fillStyle   = 'rgba(34, 197, 94, 0.75)';
+  //     ctx.fill();
+  //     ctx.strokeStyle = 'white';
+  //     ctx.lineWidth   = 1.5;
+  //     ctx.stroke();
+  //     ctx.fillStyle    = 'white';
+  //     ctx.font         = 'bold 12px monospace';
+  //     ctx.textAlign    = 'center';
+  //     ctx.textBaseline = 'middle';
+  //     ctx.fillText('🚪', mid.x, mid.y);
+  //   }
+  // }, [svgDoorAreas, showSvgOverlay, pdfDimensions, pdfRenderCount]);
 
   // ── Debug logging ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (svgSnapPoints.length > 0) {
-      console.log('[Viewer] SVG snap points extracted:', {
-        count: svgSnapPoints.length,
-        types: svgSnapPoints.reduce((acc, p) => {
-          acc[p.type] = (acc[p.type] || 0) + 1;
-          return acc;
-        }, {} as Record<string, number>),
-      });
+      console.log('[Viewer] SVG snap points:', svgSnapPoints.length);
     }
   }, [svgSnapPoints]);
 
   useEffect(() => {
-    if (svgLines.length > 0 || svgAreas.length > 0) {
-      console.log('[Viewer] SVG interaction elements extracted:', {
-        lines:    svgLines.length,
-        areas:    svgAreas.length,
-        doors:    svgDoorAreas.length,
-        svgRooms: svgRooms.length,
-      });
-    }
-  }, [svgLines, svgAreas, svgDoorAreas, svgRooms]);
-
-  useEffect(() => {
     if (mergedRooms.length > 0) {
-      const source = svgRooms.length > 0 ? 'SVG' : 'detected';
-      console.log(`[Viewer] Rooms active (${source}):`, mergedRooms.map(r => r.label));
+      console.log(`[Viewer] Rooms (${svgRooms.length > 0 ? 'SVG' : 'detected'}):`,
+        mergedRooms.map(r => r.label));
     }
   }, [mergedRooms, svgRooms.length]);
 
-  // ── Keyboard shortcuts for SVG debug overlays ──────────────────────────────
+  // ── SVG debug keyboard shortcuts ───────────────────────────────────────────
   useEffect(() => {
     const handleKeyPress = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
-        setShowSvgSnapDebug(prev => !prev);
-        console.log(`SVG snap debug ${!showSvgSnapDebug ? 'enabled' : 'disabled'}`);
-      }
-      if (e.ctrlKey && e.shiftKey && e.key === 'S') {
-        setShowSvgOverlay(prev => !prev);
-        console.log(`SVG overlay ${!showSvgOverlay ? 'enabled' : 'disabled'}`);
-      }
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') setShowSvgSnapDebug(p => !p);
+      if (e.ctrlKey && e.shiftKey && e.key === 'S') setShowSvgOverlay(p => !p);
     };
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [showSvgSnapDebug, showSvgOverlay]);
+  }, []);
 
   // ── Room click → polygon measurement ──────────────────────────────────────
   const handleRoomClick = useCallback((room: DetectedRoom) => {
     if (!pdfDimensions) return;
-    const pts = room.polygon.map(p => ({ x: p.nx, y: p.ny, snapped: false }));
-    pts.forEach(p => pushPoint(p));
+    room.polygon.map(p => ({ x: p.nx, y: p.ny, snapped: false })).forEach(p => pushPoint(p));
     commitMeasurement({ type: 'polygon', label: room.label, pageNumber });
     clearTempPoints();
   }, [pdfDimensions, pushPoint, commitMeasurement, clearTempPoints, pageNumber]);
@@ -560,8 +439,7 @@ export function Viewer({
       const vp = p.getViewport({ scale: 1 });
       const vW = containerRef.current.clientWidth  - CANVAS_PADDING * 2;
       const vH = containerRef.current.clientHeight - CANVAS_PADDING * 2;
-      setScale(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
-        Math.min(vW / vp.width, vH / vp.height) * 0.97)));
+      setScale(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.min(vW / vp.width, vH / vp.height) * 0.97)));
       setTimeout(() => centerDocumentInViewport(), 150);
     } catch (err) { console.error('Fit error', err); }
   }, [centerDocumentInViewport]);
@@ -639,7 +517,6 @@ export function Viewer({
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
 
-  // ── File upload ────────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) =>
     Array.from(e.target.files ?? []).forEach(f =>
       onDrawingAdded(f.name, URL.createObjectURL(f), f));
@@ -696,7 +573,6 @@ export function Viewer({
     (async () => {
       try {
         const page = await pdf.getPage(pageNumber); if (!active) return;
-
         currentPdfPageRef.current = page;
 
         const rawDpr  = window.devicePixelRatio || 1;
@@ -710,7 +586,11 @@ export function Viewer({
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
-        for (const ref of [drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef, vectorCanvasRef, svgAreaCanvasRef]) {
+        // Resize all overlay canvases — including the new roomLabelCanvasRef
+        for (const ref of [
+          drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef,
+          vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
+        ]) {
           const c = ref.current; if (!c) continue;
           c.width  = logVP.width;  c.height = logVP.height;
           c.style.width  = `${logVP.width}px`;
@@ -722,16 +602,12 @@ export function Viewer({
         const intrinsicVP = page.getViewport({ scale: 1 });
         setPdfIntrinsicDims(prev =>
           prev?.w === intrinsicVP.width && prev?.h === intrinsicVP.height
-            ? prev
-            : { w: intrinsicVP.width, h: intrinsicVP.height },
+            ? prev : { w: intrinsicVP.width, h: intrinsicVP.height },
         );
 
         task = page.render({ canvasContext: ctx, viewport: physVP, canvas: canvas as any } as any);
         await task.promise;
-
-        if (active) {
-          setPdfRenderCount(c => c + 1);
-        }
+        if (active) setPdfRenderCount(c => c + 1);
 
       } catch (err: any) {
         if (err?.name !== 'RenderingCancelledException') console.error(err);
@@ -740,8 +616,9 @@ export function Viewer({
     return () => { active = false; task?.cancel(); };
   }, [pdf, pageNumber, scale]);
 
-  useEffect(() => { if (pdf && pdfDimensions) centerDocumentInViewport(); },
-    [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
+  useEffect(() => {
+    if (pdf && pdfDimensions) centerDocumentInViewport();
+  }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────────
   useEffect(() => {
@@ -819,7 +696,10 @@ export function Viewer({
     if (e.button === 1 || (e.button === 0 && spaceHeldRef.current) || (e.button === 0 && activeTool === 'select'))
       startPan(e, e.currentTarget as HTMLElement);
   };
-  const handlePointerUp = () => { setIsPanning(false); if (containerRef.current) containerRef.current.style.cursor = ''; };
+  const handlePointerUp = () => {
+    setIsPanning(false);
+    if (containerRef.current) containerRef.current.style.cursor = '';
+  };
   const handleContainerPointerMove = (e: React.PointerEvent) => {
     if (isPanning && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
@@ -828,7 +708,8 @@ export function Viewer({
   };
   const handleDrawingCanvasPointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button === 1 || (e.button === 0 && spaceHeldRef.current)) {
-      e.stopPropagation(); if (containerRef.current) startPan(e, containerRef.current);
+      e.stopPropagation();
+      if (containerRef.current) startPan(e, containerRef.current);
     }
   }, [startPan]);
 
@@ -836,8 +717,7 @@ export function Viewer({
   const [wrapDims, setWrapDims] = useState<{ width: number; height: number } | undefined>();
   useEffect(() => {
     if (!pdf || !pdfDimensions) { setWrapDims(undefined); return; }
-    const el = containerRef.current;
-    if (!el) return;
+    const el = containerRef.current; if (!el) return;
     const vw = el.clientWidth  || el.offsetWidth  || window.innerWidth;
     const vh = el.clientHeight || el.offsetHeight || window.innerHeight;
     setWrapDims({
@@ -847,7 +727,6 @@ export function Viewer({
   }, [pdf, pdfDimensions]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
-
   return (
     <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full">
 
@@ -863,19 +742,11 @@ export function Viewer({
           currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
           scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
           MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
-          showRooms={showRooms}
-          setShowRooms={setShowRooms}
-          detectingRooms={detectingRooms}
-          showWalls={showWalls}
-          setShowWalls={setShowWalls}
-          wallSegmentCount={wallSegments.length}
-          showVectors={showVectors}
-          setShowVectors={setShowVectors}
-          vectorPathCount={vectorPathCount}
-          showSvgOverlay={showSvgOverlay}
-          setShowSvgOverlay={setShowSvgOverlay}
-          showSvgSnapDebug={showSvgSnapDebug}
-          setShowSvgSnapDebug={setShowSvgSnapDebug}
+          showRooms={showRooms} setShowRooms={setShowRooms} detectingRooms={detectingRooms}
+          showWalls={showWalls} setShowWalls={setShowWalls} wallSegmentCount={wallSegments.length}
+          showVectors={showVectors} setShowVectors={setShowVectors} vectorPathCount={vectorPathCount}
+          showSvgOverlay={showSvgOverlay} setShowSvgOverlay={setShowSvgOverlay}
+          showSvgSnapDebug={showSvgSnapDebug} setShowSvgSnapDebug={setShowSvgSnapDebug}
           svgSnapPointCount={svgSnapPoints.length}
         />
       )}
@@ -895,8 +766,8 @@ export function Viewer({
         onKeyDown={e => {
           if (e.code === 'Space') e.preventDefault();
           if (e.key === 'Escape') {
-            if (tempPoints.length > 0) { handleFinishMeasurement(); }
-            else { setActiveTool('select'); }
+            if (tempPoints.length > 0) handleFinishMeasurement();
+            else setActiveTool('select');
           }
           if (e.key === 'Enter') { e.preventDefault(); if (tempPoints.length > 0) handleFinishMeasurement(); }
         }}
@@ -910,16 +781,6 @@ export function Viewer({
           className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
           style={wrapDims}
         >
-          {/*
-            Canvas stack order (bottom → top):
-              0. pdfCanvasRef      — rasterised PDF page
-              1. vectorCanvasRef   — raw vector wall/curve segments (from PDF)
-              2. svgAreaCanvasRef  — SVG door areas only (non-door → room canvas)
-              3. wallCanvasRef     — wall segment overlay (from vector analysis)
-              4. roomCanvasRef     — mergedRooms: SVG rooms OR detected rooms
-              5. drawingCanvasRef  — active measurements (always on top)
-              6. pinCanvasRef      — snap corner pins
-          */}
           <ViewerCanvas
             pdfCanvasRef={pdfCanvasRef}
             drawingCanvasRef={drawingCanvasRef}
@@ -928,6 +789,7 @@ export function Viewer({
             wallCanvasRef={wallCanvasRef}
             vectorCanvasRef={vectorCanvasRef}
             svgAreaCanvasRef={svgAreaCanvasRef}
+            roomLabelCanvasRef={roomLabelCanvasRef}
             pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
             activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
             tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
@@ -937,7 +799,7 @@ export function Viewer({
             showVectors={showVectors} vectorPathCount={vectorPathCount}
             svgContent={svgContent}
             showSvgOverlay={showSvgOverlay}
-            svgAreas={svgDoorAreas}
+            svgAreas={svgAreas}
             svgSnapPoints={svgSnapPoints}
             showSvgSnapDebug={showSvgSnapDebug}
             hoveredRoomId={hoveredRoomId} setHoveredRoomId={setHoveredRoomId}
@@ -976,63 +838,27 @@ export function Viewer({
       {pdf && (
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
-            <button
-              onClick={() => setPageNumber(p => Math.max(1, p - 1))}
-              disabled={pageNumber <= 1}
-              className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
-            >
+            <button onClick={() => setPageNumber(p => Math.max(1, p - 1))} disabled={pageNumber <= 1}
+              className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50">
               <ChevronLeft className="w-4 h-4" />
             </button>
             <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
               PAGE {pageNumber} OF {pdf.numPages}
             </span>
-            <button
-              onClick={() => setPageNumber(p => Math.min(pdf.numPages, p + 1))}
-              disabled={pageNumber >= pdf.numPages}
-              className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
-            >
+            <button onClick={() => setPageNumber(p => Math.min(pdf.numPages, p + 1))} disabled={pageNumber >= pdf.numPages}
+              className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50">
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
             <span>Double-click or right-click to finish · ESC to cancel / select · Enter to finish · Space+drag to pan</span>
             <div className="w-px h-3 bg-industrial-border" />
-            {svgSnapPoints.length > 0 && (
-              <>
-                <span className="text-purple-400">{svgSnapPoints.length} SVG snap pts</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
-            {svgLines.length > 0 && (
-              <>
-                <span className="text-sky-400">{svgLines.length} SVG lines</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
-            {svgRooms.length > 0 && (
-              <>
-                <span className="text-green-400">{svgRooms.length} SVG rooms</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
-            {svgDoorAreas.length > 0 && (
-              <>
-                <span className="text-emerald-400">{svgDoorAreas.length} doors</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
-            {wallSegments.length > 0 && (
-              <>
-                <span className="text-blue-400">{wallSegments.length} wall segments</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
-            {walls.length > 0 && (
-              <>
-                <span className="text-emerald-400">{walls.length} walls paired</span>
-                <div className="w-px h-3 bg-industrial-border" />
-              </>
-            )}
+            {svgSnapPoints.length > 0 && <><span className="text-purple-400">{svgSnapPoints.length} SVG snap pts</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {svgLines.length > 0 && <><span className="text-sky-400">{svgLines.length} SVG lines</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {svgRooms.length > 0 && <><span className="text-green-400">{svgRooms.length} SVG rooms</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {svgDoorAreas.length > 0 && <><span className="text-emerald-400">{svgDoorAreas.length} doors</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {wallSegments.length > 0 && <><span className="text-blue-400">{wallSegments.length} wall segments</span><div className="w-px h-3 bg-industrial-border" /></>}
+            {walls.length > 0 && <><span className="text-emerald-400">{walls.length} walls paired</span><div className="w-px h-3 bg-industrial-border" /></>}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
         </div>

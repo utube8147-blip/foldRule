@@ -354,75 +354,69 @@ export function useSnapEngine({
       ctx.save();
 
       if (isDoor) {
-        // Door has exactly 3 points: [pivot, arcStart, arcEnd]
-        // Draw: door leaf line + proper arc for the swing
-        const pivot    = area.points[0];
-        const arcStart = area.points[1];
-        const arcEnd   = area.points[2];
+        // points = [pivot, ...interpolated arc pts]
+        // Just stroke the shape directly — no arc() needed
+        const pivot = area.points[0];
+        const arcPts = area.points.slice(1);
+        if (arcPts.length < 2) { ctx.restore(); continue; }
 
-        const radius     = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
-        const startAngle = Math.atan2(arcStart.y - pivot.y, arcStart.x - pivot.x);
-        const endAngle   = Math.atan2(arcEnd.y   - pivot.y, arcEnd.x   - pivot.x);
-
-        // Determine arc direction — pick the shorter sweep
-        let angleDiff = endAngle - startAngle;
-        if (angleDiff >  Math.PI) angleDiff -= Math.PI * 2;
-        if (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
-        const anticlockwise = angleDiff < 0;
+        const arcStart = arcPts[0];
+        const arcEnd   = arcPts[arcPts.length - 1];
 
         const isHovered = cursor && (() => {
-          // Check if cursor is near the arc
-          const toCursor = Math.hypot(cursor.x - pivot.x, cursor.y - pivot.y);
-          return Math.abs(toCursor - radius) < CORNER_PROXIMITY;
+          const dx = cursor.x - pivot.x, dy = cursor.y - pivot.y;
+          const r  = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
+          const cursorR = Math.hypot(dx, dy);
+          return Math.abs(cursorR - r) < CORNER_PROXIMITY;
         })();
 
         const alpha = isHovered ? 0.95 : 0.75;
         const lw    = isHovered ? 2.5  : 1.8;
 
-        // Door leaf
+        // Door leaf (pivot → arcStart)
         ctx.beginPath();
         ctx.moveTo(pivot.x, pivot.y);
         ctx.lineTo(arcStart.x, arcStart.y);
         ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
-        ctx.lineWidth = lw + 0.5;
+        ctx.lineWidth   = lw + 0.5;
         ctx.stroke();
 
-        // Door swing arc — single smooth curve
+        // Door swing arc (polyline through interpolated points)
         ctx.beginPath();
-        ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle, anticlockwise);
+        ctx.moveTo(arcPts[0].x, arcPts[0].y);
+        for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
         ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
-        ctx.lineWidth = lw;
+        ctx.lineWidth   = lw;
         ctx.setLineDash([6, 4]);
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Closing line (arc end back to pivot — optional, shows door opening)
+        // Closing line (arcEnd → pivot, faint)
         ctx.beginPath();
         ctx.moveTo(pivot.x, pivot.y);
         ctx.lineTo(arcEnd.x, arcEnd.y);
         ctx.strokeStyle = `rgba(34,197,94,${alpha * 0.5})`;
-        ctx.lineWidth = 1;
+        ctx.lineWidth   = 1;
         ctx.stroke();
 
         // Hover label
         if (isHovered && cursor) {
-          const midAngle = startAngle + angleDiff / 2;
-          const labelX   = pivot.x + Math.cos(midAngle) * radius * 0.6;
-          const labelY   = pivot.y + Math.sin(midAngle) * radius * 0.6;
+          const midIdx = Math.floor(arcPts.length / 2);
+          const mid = arcPts[midIdx];
           ctx.beginPath();
-          ctx.arc(labelX, labelY, 7, 0, Math.PI * 2);
-          ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
+          ctx.arc(mid.x, mid.y, 7, 0, Math.PI * 2);
+          ctx.fillStyle   = SVG_DOOR_LINE_COLOUR.fill;
           ctx.fill();
           ctx.strokeStyle = 'white';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth   = 1.5;
           ctx.stroke();
-          ctx.font = 'bold 9px ui-monospace,monospace';
-          ctx.textAlign = 'center';
+          ctx.font         = 'bold 9px ui-monospace,monospace';
+          ctx.textAlign    = 'center';
           ctx.textBaseline = 'middle';
-          ctx.fillStyle = 'rgba(0,0,0,0.80)';
-          ctx.fillRect(labelX - 24, labelY - 23, 48, 13);
+          ctx.fillStyle    = 'rgba(0,0,0,0.80)';
+          ctx.fillRect(mid.x - 24, mid.y - 23, 48, 13);
           ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
-          ctx.fillText('DOOR', labelX, labelY - 16);
+          ctx.fillText('DOOR', mid.x, mid.y - 16);
         }
 
       } else {

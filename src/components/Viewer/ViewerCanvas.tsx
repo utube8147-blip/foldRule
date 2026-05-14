@@ -2,14 +2,12 @@
 
 // ─── ViewerCanvas.tsx ─────────────────────────────────────────────────────────
 //
-// CHANGES vs previous version:
-//   • ADDED: Room label overlay layer (roomLabelCanvasRef)
-//   • ADDED: drawRoomLabelsCanvas - renders room names + sq ft inside rooms
-//   • UPDATED: SVG_SNAP_COLOURS imported from useSvgSnapPoints (includes arc-center cyan)
-//   • UPDATED: drawSvgSnapDebugCanvas renders arc-center as cyan crosshair ⊕
-//              all other types remain small circle + dot
-//   • KEPT: svgAreaCanvasRef layer for door/polygon area rendering
-//   • KEPT: drawSvgAreaCanvas (doors=green, named=orange, generic=purple)
+// CHANGES:
+//   • drawSvgAreaCanvas now renders non-door SVG areas with category-based
+//     colored fills only — label pills removed (fills only, no pills)
+//   • Category color map + getRoomCategory inlined so no cross-file import needed
+//   • Door rendering uses polyline approach (no arc() trig) — interpolated pts
+//   • Room label canvas kept for detected (raster) rooms
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
@@ -40,16 +38,90 @@ function pointInPolygon(
   return inside;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Room category system (mirrors drawRoomsOnCanvas) ────────────────────────
 
-interface SnapFlash {
-  id: string;
-  x: number;
-  y: number;
+const ROOM_CATEGORY: Record<string, string> = {
+  OFFICE: 'office', DIRECTOR: 'office', STUDY: 'office', PRIVATE_OFFICE: 'office',
+  OPEN_OFFICE: 'open', WORKSPACE: 'open', COWORKING: 'open', OPEN_PLAN: 'open',
+  OPEN_PLAN_A: 'open', OPEN_PLAN_B: 'open',
+  MEETING: 'meeting', BOARDROOM: 'meeting', CONFERENCE: 'meeting',
+  BREAKOUT: 'meeting', TRAINING: 'meeting', SEMINAR: 'meeting',
+  CORRIDOR: 'circulation', HALLWAY: 'circulation', HALL: 'circulation',
+  LOBBY: 'circulation', FOYER: 'circulation', ENTRANCE: 'circulation',
+  ENTRY: 'circulation', RECEPTION: 'circulation', STAIRS: 'circulation',
+  STAIRWELL: 'circulation', LIFT: 'circulation', ELEVATOR: 'circulation',
+  PASSAGE: 'circulation', STAIR: 'circulation', CORE: 'circulation',
+  KITCHEN: 'wet', KITCHENETTE: 'wet', BREAKROOM: 'wet', PANTRY: 'wet',
+  CANTEEN: 'wet', CAFETERIA: 'wet', BATHROOM: 'wet', WC: 'wet',
+  TOILET: 'wet', RESTROOM: 'wet', SHOWER: 'wet', LAUNDRY: 'wet',
+  STORAGE: 'utility', STORE: 'utility', STOREROOM: 'utility',
+  ARCHIVE: 'utility', PLANT: 'utility', UTILITY: 'utility',
+  ELECTRICAL: 'utility', SERVER: 'utility', COMMS: 'utility',
+  BEDROOM: 'living', LIVING: 'living', LOUNGE: 'living', DINING: 'living',
+  FAMILY: 'living',
+  BALCONY: 'outdoor', PATIO: 'outdoor', TERRACE: 'outdoor',
+  GARAGE: 'outdoor', CARPARK: 'outdoor', PARKING: 'outdoor',
+  RETAIL: 'retail', SHOP: 'retail', SALES: 'retail', SHOWROOM: 'retail',
+};
+
+const CATEGORY_COLORS: Record<string, { fill: string; stroke: string; pill: string }> = {
+  office:      { fill: 'rgba(59,130,246,0.15)',  stroke: 'rgba(59,130,246,0.70)',  pill: 'rgba(29,78,216,0.92)'   },
+  meeting:     { fill: 'rgba(139,92,246,0.15)',  stroke: 'rgba(139,92,246,0.70)',  pill: 'rgba(76,29,149,0.92)'   },
+  circulation: { fill: 'rgba(245,158,11,0.15)',  stroke: 'rgba(245,158,11,0.70)',  pill: 'rgba(120,53,15,0.92)'   },
+  wet:         { fill: 'rgba(20,184,166,0.15)',  stroke: 'rgba(20,184,166,0.70)',  pill: 'rgba(15,118,110,0.92)'  },
+  utility:     { fill: 'rgba(244,63,94,0.15)',   stroke: 'rgba(244,63,94,0.70)',   pill: 'rgba(136,19,55,0.92)'   },
+  living:      { fill: 'rgba(34,197,94,0.15)',   stroke: 'rgba(34,197,94,0.70)',   pill: 'rgba(20,83,45,0.92)'    },
+  outdoor:     { fill: 'rgba(168,162,158,0.15)', stroke: 'rgba(168,162,158,0.70)', pill: 'rgba(87,83,78,0.92)'    },
+  open:        { fill: 'rgba(99,102,241,0.15)',  stroke: 'rgba(99,102,241,0.70)',  pill: 'rgba(49,46,129,0.92)'   },
+  medical:     { fill: 'rgba(236,72,153,0.15)',  stroke: 'rgba(236,72,153,0.70)',  pill: 'rgba(157,23,77,0.92)'   },
+  retail:      { fill: 'rgba(251,191,36,0.15)',  stroke: 'rgba(251,191,36,0.70)',  pill: 'rgba(146,64,14,0.92)'   },
+  default:     { fill: 'rgba(156,163,175,0.12)', stroke: 'rgba(156,163,175,0.60)', pill: 'rgba(55,65,81,0.92)'    },
+};
+
+function getRoomCategory(label: string): string {
+  if (!label) return 'default';
+  const up = label.toUpperCase().trim().replace(/[\s/\-]+/g, '_');
+
+  // Exact match
+  if (ROOM_CATEGORY[up]) return ROOM_CATEGORY[up];
+
+  // Starts-with / contains
+  for (const [key, cat] of Object.entries(ROOM_CATEGORY)) {
+    if (up === key || up.startsWith(key + '_') || up.startsWith(key + ' ') || up.includes(key)) {
+      return cat;
+    }
+  }
+  return 'default';
 }
 
+// roundRect polyfill
+if (
+  typeof CanvasRenderingContext2D !== 'undefined' &&
+  !(CanvasRenderingContext2D.prototype as any).roundRect
+) {
+  (CanvasRenderingContext2D.prototype as any).roundRect = function (
+    x: number, y: number, w: number, h: number, r: number,
+  ) {
+    if (w < 2 * r) r = w / 2;
+    if (h < 2 * r) r = h / 2;
+    this.moveTo(x + r, y);
+    this.lineTo(x + w - r, y);
+    this.quadraticCurveTo(x + w, y, x + w, y + r);
+    this.lineTo(x + w, y + h - r);
+    this.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    this.lineTo(x + r, y + h);
+    this.quadraticCurveTo(x, y + h, x, y + h - r);
+    this.lineTo(x, y + r);
+    this.quadraticCurveTo(x, y, x + r, y);
+    return this;
+  };
+}
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+interface SnapFlash { id: string; x: number; y: number; }
+
 interface ViewerCanvasProps {
-  // Refs
   pdfCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
   drawingCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   pinCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
@@ -57,9 +129,8 @@ interface ViewerCanvasProps {
   wallCanvasRef:    React.RefObject<HTMLCanvasElement | null>;
   vectorCanvasRef:  React.RefObject<HTMLCanvasElement | null>;
   svgAreaCanvasRef: React.RefObject<HTMLCanvasElement | null>;
-  roomLabelCanvasRef?: React.RefObject<HTMLCanvasElement | null>; // NEW: for room labels
+  roomLabelCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
 
-  // State
   pdf:             any;
   loading:         boolean;
   pdfDimensions:   PdfDimensions | null;
@@ -72,36 +143,25 @@ interface ViewerCanvasProps {
   activeDrawingId: string | null;
   snapFlashes:     SnapFlash[];
 
-  // Vector overlay
   showVectors:      boolean;
   vectorPathCount:  number;
-
-  // Wall overlay
   showWalls:        boolean;
   wallSegmentCount: number;
 
-  // Room detection
   showRooms:       boolean;
   rooms:           DetectedRoom[];
   hoveredRoomId:   string | null;
   setHoveredRoomId:(id: string | null) => void;
   onRoomClick:     (room: DetectedRoom) => void;
 
-  // SVG overlay — content injected by Viewer (same source used for snapping)
   svgContent?:       string | null;
   showSvgOverlay?:   boolean;
-
-  // SVG areas (doors, polygons) — injected by Viewer
   svgAreas?:         SvgArea[];
-
-  // SVG snap points (debug pins)
   svgSnapPoints?:    SvgSnapPoint[];
   showSvgSnapDebug?: boolean;
 
-  // Geometry helper
   toCanvas: (x: number, y: number) => { x: number; y: number };
 
-  // Canvas event handlers
   handleCanvasClick:              (e: React.MouseEvent<HTMLCanvasElement>)   => void;
   handleContextMenu:              (e: React.MouseEvent<HTMLCanvasElement>)   => void;
   handleCanvasPointerMove:        (e: React.PointerEvent<HTMLCanvasElement>) => void;
@@ -112,24 +172,14 @@ interface ViewerCanvasProps {
   cursorPointRef:                 React.RefObject<any>;
   redrawPinCanvas:                () => void;
 
-  // Finish action
   handleFinishMeasurement: () => void;
-
-  // File upload
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
 
-  // Layout
   containerRef:   React.RefObject<HTMLDivElement | null>;
   CANVAS_PADDING: number;
 }
 
-// ─── SVG snap point debug overlay ────────────────────────────────────────────
-//
-// arc-center  → cyan crosshair ⊕ (circle + perpendicular arms + centre dot)
-// endpoint    → amber circle + dot
-// midpoint    → emerald circle + dot
-// centroid    → violet circle + dot
-// intersection→ red circle + dot
+// ─── SVG snap debug overlay ───────────────────────────────────────────────────
 
 function drawSvgSnapDebugCanvas(
   canvas: HTMLCanvasElement,
@@ -137,190 +187,127 @@ function drawSvgSnapDebugCanvas(
   pdfDimensions: PdfDimensions,
 ) {
   const { w, h } = pdfDimensions;
-  canvas.width        = w;
-  canvas.height       = h;
-  canvas.style.width  = `${w}px`;
-  canvas.style.height = `${h}px`;
-
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.clearRect(0, 0, w, h);
 
   for (const pt of points) {
-    const px     = pt.nx * w;
-    const py     = pt.ny * h;
+    const px = pt.nx * w, py = pt.ny * h;
     const colour = SVG_SNAP_COLOURS[pt.type] ?? 'rgba(255,255,255,0.7)';
-
     if (pt.type === 'arc-center') {
-      // ── Cyan crosshair ⊕ — circle with perpendicular arms ────────────────
       const R = 7;
       ctx.save();
-      ctx.strokeStyle = colour;
-      ctx.lineWidth   = 1.5;
-
-      // Outer circle
-      ctx.beginPath();
-      ctx.arc(px, py, R, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Horizontal arm
-      ctx.beginPath();
-      ctx.moveTo(px - R - 4, py);
-      ctx.lineTo(px + R + 4, py);
-      ctx.stroke();
-
-      // Vertical arm
-      ctx.beginPath();
-      ctx.moveTo(px, py - R - 4);
-      ctx.lineTo(px, py + R + 4);
-      ctx.stroke();
-
-      // Centre fill dot
-      ctx.beginPath();
-      ctx.arc(px, py, 2, 0, Math.PI * 2);
-      ctx.fillStyle = colour;
-      ctx.fill();
-
+      ctx.strokeStyle = colour; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px - R - 4, py); ctx.lineTo(px + R + 4, py); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(px, py - R - 4); ctx.lineTo(px, py + R + 4); ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI * 2); ctx.fillStyle = colour; ctx.fill();
       ctx.restore();
-
     } else {
-      // ── Default: small circle + centre dot ───────────────────────────────
-      ctx.beginPath();
-      ctx.arc(px, py, 4, 0, Math.PI * 2);
-      ctx.strokeStyle = colour;
-      ctx.lineWidth   = 1.5;
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(px, py, 1.5, 0, Math.PI * 2);
-      ctx.fillStyle = colour;
-      ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2);
+      ctx.strokeStyle = colour; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+      ctx.fillStyle = colour; ctx.fill();
     }
   }
 }
 
-// ─── SVG area canvas (doors, polygons) ───────────────────────────────────────
+// ─── SVG area canvas ──────────────────────────────────────────────────────────
+// Renders ALL svgAreas:
+//   • label === 'door'  → green door swing (polyline, no arc())
+//   • everything else   → category-colored room fill only (no label pill)
+
 function drawSvgAreaCanvas(
   canvas: HTMLCanvasElement,
   areas: SvgArea[],
   pdfDimensions: PdfDimensions,
+  showSvgOverlay: boolean,
 ) {
   const { w, h } = pdfDimensions;
-  canvas.width        = w;
-  canvas.height       = h;
-  canvas.style.width  = `${w}px`;
-  canvas.style.height = `${h}px`;
-
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.clearRect(0, 0, w, h);
 
+  // ── Pass 1: room fills only (no label pills) ──────────────────────────────
   for (const area of areas) {
-    if (area.points.length < 3) continue;
+    if (area.label === 'door' || area.points.length < 3) continue;
 
-    if (area.label === 'door' && area.points.length >= 3) {
-      const pivot    = area.points[0];
-      const arcStart = area.points[1];
-      const arcEnd   = area.points[area.points.length - 1];
-      const radius   = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
-      const startAngle = Math.atan2(arcStart.y - pivot.y, arcStart.x - pivot.x);
-      const endAngle   = Math.atan2(arcEnd.y   - pivot.y, arcEnd.x   - pivot.x);
+    const label = area.label ?? '';
+    const colors = CATEGORY_COLORS[getRoomCategory(label)] ?? CATEGORY_COLORS.default;
 
-      // ── Filled pie-slice overlay ──────────────────────────────────────────
-      ctx.beginPath();
-      ctx.moveTo(pivot.x, pivot.y);
-      ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle);
-      ctx.closePath();
-      ctx.fillStyle   = 'rgba(34, 197, 94, 0.18)';
-      ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(area.points[0].x, area.points[0].y);
+    for (let i = 1; i < area.points.length; i++) ctx.lineTo(area.points[i].x, area.points[i].y);
+    ctx.closePath();
+    ctx.fillStyle = colors.fill;
+    ctx.fill();
+    ctx.strokeStyle = colors.stroke;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
 
-      // ── Door leaf ─────────────────────────────────────────────────────────
-      ctx.beginPath();
-      ctx.moveTo(pivot.x, pivot.y);
-      ctx.lineTo(arcStart.x, arcStart.y);
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.9)';
-      ctx.lineWidth   = 2;
-      ctx.setLineDash([]);
-      ctx.stroke();
+  // ── Pass 2: doors (rendered last / on top) ────────────────────────────────
+  if (!showSvgOverlay) return;
 
-      // ── Swing arc (dashed) ────────────────────────────────────────────────
-      ctx.beginPath();
-      ctx.arc(pivot.x, pivot.y, radius, startAngle, endAngle);
-      ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([5, 5]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+  for (const area of areas) {
+    if (area.label !== 'door' || area.points.length < 3) continue;
 
-      // ── Badge ─────────────────────────────────────────────────────────────
-      const midAngle = (startAngle + endAngle) / 2;
-      const midX = pivot.x + Math.cos(midAngle) * (radius * 0.55);
-      const midY = pivot.y + Math.sin(midAngle) * (radius * 0.55);
-      ctx.beginPath();
-      ctx.arc(midX, midY, 10, 0, Math.PI * 2);
-      ctx.fillStyle   = 'rgba(34, 197, 94, 0.75)';
-      ctx.fill();
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth   = 1.5;
-      ctx.stroke();
-      ctx.fillStyle       = 'white';
-      ctx.font            = 'bold 12px monospace';
-      ctx.textAlign       = 'center';
-      ctx.textBaseline    = 'middle';
-      ctx.fillText('🚪', midX, midY);
+    const pivot  = area.points[0];
+    const arcPts = area.points.slice(1);
+    if (arcPts.length < 2) continue;
 
-    } else {
-      // ── Shared polygon fill path ──────────────────────────────────────────
-      ctx.beginPath();
-      ctx.moveTo(area.points[0].x, area.points[0].y);
-      for (let i = 1; i < area.points.length; i++) {
-        ctx.lineTo(area.points[i].x, area.points[i].y);
-      }
-      ctx.closePath();
+    const arcStart = arcPts[0];
 
-      if (area.label) {
-        // Named area — orange
-        ctx.fillStyle   = 'rgba(251, 146, 60, 0.20)';
-        ctx.strokeStyle = 'rgba(251, 146, 60, 0.70)';
-      } else {
-        // Generic area — purple
-        ctx.fillStyle   = 'rgba(168, 85, 247, 0.15)';
-        ctx.strokeStyle = 'rgba(168, 85, 247, 0.50)';
-      }
+    // Filled pie slice
+    ctx.beginPath();
+    ctx.moveTo(pivot.x, pivot.y);
+    for (const p of arcPts) ctx.lineTo(p.x, p.y);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(34,197,94,0.18)';
+    ctx.fill();
 
-      ctx.fill();
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
+    // Door leaf
+    ctx.beginPath();
+    ctx.moveTo(pivot.x, pivot.y);
+    ctx.lineTo(arcStart.x, arcStart.y);
+    ctx.strokeStyle = 'rgba(34,197,94,0.90)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([]);
+    ctx.stroke();
 
-      // ── Label at centroid (named areas only) ──────────────────────────────
-      if (area.label) {
-        const cx = area.points.reduce((s, p) => s + p.x, 0) / area.points.length;
-        const cy = area.points.reduce((s, p) => s + p.y, 0) / area.points.length;
+    // Swing arc — polyline through interpolated points (dashed)
+    ctx.beginPath();
+    ctx.moveTo(arcPts[0].x, arcPts[0].y);
+    for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
+    ctx.strokeStyle = 'rgba(34,197,94,0.70)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 5]);
+    ctx.stroke();
+    ctx.setLineDash([]);
 
-        // Pill background behind text
-        const text    = area.label;
-        ctx.font      = 'italic 10px monospace';
-        const metrics = ctx.measureText(text);
-        const tw      = metrics.width;
-        const th      = 12;
-        const pad     = 4;
-
-        ctx.fillStyle = 'rgba(251, 146, 60, 0.75)';
-        ctx.beginPath();
-        ctx.roundRect(cx - tw / 2 - pad, cy - th / 2 - pad + 1, tw + pad * 2, th + pad * 2 - 2, 4);
-        ctx.fill();
-
-        ctx.fillStyle    = 'white';
-        ctx.textAlign    = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(text, cx, cy);
-      }
-    }
+    // 🚪 badge at arc midpoint
+    const mid = arcPts[Math.floor(arcPts.length / 2)];
+    ctx.beginPath();
+    ctx.arc(mid.x, mid.y, 10, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(34,197,94,0.75)';
+    ctx.fill();
+    ctx.strokeStyle = 'white';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = 'white';
+    ctx.font = 'bold 12px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('🚪', mid.x, mid.y);
   }
 }
 
-// ─── ROOM LABELS CANVAS (NEW) ────────────────────────────────────────────────
-// Draws room labels (name + square footage) inside each detected room
+// ─── Room labels canvas (for raster-detected rooms only) ─────────────────────
+
 function drawRoomLabelsCanvas(
   canvas: HTMLCanvasElement,
   rooms: DetectedRoom[],
@@ -328,88 +315,36 @@ function drawRoomLabelsCanvas(
   showRooms: boolean,
 ) {
   const { w, h } = pdfDimensions;
-  canvas.width = w;
-  canvas.height = h;
-  canvas.style.width = `${w}px`;
-  canvas.style.height = `${h}px`;
-
+  canvas.width = w; canvas.height = h;
+  canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   ctx.clearRect(0, 0, w, h);
-
   if (!showRooms || rooms.length === 0) return;
 
   for (const room of rooms) {
-    // Calculate centroid of the room polygon
-    let centroidX = 0;
-    let centroidY = 0;
-    
-    for (const point of room.polygon) {
-      centroidX += point.nx * w;
-      centroidY += point.ny * h;
-    }
-    centroidX /= room.polygon.length;
-    centroidY /= room.polygon.length;
+    let cx = 0, cy = 0;
+    for (const p of room.polygon) { cx += p.nx * w; cy += p.ny * h; }
+    cx /= room.polygon.length; cy /= room.polygon.length;
 
-    // Generate display name
-    const roomName = room.label || `ROOM ${room.id.slice(0, 4).toUpperCase()}`;
-    
-    // Draw pill background
-    ctx.font = 'bold 11px monospace';
-    const metrics = ctx.measureText(roomName);
-    const tw = metrics.width;
-    const th = 14;
-    const pad = 8;
-    const pillHeight = th + pad * 2;
-    const pillWidth = tw + pad * 2;
+    const label = room.label || `ROOM`;
+    const colors = CATEGORY_COLORS[getRoomCategory(label)] ?? CATEGORY_COLORS.default;
 
-    // Drop shadow for better readability
-    ctx.shadowBlur = 8;
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-    
-    // Background pill
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+    ctx.font = 'bold 11px ui-monospace,SFMono-Regular,Menlo,monospace';
+    const tw = ctx.measureText(label).width;
+    const pillW = tw + 16, pillH = 20;
+
+    ctx.shadowBlur = 6; ctx.shadowColor = 'rgba(0,0,0,0.35)';
+    ctx.fillStyle = colors.pill;
     ctx.beginPath();
-    ctx.roundRect(
-      centroidX - pillWidth / 2,
-      centroidY - pillHeight / 2,
-      pillWidth,
-      pillHeight,
-      8
-    );
+    (ctx as any).roundRect(cx - pillW / 2, cy - pillH / 2, pillW, pillH, 5);
     ctx.fill();
-
-    // Border accent
     ctx.shadowBlur = 0;
-    ctx.strokeStyle = 'rgba(251, 191, 36, 0.6)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.roundRect(
-      centroidX - pillWidth / 2,
-      centroidY - pillHeight / 2,
-      pillWidth,
-      pillHeight,
-      8
-    );
-    ctx.stroke();
 
-    // Room name text
-    ctx.fillStyle = '#fbbf24'; // amber-400
-    ctx.font = 'bold 11px monospace';
+    ctx.fillStyle = '#ffffff';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(roomName, centroidX, centroidY - 2);
-    
-    // Optional: Add square footage if available
-    if (room.squareFootage && room.squareFootage > 0) {
-      ctx.font = '9px monospace';
-      ctx.fillStyle = '#9ca3af'; // gray-400
-      ctx.fillText(
-        `${Math.round(room.squareFootage)} sq ft`,
-        centroidX,
-        centroidY + 10
-      );
-    }
+    ctx.fillText(label, cx, cy);
   }
 }
 
@@ -418,7 +353,7 @@ function drawRoomLabelsCanvas(
 export function ViewerCanvas({
   pdfCanvasRef, drawingCanvasRef, pinCanvasRef, roomCanvasRef,
   wallCanvasRef, vectorCanvasRef, svgAreaCanvasRef,
-  roomLabelCanvasRef, // NEW
+  roomLabelCanvasRef,
   pdf, loading, pdfDimensions,
   activeTool, showPins, isPanning, spaceHeld,
   tempPoints, measurements, activeDrawingId,
@@ -443,52 +378,40 @@ export function ViewerCanvas({
   const svgCanvasRef      = React.useRef<HTMLCanvasElement | null>(null);
   const svgDebugCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
 
-  // ── Render SVG content to canvas ──────────────────────────────────────────
+  // ── SVG raster overlay ────────────────────────────────────────────────────
   React.useEffect(() => {
     const canvas = svgCanvasRef.current;
     if (!canvas) return;
-
     if (!svgContent || !pdfDimensions || !showSvgOverlay) {
       canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
-
     const { w, h } = pdfDimensions;
-    canvas.width        = w;
-    canvas.height       = h;
-    canvas.style.width  = `${w}px`;
-    canvas.style.height = `${h}px`;
-
+    canvas.width = w; canvas.height = h;
+    canvas.style.width = `${w}px`; canvas.style.height = `${h}px`;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.clearRect(0, 0, w, h);
-
     const blob = new Blob([svgContent], { type: 'image/svg+xml;charset=utf-8' });
     const url  = URL.createObjectURL(blob);
     const img  = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, w, h);
-      URL.revokeObjectURL(url);
-    };
-    img.onerror = () => {
-      console.error('[ViewerCanvas] Failed to render SVG to canvas');
-      URL.revokeObjectURL(url);
-    };
+    img.onload  = () => { ctx.drawImage(img, 0, 0, w, h); URL.revokeObjectURL(url); };
+    img.onerror = () => { console.error('[ViewerCanvas] SVG render failed'); URL.revokeObjectURL(url); };
     img.src = url;
   }, [svgContent, pdfDimensions, showSvgOverlay]);
 
-  // ── Draw SVG area canvas (doors, polygons) ────────────────────────────────
+  // ── SVG area canvas (rooms + doors) ──────────────────────────────────────
   React.useEffect(() => {
     const canvas = svgAreaCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
-    if (!showSvgOverlay || svgAreas.length === 0) {
+    if (svgAreas.length === 0) {
       canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
       return;
     }
-    drawSvgAreaCanvas(canvas, svgAreas, pdfDimensions);
+    drawSvgAreaCanvas(canvas, svgAreas, pdfDimensions, showSvgOverlay);
   }, [svgAreas, showSvgOverlay, pdfDimensions, svgAreaCanvasRef]);
 
-  // ── Draw SVG snap debug pins ──────────────────────────────────────────────
+  // ── SVG snap debug ────────────────────────────────────────────────────────
   React.useEffect(() => {
     const canvas = svgDebugCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -499,7 +422,7 @@ export function ViewerCanvas({
     drawSvgSnapDebugCanvas(canvas, svgSnapPoints, pdfDimensions);
   }, [svgSnapPoints, showSvgSnapDebug, pdfDimensions]);
 
-  // ── Draw room labels (NEW) ────────────────────────────────────────────────
+  // ── Room labels (raster-detected rooms only) ──────────────────────────────
   React.useEffect(() => {
     const canvas = roomLabelCanvasRef?.current;
     if (!canvas || !pdfDimensions) return;
@@ -510,20 +433,14 @@ export function ViewerCanvas({
     ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
     : activeTool !== 'select' && !isPanning
     ? 'cursor-crosshair'
-    : isPanning
-    ? 'cursor-grabbing'
-    : 'cursor-grab';
+    : isPanning ? 'cursor-grabbing' : 'cursor-grab';
 
   const handleRoomPointerMove = React.useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (!showRooms || !pdfDimensions || !rooms.length) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    const mx   = e.clientX - rect.left;
-    const my   = e.clientY - rect.top;
-    const hit  = rooms.find(r => {
-      const pts = r.polygon.map(p => ({
-        x: p.nx * pdfDimensions.w,
-        y: p.ny * pdfDimensions.h,
-      }));
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const hit = rooms.find(r => {
+      const pts = r.polygon.map(p => ({ x: p.nx * pdfDimensions.w, y: p.ny * pdfDimensions.h }));
       return pointInPolygon(mx, my, pts);
     });
     setHoveredRoomId(hit?.id ?? null);
@@ -551,18 +468,12 @@ export function ViewerCanvas({
           </div>
           <label className="bg-amber-400 hover:bg-amber-300 text-black px-10 py-3 font-mono font-bold text-xs uppercase tracking-widest cursor-pointer transition-all shadow-xl shadow-amber-400/10 active:scale-95">
             Select File(s)
-            <input
-              type="file"
-              multiple
-              className="hidden"
-              accept=".pdf,.png,.jpg,.jpeg,.dwg"
-              onChange={handleFileUpload}
-            />
+            <input type="file" multiple className="hidden" accept=".pdf,.png,.jpg,.jpeg,.dwg" onChange={handleFileUpload} />
           </label>
         </div>
       )}
 
-      {/* ── Loading spinner ── */}
+      {/* ── Loading ── */}
       {loading && (
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
@@ -586,68 +497,72 @@ export function ViewerCanvas({
             return { position: 'absolute' as const, left, top, width: pdfDimensions.w, height: pdfDimensions.h };
           })() : {}}
         >
-
-          {/* ── Layer 0: PDF raster ────────────────────────────────────────── */}
+          {/* Layer 0: PDF raster */}
           <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
-          {/* ── Layer 1: Full vector overlay ───────────────────────────────── */}
+          {/* Layer 1: Vector overlay */}
           <canvas
             ref={vectorCanvasRef}
             className="absolute inset-0 z-10 pointer-events-none"
             style={{ opacity: showVectors && vectorPathCount > 0 ? 1 : 0, transition: 'opacity 0.2s' }}
           />
 
-          {/* ── Layer 1.5: SVG overlay (same svgContent used for snapping) ─── */}
+          {/* Layer 1.5: SVG raster */}
           {svgContent && (
             <canvas
               ref={svgCanvasRef}
               className="absolute inset-0 z-[15] pointer-events-none"
-              style={{
-                opacity:    showSvgOverlay ? 1 : 0,
-                transition: 'opacity 0.2s',
-                width:      pdfDimensions?.w,
-                height:     pdfDimensions?.h,
-              }}
+              style={{ opacity: showSvgOverlay ? 1 : 0, transition: 'opacity 0.2s',
+                       width: pdfDimensions?.w, height: pdfDimensions?.h }}
             />
           )}
 
-          {/* ── Layer 1.6: SVG area canvas (doors=green, named=orange, generic=purple) */}
+          {/* Layer 1.6: SVG area canvas — room fills + doors (no label pills) */}
           <canvas
             ref={svgAreaCanvasRef}
             className="absolute inset-0 z-[16] pointer-events-none"
             style={{
-              opacity:    showSvgOverlay && svgAreas.length > 0 ? 1 : 0,
+              opacity: svgAreas.length > 0 ? 1 : 0,
               transition: 'opacity 0.2s',
-              width:      pdfDimensions?.w,
-              height:     pdfDimensions?.h,
+              width: pdfDimensions?.w,
+              height: pdfDimensions?.h,
             }}
           />
 
-          {/* ── Layer 1.7: SVG snap debug overlay ─────────────────────────── */}
-          {/*   amber=endpoint  emerald=midpoint  violet=centroid              */}
-          {/*   red=intersection  CYAN ⊕ =arc-center                          */}
+          {/* Layer 1.7: SVG snap debug */}
           <canvas
             ref={svgDebugCanvasRef}
             className="absolute inset-0 z-[17] pointer-events-none"
             style={{
-              opacity:    showSvgSnapDebug && svgSnapPoints.length > 0 ? 1 : 0,
+              opacity: showSvgSnapDebug && svgSnapPoints.length > 0 ? 1 : 0,
               transition: 'opacity 0.2s',
-              width:      pdfDimensions?.w,
-              height:     pdfDimensions?.h,
+              width: pdfDimensions?.w,
+              height: pdfDimensions?.h,
             }}
           />
 
-          {/* ── Layer 2: Room labels overlay (NEW) ────────────────────────── */}
+          {/* Layer 1.8: Raster room fills (drawRoomsOnCanvas — from useRoomDetection) */}
           <canvas
-            ref={roomLabelCanvasRef}
+            ref={roomCanvasRef}
             className="absolute inset-0 z-[18] pointer-events-none"
-            style={{
-              opacity:    showRooms && rooms.length > 0 ? 1 : 0,
-              transition: 'opacity 0.2s',
-            }}
+            style={{ opacity: showRooms ? 1 : 0, transition: 'opacity 0.2s' }}
           />
 
-          {/* ── Layer 4: Drawing / measurement canvas ─────────────────────── */}
+          {/* Layer 1.9: Raster room label pills */}
+          {/* <canvas
+            ref={roomLabelCanvasRef}
+            className="absolute inset-0 z-[19] pointer-events-none"
+            style={{ opacity: showRooms && rooms.length > 0 ? 1 : 0, transition: 'opacity 0.2s' }}
+          /> */}
+
+          {/* Layer 2: Wall overlay */}
+          <canvas
+            ref={wallCanvasRef}
+            className="absolute inset-0 z-[20] pointer-events-none"
+            style={{ opacity: showWalls && wallSegmentCount > 0 ? 1 : 0, transition: 'opacity 0.2s' }}
+          />
+
+          {/* Layer 4: Drawing / measurement canvas */}
           <canvas
             ref={drawingCanvasRef}
             onClick={handleCanvasClick}
@@ -666,14 +581,14 @@ export function ViewerCanvas({
             className={cn('absolute inset-0 z-40 w-full h-full mix-blend-multiply', drawingCanvasCursor)}
           />
 
-          {/* ── Layer 5: Snap pin canvas ───────────────────────────────────── */}
+          {/* Layer 5: Snap pin canvas */}
           <canvas
             ref={pinCanvasRef}
             className="absolute inset-0 z-50 w-full h-full pointer-events-none"
             style={{ opacity: showPins && activeTool !== 'select' ? 1 : 0, transition: 'opacity 0.2s' }}
           />
 
-          {/* ── Layer 6: Count pin overlay (DOM) ──────────────────────────── */}
+          {/* Layer 6: Count pin overlay (DOM) */}
           <CountPinOverlay
             measurements={measurements}
             pdfDimensions={pdfDimensions}
@@ -682,7 +597,7 @@ export function ViewerCanvas({
             activeTool={activeTool}
           />
 
-          {/* ── Layer 7: Snap flash animations ────────────────────────────── */}
+          {/* Layer 7: Snap flash animations */}
           {snapFlashes.map(flash => (
             <div
               key={flash.id}
@@ -696,12 +611,9 @@ export function ViewerCanvas({
             </div>
           ))}
 
-          {/* ── Layer 8: Finish button — Count tool ───────────────────────── */}
+          {/* Layer 8: Finish button — Count */}
           {tempPoints.length > 0 && activeTool === 'count' && (() => {
-            const last = toCanvas(
-              tempPoints[tempPoints.length - 1].x,
-              tempPoints[tempPoints.length - 1].y,
-            );
+            const last = toCanvas(tempPoints[tempPoints.length - 1].x, tempPoints[tempPoints.length - 1].y);
             return (
               <button
                 className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
@@ -715,14 +627,11 @@ export function ViewerCanvas({
             );
           })()}
 
-          {/* ── Layer 8: Finish button — Polygon / Rectangle / Linear ─────── */}
+          {/* Layer 8: Finish button — Polygon / Rectangle / Linear */}
           {tempPoints.length > 1 &&
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
             (() => {
-              const last = toCanvas(
-                tempPoints[tempPoints.length - 1].x,
-                tempPoints[tempPoints.length - 1].y,
-              );
+              const last = toCanvas(tempPoints[tempPoints.length - 1].x, tempPoints[tempPoints.length - 1].y);
               return (
                 <button
                   className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
@@ -735,7 +644,6 @@ export function ViewerCanvas({
                 </button>
               );
             })()}
-
         </div>
       )}
     </>

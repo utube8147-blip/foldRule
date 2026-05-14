@@ -1,126 +1,237 @@
 // hooks/useSnapEngine/drawRoomsOnCanvas.ts
-//
-// Changes vs previous version:
-//  1. ctx.font weight uses quoted string ('600') not bare number — bare numeric
-//     weights are invalid in the Canvas 2D font shorthand and cause measureText
-//     to return 0, collapsing the label pill to a sliver with invisible text.
-//  2. SOURCE_DOT_COLORS extended with 'vector' key (cyan) so vector-extracted
-//     rooms get a distinct dot colour instead of falling back to amber.
-//  3. getElementColor handles multi-word / numbered labels:
-//       "OFFICE 1", "OFFICE 2"   → OFFICE color
-//       "MEETING RM 1"           → MEETING color
-//       "OPEN PLAN A/B/C"        → OPEN color
-//       "WC (M)", "WC (F)"       → WC / BATHROOM color
-//  4. Pill always rendered even when label is empty (shows "ROOM" fallback).
-//  5. Minimum pill width enforced (48px) so short labels don't clip.
-//  6. areaSqM rendered as a second line below the label pill when present —
-//     shows the architect's own area figure from PDF vector data.
-//  7. Vector rooms skip the confidence badge entirely (confidence = 1.0 exact).
-//  8. Dashed stroke only for genuinely inferred (heuristic) rooms, not all
-//     non-hover rooms — removes visual noise on vector-extracted polygons.
-// ─────────────────────────────────────────────────────────────────────────────
 
 import type { DetectedRoom } from './detectRooms';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-// DetectedRoom extended with optional areaSqM from vector extraction.
-// If your DetectedRoom interface already has areaSqM, this is a no-op.
 type DetectedRoomWithArea = DetectedRoom & { areaSqM?: number | null };
 
-// ─── Color palette ────────────────────────────────────────────────────────────
-
-const ELEMENT_COLORS: Record<string, { fill: string; stroke: string; text: string }> = {
-  WINDOW:    { fill: 'rgba(59,130,246,0.15)',  stroke: 'rgba(59,130,246,0.7)',  text: 'rgba(29,78,216,0.95)'   },
-  WALL:      { fill: 'rgba(107,114,128,0.15)', stroke: 'rgba(107,114,128,0.7)', text: 'rgba(55,65,81,0.95)'    },
-  DOOR:      { fill: 'rgba(16,185,129,0.15)',  stroke: 'rgba(16,185,129,0.7)',  text: 'rgba(6,95,70,0.95)'     },
-  ROOM:      { fill: 'rgba(245,158,11,0.15)',  stroke: 'rgba(245,158,11,0.7)',  text: 'rgba(120,53,15,0.95)'   },
-  KITCHEN:   { fill: 'rgba(236,72,153,0.15)',  stroke: 'rgba(236,72,153,0.7)',  text: 'rgba(131,24,67,0.95)'   },
-  BEDROOM:   { fill: 'rgba(139,92,246,0.15)',  stroke: 'rgba(139,92,246,0.7)',  text: 'rgba(76,29,149,0.95)'   },
-  BATHROOM:  { fill: 'rgba(20,184,166,0.15)',  stroke: 'rgba(20,184,166,0.7)',  text: 'rgba(19,78,74,0.95)'    },
-  LIVING:    { fill: 'rgba(249,115,22,0.15)',  stroke: 'rgba(249,115,22,0.7)',  text: 'rgba(124,45,18,0.95)'   },
-  CORRIDOR:  { fill: 'rgba(156,163,175,0.12)', stroke: 'rgba(156,163,175,0.6)', text: 'rgba(75,85,99,0.95)'    },
-  OFFICE:    { fill: 'rgba(99,102,241,0.15)',  stroke: 'rgba(99,102,241,0.7)',  text: 'rgba(49,46,129,0.95)'   },
-  GARAGE:    { fill: 'rgba(75,85,99,0.15)',    stroke: 'rgba(75,85,99,0.7)',    text: 'rgba(31,41,55,0.95)'    },
-  BALCONY:   { fill: 'rgba(34,197,94,0.15)',   stroke: 'rgba(34,197,94,0.7)',   text: 'rgba(20,83,45,0.95)'    },
-  MEETING:   { fill: 'rgba(168,85,247,0.15)',  stroke: 'rgba(168,85,247,0.7)',  text: 'rgba(88,28,135,0.95)'   },
-  BOARDROOM: { fill: 'rgba(168,85,247,0.15)',  stroke: 'rgba(168,85,247,0.7)',  text: 'rgba(88,28,135,0.95)'   },
-  OPEN:      { fill: 'rgba(6,182,212,0.15)',   stroke: 'rgba(6,182,212,0.7)',   text: 'rgba(21,94,117,0.95)'   },
-  LOBBY:     { fill: 'rgba(251,191,36,0.15)',  stroke: 'rgba(251,191,36,0.7)',  text: 'rgba(120,53,15,0.95)'   },
-  SERVER:    { fill: 'rgba(239,68,68,0.15)',   stroke: 'rgba(239,68,68,0.7)',   text: 'rgba(127,29,29,0.95)'   },
-  BREAKOUT:  { fill: 'rgba(52,211,153,0.15)',  stroke: 'rgba(52,211,153,0.7)',  text: 'rgba(6,78,59,0.95)'     },
-  STAIRS:    { fill: 'rgba(251,146,60,0.15)',  stroke: 'rgba(251,146,60,0.7)',  text: 'rgba(124,45,18,0.95)'   },
-  STORAGE:   { fill: 'rgba(148,163,184,0.15)', stroke: 'rgba(148,163,184,0.7)', text: 'rgba(51,65,85,0.95)'    },
-  WC:        { fill: 'rgba(20,184,166,0.15)',  stroke: 'rgba(20,184,166,0.7)',  text: 'rgba(19,78,74,0.95)'    },
-  DIRECTOR:  { fill: 'rgba(99,102,241,0.15)',  stroke: 'rgba(99,102,241,0.7)',  text: 'rgba(49,46,129,0.95)'   },
-  LAUNDRY:   { fill: 'rgba(20,184,166,0.12)',  stroke: 'rgba(20,184,166,0.6)',  text: 'rgba(19,78,74,0.95)'    },
-  UTILITY:   { fill: 'rgba(148,163,184,0.15)', stroke: 'rgba(148,163,184,0.7)', text: 'rgba(51,65,85,0.95)'    },
-  RECEPTION: { fill: 'rgba(251,191,36,0.15)',  stroke: 'rgba(251,191,36,0.7)',  text: 'rgba(120,53,15,0.95)'   },
-  STUDY:     { fill: 'rgba(99,102,241,0.12)',  stroke: 'rgba(99,102,241,0.6)',  text: 'rgba(49,46,129,0.95)'   },
-  GYM:       { fill: 'rgba(239,68,68,0.15)',   stroke: 'rgba(239,68,68,0.7)',   text: 'rgba(127,29,29,0.95)'   },
-  DEFAULT:   { fill: 'rgba(156,163,175,0.15)', stroke: 'rgba(156,163,175,0.7)', text: 'rgba(75,85,99,0.95)'    },
+// ─── Room category mapping ──────────────────────────────────────────────────
+// Define which category each room type belongs to
+const ROOM_CATEGORY: Record<string, string> = {
+  // Office spaces
+  OFFICE: 'office',
+  DIRECTOR: 'office',
+  STUDY: 'office',
+  PRIVATE_OFFICE: 'office',
+  OPEN_OFFICE: 'office',
+  WORKSPACE: 'office',
+  DESK: 'office',
+  CUBICLE: 'office',
+  
+  // Meeting spaces
+  MEETING: 'meeting',
+  BOARDROOM: 'meeting',
+  CONFERENCE: 'meeting',
+  BREAKOUT: 'meeting',
+  TRAINING: 'meeting',
+  SEMINAR: 'meeting',
+  
+  // Circulation
+  CORRIDOR: 'circulation',
+  HALLWAY: 'circulation',
+  HALL: 'circulation',
+  LOBBY: 'circulation',
+  FOYER: 'circulation',
+  ENTRANCE: 'circulation',
+  ENTRY: 'circulation',
+  RECEPTION: 'circulation',
+  STAIRS: 'circulation',
+  STAIRWELL: 'circulation',
+  STAIRCASE: 'circulation',
+  LIFT: 'circulation',
+  ELEVATOR: 'circulation',
+  PASSAGE: 'circulation',
+  
+  // Wet areas
+  KITCHEN: 'wet',
+  KITCHENETTE: 'wet',
+  BREAKROOM: 'wet',
+  BREAK_ROOM: 'wet',
+  PANTRY: 'wet',
+  CANTEEN: 'wet',
+  CAFETERIA: 'wet',
+  BATHROOM: 'wet',
+  WC: 'wet',
+  TOILET: 'wet',
+  RESTROOM: 'wet',
+  SHOWER: 'wet',
+  LAUNDRY: 'wet',
+  LOCKER: 'wet',
+  CHANGING: 'wet',
+  
+  // Storage/Utility
+  STORAGE: 'utility',
+  STORE: 'utility',
+  STOREROOM: 'utility',
+  ARCHIVE: 'utility',
+  ARCHIVES: 'utility',
+  PLANT: 'utility',
+  PLANT_ROOM: 'utility',
+  UTILITY: 'utility',
+  UTILITY_ROOM: 'utility',
+  ELECTRICAL: 'utility',
+  SWITCH_ROOM: 'utility',
+  SERVER: 'utility',
+  SERVER_ROOM: 'utility',
+  COMMS: 'utility',
+  IT_ROOM: 'utility',
+  DATA_ROOM: 'utility',
+  MAIL_ROOM: 'utility',
+  PRINT_ROOM: 'utility',
+  COPY_ROOM: 'utility',
+  
+  // Living spaces
+  BEDROOM: 'living',
+  BED: 'living',
+  LIVING: 'living',
+  LIVING_ROOM: 'living',
+  LOUNGE: 'living',
+  DINING: 'living',
+  DINING_ROOM: 'living',
+  FAMILY: 'living',
+  FAMILY_ROOM: 'living',
+  STUDY_ROOM: 'living',
+  
+  // Outdoor
+  BALCONY: 'outdoor',
+  PATIO: 'outdoor',
+  TERRACE: 'outdoor',
+  GARDEN: 'outdoor',
+  YARD: 'outdoor',
+  GARAGE: 'outdoor',
+  CARPARK: 'outdoor',
+  PARKING: 'outdoor',
+  CAR_PARK: 'outdoor',
+  
+  // Open plan
+  OPEN_PLAN: 'open',
+  OPEN_OFFICE: 'open',
+  WORKSPACE: 'open',
+  COWORKING: 'open',
+  
+  // Medical/Healthcare
+  EXAM: 'medical',
+  EXAMINATION: 'medical',
+  CONSULTATION: 'medical',
+  TREATMENT: 'medical',
+  PATIENT: 'medical',
+  NURSES: 'medical',
+  DOCTOR: 'office',
+  DENTAL: 'medical',
+  PHARMACY: 'retail',
+  
+  // Retail
+  RETAIL: 'retail',
+  SHOP: 'retail',
+  DISPLAY: 'retail',
+  SALES: 'retail',
+  SHOWROOM: 'retail',
 };
 
-// Source dot: 3px dot top-right of the pill — tells you where the data came from
-const SOURCE_DOT_COLORS: Record<string, string> = {
-  'cubicasa':                'rgba(107,114,128,0.9)',  // gray   — CubiCasa v6
-  'room-model':              'rgba(59,130,246,0.9)',   // blue   — Roboflow room model
-  'room-model+model-label':  'rgba(59,130,246,0.9)',   // blue
-  'room-model+ocr':          'rgba(16,185,129,0.9)',   // green  — Roboflow + OCR
-  'room-model+heuristic':    'rgba(245,158,11,0.9)',   // amber  — Roboflow + heuristic
-  'workflow':                'rgba(99,102,241,0.9)',   // indigo — workflow fallback
-  'vector':                  'rgba(6,182,212,0.9)',    // cyan   — PDF vector extraction
-  'inferred':                'rgba(245,158,11,0.9)',   // amber  — area heuristic only
+// Category color palette - visually distinct for each category
+const CATEGORY_COLORS: Record<string, { fill: string; stroke: string; pill: string; text: string }> = {
+  office: {
+    fill: 'rgba(59,130,246,0.18)',   // blue
+    stroke: 'rgba(59,130,246,0.80)',
+    pill: 'rgba(29,78,216,0.90)',
+    text: '#ffffff',
+  },
+  meeting: {
+    fill: 'rgba(139,92,246,0.18)',   // purple
+    stroke: 'rgba(139,92,246,0.80)',
+    pill: 'rgba(76,29,149,0.90)',
+    text: '#ffffff',
+  },
+  circulation: {
+    fill: 'rgba(245,158,11,0.18)',   // amber/orange
+    stroke: 'rgba(245,158,11,0.80)',
+    pill: 'rgba(120,53,15,0.90)',
+    text: '#ffffff',
+  },
+  wet: {
+    fill: 'rgba(20,184,166,0.18)',   // teal
+    stroke: 'rgba(20,184,166,0.80)',
+    pill: 'rgba(15,118,110,0.90)',
+    text: '#ffffff',
+  },
+  utility: {
+    fill: 'rgba(244,63,94,0.18)',    // rose/red
+    stroke: 'rgba(244,63,94,0.80)',
+    pill: 'rgba(136,19,55,0.90)',
+    text: '#ffffff',
+  },
+  living: {
+    fill: 'rgba(34,197,94,0.18)',    // green
+    stroke: 'rgba(34,197,94,0.80)',
+    pill: 'rgba(20,83,45,0.90)',
+    text: '#ffffff',
+  },
+  outdoor: {
+    fill: 'rgba(168,162,158,0.18)',  // cool gray
+    stroke: 'rgba(168,162,158,0.80)',
+    pill: 'rgba(87,83,78,0.90)',
+    text: '#ffffff',
+  },
+  open: {
+    fill: 'rgba(99,102,241,0.18)',   // indigo
+    stroke: 'rgba(99,102,241,0.80)',
+    pill: 'rgba(49,46,129,0.90)',
+    text: '#ffffff',
+  },
+  medical: {
+    fill: 'rgba(236,72,153,0.18)',   // pink
+    stroke: 'rgba(236,72,153,0.80)',
+    pill: 'rgba(157,23,77,0.90)',
+    text: '#ffffff',
+  },
+  retail: {
+    fill: 'rgba(251,191,36,0.18)',   // yellow/amber
+    stroke: 'rgba(251,191,36,0.80)',
+    pill: 'rgba(146,64,14,0.90)',
+    text: '#ffffff',
+  },
+  // Default fallback
+  default: {
+    fill: 'rgba(156,163,175,0.18)',  // gray
+    stroke: 'rgba(156,163,175,0.80)',
+    pill: 'rgba(75,85,99,0.90)',
+    text: '#ffffff',
+  },
 };
 
-function getSourceDotColor(source: string | undefined): string {
-  if (!source) return SOURCE_DOT_COLORS['inferred'];
-  // Exact match first
-  if (SOURCE_DOT_COLORS[source]) return SOURCE_DOT_COLORS[source];
-  // Prefix match (e.g. "vector+user-relabelled")
-  for (const [key, color] of Object.entries(SOURCE_DOT_COLORS)) {
-    if (source.startsWith(key)) return color;
-  }
-  return SOURCE_DOT_COLORS['inferred'];
-}
-
-// ─── Color lookup ─────────────────────────────────────────────────────────────
-//
-// Priority:
-//   1. Exact match:         "OFFICE"         → OFFICE
-//   2. Strip trailing:      "OFFICE 1"       → "OFFICE"  → OFFICE
-//                           "OPEN PLAN A"    → "OPEN PLAN" → "OPEN" → OPEN
-//                           "WC (M)"         → "WC"       → WC
-//                           "MEETING RM 1"   → "MEETING RM" → "MEETING" → MEETING
-//   3. Substring scan:      first key that appears anywhere in the label
-//   4. Fallback:            DEFAULT
-
-function getElementColor(label: string): { fill: string; stroke: string; text: string } {
+function getRoomCategory(label: string): string {
+  if (!label) return 'default';
+  
   const up = label.toUpperCase().trim();
-
-  // 1. Exact match
-  if (ELEMENT_COLORS[up]) return ELEMENT_COLORS[up];
-
-  // 2. Progressive right-trim: remove last word until we get a match
-  //    "OFFICE 1" → "OFFICE", "OPEN PLAN A" → "OPEN PLAN" → "OPEN"
-  //    "WC (M)"   → "WC (M" → "WC"
-  //    "MEETING RM 1" → "MEETING RM" → "MEETING"
-  const words = up.split(/[\s(]+/);
-  for (let i = words.length - 1; i >= 1; i--) {
-    const candidate = words.slice(0, i).join(' ').trim();
-    if (ELEMENT_COLORS[candidate]) return ELEMENT_COLORS[candidate];
+  
+  // Exact match first
+  if (ROOM_CATEGORY[up]) return ROOM_CATEGORY[up];
+  
+  // Check prefix matches (e.g., "MEETING ROOM 1" starts with "MEETING")
+  for (const [key, category] of Object.entries(ROOM_CATEGORY)) {
+    if (up === key) return category;
   }
-
-  // 3. Substring scan — first palette key that appears inside the label
-  for (const [key, color] of Object.entries(ELEMENT_COLORS)) {
-    if (key !== 'DEFAULT' && up.includes(key)) return color;
+  
+  // Check starts with
+  for (const [key, category] of Object.entries(ROOM_CATEGORY)) {
+    if (up.startsWith(key) || up.startsWith(key + ' ') || up.startsWith(key + '/')) {
+      return category;
+    }
   }
-
-  return ELEMENT_COLORS.DEFAULT;
+  
+  // Check contains
+  for (const [key, category] of Object.entries(ROOM_CATEGORY)) {
+    if (up.includes(key)) return category;
+  }
+  
+  return 'default';
 }
 
-// ─── roundRect polyfill (browser-only, guards against SSR) ───────────────────
+function getRoomColor(label: string) {
+  const category = getRoomCategory(label);
+  return CATEGORY_COLORS[category] || CATEGORY_COLORS.default;
+}
 
+// ─── roundRect polyfill ───────────────────────────────────────────────────────
 if (
   typeof CanvasRenderingContext2D !== 'undefined' &&
   !(CanvasRenderingContext2D.prototype as any).roundRect
@@ -143,35 +254,72 @@ if (
   };
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
+function polygonCentroid(pts: Array<{ x: number; y: number }>): { x: number; y: number } {
+  let area = 0, cx = 0, cy = 0;
+  const n = pts.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const cross = pts[j].x * pts[i].y - pts[i].x * pts[j].y;
+    area += cross;
+    cx += (pts[j].x + pts[i].x) * cross;
+    cy += (pts[j].y + pts[i].y) * cross;
+  }
+  area *= 0.5;
+  if (Math.abs(area) < 1e-6) {
+    return {
+      x: pts.reduce((s, p) => s + p.x, 0) / n,
+      y: pts.reduce((s, p) => s + p.y, 0) / n,
+    };
+  }
+  const inv6A = 1 / (6 * area);
+  return { x: cx * inv6A, y: cy * inv6A };
+}
+
+// ─── Source dot colours ───────────────────────────────────────────────────────
+const SOURCE_DOT: Record<string, string> = {
+  cubicasa:               'rgba(107,114,128,0.9)',
+  'room-model':           'rgba(59,130,246,0.9)',
+  'room-model+ocr':       'rgba(16,185,129,0.9)',
+  'room-model+heuristic': 'rgba(245,158,11,0.9)',
+  workflow:               'rgba(99,102,241,0.9)',
+  vector:                 'rgba(6,182,212,0.9)',
+  inferred:               'rgba(245,158,11,0.9)',
+};
+
+function sourceDot(source: string | undefined): string {
+  if (!source) return SOURCE_DOT.inferred;
+  if (SOURCE_DOT[source]) return SOURCE_DOT[source];
+  for (const [k, v] of Object.entries(SOURCE_DOT)) if (source.startsWith(k)) return v;
+  return SOURCE_DOT.inferred;
+}
+
+// ─── Pill drawing ─────────────────────────────────────────────────────────────
+interface PillResult { pillW: number; pillH: number; pillTop: number; pillRight: number }
 
 function drawPill(
-  ctx:     CanvasRenderingContext2D,
-  text:    string,
-  cx:      number,
-  cy:      number,
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  cy: number,
   bgColor: string,
   fontSize = 11,
-): { pillW: number; pillH: number } {
-  const MIN_PILL_W = 48;
-  const PILL_H     = 20;
-  const PADDING_X  = 14;
+): PillResult {
+  const PILL_H   = 20;
+  const PAD_X    = 14;
+  const MIN_W    = 48;
 
-  // FIXED: font weight MUST be a quoted string in Canvas 2D font shorthand.
-  // Bare numeric weights (500, 600) are invalid and cause measureText → 0.
-  ctx.font = `'600' ${fontSize}px ui-monospace,SFMono-Regular,Menlo,monospace`;
-  const tw   = ctx.measureText(text).width;
-  const pillW = Math.max(MIN_PILL_W, tw + PADDING_X);
-
-  const x = cx - pillW / 2;
-  const y = cy - PILL_H / 2;
+  ctx.font = `600 ${fontSize}px ui-monospace,SFMono-Regular,Menlo,monospace`;
+  const tw    = ctx.measureText(text).width;
+  const pillW = Math.max(MIN_W, tw + PAD_X);
+  const pillLeft = cx - pillW / 2;
+  const pillTop  = cy - PILL_H / 2;
 
   ctx.fillStyle = bgColor;
   ctx.beginPath();
   if (typeof (ctx as any).roundRect === 'function') {
-    (ctx as any).roundRect(x, y, pillW, PILL_H, 5);
+    (ctx as any).roundRect(pillLeft, pillTop, pillW, PILL_H, 5);
   } else {
-    ctx.rect(x, y, pillW, PILL_H);
+    ctx.rect(pillLeft, pillTop, pillW, PILL_H);
   }
   ctx.fill();
 
@@ -180,26 +328,10 @@ function drawPill(
   ctx.textBaseline = 'middle';
   ctx.fillText(text, cx, cy);
 
-  return { pillW, pillH: PILL_H };
+  return { pillW, pillH: PILL_H, pillTop, pillRight: pillLeft + pillW };
 }
 
-function drawAreaBadge(
-  ctx:    CanvasRenderingContext2D,
-  areaSqM: number,
-  cx:     number,
-  topY:   number,   // y just below the label pill
-  color:  string,
-) {
-  const text = `${areaSqM.toFixed(1)} m²`;
-  ctx.font          = `'400' 9px ui-monospace,SFMono-Regular,Menlo,monospace`;
-  ctx.fillStyle     = color;
-  ctx.textAlign     = 'center';
-  ctx.textBaseline  = 'top';
-  ctx.fillText(text, cx, topY + 2);
-}
-
-// ─── Main export ──────────────────────────────────────────────────────────────
-
+// ─── Main export - draw rooms with category-based colors ──────────────────────
 export function drawRoomsOnCanvas(
   canvas:  HTMLCanvasElement,
   rooms:   DetectedRoomWithArea[],
@@ -215,91 +347,80 @@ export function drawRoomsOnCanvas(
   for (const room of rooms) {
     const isHover    = room.id === hoverId;
     const isVector   = room.source?.startsWith('vector') ?? false;
-    // Only genuinely heuristic rooms get a dashed stroke — not vector rooms
     const isInferred = (room.source ?? '').includes('heuristic') && !isVector;
-    const colors     = getElementColor(room.label || 'ROOM');
 
-    // ── Convert normalised polygon → canvas pixels ──────────────────────────
-    const pts = room.polygon.map(p => ({
-      x: p.nx * dims.w,
-      y: p.ny * dims.h,
-    }));
+    // Get color based on room category (same category = same color)
+    const colors = getRoomColor(room.label || 'default');
+
+    // ── Pixel polygon ────────────────────────────────────────────────────────
+    const pts = room.polygon.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h }));
     if (pts.length < 3) continue;
 
-    // ── Polygon fill ────────────────────────────────────────────────────────
+    // ── Fill ─────────────────────────────────────────────────────────────────
     ctx.beginPath();
     ctx.moveTo(pts[0].x, pts[0].y);
     for (let k = 1; k < pts.length; k++) ctx.lineTo(pts[k].x, pts[k].y);
     ctx.closePath();
 
-    ctx.fillStyle = isHover
-      ? colors.fill.replace(/[\d.]+\)$/, '0.30)')
-      : colors.fill;
+    // Hover: boost fill alpha
+    if (isHover) {
+      ctx.fillStyle = colors.fill.replace(/[\d.]+\)$/, '0.35)');
+    } else {
+      ctx.fillStyle = colors.fill;
+    }
     ctx.fill();
 
-    // ── Polygon stroke ──────────────────────────────────────────────────────
+    // ── Stroke ────────────────────────────────────────────────────────────────
     ctx.strokeStyle = colors.stroke;
     ctx.lineWidth   = isHover ? 2.5 : isVector ? 2.0 : 1.5;
-    // Dashed only for heuristic-inferred rooms; vector and model rooms solid
     ctx.setLineDash(isInferred ? [4, 5] : []);
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // ── Label pill ──────────────────────────────────────────────────────────
-    const cx = room.centroid.nx * dims.w;
-    const cy = room.centroid.ny * dims.h;
-
+    // ── Label pill at polygon centroid ────────────────────────────────────────
+    const { x: cx, y: cy } = polygonCentroid(pts);
     const labelText = (room.label || 'ROOM').trim();
     const fontSize  = isHover ? 12 : 11;
 
-    // Hover drop shadow
     if (isHover) {
       ctx.shadowColor   = 'rgba(0,0,0,0.35)';
       ctx.shadowBlur    = 6;
       ctx.shadowOffsetY = 2;
     }
 
-    const bgColor = colors.text.replace(/[\d.]+\)$/, '0.90)');
-    const pillY   = isHover ? cy - 12 : cy - 9;
+    const { pillW, pillH, pillTop, pillRight } = drawPill(
+      ctx, labelText, cx, cy, colors.pill, fontSize,
+    );
 
-    const { pillW, pillH } = drawPill(ctx, labelText, cx, pillY, bgColor, fontSize);
+    ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 
-    // Clear shadow after pill so it doesn't bleed into other elements
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur  = 0;
-    ctx.shadowOffsetY = 0;
-
-    // ── Area badge (vector rooms only — shows architect's exact m²) ─────────
-    // areaSqM is set by extractPdfVectorData; raster rooms don't have it.
-    const areaSqM = (room as DetectedRoomWithArea).areaSqM;
-    if (isVector && typeof areaSqM === 'number' && areaSqM > 0) {
-      drawAreaBadge(
-        ctx,
-        areaSqM,
-        cx,
-        pillY + pillH / 2,   // just below the pill bottom edge
-        colors.text.replace(/[\d.]+\)$/, '0.80)'),
-      );
+    // ── Area badge ────────────────────────────────────────────────────────────
+    const { areaSqM } = room;
+    if (typeof areaSqM === 'number' && areaSqM > 0) {
+      ctx.font         = `400 9px ui-monospace,SFMono-Regular,Menlo,monospace`;
+      ctx.fillStyle    = colors.stroke;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${areaSqM.toFixed(1)} m²`, cx, pillTop + pillH + 2);
     }
 
-    // ── Confidence badge (raster rooms only, shown when conf < 0.75) ────────
-    // Vector rooms always have confidence = 1.0 (exact) so we skip this.
+    // ── Confidence badge (raster rooms, low confidence only) ─────────────────
     const conf = room.confidence ?? 1;
     if (!isVector && conf < 0.75 && room.areaNorm > 0.005) {
-      const confText = `${Math.round(conf * 100)}%`;
-      ctx.font          = `'400' 9px ui-monospace,SFMono-Regular,Menlo,monospace`;
-      ctx.fillStyle     = isInferred
-        ? 'rgba(245,158,11,0.85)'
-        : colors.text.replace(/[\d.]+\)$/, '0.75)');
-      ctx.textAlign     = 'center';
-      ctx.textBaseline  = 'top';
-      ctx.fillText(confText, cx, pillY + pillH / 2 + 2);
+      const badgeY = (typeof areaSqM === 'number' && areaSqM > 0)
+        ? pillTop + pillH + 14
+        : pillTop + pillH + 2;
+      ctx.font         = `400 9px ui-monospace,SFMono-Regular,Menlo,monospace`;
+      ctx.fillStyle    = isInferred ? 'rgba(245,158,11,0.85)' : colors.stroke;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(`${Math.round(conf * 100)}%`, cx, badgeY);
     }
 
-    // ── Source dot (3px, top-right corner of pill) ───────────────────────────
-    ctx.fillStyle = getSourceDotColor(room.source);
+    // ── Source dot (top-right corner of pill) ─────────────────────────────────
+    ctx.fillStyle = sourceDot(room.source);
     ctx.beginPath();
-    ctx.arc(cx + pillW / 2 - 4, pillY - pillH / 2 + 4, 3, 0, Math.PI * 2);
+    ctx.arc(pillRight - 4, pillTop + 4, 3, 0, Math.PI * 2);
     ctx.fill();
   }
 }
