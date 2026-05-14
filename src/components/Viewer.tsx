@@ -52,17 +52,16 @@ export function Viewer({
 }) {
 
   // ── Refs ───────────────────────────────────────────────────────────────────
-  const pdfCanvasRef      = useRef<HTMLCanvasElement>(null);
-  const drawingCanvasRef  = useRef<HTMLCanvasElement>(null);
-  const pinCanvasRef      = useRef<HTMLCanvasElement>(null);
-  const roomCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const wallCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const vectorCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const svgAreaCanvasRef  = useRef<HTMLCanvasElement>(null);
-  // NEW: separate canvas for room label pills so they always render above fills
+  const pdfCanvasRef       = useRef<HTMLCanvasElement>(null);
+  const drawingCanvasRef   = useRef<HTMLCanvasElement>(null);
+  const pinCanvasRef       = useRef<HTMLCanvasElement>(null);
+  const roomCanvasRef      = useRef<HTMLCanvasElement>(null);
+  const wallCanvasRef      = useRef<HTMLCanvasElement>(null);
+  const vectorCanvasRef    = useRef<HTMLCanvasElement>(null);
+  const svgAreaCanvasRef   = useRef<HTMLCanvasElement>(null);
   const roomLabelCanvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef      = useRef<HTMLDivElement>(null);
-  const currentPdfPageRef = useRef<PDFPageProxy | null>(null);
+  const containerRef       = useRef<HTMLDivElement>(null);
+  const currentPdfPageRef  = useRef<PDFPageProxy | null>(null);
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [pdf, setPdf]               = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -188,8 +187,13 @@ export function Viewer({
   const svgSnapPoints = useSvgSnapPoints(svgContent, pdfIntrinsicDims);
 
   // ── SVG lines + areas ──────────────────────────────────────────────────────
+  // FIX: pass pdfIntrinsicDims (zoom-independent) + detectScale = MAX_ZOOM
+  // Detection runs once at intrinsic × MAX_ZOOM canvas size, stores nx/ny [0,1]
   const { elements: svgElements } = useSvgInteraction({
-    svgContent, pdfDimensions, enabled: !!svgContent && !!pdfDimensions,
+    svgContent,
+    pdfIntrinsicDims,                            // ← was pdfDimensions
+    detectScale: MAX_ZOOM,                        // ← NEW: fixed detection scale
+    enabled: !!svgContent && !!pdfIntrinsicDims,  // ← was pdfDimensions
   });
 
   const svgLines = useMemo(
@@ -202,26 +206,29 @@ export function Viewer({
   );
 
   // ── SVG rooms (non-door areas → DetectedRoom) ─────────────────────────────
+  // FIX: area.points are now { nx, ny } — no division by pdfDimensions needed
   const svgRooms = useMemo<DetectedRoom[]>(() => {
-    if (!pdfDimensions) return [];
     return svgAreas
-      .filter(a => a.points.length >= 3 && a.label !== 'door')
-      .map((area, i) => {
-        const polygon = area.points.map(p => ({
-          nx: p.x / pdfDimensions.w,
-          ny: p.y / pdfDimensions.h,
-        }));
-        let s = 0;
-        for (let j = 0, k = polygon.length - 1; j < polygon.length; k = j++) {
-          s += (polygon[k].nx + polygon[j].nx) * (polygon[k].ny - polygon[j].ny);
-        }
-        return {
-          id:      `svg-room-${i}`,
-          label:   area.label ?? `Room ${i + 1}`,
-          polygon,
-          areaNorm: Math.abs(s) / 2,
-        } satisfies DetectedRoom;
-      });
+      .filter(a => {
+        if (a.points.length < 3) return false;
+        if (a.label === 'door') return false;
+        
+        // Add filtering similar to detectRoomAreas
+        const MIN_AREA_N = 800 / (pdfDimensions?.w * pdfDimensions?.h || 1);
+        if (a.areaN < MIN_AREA_N) return false;
+        
+        const aspect = (a.bounds.maxNX - a.bounds.minNX) / 
+                      (a.bounds.maxNY - a.bounds.minNY);
+        if (aspect < 0.08 || aspect > 12.0) return false;
+        
+        return true;
+      })
+      .map((area, i) => ({
+        id: `svg-room-${i}`,
+        label: area.label ?? `Room ${i + 1}`,
+        polygon: area.points.map(p => ({ nx: p.nx, ny: p.ny })),
+        areaNorm: area.areaN,
+      }));
   }, [svgAreas, pdfDimensions]);
 
   const svgDoorAreas = useMemo(() => svgAreas.filter(a => a.label === 'door'), [svgAreas]);
@@ -249,6 +256,8 @@ export function Viewer({
   const setActiveToolString = useCallback((t: string) => setActiveTool(t as ToolType), [setActiveTool]);
 
   // ── Room detection ─────────────────────────────────────────────────────────
+  // FIX: useRoomDetection should use pdfIntrinsicDims not pdfDimensions
+  // so detection doesn't re-run on zoom (handled inside useRoomDetection)
   const {
     rooms, geometryCandidates, wallSegments, walls,
     phase: roomPhase, detecting: detectingRooms, error: roomError, forceRedetect,
@@ -266,6 +275,7 @@ export function Viewer({
   useEffect(() => { if (roomError) console.error('[Viewer] Room detection error:', roomError); }, [roomError]);
 
   // ── Wall canvas ────────────────────────────────────────────────────────────
+  // FIX: pdfDimensions removed from deps — canvas.width/height read at draw time
   useEffect(() => {
     const canvas = wallCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -279,9 +289,10 @@ export function Viewer({
       curveColor: 'rgba(16, 185, 129, 0.70)',
       wallsOnly:  false,
     });
-  }, [wallSegments, showWalls, pdfDimensions, pdfRenderCount]);
+  }, [wallSegments, showWalls, pdfRenderCount]); // ← pdfDimensions removed
 
-  // ── Room canvas (fills + strokes + labels all in one call) ────────────────
+  // ── Room canvas ────────────────────────────────────────────────────────────
+  // FIX: pdfDimensions removed from deps — canvas.width/height read at draw time
   useEffect(() => {
     const canvas = roomCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -291,66 +302,7 @@ export function Viewer({
     }
     const displayRooms = mergedRooms.length > 0 ? mergedRooms : geometryCandidates;
     drawRoomsOnCanvas(canvas, displayRooms, { w: canvas.width, h: canvas.height }, hoveredRoomId);
-  }, [mergedRooms, geometryCandidates, showRooms, pdfDimensions, hoveredRoomId, pdfRenderCount]);
-
-  // ── SVG door areas canvas ─────────────────────────────────────────────────
-  // useEffect(() => {
-  //   const canvas = svgAreaCanvasRef.current;
-  //   if (!canvas || !pdfDimensions) return;
-  //   const ctx = canvas.getContext('2d');
-  //   if (!ctx) return;
-  //   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  //   if (!showSvgOverlay || svgDoorAreas.length === 0) return;
-
-  //   for (const area of svgDoorAreas) {
-  //     if (area.points.length < 3) continue;
-  //     const pivot  = area.points[0];
-  //     const arcPts = area.points.slice(1);
-  //     const arcStart = arcPts[0];
-
-  //     // Filled pie slice
-  //     ctx.beginPath();
-  //     ctx.moveTo(pivot.x, pivot.y);
-  //     for (const p of arcPts) ctx.lineTo(p.x, p.y);
-  //     ctx.closePath();
-  //     ctx.fillStyle = 'rgba(34, 197, 94, 0.18)';
-  //     ctx.fill();
-
-  //     // Door leaf
-  //     ctx.beginPath();
-  //     ctx.moveTo(pivot.x, pivot.y);
-  //     ctx.lineTo(arcStart.x, arcStart.y);
-  //     ctx.strokeStyle = 'rgba(34, 197, 94, 0.9)';
-  //     ctx.lineWidth   = 2;
-  //     ctx.setLineDash([]);
-  //     ctx.stroke();
-
-  //     // Swing arc (polyline, dashed)
-  //     ctx.beginPath();
-  //     ctx.moveTo(arcPts[0].x, arcPts[0].y);
-  //     for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
-  //     ctx.strokeStyle = 'rgba(34, 197, 94, 0.7)';
-  //     ctx.lineWidth   = 1.5;
-  //     ctx.setLineDash([5, 5]);
-  //     ctx.stroke();
-  //     ctx.setLineDash([]);
-
-  //     // Badge at arc midpoint
-  //     const mid = arcPts[Math.floor(arcPts.length / 2)];
-  //     ctx.beginPath();
-  //     ctx.arc(mid.x, mid.y, 10, 0, Math.PI * 2);
-  //     ctx.fillStyle   = 'rgba(34, 197, 94, 0.75)';
-  //     ctx.fill();
-  //     ctx.strokeStyle = 'white';
-  //     ctx.lineWidth   = 1.5;
-  //     ctx.stroke();
-  //     ctx.fillStyle    = 'white';
-  //     ctx.font         = 'bold 12px monospace';
-  //     ctx.textAlign    = 'center';
-  //     ctx.textBaseline = 'middle';
-  //     ctx.fillText('🚪', mid.x, mid.y);
-  //   }
-  // }, [svgDoorAreas, showSvgOverlay, pdfDimensions, pdfRenderCount]);
+  }, [mergedRooms, geometryCandidates, showRooms, hoveredRoomId, pdfRenderCount]); // ← pdfDimensions removed
 
   // ── Debug logging ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -379,7 +331,10 @@ export function Viewer({
   // ── Room click → polygon measurement ──────────────────────────────────────
   const handleRoomClick = useCallback((room: DetectedRoom) => {
     if (!pdfDimensions) return;
-    room.polygon.map(p => ({ x: p.nx, y: p.ny, snapped: false })).forEach(p => pushPoint(p));
+    // polygon points are nx/ny [0,1] — push directly
+    room.polygon
+      .map(p => ({ x: p.nx, y: p.ny, snapped: false }))
+      .forEach(p => pushPoint(p));
     commitMeasurement({ type: 'polygon', label: room.label, pageNumber });
     clearTempPoints();
   }, [pdfDimensions, pushPoint, commitMeasurement, clearTempPoints, pageNumber]);
@@ -586,7 +541,7 @@ export function Viewer({
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
-        // Resize all overlay canvases — including the new roomLabelCanvasRef
+        // Resize all overlay canvases to match the new logical viewport
         for (const ref of [
           drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef,
           vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
@@ -597,16 +552,26 @@ export function Viewer({
           c.style.height = `${logVP.height}px`;
         }
 
-        setPdfDimensions({ w: logVP.width, h: logVP.height });
+        // FIX: stabilize pdfDimensions — only create new object when value changes
+        // This prevents downstream effects that depend on pdfDimensions from
+        // re-running purely due to zoom (since the object reference would change).
+        setPdfDimensions(prev =>
+          prev?.w === logVP.width && prev?.h === logVP.height
+            ? prev
+            : { w: logVP.width, h: logVP.height }
+        );
 
+        // pdfIntrinsicDims already has this guard — unchanged
         const intrinsicVP = page.getViewport({ scale: 1 });
         setPdfIntrinsicDims(prev =>
           prev?.w === intrinsicVP.width && prev?.h === intrinsicVP.height
-            ? prev : { w: intrinsicVP.width, h: intrinsicVP.height },
+            ? prev
+            : { w: intrinsicVP.width, h: intrinsicVP.height }
         );
 
         task = page.render({ canvasContext: ctx, viewport: physVP, canvas: canvas as any } as any);
         await task.promise;
+        // Increment render count — canvas effects use this as their trigger
         if (active) setPdfRenderCount(c => c + 1);
 
       } catch (err: any) {
@@ -791,6 +756,7 @@ export function Viewer({
             svgAreaCanvasRef={svgAreaCanvasRef}
             roomLabelCanvasRef={roomLabelCanvasRef}
             pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
+            pdfRenderCount={pdfRenderCount}
             activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
             tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
             snapFlashes={snapFlashes} toCanvas={toCanvas}

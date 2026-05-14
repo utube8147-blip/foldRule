@@ -1,19 +1,19 @@
 // hooks/useSvgInteraction.ts
 //
-// CHANGES in this version:
-//   • EXTRACTED: reconstructRoomsFromWalls, assignLabelsToRooms, resolveRoomLabel
-//     → moved to ./detectRoomAreas.ts  (mirrors detectDoorSymbols pattern)
-//   • KEPT: all matrix helpers, parsePathToPoints, chainRawSegments exported
-//     (detectDoorSymbols and detectRoomAreas both import from here)
-//   • KEPT: all hook logic, explicit area/line/point extraction, deduplication
+// NORMALIZATION FIX:
+//   • Detection always runs at pdfIntrinsicDims × DETECT_SCALE (MAX_ZOOM) — fixed canvas size
+//   • Every extracted point is immediately divided by detectionW/detectionH → stored as nx/ny ∈ [0,1]
+//   • All SvgLine, SvgArea, SvgPoint coords are now NORMALIZED (nx,ny not px,py)
+//   • Consumers multiply nx × currentCanvasW at render/snap time — zero reprocessing on zoom
+//   • pdfDimensions is NOT a dependency of this hook — only pdfIntrinsicDims is
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import {
   isDecorationElement,
   isFullPageShape,
   resolveStrokeWidth,
 } from './svgDecorationFilter';
-import { detectDoorSymbols }  from './detectDoorSymbols';
+import { detectDoorSymbols }            from './detectDoorSymbols';
 import { detectRoomAreas, resolveRoomLabel } from './detectRoomAreas';
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -21,34 +21,44 @@ import { detectRoomAreas, resolveRoomLabel } from './detectRoomAreas';
 export interface SvgPoint {
   id: string;
   type: 'point';
-  x: number;
-  y: number;
+  // Normalized [0,1] — multiply by canvas dims at use-time
+  nx: number;
+  ny: number;
   element: Element;
   attributes: Record<string, string>;
   label?: string;
+  // Legacy pixel coords derived at render time — set by useSvgInteraction consumers
+  x?: number;
+  y?: number;
 }
 
 export interface SvgLine {
   id: string;
   type: 'line';
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  length: number;
+  // Normalized [0,1]
+  nx1: number; ny1: number;
+  nx2: number; ny2: number;
+  // Derived (unit-less) — computed from normalized coords
+  lengthN: number;
   angle: number;
   element: Element;
   attributes: Record<string, string>;
   label?: string;
   shapeId?: string;
+  // Legacy pixel fields — populated by toPixels() helper for consumers that need them
+  x1?: number; y1?: number;
+  x2?: number; y2?: number;
+  length?: number;
 }
 
 export interface SvgArea {
   id: string;
   type: 'area';
-  points: Array<{ x: number; y: number }>;
-  bounds: { minX: number; minY: number; maxX: number; maxY: number };
-  area: number;
+  // All points normalized [0,1]
+  points: Array<{ nx: number; ny: number }>;
+  // Normalized bounds
+  bounds: { minNX: number; minNY: number; maxNX: number; maxNY: number };
+  areaN: number; // area in normalized space
   element: Element;
   attributes: Record<string, string>;
   label?: string;
@@ -70,7 +80,10 @@ export interface VBTransform { sx: number; sy: number; tx: number; ty: number }
 
 interface UseSvgInteractionProps {
   svgContent: string | null;
-  pdfDimensions: { w: number; h: number } | null;
+  // CHANGED: was pdfDimensions — now only intrinsic (zoom-independent) dims needed
+  pdfIntrinsicDims: { w: number; h: number } | null;
+  // Fixed scale to run detection at — should equal MAX_ZOOM in ViewerConstants
+  detectScale?: number;
   snapThreshold?: number;
   enabled?: boolean;
 }
@@ -218,6 +231,20 @@ export function pointInPolygon(
     const xi = points[i].x, yi = points[i].y;
     const xj = points[j].x, yj = points[j].y;
     if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
+      inside = !inside;
+  }
+  return inside;
+}
+
+export function pointInNormalizedPolygon(
+  nx: number, ny: number,
+  points: Array<{ nx: number; ny: number }>,
+): boolean {
+  let inside = false;
+  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+    const xi = points[i].nx, yi = points[i].ny;
+    const xj = points[j].nx, yj = points[j].ny;
+    if ((yi > ny) !== (yj > ny) && nx < ((xj - xi) * (ny - yi)) / (yj - yi) + xi)
       inside = !inside;
   }
   return inside;
@@ -403,14 +430,30 @@ export function chainRawSegments(segs: RawSeg[], tol = 8.0): Vec2[][] {
 
 // ─── Hook constants ───────────────────────────────────────────────────────────
 
-const MIN_AREA_THRESHOLD = 1500;
-const MAX_ASPECT_RATIO   = 14;
+const MIN_AREA_THRESHOLD_N = 0.00005; // normalized — ~1500px at 1x, scales correctly
+const MAX_ASPECT_RATIO     = 14;
+
+// ─── Pixel → normalized helpers ──────────────────────────────────────────────
+
+function pxToN(px: number, py: number, dw: number, dh: number) {
+  return { nx: px / dw, ny: py / dh };
+}
+
+// Expand legacy pixel-based SvgArea from detectDoorSymbols/detectRoomAreas into normalized form
+function normalizeAreaPoints(
+  pixelPoints: Array<{ x: number; y: number }>,
+  dw: number,
+  dh: number,
+): Array<{ nx: number; ny: number }> {
+  return pixelPoints.map(p => ({ nx: p.x / dw, ny: p.y / dh }));
+}
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useSvgInteraction({
   svgContent,
-  pdfDimensions,
+  pdfIntrinsicDims,  // zoom-independent page size in points
+  detectScale = 4,   // MAX_ZOOM — detection canvas size = intrinsic × detectScale
   snapThreshold = 14,
   enabled = true,
 }: UseSvgInteractionProps) {
@@ -422,12 +465,23 @@ export function useSvgInteraction({
 
   const spatialIndexRef = useRef<Map<string, SvgElement>>(new Map());
 
+  // Fixed detection canvas size — never changes with zoom
+  const detectionDims = useMemo(
+    () => pdfIntrinsicDims
+      ? { w: pdfIntrinsicDims.w * detectScale, h: pdfIntrinsicDims.h * detectScale }
+      : null,
+    [pdfIntrinsicDims, detectScale],
+  );
+
   useEffect(() => {
-    if (!enabled || !svgContent || !pdfDimensions) {
+    // Only re-run when SVG content or intrinsic dims change — NOT on zoom
+    if (!enabled || !svgContent || !detectionDims) {
       setElements([]);
       spatialIndexRef.current.clear();
       return;
     }
+
+    const { w: dw, h: dh } = detectionDims;
 
     setLoading(true);
     setError(null);
@@ -442,7 +496,8 @@ export function useSvgInteraction({
       const svgEl = svgDoc.querySelector('svg') as SVGSVGElement | null;
       if (!svgEl) throw new Error('No <svg> element found');
 
-      const vbt = buildViewBoxTransform(svgEl, pdfDimensions.w, pdfDimensions.h);
+      // Build transform at MAX_ZOOM detection size — fixed forever for this SVG+page combo
+      const vbt = buildViewBoxTransform(svgEl, dw, dh);
 
       const extractedElements: SvgElement[] = [];
       let idCounter = 0;
@@ -455,9 +510,11 @@ export function useSvgInteraction({
         return attrs;
       };
 
-      const toCanvas = (el: Element, x: number, y: number) => {
+      // Returns pixel coords in detection space, then immediately normalized
+      const toNorm = (el: Element, x: number, y: number) => {
         const ctm = getCTM(el, svgEl);
-        return applyVBTransform(applyMatrix(ctm, { x, y }), vbt);
+        const px  = applyVBTransform(applyMatrix(ctm, { x, y }), vbt);
+        return { nx: px.x / dw, ny: px.y / dh };
       };
 
       // ── Circles / points ─────────────────────────────────────────────────
@@ -469,10 +526,10 @@ export function useSvgInteraction({
         const cx    = parseFloat(el.getAttribute('cx') || el.getAttribute('x') || '0');
         const cy    = parseFloat(el.getAttribute('cy') || el.getAttribute('y') || '0');
         const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const pt    = toCanvas(el, cx, cy);
+        const { nx, ny } = toNorm(el, cx, cy);
         extractedElements.push({
           id: `point-${idCounter++}`, type: 'point',
-          x: pt.x, y: pt.y,
+          nx, ny,
           element: el, attributes: getAttributes(el), label,
         });
       });
@@ -488,13 +545,15 @@ export function useSvgInteraction({
         const rx2 = parseFloat(el.getAttribute('x2') || '0');
         const ry2 = parseFloat(el.getAttribute('y2') || '0');
         const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const p1 = toCanvas(el, rx1, ry1);
-        const p2 = toCanvas(el, rx2, ry2);
+        const n1 = toNorm(el, rx1, ry1);
+        const n2 = toNorm(el, rx2, ry2);
+        const lenN = Math.hypot(n2.nx - n1.nx, n2.ny - n1.ny);
+        if (lenN < 0.0001) return;
         extractedElements.push({
           id: `line-${idCounter++}`, type: 'line',
-          x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
-          length: Math.hypot(p2.x - p1.x, p2.y - p1.y),
-          angle:  Math.atan2(p2.y - p1.y, p2.x - p1.x),
+          nx1: n1.nx, ny1: n1.ny, nx2: n2.nx, ny2: n2.ny,
+          lengthN: lenN,
+          angle: Math.atan2(n2.ny - n1.ny, n2.nx - n1.nx),
           element: el, attributes: getAttributes(el), label,
         });
       });
@@ -510,14 +569,15 @@ export function useSvgInteraction({
         const first = rawPts[0], last = rawPts[rawPts.length - 1];
         if (Math.hypot(last.x - first.x, last.y - first.y) < 2) return;
         const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const p1 = toCanvas(el, first.x, first.y);
-        const p2 = toCanvas(el, last.x, last.y);
-        const len = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-        if (len < 3) return;
+        const n1 = toNorm(el, first.x, first.y);
+        const n2 = toNorm(el, last.x, last.y);
+        const lenN = Math.hypot(n2.nx - n1.nx, n2.ny - n1.ny);
+        if (lenN < 0.0001) return;
         extractedElements.push({
           id: `line-${idCounter++}`, type: 'line',
-          x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
-          length: len, angle: Math.atan2(p2.y - p1.y, p2.x - p1.x),
+          nx1: n1.nx, ny1: n1.ny, nx2: n2.nx, ny2: n2.ny,
+          lengthN: lenN,
+          angle: Math.atan2(n2.ny - n1.ny, n2.nx - n1.nx),
           element: el, attributes: getAttributes(el), label,
         });
       });
@@ -542,25 +602,36 @@ export function useSvgInteraction({
         }
 
         const ctm = getCTM(el, svgEl);
-        const transformPoint = (rx: number, ry: number) =>
+        const transformToDetectionPx = (rx: number, ry: number) =>
           applyVBTransform(applyMatrix(ctm, { x: rx, y: ry }), vbt);
 
-        let points: Array<{ x: number; y: number }> = [];
+        let pixelPoints: Array<{ x: number; y: number }> = [];
 
         if (el.tagName === 'polygon') {
           const raw    = el.getAttribute('points') || '';
           const coords = raw.trim().split(/[\s,]+/).map(parseFloat);
           for (let i = 0; i + 1 < coords.length; i += 2) {
-            points.push(transformPoint(coords[i], coords[i + 1]));
+            pixelPoints.push(transformToDetectionPx(coords[i], coords[i + 1]));
           }
         } else if (el.tagName === 'path') {
-          points = parsePathToPoints(d).map(p => transformPoint(p.x, p.y));
+          pixelPoints = parsePathToPoints(d).map(p => transformToDetectionPx(p.x, p.y));
         }
 
-        if (points.length < 3) return;
-        if (isFullPageShape(points, pdfDimensions.w, pdfDimensions.h)) return;
+        if (pixelPoints.length < 3) return;
 
-        const bounds = points.reduce(
+        // Full-page check uses detection-space pixel coords
+        if (isFullPageShape(pixelPoints, dw, dh)) return;
+
+        // Compute area in pixel space, then normalize threshold check
+        let area = 0;
+        for (let i = 0; i < pixelPoints.length; i++) {
+          const j = (i + 1) % pixelPoints.length;
+          area += pixelPoints[i].x * pixelPoints[j].y - pixelPoints[j].x * pixelPoints[i].y;
+        }
+        area = Math.abs(area) / 2;
+        if (area < MIN_AREA_THRESHOLD_N * dw * dh) return;
+
+        const bounds = pixelPoints.reduce(
           (b, p) => ({
             minX: Math.min(b.minX, p.x), minY: Math.min(b.minY, p.y),
             maxX: Math.max(b.maxX, p.x), maxY: Math.max(b.maxY, p.y),
@@ -568,52 +639,83 @@ export function useSvgInteraction({
           { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
         );
 
-        let area = 0;
-        for (let i = 0; i < points.length; i++) {
-          const j = (i + 1) % points.length;
-          area += points[i].x * points[j].y - points[j].x * points[i].y;
-        }
-        area = Math.abs(area) / 2;
-        if (area < MIN_AREA_THRESHOLD) return;
-
         const shapeW  = bounds.maxX - bounds.minX;
         const shapeH  = bounds.maxY - bounds.minY;
         const shorter = Math.min(shapeW, shapeH);
         const longer  = Math.max(shapeW, shapeH);
         if (shorter > 0 && longer / shorter > MAX_ASPECT_RATIO) return;
 
+        // Normalize immediately — pixel coords discarded
+        const normPoints = normalizeAreaPoints(pixelPoints, dw, dh);
+        const normBounds = {
+          minNX: bounds.minX / dw, minNY: bounds.minY / dh,
+          maxNX: bounds.maxX / dw, maxNY: bounds.maxY / dh,
+        };
+        const areaN = area / (dw * dh);
+
         const rawLabel = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
         const label    = rawLabel ? (resolveRoomLabel(rawLabel) ?? rawLabel) : undefined;
 
         extractedElements.push({
           id: `area-${idCounter++}`, type: 'area',
-          points, bounds, area,
+          points: normPoints, bounds: normBounds, areaN,
           element: el, attributes: getAttributes(el), label,
         });
       });
 
       // ── Door symbol detection ────────────────────────────────────────────
-      const doorAreas = detectDoorSymbols(svgRoot, svgEl, vbt, idCounter);
+      // detectDoorSymbols still returns pixel areas in detection space — normalize them
+      const doorAreasRaw = detectDoorSymbols(svgRoot, svgEl, vbt, idCounter);
+      const doorAreas: SvgArea[] = doorAreasRaw.map(da => {
+        const pixPts = (da as any).points as Array<{ x: number; y: number }>;
+        const normPts = normalizeAreaPoints(pixPts, dw, dh);
+        const normBounds = {
+          minNX: Math.min(...normPts.map(p => p.nx)),
+          minNY: Math.min(...normPts.map(p => p.ny)),
+          maxNX: Math.max(...normPts.map(p => p.nx)),
+          maxNY: Math.max(...normPts.map(p => p.ny)),
+        };
+        return {
+          ...da,
+          points: normPts,
+          bounds: normBounds,
+          areaN: (da as any).area / (dw * dh),
+          isDoor: true,
+          label: 'door',
+        } as SvgArea;
+      });
       idCounter += doorAreas.length;
       extractedElements.push(...doorAreas);
 
-      // ── Wall-graph room detection (extracted to detectRoomAreas.ts) ──────
-      const wallRooms = detectRoomAreas(
-            svgRoot, svgEl, vbt, idCounter,
-            pdfDimensions.w,   // ← canvasW
-            pdfDimensions.h,   // ← canvasH
-      );
+      // ── Wall-graph room detection ────────────────────────────────────────
+      const wallRoomsRaw = detectRoomAreas(svgRoot, svgEl, vbt, idCounter, dw, dh);
+      const wallRooms: SvgArea[] = wallRoomsRaw.map(wr => {
+        const pixPts = (wr as any).points as Array<{ x: number; y: number }>;
+        const normPts = normalizeAreaPoints(pixPts, dw, dh);
+        const normBounds = {
+          minNX: Math.min(...normPts.map(p => p.nx)),
+          minNY: Math.min(...normPts.map(p => p.ny)),
+          maxNX: Math.max(...normPts.map(p => p.nx)),
+          maxNY: Math.max(...normPts.map(p => p.ny)),
+        };
+        return {
+          ...wr,
+          points: normPts,
+          bounds: normBounds,
+          areaN: (wr as any).area / (dw * dh),
+        } as SvgArea;
+      });
       idCounter += wallRooms.length;
 
-      // Deduplicate wall rooms against explicit closed-path areas
+      // Deduplicate wall rooms against explicit closed-path areas (all in normalized space)
       const existingAreas = extractedElements.filter(e => e.type === 'area') as SvgArea[];
       const deduped = wallRooms.filter(wr =>
         !existingAreas.some(ea => {
-          const overlapX = Math.max(0,
-            Math.min(wr.bounds.maxX, ea.bounds.maxX) - Math.max(wr.bounds.minX, ea.bounds.minX));
-          const overlapY = Math.max(0,
-            Math.min(wr.bounds.maxY, ea.bounds.maxY) - Math.max(wr.bounds.minY, ea.bounds.minY));
-          return (overlapX * overlapY) / wr.area > 0.8;
+          const overlapNX = Math.max(0,
+            Math.min(wr.bounds.maxNX, ea.bounds.maxNX) - Math.max(wr.bounds.minNX, ea.bounds.minNX));
+          const overlapNY = Math.max(0,
+            Math.min(wr.bounds.maxNY, ea.bounds.maxNY) - Math.max(wr.bounds.minNY, ea.bounds.minNY));
+          return (overlapNX * overlapNY) / wr.areaN > 0.8;
         }),
       );
       extractedElements.push(...deduped);
@@ -631,9 +733,11 @@ export function useSvgInteraction({
       const labelled   = deduped.filter(r => r.label).length;
       const explicitAr = ars - deduped.length - doorAreas.length;
       console.log(
-        `[useSvgInteraction] points=${pts} lines=${lns} areas=${ars} ` +
+        `[useSvgInteraction] detected at ${dw}×${dh} (${detectScale}× MAX_ZOOM) | ` +
+        `points=${pts} lines=${lns} areas=${ars} ` +
         `(${doorAreas.length} doors + ${explicitAr} explicit + ` +
-        `${deduped.length} wall-graph rooms, ${labelled}/${deduped.length} labelled)`,
+        `${deduped.length} wall-graph rooms, ${labelled}/${deduped.length} labelled) ` +
+        `| all coords normalized [0,1]`,
       );
 
     } catch (err) {
@@ -641,39 +745,75 @@ export function useSvgInteraction({
       setError(err instanceof Error ? err.message : 'Failed to parse SVG');
       setLoading(false);
     }
-  }, [svgContent, pdfDimensions, enabled]);
+  // KEY: pdfIntrinsicDims here (zoom-independent), NOT pdfDimensions
+  }, [svgContent, detectionDims, enabled]);
 
-  // ─── Snap ──────────────────────────────────────────────────────────────────
-  const findNearestSnap = useCallback((mouseX: number, mouseY: number): SnapResult | null => {
+  // ─── Snap (all math in normalized space, result scaled to canvas) ──────────
+  const findNearestSnap = useCallback((
+    mouseX: number,
+    mouseY: number,
+    canvasW: number,
+    canvasH: number,
+  ): SnapResult | null => {
     if (!enabled || elements.length === 0) return null;
+
+    // Convert mouse pixel → normalized
+    const mnx = mouseX / canvasW;
+    const mny = mouseY / canvasH;
+    // Scale threshold to normalized space
+    const threshN = snapThreshold / Math.min(canvasW, canvasH);
+
     let best: SnapResult | null = null;
 
     for (const el of elements) {
       if (el.type === 'point') {
-        const dist = Math.hypot(el.x - mouseX, el.y - mouseY);
-        if (dist < snapThreshold && (!best || dist < best.distance))
-          best = { type: 'point', element: el, snapPoint: { x: el.x, y: el.y }, distance: dist };
+        const dist = Math.hypot(el.nx - mnx, el.ny - mny);
+        if (dist < threshN && (!best || dist < best.distance)) {
+          best = {
+            type: 'point', element: el,
+            snapPoint: { x: el.nx * canvasW, y: el.ny * canvasH },
+            distance: dist,
+          };
+        }
       }
     }
     if (!best) {
       for (const el of elements) {
         if (el.type === 'line') {
-          const closest = closestPointOnLine(mouseX, mouseY, el.x1, el.y1, el.x2, el.y2);
-          const dist    = Math.hypot(closest.x - mouseX, closest.y - mouseY);
-          if (dist < snapThreshold && (!best || dist < best.distance))
-            best = { type: 'line', element: el, snapPoint: closest, distance: dist };
+          const closest = closestPointOnLine(mnx, mny, el.nx1, el.ny1, el.nx2, el.ny2);
+          const dist = Math.hypot(closest.x - mnx, closest.y - mny);
+          if (dist < threshN && (!best || dist < best.distance)) {
+            best = {
+              type: 'line', element: el,
+              snapPoint: { x: closest.x * canvasW, y: closest.y * canvasH },
+              distance: dist,
+            };
+          }
         }
       }
     }
     if (!best) {
       for (const el of elements) {
         if (el.type === 'area') {
-          if (mouseX >= el.bounds.minX && mouseX <= el.bounds.maxX &&
-              mouseY >= el.bounds.minY && mouseY <= el.bounds.maxY &&
-              pointInPolygon(mouseX, mouseY, el.points)) {
-            const dist = distanceToPolygonEdge(mouseX, mouseY, el.points);
-            if (dist < snapThreshold && (!best || dist < best.distance))
-              best = { type: 'area', element: el, snapPoint: { x: mouseX, y: mouseY }, distance: dist };
+          if (
+            mnx >= el.bounds.minNX && mnx <= el.bounds.maxNX &&
+            mny >= el.bounds.minNY && mny <= el.bounds.maxNY &&
+            pointInNormalizedPolygon(mnx, mny, el.points)
+          ) {
+            const pixPts = el.points.map(p => ({ x: p.nx * canvasW, y: p.ny * canvasH }));
+            const dist = distanceToPolygonEdge(mouseX, mouseY, pixPts) / Math.min(canvasW, canvasH);
+            if (dist < threshN && (!best || dist < best.distance)) {
+              const edge = closestPointOnLine(
+                mouseX, mouseY,
+                el.points[0].nx * canvasW, el.points[0].ny * canvasH,
+                el.points[1].nx * canvasW, el.points[1].ny * canvasH,
+              );
+              best = {
+                type: 'area', element: el,
+                snapPoint: edge,
+                distance: dist,
+              };
+            }
           }
         }
       }
@@ -681,27 +821,39 @@ export function useSvgInteraction({
     return best;
   }, [elements, snapThreshold, enabled]);
 
-  // ─── Hit test ──────────────────────────────────────────────────────────────
-  const hitTest = useCallback((mouseX: number, mouseY: number): SvgElement | null => {
+  // ─── Hit test (pixel coords in, uses normalized internally) ───────────────
+  const hitTest = useCallback((
+    mouseX: number,
+    mouseY: number,
+    canvasW: number,
+    canvasH: number,
+  ): SvgElement | null => {
     if (!enabled || elements.length === 0) return null;
+    const mnx = mouseX / canvasW, mny = mouseY / canvasH;
+
     for (const el of elements) {
-      if (el.type === 'area' && pointInPolygon(mouseX, mouseY, el.points)) return el;
+      if (el.type === 'area' && pointInNormalizedPolygon(mnx, mny, el.points)) return el;
     }
     for (const el of elements) {
       if (el.type === 'line') {
-        const closest = closestPointOnLine(mouseX, mouseY, el.x1, el.y1, el.x2, el.y2);
-        if (Math.hypot(closest.x - mouseX, closest.y - mouseY) < 10) return el;
+        const closest = closestPointOnLine(mnx, mny, el.nx1, el.ny1, el.nx2, el.ny2);
+        if (Math.hypot(closest.x - mnx, closest.y - mny) < 10 / Math.min(canvasW, canvasH)) return el;
       }
     }
     for (const el of elements) {
-      if (el.type === 'point' && Math.hypot(el.x - mouseX, el.y - mouseY) < 12) return el;
+      if (el.type === 'point' && Math.hypot(el.nx - mnx, el.ny - mny) < 12 / Math.min(canvasW, canvasH)) return el;
     }
     return null;
   }, [elements, enabled]);
 
-  const checkHover = useCallback((mouseX: number, mouseY: number) => {
+  const checkHover = useCallback((
+    mouseX: number,
+    mouseY: number,
+    canvasW: number,
+    canvasH: number,
+  ) => {
     if (!enabled) { setHoveredElement(null); return null; }
-    const hit = hitTest(mouseX, mouseY);
+    const hit = hitTest(mouseX, mouseY, canvasW, canvasH);
     setHoveredElement(hit);
     return hit;
   }, [hitTest, enabled]);

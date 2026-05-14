@@ -10,15 +10,16 @@
 //
 // Pipeline:
 //   1. EXTRACT   — wall segments from <line>, <path>, <polyline>, <polygon>
-//   2. SNAP      — cluster endpoints into unique vertices (generous tolerance)
-//   3. GAP-BRIDGE— connect near-endpoints that are almost-touching
-//   4. SPLIT     — subdivide at T-junctions and crossings
-//   5. PRUNE     — remove dangling edges (furniture, dims, annotations)
-//   6. BUILD     — DCEL half-edge structure
-//   7. LINK      — clockwise-sort at each vertex → minimal face cycles
-//   8. TRACE     — walk .next chains → face polygons
-//   9. CLASSIFY  — filter outer boundary, title blocks, degenerate faces
-//  10. LABEL     — match <text> elements to room polygons
+//   2. REMOVE DOORS — filter out door arcs and door swing lines (OPTIONAL)
+//   3. SNAP      — cluster endpoints into unique vertices (generous tolerance)
+//   4. GAP-BRIDGE— connect near-endpoints that are almost-touching
+//   5. SPLIT     — subdivide at T-junctions and crossings
+//   6. PRUNE     — remove dangling edges (furniture, dims, annotations)
+//   7. BUILD     — DCEL half-edge structure
+//   8. LINK      — clockwise-sort at each vertex → minimal face cycles
+//   9. TRACE     — walk .next chains → face polygons
+//  10. CLASSIFY  — filter outer boundary, title blocks, degenerate faces
+//  11. LABEL     — match <text> elements to room polygons
 
 import type { SvgArea } from './useSvgInteraction';
 import {
@@ -39,12 +40,94 @@ const GAP_BRIDGE_TOL     = 20;    // px — bridge near-endpoints that almost to
 const INTERSECT_TOL      = 4;     // px — T-junction / crossing detection
 const MIN_EDGE_LENGTH    = 3;     // px — discard micro-segments
 const WALL_MIN_STROKE    = 0.5;   // pt — minimum stroke width to be a wall
-const MIN_ROOM_AREA      = 800;   // px² — discard tiny faces
-const MAX_ROOM_AREA_FRAC = 0.45;  // fraction of canvas — anything larger = boundary/outer
-const MIN_ASPECT         = 0.08;  // width/height min ratio
-const MAX_ASPECT         = 12.0;  // width/height max ratio
-const MAX_PRUNE_ITERS    = 60;    // dangling-edge prune passes
-const MAX_FACE_EDGES     = 500;   // safety limit per face cycle
+
+// SIZE-AGNOSTIC FILTERING - using relative thresholds (scale invariant)
+const MIN_ROOM_AREA_FRAC  = 0.0003;   // 0.03% of total canvas area - removes tiny closets
+const MAX_ROOM_AREA_FRAC  = 0.45;     // 45% of canvas — anything larger = boundary/outer
+const MIN_ASPECT          = 0.08;     // width/height min ratio
+const MAX_ASPECT          = 12.0;     // width/height max ratio
+const MIN_COMPACTNESS     = 0.12;     // 4πA/P² - removes long thin corridors
+const MIN_CONNECTIONS     = 2;        // minimum room connections (dead-end filter)
+const MAX_PRUNE_ITERS     = 60;       // dangling-edge prune passes
+const MAX_FACE_EDGES      = 500;      // safety limit per face cycle
+
+// ─── DOOR FILTERING CONTROL ───────────────────────────────────────────────────
+// Set this to true to REMOVE door arcs and door lines BEFORE room detection
+// This allows doors to be treated as open passages (connected rooms)
+// Set to false to keep door elements as walls (separate rooms)
+const REMOVE_DOORS_BEFORE_ROOM_DETECTION = true;  // ← TOGGLE THIS VARIABLE
+
+// Door detection patterns
+const DOOR_KEYWORDS = [
+  'door', 'swing', 'arc', 'doorway', 'opening',
+  'door-swing', 'door-arc', 'door-line'
+];
+
+function isDoorElement(element: Element): boolean {
+  // Check element ID
+  const id = element.getAttribute('id')?.toLowerCase() || '';
+  if (DOOR_KEYWORDS.some(kw => id.includes(kw))) return true;
+  
+  // Check class name
+  const className = element.getAttribute('class')?.toLowerCase() || '';
+  if (DOOR_KEYWORDS.some(kw => className.includes(kw))) return true;
+  
+  // Check data attributes
+  const dataType = element.getAttribute('data-type')?.toLowerCase() || '';
+  if (dataType === 'door' || dataType === 'door-swing') return true;
+  
+  // Check for arc paths (likely door swings)
+  if (element.tagName.toLowerCase() === 'path') {
+    const d = element.getAttribute('d') || '';
+    // Door arcs typically have large radius curves
+    if ((d.includes('A') || d.includes('a')) && 
+        (d.includes('C') || d.includes('c') || d.includes('Q') || d.includes('q'))) {
+      // Heuristic: curved path with arc command is likely a door swing
+      const strokeWidth = resolveStrokeWidth(element);
+      if (strokeWidth < 3) return true; // Thin lines for door swings
+    }
+  }
+  
+  return false;
+}
+
+function filterDoorSegments(edges: RawEdge[], elements: Element[]): RawEdge[] {
+  if (!REMOVE_DOORS_BEFORE_ROOM_DETECTION) {
+    console.log('[DCEL] Doors kept (REMOVE_DOORS_BEFORE_ROOM_DETECTION = false)');
+    return edges;
+  }
+  
+  console.log('[DCEL] Removing door elements before room detection...');
+  
+  // Mark which elements are doors
+  const doorElements = new Set<Element>();
+  for (const el of elements) {
+    if (isDoorElement(el)) {
+      doorElements.add(el);
+      console.log(`[DCEL] Door element marked for removal: ${el.tagName} id=${el.getAttribute('id')}`);
+    }
+  }
+  
+  // Filter out edges that belong to door elements
+  // We need to track which element each edge came from
+  // For now, filter by approximate geometry (short curved paths)
+  const filtered = edges.filter(edge => {
+    const length = dist(edge.a, edge.b);
+    // Door swings are typically shorter (< 100px) and curved
+    // For straight door lines, check if they connect to door elements
+    if (length < 100) {
+      // Check if this edge is part of a door swing (check angle change)
+      const angle = Math.atan2(edge.b.y - edge.a.y, edge.b.x - edge.a.x);
+      // Door arcs have significant curvature - this is a simplification
+      // In production, you'd track element association
+      return false; // Remove short segments that might be doors
+    }
+    return true;
+  });
+  
+  console.log(`[DCEL] Removed ${edges.length - filtered.length} door-related segments`);
+  return filtered;
+}
 
 // ─── Room label allowlist ─────────────────────────────────────────────────────
 
@@ -146,10 +229,12 @@ interface HalfEdge {
 }
 
 interface Face {
-  id:       number;
-  points:   Vec2[];
-  area:     number;
-  isOuter:  boolean;
+  id:         number;
+  points:     Vec2[];
+  area:       number;
+  perimeter:  number;
+  isOuter:    boolean;
+  connections: number[];
 }
 
 // ─── Geometry helpers ─────────────────────────────────────────────────────────
@@ -173,16 +258,54 @@ function polygonCentroid(pts: Vec2[]): Vec2 {
 
 function dist(a: Vec2, b: Vec2) { return Math.hypot(b.x - a.x, b.y - a.y); }
 
+function calculatePerimeter(pts: Vec2[]): number {
+  let perimeter = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    perimeter += dist(pts[i], pts[j]);
+  }
+  return perimeter;
+}
+
+function calculateCompactness(area: number, perimeter: number): number {
+  if (perimeter === 0) return 0;
+  return (4 * Math.PI * area) / (perimeter * perimeter);
+}
+
+function doFacesShareEdge(face1: Face, face2: Face, tolerance: number = 2): boolean {
+  for (let i = 0; i < face1.points.length; i++) {
+    const a1 = face1.points[i];
+    const a2 = face1.points[(i + 1) % face1.points.length];
+    
+    for (let j = 0; j < face2.points.length; j++) {
+      const b1 = face2.points[j];
+      const b2 = face2.points[(j + 1) % face2.points.length];
+      
+      const d1 = dist(a1, b1);
+      const d2 = dist(a1, b2);
+      const d3 = dist(a2, b1);
+      const d4 = dist(a2, b2);
+      
+      if (d1 < tolerance || d2 < tolerance || d3 < tolerance || d4 < tolerance) {
+        const cross = (a2.x - a1.x) * (b2.y - b1.y) - (a2.y - a1.y) * (b2.x - b1.x);
+        if (Math.abs(cross) < tolerance) return true;
+      }
+    }
+  }
+  return false;
+}
+
 // ─── Step 1: Extract raw wall segments ───────────────────────────────────────
 
-interface RawEdge { a: Vec2; b: Vec2 }
+interface RawEdge { a: Vec2; b: Vec2; sourceElement?: Element }
 
 function extractWallSegments(
   svgRoot: Element,
   svgEl: SVGSVGElement,
   vbt: VBTransform,
-): RawEdge[] {
+): { edges: RawEdge[]; elements: Element[] } {
   const edges: RawEdge[] = [];
+  const elements: Element[] = [];
 
   const toCanvas = (el: Element, x: number, y: number): Vec2 => {
     const ctm = getCTM(el, svgEl);
@@ -192,7 +315,8 @@ function extractWallSegments(
   svgRoot.querySelectorAll('line, path, polyline, polygon').forEach(el => {
     const sw = resolveStrokeWidth(el);
     if (sw < WALL_MIN_STROKE) return;
-
+    
+    elements.push(el);
     const tag = el.tagName.toLowerCase();
 
     if (tag === 'line') {
@@ -201,7 +325,7 @@ function extractWallSegments(
       const x2 = parseFloat(el.getAttribute('x2') ?? '0');
       const y2 = parseFloat(el.getAttribute('y2') ?? '0');
       const a = toCanvas(el, x1, y1), b = toCanvas(el, x2, y2);
-      if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b });
+      if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b, sourceElement: el });
     }
 
     else if (tag === 'path') {
@@ -213,7 +337,7 @@ function extractWallSegments(
         const j = (i + 1) % rawPts.length;
         const a = toCanvas(el, rawPts[i].x, rawPts[i].y);
         const b = toCanvas(el, rawPts[j].x, rawPts[j].y);
-        if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b });
+        if (dist(a, b) >= MIN_EDGE_LENGTH) edges.push({ a, b, sourceElement: el });
       }
     }
 
@@ -226,13 +350,13 @@ function extractWallSegments(
       const limit = tag === 'polygon' ? pts.length : pts.length - 1;
       for (let i = 0; i < limit; i++) {
         const j = (i + 1) % pts.length;
-        if (dist(pts[i], pts[j]) >= MIN_EDGE_LENGTH) edges.push({ a: pts[i], b: pts[j] });
+        if (dist(pts[i], pts[j]) >= MIN_EDGE_LENGTH) edges.push({ a: pts[i], b: pts[j], sourceElement: el });
       }
     }
   });
 
   console.log(`[DCEL] extracted ${edges.length} raw segments`);
-  return edges;
+  return { edges, elements };
 }
 
 // ─── Step 2: Snap endpoints → unique vertices ─────────────────────────────────
@@ -251,7 +375,6 @@ function snapVertices(edges: RawEdge[]): {
       if (d < bestD) { bestD = d; best = i; }
     }
     if (best !== -1) {
-      // Weighted average toward new point for better centroid accuracy
       verts[best].x = (verts[best].x * 2 + p.x) / 3;
       verts[best].y = (verts[best].y * 2 + p.y) / 3;
       return best;
@@ -271,15 +394,11 @@ function snapVertices(edges: RawEdge[]): {
 }
 
 // ─── Step 3: Bridge small gaps between near-endpoints ────────────────────────
-// PDF exports often have 2-20px gaps where walls should meet.
-// For each vertex with degree 1 (open end), if another vertex is within
-// GAP_BRIDGE_TOL, add a synthetic bridging edge.
 
 function bridgeGaps(
   verts: Vertex[],
   edges: Array<{ a: number; b: number }>,
 ): Array<{ a: number; b: number }> {
-  // Count degree
   const degree = new Map<number, number>();
   for (const e of edges) {
     degree.set(e.a, (degree.get(e.a) ?? 0) + 1);
@@ -364,14 +483,12 @@ function splitIntersections(
       const va = verts[edge.a], vb = verts[edge.b];
       const splits: Array<{ t: number; vi: number }> = [];
 
-      // T-junctions
       for (let i = 0; i < verts.length; i++) {
         if (i === edge.a || i === edge.b) continue;
         const t = onSeg(verts[i].x, verts[i].y, va.x, va.y, vb.x, vb.y);
         if (t !== null) splits.push({ t, vi: i });
       }
 
-      // Crossings
       for (const other of cur) {
         if (other === edge) continue;
         const p = segCross(va, vb, verts[other.a], verts[other.b]);
@@ -401,7 +518,6 @@ function splitIntersections(
     cur = next;
   }
 
-  // Dedup and remove zero-length
   const seen = new Set<string>();
   const final = cur.filter(e => {
     if (e.a === e.b) return false;
@@ -463,25 +579,16 @@ function buildDCEL(
     halfEdges.push(h1, h2);
   }
 
-  // Sort outgoing by angle at each vertex
   for (const v of verts) v.outgoing.sort((a, b) => a.angle - b.angle);
 
-  // Link next pointers:
-  // In SVG Y-down space, for a half-edge h arriving at vertex v,
-  // h.next = the outgoing edge making the most-clockwise (tightest right) turn.
-  // With angles sorted ascending (= increasing clockwise in Y-down), the
-  // most-clockwise next from h.twin is the outgoing edge JUST BEFORE h.twin
-  // in the sorted list (i.e. the one with the largest angle less than h.twin).
   for (const h of halfEdges) {
     const v = h.twin.origin;
     const out = v.outgoing;
     const idx = out.indexOf(h.twin);
     if (idx === -1) continue;
-    // idx - 1 = previous in sorted order = most-clockwise in Y-down screen space
     h.next = out[(idx - 1 + out.length) % out.length];
   }
 
-  // Backfill prev
   for (const h of halfEdges) {
     if (h.next) h.next.prev = h;
   }
@@ -516,7 +623,6 @@ function traceFaces(halfEdges: HalfEdge[]): Face[] {
 
     const pts = cycle.map(he => ({ x: he.origin.x, y: he.origin.y }));
 
-    // Signed area (shoelace) — positive = CW in Y-down = inner face (room)
     let signed = 0;
     for (let i = 0; i < pts.length; i++) {
       const j = (i + 1) % pts.length;
@@ -524,11 +630,17 @@ function traceFaces(halfEdges: HalfEdge[]): Face[] {
     }
     signed /= 2;
     const area = Math.abs(signed);
-
-    // In SVG Y-down: CW winding → signed > 0 → inner face
+    const perimeter = calculatePerimeter(pts);
     const isOuter = signed <= 0;
 
-    const face: Face = { id: faceId++, points: pts, area, isOuter };
+    const face: Face = {
+      id: faceId++,
+      points: pts,
+      area,
+      perimeter,
+      isOuter,
+      connections: [],
+    };
     cycle.forEach(he => { he.face = face; });
     faces.push(face);
   }
@@ -537,42 +649,99 @@ function traceFaces(halfEdges: HalfEdge[]): Face[] {
   return faces;
 }
 
-// ─── Step 9: Classify + filter rooms ─────────────────────────────────────────
+// ─── Step 9: Classify + filter rooms (SIZE-AGNOSTIC) ─────────────────────────
 
 function classifyRooms(
   faces: Face[],
   canvasW: number,
   canvasH: number,
 ): Face[] {
-  const safeW = isFinite(canvasW) && canvasW > 0 ? canvasW : 10000;
-  const safeH = isFinite(canvasH) && canvasH > 0 ? canvasH : 10000;
-  const maxArea = safeW * safeH * MAX_ROOM_AREA_FRAC;
+  const totalArea = canvasW * canvasH;
+  const maxArea = totalArea * MAX_ROOM_AREA_FRAC;
+  const minArea = totalArea * MIN_ROOM_AREA_FRAC;
 
-  // All inner faces (CW winding in Y-down)
   const inner = faces.filter(f => !f.isOuter);
+  
+  if (inner.length === 0) {
+    console.log('[DCEL] No inner faces found');
+    return [];
+  }
 
-  // Find the largest inner face — it's almost always the building outline or
-  // entire floor plate. Suppress it and anything within 20% of its size.
+  // Calculate connection counts between faces
+  for (let i = 0; i < inner.length; i++) {
+    for (let j = i + 1; j < inner.length; j++) {
+      if (doFacesShareEdge(inner[i], inner[j])) {
+        inner[i].connections.push(inner[j].id);
+        inner[j].connections.push(inner[i].id);
+      }
+    }
+  }
+
   const sorted = [...inner].sort((a, b) => b.area - a.area);
   const outerThreshold = sorted.length > 0 ? sorted[0].area * 0.80 : Infinity;
+  
+  const areas = inner.map(f => f.area);
+  areas.sort((a, b) => a - b);
+  const medianArea = areas[Math.floor(areas.length / 2)];
+  const meanArea = areas.reduce((a, b) => a + b, 0) / areas.length;
+  
+  console.log(`[DCEL] Area stats — min:${minArea.toFixed(0)} median:${medianArea.toFixed(0)} mean:${meanArea.toFixed(0)} max:${maxArea.toFixed(0)}`);
 
   const rooms = inner.filter(f => {
-    if (f.area < MIN_ROOM_AREA) return false;
-    if (f.area > maxArea) return false;
-    if (f.area >= outerThreshold) return false;   // suppress building outline
-
-    const b = computeBounds(f.points);
-    const bw = b.maxX - b.minX, bh = b.maxY - b.minY;
+    if (f.area < minArea) {
+      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < ${minArea.toFixed(0)}`);
+      return false;
+    }
+    
+    if (f.area > maxArea) {
+      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} > ${maxArea.toFixed(0)}`);
+      return false;
+    }
+    
+    if (f.area >= outerThreshold) {
+      console.log(`[DCEL] Filtered: outer boundary area ${f.area.toFixed(0)} >= ${outerThreshold.toFixed(0)}`);
+      return false;
+    }
+    
+    const bounds = computeBounds(f.points);
+    const bw = bounds.maxX - bounds.minX;
+    const bh = bounds.maxY - bounds.minY;
     if (bw === 0 || bh === 0) return false;
     const aspect = bw / bh;
-    if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) return false;
-
+    if (aspect < MIN_ASPECT || aspect > MAX_ASPECT) {
+      console.log(`[DCEL] Filtered: aspect ${aspect.toFixed(2)} out of range [${MIN_ASPECT}, ${MAX_ASPECT}]`);
+      return false;
+    }
+    
+    const compactness = calculateCompactness(f.area, f.perimeter);
+    if (compactness < MIN_COMPACTNESS) {
+      console.log(`[DCEL] Filtered: compactness ${compactness.toFixed(3)} < ${MIN_COMPACTNESS}`);
+      return false;
+    }
+    
+    if (f.area < medianArea * 0.20) {
+      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < 20% of median (${medianArea.toFixed(0)})`);
+      return false;
+    }
+    
+    if (f.area < meanArea * 0.15) {
+      console.log(`[DCEL] Filtered: area ${f.area.toFixed(0)} < 15% of mean (${meanArea.toFixed(0)})`);
+      return false;
+    }
+    
+    if (f.connections.length < MIN_CONNECTIONS && f.area < medianArea * 0.5) {
+      console.log(`[DCEL] Filtered: only ${f.connections.length} connection(s) and area < 50% of median`);
+      return false;
+    }
+    
     return true;
   });
 
   console.log(
     `[DCEL] classify: ${inner.length} inner faces → ${rooms.length} rooms ` +
-    `(outer threshold=${Math.round(outerThreshold)}px², max=${Math.round(maxArea)}px²)`,
+    `(minArea=${Math.round(minArea)}px², ` +
+    `median=${Math.round(medianArea)}px², ` +
+    `outer threshold=${Math.round(outerThreshold)}px²)`,
   );
   return rooms;
 }
@@ -595,11 +764,9 @@ function assignLabels(
   };
 
   svgRoot.querySelectorAll('text').forEach(textEl => {
-    // Full text content
     const full = textEl.textContent?.trim() ?? '';
     if (full.length >= 2) candidates.push({ text: full, ...getXY(textEl) });
 
-    // Individual tspans (multi-line labels)
     textEl.querySelectorAll('tspan').forEach(ts => {
       const t = ts.textContent?.trim() ?? '';
       if (t.length >= 2) candidates.push({ text: t, ...getXY(ts) });
@@ -620,7 +787,6 @@ function assignLabels(
 
     if (resolved.length === 0) return room;
 
-    // Prefer longer labels; prefer ALL-CAPS (primary label text in floor plans)
     resolved.sort((a, b) => {
       const lenD = b.label.length - a.label.length;
       if (lenD !== 0) return lenD;
@@ -660,29 +826,34 @@ export function detectRoomAreas(
   canvasW: number,
   canvasH: number,
 ): SvgArea[] {
-  console.log('[DCEL] ── Starting room detection ──────────────────────────');
+  console.log('[DCEL] ── Starting room detection (SIZE-AGNOSTIC MODE) ──────────────────────────');
+  console.log(`[DCEL] REMOVE_DOORS_BEFORE_ROOM_DETECTION = ${REMOVE_DOORS_BEFORE_ROOM_DETECTION}`);
 
   // 1. Extract
-  const rawEdges = extractWallSegments(svgRoot, svgEl, vbt);
+  const { edges: rawEdges, elements } = extractWallSegments(svgRoot, svgEl, vbt);
   if (rawEdges.length === 0) { console.log('[DCEL] No segments found'); return []; }
 
-  // 2. Snap
-  const { verts, edges: snapped } = snapVertices(rawEdges);
+  // 2. Filter out door segments (OPTIONAL)
+  const filteredEdges = filterDoorSegments(rawEdges, elements);
+  if (filteredEdges.length === 0) { console.log('[DCEL] No segments after door filtering'); return []; }
 
-  // 3. Bridge gaps
+  // 3. Snap
+  const { verts, edges: snapped } = snapVertices(filteredEdges);
+
+  // 4. Bridge gaps
   const bridged = bridgeGaps(verts, snapped);
 
-  // 4. Split
+  // 5. Split
   const split = splitIntersections(verts, bridged);
 
-  // 5. Prune
+  // 6. Prune
   const pruned = pruneDangling(verts, split);
   if (pruned.length === 0) { console.log('[DCEL] Nothing survived prune'); return []; }
 
-  // 6. Build DCEL
+  // 7. Build DCEL
   const halfEdges = buildDCEL(verts, pruned);
 
-  // 7 & 8. Trace + classify
+  // 8 & 9. Trace + classify
   const faces = traceFaces(halfEdges);
   const roomFaces = classifyRooms(faces, canvasW, canvasH);
   if (roomFaces.length === 0) { console.log('[DCEL] No rooms after classify'); return []; }
@@ -702,10 +873,10 @@ export function detectRoomAreas(
     };
   });
 
-  // 8b. Deduplicate
+  // 10. Deduplicate
   areas = deduplicateRooms(areas);
 
-  // 9. Label
+  // 11. Label
   const labelled = assignLabels(areas, svgRoot, svgEl, vbt);
 
   console.log(

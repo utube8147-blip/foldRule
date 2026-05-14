@@ -1,4 +1,12 @@
-// useSnapEngine.tsx (SVG-only version with DOOR DETECTION)
+// hooks/useSnapEngine/useSnapEngine.tsx (SVG-only, normalized coords)
+//
+// NORMALIZATION FIX:
+//   • svgSnapPoints arrive as nx/ny ∈ [0,1] from useSvgSnapPoints
+//   • svgLines arrive as nx1/ny1/nx2/ny2 ∈ [0,1] from useSvgInteraction
+//   • svgAreas arrive with points[].nx/ny ∈ [0,1] and bounds.minNX/maxNX etc.
+//   • All snap math converts to pixels at call time: nx × pdfDimensions.w
+//   • redrawPinCanvas multiplies normalized coords by canvas.width/height at draw time
+//   • Zero re-detection on zoom — pdfDimensions changes do NOT trigger any effect here
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
@@ -49,53 +57,40 @@ const SVG_SNAP_COLOURS: Record<SvgSnapPoint['type'], { dot: string; ring: string
   'arc-center': { dot: 'rgba(34,211,238,0.90)',  ring: 'rgba(34,211,238,0.45)', fill: '#22d3ee' },
 };
 
-const SVG_LINE_COLOUR     = { stroke: 'rgba(56,189,248,0.55)',  fill: '#38bdf8' };
-const SVG_AREA_COLOUR     = { stroke: 'rgba(251,146,60,0.55)',  fill: '#fb923c' };
-const SVG_DOOR_LINE_COLOUR = { stroke: 'rgba(34,197,94,0.85)',   fill: '#22c55e' };  // Green for doors
-
-// ─── Door detection helper ─────────────────────────────────────────────────────
-
-function isDoorShape(shapeId: string | undefined): boolean {
-  if (!shapeId) return false;
-  const doorKeywords = [
-    'door', 'Door', 'DOOR',
-    'door-swing', 'door-leaf',
-    'swing', 'arc', 'threshold',
-    'entry', 'entrance'
-  ];
-  return doorKeywords.some(keyword => shapeId.includes(keyword));
-}
+const SVG_LINE_COLOUR      = { stroke: 'rgba(56,189,248,0.55)',  fill: '#38bdf8' };
+const SVG_AREA_COLOUR      = { stroke: 'rgba(251,146,60,0.55)',  fill: '#fb923c' };
+const SVG_DOOR_LINE_COLOUR = { stroke: 'rgba(34,197,94,0.85)',   fill: '#22c55e' };
 
 // ─── Hook params ──────────────────────────────────────────────────────────────
 
 export interface UseSnapEngineParams {
-  pinCanvasRef: React.RefObject<HTMLCanvasElement>;
+  pinCanvasRef:     React.RefObject<HTMLCanvasElement>;
   pdfDimensionsRef: React.MutableRefObject<PdfDimensions | null>;
-  pageNumberRef: React.MutableRefObject<number>;
-  snapEnabled: boolean;
-  showPins: boolean;
-  snapThreshold: number;
+  pageNumberRef:    React.MutableRefObject<number>;
+  snapEnabled:      boolean;
+  showPins:         boolean;
+  snapThreshold:    number;
   confidenceFilter: number;
-  svgSnapPoints?: SvgSnapPoint[];
-  svgLines?: SvgLine[];
-  svgAreas?: SvgArea[];
+  svgSnapPoints?:   SvgSnapPoint[];
+  svgLines?:        SvgLine[];
+  svgAreas?:        SvgArea[];
 }
 
-// ─── Hook return (matches original interface) ─────────────────────────────────
+// ─── Hook return ──────────────────────────────────────────────────────────────
 
 export interface UseSnapEngineReturn {
-  pageData: Map<number, PageExtractionState>;
-  analysisStatus: 'idle' | 'analyzing' | 'done';
-  analysisPage: { current: number; total: number } | null;
-  snapFlashes: SnapFlash[];
-  startExtraction: (pdf: any, file?: File) => void;
+  pageData:         Map<number, PageExtractionState>;
+  analysisStatus:   'idle' | 'analyzing' | 'done';
+  analysisPage:     { current: number; total: number } | null;
+  snapFlashes:      SnapFlash[];
+  startExtraction:  (pdf: any, file?: File) => void;
   getScaledCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
   getScaledWallCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number; lineIndices: number[] }>;
   getScaledWallLines: (pageIdx: number) => Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }>;
-  snapToCorner: (rawX: number, rawY: number) => SnapResult;
+  snapToCorner:     (rawX: number, rawY: number) => SnapResult;
   triggerSnapFlash: (x: number, y: number) => void;
-  redrawPinCanvas: () => void;
-  cursorPointRef: React.MutableRefObject<{ x: number; y: number } | null>;
+  redrawPinCanvas:  () => void;
+  cursorPointRef:   React.MutableRefObject<{ x: number; y: number } | null>;
 }
 
 // ─── useSnapEngine ─────────────────────────────────────────────────────────────
@@ -109,15 +104,16 @@ export function useSnapEngine({
   snapThreshold,
   confidenceFilter,
   svgSnapPoints = [],
-  svgLines = [],
-  svgAreas = [],
+  svgLines      = [],
+  svgAreas      = [],
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
-  // ── Stable setting refs ────────────────────────────────────────────────────
+  // ── Stable setting refs — no zoom re-renders ───────────────────────────────
   const snapEnabledRef      = useRef(snapEnabled);
   const showPinsRef         = useRef(showPins);
   const snapThresholdRef    = useRef(snapThreshold);
   const confidenceFilterRef = useRef(confidenceFilter);
+  // Normalized data refs — updated when SVG changes (not on zoom)
   const svgSnapPointsRef    = useRef<SvgSnapPoint[]>(svgSnapPoints);
   const svgLinesRef         = useRef<SvgLine[]>(svgLines);
   const svgAreasRef         = useRef<SvgArea[]>(svgAreas);
@@ -130,80 +126,86 @@ export function useSnapEngine({
   useEffect(() => { svgLinesRef.current         = svgLines;         }, [svgLines]);
   useEffect(() => { svgAreasRef.current         = svgAreas;         }, [svgAreas]);
 
-  // ── Empty state (no raster analysis) ───────────────────────────────────────
-  const [pageData, setPageData] = useState<Map<number, PageExtractionState>>(new Map());
-  const [analysisStatus, setAnalysisStatus] = useState<'idle' | 'analyzing' | 'done'>('idle');
-  const [analysisPage, setAnalysisPage] = useState<{ current: number; total: number } | null>(null);
+  // ── State ──────────────────────────────────────────────────────────────────
+  const [pageData]        = useState<Map<number, PageExtractionState>>(new Map());
+  const [analysisStatus]  = useState<'idle' | 'analyzing' | 'done'>('done');
+  const [analysisPage]    = useState<{ current: number; total: number } | null>(null);
   const [snapFlashes, setSnapFlashes] = useState<SnapFlash[]>([]);
-  
+
   const cursorPointRef = useRef<{ x: number; y: number } | null>(null);
-  const flashIdRef = useRef(0);
+  const flashIdRef     = useRef(0);
 
-  // ── Empty page state maker ─────────────────────────────────────────────────
-  const makeEmptyPageState = (): PageExtractionState => ({
-    status: 'idle',
-    corners: [],
-    lines: [],
-    intersections: [],
-    width: 0,
-    height: 0,
-    wallLines: [],
-    wallCorners: [],
-  });
-
-  // ── No-op startExtraction (does nothing, but satisfies interface) ───────────
-  const startExtraction = useCallback((pdf: any, file?: File) => {
-    console.log('[useSnapEngine] SVG-only mode - raster extraction disabled');
-    setAnalysisStatus('done');
-    setAnalysisPage(null);
+  // ── No-op startExtraction ─────────────────────────────────────────────────
+  const startExtraction = useCallback((_pdf: any, _file?: File) => {
+    console.log('[useSnapEngine] SVG-only mode — raster extraction disabled');
   }, []);
 
-  // ── Empty scaled getters (return empty arrays) ─────────────────────────────
-  const getScaledCorners = useCallback((): Array<{ x: number; y: number; confidence: number }> => {
-    return [];
-  }, []);
+  // ── Empty scaled getters ─────────────────────────────────────────────────
+  const getScaledCorners      = useCallback(() => [], []);
+  const getScaledWallCorners  = useCallback(() => [], []);
+  const getScaledWallLines    = useCallback(() => [], []);
 
-  const getScaledWallCorners = useCallback((): Array<{ x: number; y: number; confidence: number; lineIndices: number[] }> => {
-    return [];
-  }, []);
+  // ── Scale normalized snap point to current canvas pixels ─────────────────
+  // Called only at snap/draw time, never stored
+  const normToCanvas = useCallback((nx: number, ny: number) => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return null;
+    return { x: nx * dims.w, y: ny * dims.h };
+  }, [pdfDimensionsRef]);
 
-  const getScaledWallLines = useCallback((): Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }> => {
-    return [];
-  }, []);
-
-  // ── SVG candidate helpers ──────────────────────────────────────────────────
+  // ── SVG candidate helpers (normalized → pixel at call time) ──────────────
   const getSvgPointCandidates = useCallback(() => {
     const dims = pdfDimensionsRef.current;
     if (!dims) return [];
     return svgSnapPointsRef.current.map(p => ({
-      x: p.nx * dims.w,
-      y: p.ny * dims.h,
-      type: p.type,
+      x:           p.nx * dims.w,
+      y:           p.ny * dims.h,
+      type:        p.type,
       strokeWidth: p.strokeWidth,
-      shapeId: p.shapeId,
+      shapeId:     p.shapeId,
     }));
   }, [pdfDimensionsRef]);
 
-  // ── snapToCorner (SVG only) ────────────────────────────────────────────────
+  // Expand normalized area bounds → pixel bounds at call time
+  const getAreaPixelBounds = useCallback((area: SvgArea, dims: PdfDimensions) => ({
+    minX: area.bounds.minNX * dims.w,
+    minY: area.bounds.minNY * dims.h,
+    maxX: area.bounds.maxNX * dims.w,
+    maxY: area.bounds.maxNY * dims.h,
+  }), []);
+
+  // Expand normalized area points → pixel points at call time
+  const getAreaPixelPoints = useCallback((area: SvgArea, dims: PdfDimensions) =>
+    area.points.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h })),
+  []);
+
+  // Expand normalized line → pixel line at call time
+  const getLinePixels = useCallback((line: SvgLine, dims: PdfDimensions) => ({
+    x1: line.nx1 * dims.w, y1: line.ny1 * dims.h,
+    x2: line.nx2 * dims.w, y2: line.ny2 * dims.h,
+  }), []);
+
+  // ── snapToCorner ──────────────────────────────────────────────────────────
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current) {
       return { point: { x: rawX, y: rawY }, snapped: false };
     }
 
+    const dims   = pdfDimensionsRef.current;
     const thresh = snapThresholdRef.current;
     let bestPoint: { x: number; y: number } | null = null;
     let bestDist = thresh;
 
-    // Tier 1: SVG discrete snap points  
+    // Tier 1: SVG discrete snap points (normalized → pixel at call time)
     for (const c of getSvgPointCandidates()) {
-      // Skip non-arc-center points inside door areas
       if (c.type !== 'arc-center') {
         const insideDoor = svgAreasRef.current
           .filter(a => a.label === 'door' || a.isDoor)
           .some(da => {
+            const b = getAreaPixelBounds(da, dims);
             const pad = 20;
-            return c.x >= da.bounds.minX - pad && c.x <= da.bounds.maxX + pad &&
-                  c.y >= da.bounds.minY - pad && c.y <= da.bounds.maxY + pad;
+            return c.x >= b.minX - pad && c.x <= b.maxX + pad &&
+                   c.y >= b.minY - pad && c.y <= b.maxY + pad;
           });
         if (insideDoor) continue;
       }
@@ -211,28 +213,27 @@ export function useSnapEngine({
       if (dist < bestDist) { bestDist = dist; bestPoint = { x: c.x, y: c.y }; }
     }
 
-    // Tier 2: SVG lines (skip door lines for snapping)
+    // Tier 2: SVG lines (normalized → pixel at call time)
     if (!bestPoint) {
       for (const line of svgLinesRef.current) {
-        // Skip door lines - users should snap to arc-center, not points along the arc
-        if (isDoorShape(line.shapeId)) continue;
-        
-        const closest = closestPointOnSegment(rawX, rawY, line.x1, line.y1, line.x2, line.y2);
-        const dist = Math.hypot(rawX - closest.x, rawY - closest.y);
+        if (line.shapeId?.toLowerCase().includes('door') ||
+            line.shapeId?.toLowerCase().includes('swing')) continue;
+        const { x1, y1, x2, y2 } = getLinePixels(line, dims);
+        const closest = closestPointOnSegment(rawX, rawY, x1, y1, x2, y2);
+        const dist    = Math.hypot(rawX - closest.x, rawY - closest.y);
         if (dist < bestDist) { bestDist = dist; bestPoint = closest; }
       }
     }
 
-    // Tier 3: SVG areas (skip door areas for snapping)
+    // Tier 3: SVG area edges (normalized → pixel at call time)
     if (!bestPoint) {
       for (const area of svgAreasRef.current) {
-        if (isDoorShape(area.shapeId)) continue;
-        
-        if (
-          rawX < area.bounds.minX - thresh || rawX > area.bounds.maxX + thresh ||
-          rawY < area.bounds.minY - thresh || rawY > area.bounds.maxY + thresh
-        ) continue;
-        const onEdge = closestPointOnPolygonEdge(rawX, rawY, area.points);
+        if (area.label === 'door' || area.isDoor) continue;
+        const b = getAreaPixelBounds(area, dims);
+        if (rawX < b.minX - thresh || rawX > b.maxX + thresh ||
+            rawY < b.minY - thresh || rawY > b.maxY + thresh) continue;
+        const pts    = getAreaPixelPoints(area, dims);
+        const onEdge = closestPointOnPolygonEdge(rawX, rawY, pts);
         if (onEdge.dist < bestDist) {
           bestDist = onEdge.dist;
           bestPoint = { x: onEdge.x, y: onEdge.y };
@@ -243,137 +244,60 @@ export function useSnapEngine({
     return bestPoint
       ? { point: { x: bestPoint.x, y: bestPoint.y }, snapped: true }
       : { point: { x: rawX, y: rawY }, snapped: false };
-  }, [getSvgPointCandidates]);
+  }, [getSvgPointCandidates, getAreaPixelBounds, getAreaPixelPoints, getLinePixels]);
 
-  // ── triggerSnapFlash ───────────────────────────────────────────────────────
+  // ── triggerSnapFlash ──────────────────────────────────────────────────────
   const triggerSnapFlash = useCallback((x: number, y: number) => {
     const id = ++flashIdRef.current;
     setSnapFlashes(prev => [...prev, { x, y, id }]);
     setTimeout(() => setSnapFlashes(prev => prev.filter(f => f.id !== id)), 700);
   }, []);
 
-  // ── redrawPinCanvas (SVG only with DOOR RENDERING) ─────────────────────────
+  // ── redrawPinCanvas — all coords derived from normalized at draw time ──────
   const redrawPinCanvas = useCallback(() => {
     const canvas = pinCanvasRef.current;
-    if (!canvas || !pdfDimensionsRef.current) return;
+    const dims   = pdfDimensionsRef.current;
+    if (!canvas || !dims) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showPinsRef.current) return;
 
-    const cursor = cursorPointRef.current;
-    const thresh = snapThresholdRef.current;
-    const CORNER_PROXIMITY = 80;
+    const cursor        = cursorPointRef.current;
+    const thresh        = snapThresholdRef.current;
+    const CORNER_PROX   = 80;
+    const cw            = canvas.width;   // current canvas pixel size — may differ from detection size
+    const ch            = canvas.height;
 
-    // ── Layer 1: SVG lines (with door detection for styling) ─────────────────
-    // for (const line of svgLinesRef.current) {
-    //   const isDoor = isDoorShape(line.shapeId);
-      
-    //   // Choose styling based on door detection
-    //   const colour = isDoor ? SVG_DOOR_LINE_COLOUR : SVG_LINE_COLOUR;
-    //   const dashPattern = isDoor ? [8, 6] : [];  // Dashed line for doors
-      
-    //   let distSeg = Infinity;
-    //   let snapPt = { x: (line.x1 + line.x2) / 2, y: (line.y1 + line.y2) / 2 };
-
-    //   if (cursor) {
-    //     const c = closestPointOnSegment(cursor.x, cursor.y, line.x1, line.y1, line.x2, line.y2);
-    //     distSeg = Math.hypot(cursor.x - c.x, cursor.y - c.y);
-    //     snapPt = c;
-    //   }
-
-    //   const isSnapping = !isDoor && distSeg < thresh;  // Don't show snap UI on doors
-    //   const isProximity = distSeg < CORNER_PROXIMITY * 2;
-    //   const alpha = isSnapping ? 0.95 : isProximity ? 0.65 : (isDoor ? 0.7 : 0.35);
-    //   const lw = isSnapping ? 2.5 : isProximity ? 1.8 : (isDoor ? 2 : 1);
-
-    //   ctx.save();
-      
-    //   // Apply dashed pattern for doors
-    //   if (dashPattern.length) {
-    //     ctx.setLineDash(dashPattern);
-    //   }
-      
-    //   ctx.beginPath();
-    //   ctx.moveTo(line.x1, line.y1);
-    //   ctx.lineTo(line.x2, line.y2);
-    //   ctx.strokeStyle = colour.stroke.replace(/[\d.]+\)$/, `${alpha})`);
-    //   ctx.lineWidth = lw;
-    //   ctx.stroke();
-      
-    //   // Reset dash pattern
-    //   if (dashPattern.length) {
-    //     ctx.setLineDash([]);
-    //   }
-
-    //   // Show label on hover (only for non-door lines, or show DOOR label)
-    //   if (isSnapping && cursor && !isDoor) {
-    //     ctx.beginPath();
-    //     ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
-    //     ctx.fillStyle = colour.fill;
-    //     ctx.fill();
-    //     ctx.strokeStyle = 'white';
-    //     ctx.lineWidth = 1.5;
-    //     ctx.stroke();
-    //     ctx.font = 'bold 9px ui-monospace,monospace';
-    //     ctx.textAlign = 'center';
-    //     ctx.textBaseline = 'middle';
-    //     const label = line.label ? line.label.toUpperCase() : 'LINE';
-    //     const tw = ctx.measureText(label).width + 8;
-    //     ctx.fillStyle = 'rgba(0,0,0,0.80)';
-    //     ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23, tw, 13);
-    //     ctx.fillStyle = colour.fill;
-    //     ctx.fillText(label, snapPt.x, snapPt.y - 16);
-    //   } else if (isDoor && cursor && distSeg < thresh) {
-    //     // Show "DOOR" label when hovering over door swing
-    //     ctx.beginPath();
-    //     ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
-    //     ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
-    //     ctx.fill();
-    //     ctx.strokeStyle = 'white';
-    //     ctx.lineWidth = 1.5;
-    //     ctx.stroke();
-    //     ctx.font = 'bold 9px ui-monospace,monospace';
-    //     ctx.textAlign = 'center';
-    //     ctx.textBaseline = 'middle';
-    //     ctx.fillStyle = 'rgba(0,0,0,0.80)';
-    //     ctx.fillRect(snapPt.x - 28, snapPt.y - 23, 56, 13);
-    //     ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
-    //     ctx.fillText('DOOR', snapPt.x, snapPt.y - 16);
-    //   }
-    //   ctx.restore();
-    // }
-
-    // ── Layer 2: SVG area outlines ────────────────────────────────────────────────
+    // ── Layer 1: SVG area outlines ────────────────────────────────────────
     for (const area of svgAreasRef.current) {
       if (area.points.length < 3) continue;
 
-      const isDoor = area.label === 'door' || !!area.isDoor;
+      // Scale normalized points → current canvas pixels at draw time
+      const pts = area.points.map(p => ({ x: p.nx * cw, y: p.ny * ch }));
 
+      const isDoor = area.label === 'door' || !!area.isDoor;
       ctx.save();
 
       if (isDoor) {
-        // points = [pivot, ...interpolated arc pts]
-        // Just stroke the shape directly — no arc() needed
-        const pivot = area.points[0];
-        const arcPts = area.points.slice(1);
+        const pivot  = pts[0];
+        const arcPts = pts.slice(1);
         if (arcPts.length < 2) { ctx.restore(); continue; }
 
         const arcStart = arcPts[0];
         const arcEnd   = arcPts[arcPts.length - 1];
 
         const isHovered = cursor && (() => {
-          const dx = cursor.x - pivot.x, dy = cursor.y - pivot.y;
-          const r  = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
-          const cursorR = Math.hypot(dx, dy);
-          return Math.abs(cursorR - r) < CORNER_PROXIMITY;
+          const r       = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
+          const cursorR = Math.hypot(cursor.x - pivot.x, cursor.y - pivot.y);
+          return Math.abs(cursorR - r) < CORNER_PROX;
         })();
 
         const alpha = isHovered ? 0.95 : 0.75;
         const lw    = isHovered ? 2.5  : 1.8;
 
-        // Door leaf (pivot → arcStart)
+        // Door leaf
         ctx.beginPath();
         ctx.moveTo(pivot.x, pivot.y);
         ctx.lineTo(arcStart.x, arcStart.y);
@@ -381,7 +305,7 @@ export function useSnapEngine({
         ctx.lineWidth   = lw + 0.5;
         ctx.stroke();
 
-        // Door swing arc (polyline through interpolated points)
+        // Door swing arc (polyline)
         ctx.beginPath();
         ctx.moveTo(arcPts[0].x, arcPts[0].y);
         for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
@@ -391,7 +315,7 @@ export function useSnapEngine({
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Closing line (arcEnd → pivot, faint)
+        // Closing line (faint)
         ctx.beginPath();
         ctx.moveTo(pivot.x, pivot.y);
         ctx.lineTo(arcEnd.x, arcEnd.y);
@@ -399,10 +323,9 @@ export function useSnapEngine({
         ctx.lineWidth   = 1;
         ctx.stroke();
 
-        // Hover label
         if (isHovered && cursor) {
           const midIdx = Math.floor(arcPts.length / 2);
-          const mid = arcPts[midIdx];
+          const mid    = arcPts[midIdx];
           ctx.beginPath();
           ctx.arc(mid.x, mid.y, 7, 0, Math.PI * 2);
           ctx.fillStyle   = SVG_DOOR_LINE_COLOUR.fill;
@@ -420,50 +343,48 @@ export function useSnapEngine({
         }
 
       } else {
-        // Non-door area — existing logic unchanged
-        const colour = SVG_AREA_COLOUR;
-
-        const centroidX = area.points.reduce((s, p) => s + p.x, 0) / area.points.length;
-        const centroidY = area.points.reduce((s, p) => s + p.y, 0) / area.points.length;
+        // Non-door room area
+        const centroidX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+        const centroidY = pts.reduce((s, p) => s + p.y, 0) / pts.length;
 
         let distEdge = Infinity;
-        let snapPt = { x: centroidX, y: centroidY };
+        let snapPt   = { x: centroidX, y: centroidY };
 
         if (cursor) {
-          const e = closestPointOnPolygonEdge(cursor.x, cursor.y, area.points);
+          const e = closestPointOnPolygonEdge(cursor.x, cursor.y, pts);
           distEdge = e.dist;
-          snapPt = { x: e.x, y: e.y };
+          snapPt   = { x: e.x, y: e.y };
         }
 
         const isSnapping  = distEdge < thresh;
-        const isProximity = distEdge < CORNER_PROXIMITY * 2;
+        const isProximity = distEdge < CORNER_PROX * 2;
         const alpha = isSnapping ? 0.95 : isProximity ? 0.65 : 0.25;
         const lw    = isSnapping ? 2.5  : isProximity ? 1.8  : 1;
 
         ctx.beginPath();
-        ctx.moveTo(area.points[0].x, area.points[0].y);
-        area.points.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+        ctx.moveTo(pts[0].x, pts[0].y);
+        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
         ctx.closePath();
-        ctx.strokeStyle = colour.stroke.replace(/[\d.]+\)$/, `${alpha})`);
-        ctx.lineWidth = lw;
+        ctx.strokeStyle = SVG_AREA_COLOUR.stroke.replace(/[\d.]+\)$/, `${alpha})`);
+        ctx.lineWidth   = lw;
         ctx.stroke();
 
         if (isSnapping && cursor) {
           ctx.beginPath();
           ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
-          ctx.fillStyle = colour.fill;
+          ctx.fillStyle   = SVG_AREA_COLOUR.fill;
           ctx.fill();
           ctx.strokeStyle = 'white';
-          ctx.lineWidth = 1.5;
+          ctx.lineWidth   = 1.5;
           ctx.stroke();
-          ctx.font = 'bold 9px ui-monospace,monospace';
-          ctx.textAlign = 'center';
+          ctx.font         = 'bold 9px ui-monospace,monospace';
+          ctx.textAlign    = 'center';
           ctx.textBaseline = 'middle';
           const label = area.label ? area.label.toUpperCase() : 'AREA';
-          const tw = ctx.measureText(label).width + 8;
+          const tw    = ctx.measureText(label).width + 8;
           ctx.fillStyle = 'rgba(0,0,0,0.80)';
           ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23, tw, 13);
-          ctx.fillStyle = colour.fill;
+          ctx.fillStyle = SVG_AREA_COLOUR.fill;
           ctx.fillText(label, snapPt.x, snapPt.y - 16);
         }
       }
@@ -471,91 +392,76 @@ export function useSnapEngine({
       ctx.restore();
     }
 
-    // ── Layer 3: SVG discrete snap points (arc-center only for doors) ────────
+    // ── Layer 2: SVG discrete snap points ─────────────────────────────────
+    // getSvgPointCandidates() scales nx/ny → pixels using current pdfDimensions
     const svgCandidates = getSvgPointCandidates();
-    const doorAreas = svgAreasRef.current.filter(a => a.label === 'door' || a.isDoor);
+    const doorAreas     = svgAreasRef.current.filter(a => a.label === 'door' || a.isDoor);
 
     for (const c of svgCandidates) {
       const col = SVG_SNAP_COLOURS[c.type];
       if (!col) continue;
 
-      // Suppress all non-arc-center points that lie inside a door area bounding box
       if (c.type !== 'arc-center') {
         const insideDoor = doorAreas.some(da => {
+          const b   = getAreaPixelBounds(da, dims);
           const pad = 20;
-          return (
-            c.x >= da.bounds.minX - pad && c.x <= da.bounds.maxX + pad &&
-            c.y >= da.bounds.minY - pad && c.y <= da.bounds.maxY + pad
-          );
+          return c.x >= b.minX - pad && c.x <= b.maxX + pad &&
+                 c.y >= b.minY - pad && c.y <= b.maxY + pad;
         });
         if (insideDoor) continue;
       }
 
-      const dist = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
-      const isInSnap = dist < thresh;
-      const inRange = dist < CORNER_PROXIMITY;
+      if (c.shapeId?.toLowerCase().includes('door') ||
+          c.shapeId?.toLowerCase().includes('swing')) continue;
 
-      // Other snap point types (endpoint, midpoint, centroid, intersection)
-      // Skip rendering these if they belong to a door shape
-      const isDoorPoint = c.shapeId?.toLowerCase().includes('door') ||
-                          c.shapeId?.toLowerCase().includes('swing');
-      
-      if (isDoorPoint) {
-        // Door endpoints/midpoints are filtered out (don't render)
-        continue;
-      }
+      const dist    = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
+      const isInSnap = dist < thresh;
+      const inRange  = dist < CORNER_PROX;
 
       if (!cursor || !inRange) {
         ctx.beginPath();
         ctx.arc(c.x, c.y, 2, 0, Math.PI * 2);
         ctx.strokeStyle = col.dot;
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth   = 1.2;
         ctx.stroke();
         continue;
       }
 
-      const alpha = Math.max(0, 1 - dist / CORNER_PROXIMITY);
+      const alpha   = Math.max(0, 1 - dist / CORNER_PROX);
       const isClose = dist < 20;
-      const size = isClose ? 7 : 4;
+      const size    = isClose ? 7 : 4;
 
       ctx.save();
       if (isInSnap) {
         ctx.beginPath();
         ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = col.fill;
+        ctx.fillStyle   = col.fill;
         ctx.fill();
         ctx.strokeStyle = 'white';
-        ctx.lineWidth = 2;
+        ctx.lineWidth   = 2;
         ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(c.x - 12, c.y);
-        ctx.lineTo(c.x + 12, c.y);
-        ctx.moveTo(c.x, c.y - 12);
-        ctx.lineTo(c.x, c.y + 12);
+        ctx.moveTo(c.x - 12, c.y); ctx.lineTo(c.x + 12, c.y);
+        ctx.moveTo(c.x, c.y - 12); ctx.lineTo(c.x, c.y + 12);
         ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = 1;
+        ctx.lineWidth   = 1;
         ctx.stroke();
-        ctx.font = 'bold 9px ui-monospace,monospace';
-        ctx.textAlign = 'center';
+        ctx.font         = 'bold 9px ui-monospace,monospace';
+        ctx.textAlign    = 'center';
         ctx.textBaseline = 'middle';
         const label = c.type.toUpperCase();
-        const tw = ctx.measureText(label).width + 8;
+        const tw    = ctx.measureText(label).width + 8;
         ctx.fillStyle = 'rgba(0,0,0,0.80)';
         ctx.fillRect(c.x - tw / 2, c.y - 23, tw, 13);
         ctx.fillStyle = col.fill;
         ctx.fillText(label, c.x, c.y - 16);
       } else {
-        const rgbaStroke = col.dot.replace(/[\d.]+\)$/, `${alpha})`);
-        ctx.strokeStyle = rgbaStroke;
-        ctx.lineWidth = isClose ? 1.5 : 1;
+        ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${alpha})`);
+        ctx.lineWidth   = isClose ? 1.5 : 1;
         ctx.beginPath();
-        ctx.moveTo(c.x - size, c.y);
-        ctx.lineTo(c.x + size, c.y);
-        ctx.stroke();
+        ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
         ctx.beginPath();
-        ctx.moveTo(c.x, c.y - size);
-        ctx.lineTo(c.x, c.y + size);
-        ctx.stroke();
+        ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
         if (isClose) {
           ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${alpha * 0.5})`);
           ctx.beginPath();
@@ -565,9 +471,9 @@ export function useSnapEngine({
       }
       ctx.restore();
     }
-  }, [pinCanvasRef, pdfDimensionsRef, getSvgPointCandidates]);
+  }, [pinCanvasRef, pdfDimensionsRef, getSvgPointCandidates, getAreaPixelBounds]);
 
-  // Redraw on changes
+  // Redraw on SVG data changes or settings changes — NOT on zoom
   useEffect(() => {
     redrawPinCanvas();
   }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas]);
