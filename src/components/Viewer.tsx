@@ -29,6 +29,8 @@ import type { DetectedRoom } from '@/hooks/useSnapEngine/detectRooms';
 import { useSvgSnapPoints }  from '@/hooks/useSvgSnapPoints';
 import { useSvgInteraction } from '@/hooks/useSvgInteraction';
 import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
+import { useShapeCluster } from '@/hooks/useShapeCluster';
+
 
 // ── NEW: extracted label guards (fixes the pillar/window capitalisation bug) ──
 import { isSvgDoor, isSvgPillar, isSvgWindow, isSvgStructural } from '@/lib/svgLabelUtils';
@@ -140,6 +142,7 @@ export function Viewer({
 
   // ── Dialog state ───────────────────────────────────────────────────────────
   const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
+  const [showClusters, setShowClusters] = useState(false);
   const [pendingPtLen,           setPendingPtLen]           = useState(0);
   const [calibrationInput,       setCalibrationInput]       = useState('');
   const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
@@ -184,13 +187,17 @@ export function Viewer({
 
     if (!activeDrawingUrl && !file) { setSvgContent(null); return; }
 
+    // ← NEW: skip the fallback fetch until the user turns on Show Rooms
+    if (!showRooms) { setSvgContent(null); return; }
+
     fetch('/svg-overlay.svg')
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
       .then(t => { if (!cancelled) setSvgContent(t); })
       .catch(() => { if (!cancelled) setSvgContent(null); });
 
     return () => { cancelled = true; };
-  }, [activeDrawingId, activeDrawingUrl]);
+
+  }, [activeDrawingId, activeDrawingUrl, showRooms]);
 
   // ── SVG snap points ────────────────────────────────────────────────────────
   const svgSnapPoints = useSvgSnapPoints(svgContent, pdfIntrinsicDims);
@@ -211,6 +218,25 @@ export function Viewer({
     () => svgElements.filter((el): el is SvgArea => el.type === 'area'),
     [svgElements],
   );
+
+  // ── Shape clustering ───────────────────────────────────────────────────────
+  const { clusters } = useShapeCluster(svgElements, {
+    clusterAreas:     true,
+    clusterCompound:  true,
+  });
+
+  useEffect(() => {
+    if (clusters.length === 0) return;
+    console.group('[Viewer] Shape clusters');
+    for (const c of clusters) {
+      console.log(
+        `${c.id} (${c.type}) — ${c.members.length} members`,
+        `x[${c.bounds.minNX.toFixed(3)}–${c.bounds.maxNX.toFixed(3)}]`,
+        `y[${c.bounds.minNY.toFixed(3)}–${c.bounds.maxNY.toFixed(3)}]`,
+      );
+    }
+    console.groupEnd();
+  }, [clusters]);
 
   // ── SVG ROOMS — excludes doors, pillars, windows ───────────────────────────
   // FIX: was using raw string comparisons ('pillar', 'window') which never matched
@@ -257,6 +283,19 @@ export function Viewer({
     () => svgAreas.filter(isSvgDoor),
     [svgAreas],
   );
+
+
+
+useEffect(() => {
+  if (clusters.length === 0) return;
+  console.group('[Viewer] Shape clusters');
+  clusters.forEach(c => console.log(
+    `${c.id} (${c.type}) — ${c.members.length} members`,
+    `x[${c.bounds.minNX.toFixed(3)}–${c.bounds.maxNX.toFixed(3)}]`,
+    `y[${c.bounds.minNY.toFixed(3)}–${c.bounds.maxNY.toFixed(3)}]`,
+  ));
+  console.groupEnd();
+}, [clusters]);
 
   useEffect(() => {
     if (svgRooms.length > 0) setShowRooms(true);
@@ -786,6 +825,8 @@ export function Viewer({
             showVectors={showVectors} vectorPathCount={vectorPathCount}
             svgContent={svgContent}
             showSvgOverlay={showSvgOverlay}
+            clusters={clusters}
+            showClusters={showClusters}
             svgAreas={svgAreas}
             svgSnapPoints={svgSnapPoints}
             showSvgSnapDebug={showSvgSnapDebug}
@@ -891,6 +932,23 @@ export function Viewer({
                     {svgWindows.length} WINDOWS
                   </span>
                   <div className="w-px h-3 bg-industrial-border" />
+                </>
+              )}
+
+              {clusters.length > 0 && (
+                <>
+                  <div className="w-px h-3 bg-industrial-border" />
+                  <button
+                    onClick={() => setShowClusters(p => !p)}
+                    className={cn(
+                      'text-[9px] uppercase tracking-widest transition-colors',
+                      showClusters
+                        ? 'text-violet-300'
+                        : 'text-violet-500 hover:text-violet-300',
+                    )}
+                  >
+                    {clusters.length} clusters {showClusters ? '●' : '○'}
+                  </button>
                 </>
               )}
 

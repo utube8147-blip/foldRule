@@ -3,9 +3,16 @@
 // ─── useSvgSnapPoints.ts ──────────────────────────────────────────────────────
 //
 //  CHANGES in this version:
-//    • ADDED: Enhanced door detection to filter snap points
-//    • ADDED: For doors, ONLY arc-center points are shown (no endpoints/midpoints)
-//    • FIXED: Arc chains now correctly identify door swings
+//    • FIX: assembleChain rewritten — Map-based O(n) with 9-bucket neighbour
+//           lookup to avoid grid-boundary misses. Hard cap of 500 segs.
+//    • FIX: Arc detection separated from chain assembly — large shapes (>500
+//           segs) that exceed the chain cap still get arc-center snap points
+//           via uniform point sampling fed into fitCircleToPoints.
+//    • FIX: isDoorShape no longer calls assembleChain internally (was doubling
+//           chain work and could recurse on the same segs).
+//    • FIX: Intersection guard tightened from 2000 → 500 (4M→250K ops max).
+//    • FIX: Per-shape segment cap of 300 for chain/centroid work; full segs
+//           always used for arc fit so fixtures are never missed.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useMemo } from 'react';
@@ -37,6 +44,18 @@ export interface SvgSnapPoint {
 interface Vec2    { x: number; y: number }
 interface Mat2D   { a: number; b: number; c: number; d: number; e: number; f: number }
 interface Segment { a: Vec2; b: Vec2; strokeWidth: number; shapeId: string }
+
+// ─── Caps ─────────────────────────────────────────────────────────────────────
+
+// Chain assembly: shapes with more segments than this are too complex to chain
+// reliably (hatching, dense fills). Arc fit still runs on the full set.
+const MAX_CHAIN_SEGS = 500;
+
+// Per-shape segment cap fed into chain + centroid work. Arc fit is exempt.
+const MAX_SEGS_FOR_CHAIN = 300;
+
+// Intersection: O(n²) — keep well below 1000 to avoid 1M+ iterations
+const MAX_SEGS_FOR_INTERSECT = 500;
 
 // ─── Matrix helpers ───────────────────────────────────────────────────────────
 
@@ -146,7 +165,7 @@ function numAttr(el: Element, name: string, fallback = 0): number {
   const v = parseFloat(attr(el, name)); return isNaN(v) ? fallback : v;
 }
 
-// ─── Path `d` tokeniser & segment builder ─────────────────────────────────────
+// ─── Path `d` tokeniser & segment builder ────────────────────────────────────
 
 type PathToken = { cmd: string; args: number[] };
 
@@ -199,7 +218,7 @@ function arcToPoints(
   const ux    = (x1p-cxp)/rxA, uy = (y1p-cyp)/ryA;
   const vx    = (-x1p-cxp)/rxA, vy = (-y1p-cyp)/ryA;
   const n     = Math.sqrt(ux*ux+uy*uy);
-  let theta1  = uy>=0 ? Math.acos(Math.max(-1,Math.min(1,ux/n))) : -Math.acos(Math.max(-1,Math.min(1,ux/n)));
+  const theta1  = uy>=0 ? Math.acos(Math.max(-1,Math.min(1,ux/n))) : -Math.acos(Math.max(-1,Math.min(1,ux/n)));
   const mag   = Math.sqrt((ux*ux+uy*uy)*(vx*vx+vy*vy));
   const dotUV = ux*vx+uy*vy;
   let dTheta  = (ux*vy-uy*vx)>=0
@@ -346,34 +365,91 @@ function extractEllipse(el: Element, sw: number, id: string): Segment[] {
   return pathToSegments(`M${cx-rx},${cy} A${rx},${ry} 0 1 1 ${cx+rx},${cy} A${rx},${ry} 0 1 1 ${cx-rx},${cy} Z`, sw, id);
 }
 
-// ─── Chain assembly ───────────────────────────────────────────────────────────
+// ─── Chain assembly — Map-based O(n) with neighbour-bucket lookup ─────────────
+//
+// WHY 9-BUCKET LOOKUP:
+//   A simple snap(v) = `${round(v.x/TOL)},${round(v.y/TOL)}` has a dead zone
+//   at every grid boundary. A point at x=4.9 and one at x=5.1 (TOL=5) round to
+//   different buckets even though they're 0.2px apart — a valid connection is
+//   missed. Checking all 9 neighbours (dx,dy ∈ {-1,0,1}) eliminates the dead
+//   zone: any two points within TOL of each other share at least one bucket.
+//
+// WHY MAX_CHAIN_SEGS:
+//   Pathological shapes (dense hatching, filled regions exported as strokes)
+//   can have thousands of segments. The map lookup is O(n) overall, but the
+//   resulting vertex array would be huge and chain assembly still iterates it.
+//   Shapes this large are never symbols — skip chain, arc fit runs separately.
 
 const CHAIN_TOL = 5.0;
+
+function snapKey(v: Vec2, dx: number, dy: number): string {
+  return `${Math.round(v.x / CHAIN_TOL) + dx},${Math.round(v.y / CHAIN_TOL) + dy}`;
+}
 
 function assembleChain(segs: Segment[]): Vec2[] | null {
   if (segs.length === 0) return null;
   if (segs.length === 1) return [segs[0].a, segs[0].b];
 
-  const shapeId = segs[0].shapeId;
-  const ordered: Segment[] = [segs[0]];
-  const used = new Set<number>([0]);
-  let tail = segs[0].b;
-  let grew = true;
+  // Hard cap — shapes this large can't be meaningfully chained
+  if (segs.length > MAX_CHAIN_SEGS) return null;
 
-  while (grew && ordered.length < segs.length) {
-    grew = false;
-    for (let j = 1; j < segs.length; j++) {
-      if (used.has(j)) continue;
-      const dA = Math.hypot(segs[j].a.x - tail.x, segs[j].a.y - tail.y);
-      const dB = Math.hypot(segs[j].b.x - tail.x, segs[j].b.y - tail.y);
-      if (dA <= CHAIN_TOL) {
-        ordered.push(segs[j]);
-        used.add(j); tail = segs[j].b; grew = true; break;
-      } else if (dB <= CHAIN_TOL) {
-        ordered.push({ a: segs[j].b, b: segs[j].a, strokeWidth: segs[j].strokeWidth, shapeId });
-        used.add(j); tail = segs[j].a; grew = true; break;
+  const shapeId = segs[0].shapeId;
+
+  // Build endpoint map: snapKey → list of (segIdx, endpoint:'a'|'b')
+  // Each segment is registered under all 9 neighbour buckets for both endpoints
+  // to avoid grid-boundary misses (see comment above).
+  type Entry = { idx: number; end: 'a' | 'b' };
+  const epMap = new Map<string, Entry[]>();
+
+  const register = (v: Vec2, idx: number, end: 'a' | 'b') => {
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const k = snapKey(v, dx, dy);
+        const arr = epMap.get(k) ?? [];
+        arr.push({ idx, end });
+        epMap.set(k, arr);
       }
     }
+  };
+
+  for (let i = 0; i < segs.length; i++) {
+    register(segs[i].a, i, 'a');
+    register(segs[i].b, i, 'b');
+  }
+
+  const used = new Set<number>([0]);
+  const ordered: Segment[] = [segs[0]];
+  let tail = segs[0].b;
+
+  while (ordered.length < segs.length) {
+    // Look up all segments touching `tail` via neighbour buckets
+    const key = snapKey(tail, 0, 0);
+    const candidates = epMap.get(key) ?? [];
+    let advanced = false;
+
+    for (const { idx, end } of candidates) {
+      if (used.has(idx)) continue;
+
+      const seg = segs[idx];
+      const connectPt = end === 'a' ? seg.a : seg.b;
+      const dist = Math.hypot(connectPt.x - tail.x, connectPt.y - tail.y);
+      if (dist > CHAIN_TOL) continue; // neighbour bucket overlap — not actually close
+
+      used.add(idx);
+      if (end === 'a') {
+        // Connect a→b normally
+        ordered.push(seg);
+        tail = seg.b;
+      } else {
+        // Connect b→a (reversed)
+        ordered.push({ a: seg.b, b: seg.a, strokeWidth: seg.strokeWidth, shapeId });
+        tail = seg.a;
+      }
+      advanced = true;
+      break;
+    }
+
+    if (!advanced) break; // chain can't grow further (disconnected or branching)
   }
 
   if (ordered.length !== segs.length) return null;
@@ -385,8 +461,12 @@ function assembleChain(segs: Segment[]): Vec2[] | null {
 
 // ─── Arc / circle detection ───────────────────────────────────────────────────
 
-const ARC_R_VAR_MAX   = 0.08;
-const ARC_MIN_SEGS    = 3;
+const ARC_R_VAR_MAX = 0.08;
+const ARC_MIN_SEGS  = 3;
+
+// Max points fed into fitCircleToPoints. Uniformly sampled from segs so that
+// large shapes (>MAX_CHAIN_SEGS) still get arc-center detection.
+const ARC_FIT_MAX_PTS = 64;
 
 interface CircleFit { cx: number; cy: number; r: number; rVar: number }
 
@@ -429,45 +509,58 @@ function fitCircleToPoints(pts: Vec2[]): CircleFit | null {
   const rMean  = radii.reduce((s, r) => s+r, 0) / n;
   if (rMean < 1) return null;
 
-  const rVar   = Math.sqrt(radii.reduce((s, r) => s+(r-rMean)**2, 0) / n) / rMean;
-
+  const rVar = Math.sqrt(radii.reduce((s, r) => s+(r-rMean)**2, 0) / n) / rMean;
   return { cx, cy, r: rMean, rVar };
 }
 
-// ─── Enhanced door detection ───────────────────────────────────────────────────
-
-function isDoorShape(shapeId: string, segs: Segment[], circleFit: CircleFit | null): boolean {
-  // Check shapeId for door-related keywords
-  const doorKeywords = ['door', 'Door', 'DOOR', 'door-swing', 'door-leaf', 'swing', 'arc', 'threshold'];
-  if (doorKeywords.some(keyword => shapeId.includes(keyword))) {
-    console.log(`[Door Detection] shapeId "${shapeId}" matched keyword`);
-    return true;
+// Sample up to ARC_FIT_MAX_PTS points uniformly from segment midpoints.
+// This is used for both small chains AND oversized shapes that exceed
+// MAX_CHAIN_SEGS — the arc fit must never be gated behind the chain cap.
+function sampleArcPoints(segs: Segment[]): Vec2[] {
+  if (segs.length === 0) return [];
+  const step = Math.max(1, Math.floor(segs.length / ARC_FIT_MAX_PTS));
+  const pts: Vec2[] = [];
+  for (let i = 0; i < segs.length; i += step) {
+    pts.push(segs[i].a);
+    if (pts.length >= ARC_FIT_MAX_PTS) break;
   }
-  
-  // Check if it's an arc with door-like angle (70-110 degrees)
-  if (circleFit !== null && segs.length >= ARC_MIN_SEGS) {
-    const vertices = assembleChain(segs);
-    if (vertices && vertices.length >= 2) {
-      const start = vertices[0];
-      const end = vertices[vertices.length - 1];
-      const startAngle = Math.atan2(start.y - circleFit.cy, start.x - circleFit.cx);
-      const endAngle = Math.atan2(end.y - circleFit.cy, end.x - circleFit.cx);
-      let angleSpan = Math.abs(endAngle - startAngle);
-      if (angleSpan > Math.PI) angleSpan = 2 * Math.PI - angleSpan;
-      
-      const angleDeg = angleSpan * 180 / Math.PI;
-      // Door swings are typically 90°, but allow 60-120° range
-      if (angleDeg >= 60 && angleDeg <= 120) {
-        console.log(`[Door Detection] Arc with ${angleDeg.toFixed(1)}° detected as door (shapeId: ${shapeId})`);
-        return true;
-      }
-    }
+  // Always include the last endpoint
+  const last = segs[segs.length - 1].b;
+  if (pts.length === 0 || Math.hypot(last.x - pts[pts.length-1].x, last.y - pts[pts.length-1].y) > 0.01) {
+    pts.push(last);
   }
-  
-  return false;
+  return pts;
 }
 
-// ─── Snap point builder with door filtering ───────────────────────────────────
+// ─── Enhanced door detection ──────────────────────────────────────────────────
+//
+// NOTE: This function no longer calls assembleChain internally.
+// Previously it called assembleChain(segs) which doubled chain work and could
+// trigger the same O(n²) path on the same segment set being processed above.
+// Door arc angle is now checked in buildSnapPointsForShape where vertices are
+// already available.
+
+function isDoorByKeyword(shapeId: string): boolean {
+  const doorKeywords = ['door', 'Door', 'DOOR', 'door-swing', 'door-leaf', 'swing', 'arc', 'threshold'];
+  return doorKeywords.some(kw => shapeId.includes(kw));
+}
+
+function isDoorByArcAngle(
+  vertices: Vec2[],
+  circleFit: CircleFit,
+): boolean {
+  if (vertices.length < 2) return false;
+  const start = vertices[0];
+  const end   = vertices[vertices.length - 1];
+  const startAngle = Math.atan2(start.y - circleFit.cy, start.x - circleFit.cx);
+  const endAngle   = Math.atan2(end.y   - circleFit.cy, end.x   - circleFit.cx);
+  let span = Math.abs(endAngle - startAngle);
+  if (span > Math.PI) span = 2 * Math.PI - span;
+  const deg = span * 180 / Math.PI;
+  return deg >= 60 && deg <= 120;
+}
+
+// ─── Snap point builder ───────────────────────────────────────────────────────
 
 const MID_COINCIDENCE_PX = 1.0;
 
@@ -478,85 +571,101 @@ function buildSnapPointsForShape(segs: Segment[], shapeId: string): RawPoint[] {
 
   const sw = segs[0].strokeWidth;
   const out: RawPoint[] = [];
-  
-  // Try to detect if this is a door
+
+  // ── Arc detection — always runs, even for oversized shapes ────────────────
+  // sampleArcPoints gives up to ARC_FIT_MAX_PTS regardless of segs.length,
+  // so a complex circular fixture (600+ segs) is never skipped.
   let circleFit: CircleFit | null = null;
   let isArc = false;
-  
+
   if (segs.length >= ARC_MIN_SEGS) {
-    const vertices = assembleChain(segs);
-    if (vertices && vertices.length >= 4) {
-      circleFit = fitCircleToPoints(vertices);
+    const arcPts = sampleArcPoints(segs);
+    if (arcPts.length >= 4) {
+      circleFit = fitCircleToPoints(arcPts);
       if (circleFit !== null && circleFit.rVar <= ARC_R_VAR_MAX) {
         isArc = true;
       }
     }
   }
-  
-  const isDoor = isDoorShape(shapeId, segs, circleFit);
+
+  // ── Door detection ────────────────────────────────────────────────────────
+  // Keyword check is cheap. Arc-angle check needs vertices — deferred until
+  // after chain assembly below to avoid assembling twice.
+  const doorByKeyword = isDoorByKeyword(shapeId);
 
   // ── Single segment ────────────────────────────────────────────────────────
   if (segs.length === 1) {
-    const seg = segs[0];
-    
-    if (isDoor) {
-      // For door segments: NO snap points
-      console.log(`[Door Filter] Single-segment door "${shapeId}" → filtering all points`);
-      return [];
-    }
-    
-    out.push({ ...seg.a, type: 'endpoint', strokeWidth: sw, shapeId });
-    out.push({ ...seg.b, type: 'endpoint', strokeWidth: sw, shapeId });
+    if (doorByKeyword) return []; // single-seg door: no snap points
+    out.push({ ...segs[0].a, type: 'endpoint', strokeWidth: sw, shapeId });
+    out.push({ ...segs[0].b, type: 'endpoint', strokeWidth: sw, shapeId });
     out.push({
-      x: (seg.a.x + seg.b.x) / 2,
-      y: (seg.a.y + seg.b.y) / 2,
+      x: (segs[0].a.x + segs[0].b.x) / 2,
+      y: (segs[0].a.y + segs[0].b.y) / 2,
       type: 'midpoint', strokeWidth: sw, shapeId,
     });
     return out;
   }
 
-  // ── Multi-segment: attempt chain ──────────────────────────────────────────
+  // ── Oversized shape: chain is skipped, arc-center only ───────────────────
+  // Chain assembly is capped at MAX_CHAIN_SEGS. For larger shapes we can still
+  // emit an arc-center if the sampled points fit a circle well.
+  if (segs.length > MAX_SEGS_FOR_CHAIN) {
+    if (isArc && circleFit !== null) {
+      if (!doorByKeyword) {
+        // Emit arc-center for large circular fixtures (toilets, spiral stairs…)
+        out.push({
+          x: circleFit.cx, y: circleFit.cy,
+          type: 'arc-center', strokeWidth: sw, shapeId,
+        });
+        console.log(`[Arc Detection] Large shape arc-center: shapeId=${shapeId} r=${circleFit.r.toFixed(1)} segs=${segs.length}`);
+      }
+    }
+    // No endpoints/midpoints for oversized shapes — too dense to be useful
+    return out;
+  }
+
+  // ── Normal path: attempt chain assembly ───────────────────────────────────
   const vertices = assembleChain(segs);
-  
+
   if (vertices !== null) {
     const start = vertices[0];
     const end   = vertices[vertices.length - 1];
 
-    // For doors: ONLY add arc-center point if it's an arc
-    if (isDoor && isArc && circleFit !== null) {
-      console.log(`[Door Filter] Door arc "${shapeId}" → ONLY arc-center point`);
-      out.push({
-        x: circleFit.cx, y: circleFit.cy,
-        type: 'arc-center', strokeWidth: sw, shapeId,
-      });
+    // Complete door detection: check arc angle now that vertices are available
+    const doorByAngle = (isArc && circleFit !== null)
+      ? isDoorByArcAngle(vertices, circleFit)
+      : false;
+    const isDoor = doorByKeyword || doorByAngle;
+
+    if (isDoor) {
+      if (isArc && circleFit !== null) {
+        // Door arc: emit ONLY the hinge point (arc center)
+        out.push({
+          x: circleFit.cx, y: circleFit.cy,
+          type: 'arc-center', strokeWidth: sw, shapeId,
+        });
+        console.log(`[Door Filter] Door arc "${shapeId}" (angle-detect=${doorByAngle}) → arc-center only`);
+      } else {
+        console.log(`[Door Filter] Non-arc door "${shapeId}" → no points`);
+      }
       return out;
     }
-    
-    // For doors that are not arcs: return empty (no points)
-    if (isDoor) {
-      console.log(`[Door Filter] Non-arc door "${shapeId}" → filtering all points`);
-      return [];
-    }
 
-    // For non-doors: emit standard points
-    // Always emit both terminal endpoints
-    out.push({ ...start, type: 'endpoint', strokeWidth: sw, shapeId });
-    out.push({ ...end,   type: 'endpoint', strokeWidth: sw, shapeId });
-
+    // Non-door arc: emit endpoints + arc-center
     if (isArc && circleFit !== null) {
-      // Non-door arc - emit arc-center
-      out.push({
-        x: circleFit.cx, y: circleFit.cy,
-        type: 'arc-center', strokeWidth: sw, shapeId,
-      });
+      out.push({ ...start, type: 'endpoint',   strokeWidth: sw, shapeId });
+      out.push({ ...end,   type: 'endpoint',   strokeWidth: sw, shapeId });
+      out.push({ x: circleFit.cx, y: circleFit.cy, type: 'arc-center', strokeWidth: sw, shapeId });
       console.log(`[Arc Detection] Non-door arc: shapeId=${shapeId} r=${circleFit.r.toFixed(1)}`);
       return out;
     }
 
-    // Non-arc chain: emit vertex midpoint
+    // Standard chain: endpoints + midpoint
+    out.push({ ...start, type: 'endpoint', strokeWidth: sw, shapeId });
+    out.push({ ...end,   type: 'endpoint', strokeWidth: sw, shapeId });
+
     const midIdx = Math.floor((vertices.length - 1) / 2);
     const mid    = vertices[midIdx];
-
     const midEqStart = Math.hypot(mid.x - start.x, mid.y - start.y) < MID_COINCIDENCE_PX;
     const midEqEnd   = Math.hypot(mid.x - end.x,   mid.y - end.y)   < MID_COINCIDENCE_PX;
     if (!midEqStart && !midEqEnd) {
@@ -565,19 +674,26 @@ function buildSnapPointsForShape(segs: Segment[], shapeId: string): RawPoint[] {
     return out;
   }
 
-  // ── Non-chain fallback (disconnected segments) ────────────────────────────
-  for (const seg of segs) {
-    if (isDoor) {
-      // Skip door segments entirely
-      continue;
-    }
-    out.push({ ...seg.a, type: 'endpoint', strokeWidth: sw, shapeId });
-    out.push({ ...seg.b, type: 'endpoint', strokeWidth: sw, shapeId });
+  // ── Non-chain fallback (disconnected / branching segments) ────────────────
+  // If arc-center was already determined above, emit it even without a chain
+  if (isArc && circleFit !== null && !doorByKeyword) {
     out.push({
-      x: (seg.a.x + seg.b.x) / 2,
-      y: (seg.a.y + seg.b.y) / 2,
-      type: 'midpoint', strokeWidth: sw, shapeId,
+      x: circleFit.cx, y: circleFit.cy,
+      type: 'arc-center', strokeWidth: sw, shapeId,
     });
+    return out;
+  }
+
+  if (!doorByKeyword) {
+    for (const seg of segs) {
+      out.push({ ...seg.a, type: 'endpoint', strokeWidth: sw, shapeId });
+      out.push({ ...seg.b, type: 'endpoint', strokeWidth: sw, shapeId });
+      out.push({
+        x: (seg.a.x + seg.b.x) / 2,
+        y: (seg.a.y + seg.b.y) / 2,
+        type: 'midpoint', strokeWidth: sw, shapeId,
+      });
+    }
   }
   return out;
 }
@@ -634,7 +750,7 @@ function dedup(rawPts: RawPoint[]): RawPoint[] {
   return out;
 }
 
-// ─── SVG segment parser with shapeId preservation ─────────────────────────────
+// ─── SVG segment parser ───────────────────────────────────────────────────────
 
 function parseSvgSegments(svgEl: Element): Segment[] {
   if (typeof window === 'undefined') return [];
@@ -645,8 +761,7 @@ function parseSvgSegments(svgEl: Element): Segment[] {
     const sw = resolveStrokeWidth(el);
     if (isDecorationElement(el, sw)) return;
 
-    // Preserve original ID or generate one
-    const id = el.id || el.getAttribute('data-id') || `shape-${autoId++}`;
+    const id  = el.id || el.getAttribute('data-id') || `shape-${autoId++}`;
     const ctm = getCTM(el, svgEl);
     const tag = el.tagName.toLowerCase();
 
@@ -676,11 +791,11 @@ function parseSvgSegments(svgEl: Element): Segment[] {
 // ─── Colour map for debug overlay ─────────────────────────────────────────────
 
 export const SVG_SNAP_COLOURS: Record<string, string> = {
-  endpoint:     'rgba(251, 191, 36, 0.90)',   // amber
-  midpoint:     'rgba(52,  211, 153, 0.80)',  // emerald
-  centroid:     'rgba(167, 139, 250, 0.85)',  // violet
-  intersection: 'rgba(248, 113, 113, 0.85)',  // red
-  'arc-center': 'rgba(34,  211, 238, 0.95)',  // cyan
+  endpoint:     'rgba(251, 191, 36, 0.90)',
+  midpoint:     'rgba(52,  211, 153, 0.80)',
+  centroid:     'rgba(167, 139, 250, 0.85)',
+  intersection: 'rgba(248, 113, 113, 0.85)',
+  'arc-center': 'rgba(34,  211, 238, 0.95)',
 };
 
 // ─── Main export ──────────────────────────────────────────────────────────────
@@ -704,7 +819,7 @@ export function useSvgSnapPoints(
     const svgEl = doc.querySelector('svg') as SVGSVGElement | null;
     if (!svgEl) return [];
 
-    const vbt = buildViewBoxTransform(svgEl, pdfW, pdfH);
+    const vbt     = buildViewBoxTransform(svgEl, pdfW, pdfH);
     const allSegs = parseSvgSegments(svgEl);
 
     const transformedSegs: Segment[] = allSegs.map(seg => ({
@@ -715,7 +830,7 @@ export function useSvgSnapPoints(
 
     if (transformedSegs.length === 0) return [];
 
-    // ── Group segments by shapeId ────────────────────────────────────────────
+    // Group segments by shapeId
     const byShape = new Map<string, Segment[]>();
     for (const seg of transformedSegs) {
       const arr = byShape.get(seg.shapeId) ?? [];
@@ -723,18 +838,14 @@ export function useSvgSnapPoints(
       byShape.set(seg.shapeId, arr);
     }
 
-    // ── Build snap points with door filtering ────────────────────────────────
     const raw: RawPoint[] = [];
 
     for (const [shapeId, segs] of byShape) {
-      // Pass shapeId to buildSnapPointsForShape for door detection
       raw.push(...buildSnapPointsForShape(segs, shapeId));
 
-      // Centroid for closed polygon shapes (skip for doors)
-      const isDoor = shapeId.toLowerCase().includes('door') || 
-                     shapeId.toLowerCase().includes('swing');
-      
-      if (!isDoor && segs.length >= 3) {
+      // Centroid for closed polygons — skip doors and oversized shapes
+      const isDoorShape = isDoorByKeyword(shapeId);
+      if (!isDoorShape && segs.length >= 3 && segs.length <= MAX_SEGS_FOR_CHAIN) {
         const vertices = assembleChain(segs);
         if (vertices !== null) {
           const head = vertices[0];
@@ -751,12 +862,11 @@ export function useSvgSnapPoints(
       }
     }
 
-    // ── Intersection snap points (skip for performance) ───────────────────────
-    if (transformedSegs.length <= 2000) {
+    // Intersection snap points — tightened cap to prevent O(n²) blowup
+    if (transformedSegs.length <= MAX_SEGS_FOR_INTERSECT) {
       raw.push(...computeIntersections(transformedSegs, transformedSegs));
     }
 
-    // ── Deduplicate and normalise to [0,1] ────────────────────────────────────
     const dedupedRaw = dedup(raw);
 
     const snapPoints: SvgSnapPoint[] = dedupedRaw
@@ -769,18 +879,15 @@ export function useSvgSnapPoints(
         shapeId,
       }));
 
-    // Count breakdown for logging
     const typeCounts = snapPoints.reduce((acc, p) => {
       acc[p.type] = (acc[p.type] || 0) + 1; return acc;
     }, {} as Record<string, number>);
 
-    const doorCount = Array.from(byShape.keys()).filter(id => 
-      id.toLowerCase().includes('door') || id.toLowerCase().includes('swing')
-    ).length;
+    const doorCount = Array.from(byShape.keys()).filter(id => isDoorByKeyword(id)).length;
 
     console.log(
-      `[useSvgSnapPoints] Extracted ${snapPoints.length} snap points ` +
-      `(${transformedSegs.length} segments, ${byShape.size} shapes, ${doorCount} doors detected) — ` +
+      `[useSvgSnapPoints] ${snapPoints.length} snap points ` +
+      `(${transformedSegs.length} segs, ${byShape.size} shapes, ${doorCount} keyword-doors) — ` +
       Object.entries(typeCounts).map(([k,v]) => `${k}:${v}`).join(' '),
     );
 

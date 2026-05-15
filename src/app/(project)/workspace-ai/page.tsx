@@ -1,762 +1,615 @@
-// ─── workspace/page.tsx ───────────────────────────────────────────────────────
-
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
-import { Sidebar } from '@/components/Sidebar';
-import { Navbar } from '@/components/Navbar';
-import dynamic from 'next/dynamic';
-import type { ViewerToolbarAPI } from '@/components/Viewer';
-import { Material, TakeoffRow, ToolType } from '@/types';
+// ─── app/svg-compare/page.tsx — Redesigned ───────────────────────────────────
+//
+// DESIGN:
+//   • Dark industrial UI everywhere (bg, sidebar, toolbar, status bar)
+//     — matches the Viewer.tsx aesthetic (bg-industrial-black, zinc palette,
+//       font-mono, uppercase tracking-widest, 10px labels)
+//   • Canvas only: warm white (#FAF9F7) with dot grid — drawings read on white
+//   • Room fills: vivid high-chroma palette, fill-opacity reset to 1 on each
+//     element, single layer-opacity multiplier. No double-stacking.
+//   • Per-room color swatch in sidebar list matches canvas fill exactly.
+//   • Room fill opacity: dedicated slider with gradient track in sidebar.
+// ─────────────────────────────────────────────────────────────────────────────
 
-
-const Viewer = dynamic(
-  () => import('@/components/Viewer').then(m => m.Viewer),
-  { ssr: false }
-);
-
-import { TakeoffTable } from '@/components/TakeoffTable';
-import { MaterialLibrary } from '@/components/MaterialLibrary';
-import { ExportModal } from '@/components/ExportModal';
-import { ToastContainer } from '@/components/Toast';
-import { PresetTemplate } from '@/components/presets/PresetTemplates';
-import { useTakeoffContext } from '@/context/TakeoffContext';
+import React, {
+  useState, useEffect, useRef, useCallback,
+} from 'react';
 import {
-  PanelRightClose,
-  Sidebar as SidebarIcon,
-  ZoomIn,
-  ZoomOut,
-  Maximize,
-  Target,
-  Settings2,
+  Eye, EyeOff, Upload, BarChart2,
+  ZoomIn, ZoomOut, Maximize2, Info, Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { AnimatePresence } from 'motion/react';
 
-// ─── Stable color palette for presets ────────────────────────────────────────
-const PRESET_COLORS = [
-  '#EF9F27', '#85B7EB', '#7EC8A4', '#E07B7B', '#B07BE0',
-  '#E0C47B', '#7BE0D4', '#E07BB0', '#9BE07B', '#7B9BE0',
-];
-let colorIndex = 0;
-const getPresetColor = () => PRESET_COLORS[colorIndex++ % PRESET_COLORS.length];
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-// ─── Safe row builder — ensures every required TakeoffRow field is present ────
-function buildRow(overrides: Partial<TakeoffRow> & { id: string; drawingId: string }): TakeoffRow {
-  return {
-    label:         '',
-    description:   'Untitled',
-    type:          'Length',
-    quantity:      0,
-    unit:          'm',
-    unitRate:      0,
-    notes:         '',
-    points:        [],
-    isOverridden:  false,
-    childIds:      [],
-    color:         '#EF9F27',
-    isVisible:     true,
-    isGroupHeader: false,
-    ...overrides,
-  };
+interface RoomSummary  { face_id: number; area: number; centroid: [number, number]; n_walls: number; }
+interface WallSummary  { wall_id: string; orientation: 'H' | 'V' | 'D'; length: number; compass: string; }
+interface GroupSummary { group_id: number; count: number; signature: number[]; template: { face_id: number; area: number }; }
+
+interface Report {
+  source:  string;
+  summary: { elements_parsed: number; segments_final: number; rooms: number; walls: number; shape_groups: number; };
+  rooms:   RoomSummary[];
+  walls:   WallSummary[];
+  groups:  GroupSummary[];
 }
 
-export default function Workspace() {
-  const router = useRouter();
+// ─── Room fill palette — vivid, high-chroma, clearly distinct ────────────────
+// fill-opacity on each element is reset to 1.
+// Only the layer group opacity controls overall transparency — no double-stacking.
 
-  const {
-    projectState: ps,
-    setProjectState,
-    activeTool,
-    setActiveTool,
-    selectedId,
-    setSelectedId,
-    addDrawing,
-    setActiveDrawingId,
-    updateDrawingScale,
-    addMeasurement,
-    updateMeasurement,
-    deleteMeasurement,
-    clearAll,
-    toggleVisibility,
-    updateProjectMeta,
-  } = useTakeoffContext();
+const ROOM_PALETTE = [
+  '#7C3AED', // violet
+  '#0284C7', // sky
+  '#059669', // emerald
+  '#D97706', // amber
+  '#DC2626', // red
+  '#9333EA', // purple
+  '#0891B2', // cyan
+  '#16A34A', // green
+  '#EA580C', // orange
+  '#0EA5E9', // light blue
+  '#CA8A04', // yellow
+  '#C026D3', // fuchsia
+];
 
-  const [leftCollapsed, setLeftCollapsed]             = useState(true);
-  const [rightCollapsed, setRightCollapsed]           = useState(false);
-  const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
-  const [showExportModal, setShowExportModal]         = useState(false);
-  const [showPresetDrawer, setShowPresetDrawer]       = useState(false);
-  const [toasts, setToasts]                           = useState<any[]>([]);
-  const [isMounted, setIsMounted]                     = useState(false);
-  const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
+function getRoomColor(index: number) {
+  return ROOM_PALETTE[index % ROOM_PALETTE.length];
+}
 
-  const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
+// ─── Annotation layers ────────────────────────────────────────────────────────
 
-  useEffect(() => { setIsMounted(true); }, []);
+const ANNOT_LAYERS = [
+  { id: 'rooms',       label: 'Room fills',   color: '#7C3AED' },
+  { id: 'walls',       label: 'Wall lines',   color: '#60a5fa' },
+  { id: 'room-labels', label: 'Room labels',  color: '#34d399' },
+  { id: 'wall-labels', label: 'Wall labels',  color: '#fbbf24' },
+  { id: 'legend',      label: 'Legend',       color: '#f87171' },
+] as const;
+type AnnotLayerId = typeof ANNOT_LAYERS[number]['id'];
 
-  // ── Fix existing groups with mismatched types ───────────────────────────────
-  useEffect(() => {
-    ps.measurements
-      .filter(m => m.isGroupHeader && m.childIds && m.childIds.length > 0)
-      .forEach(group => {
-        const firstChild = ps.measurements.find(c => c.id === group.childIds?.[0]);
-        if (firstChild && group.type !== firstChild.type) {
-          updateMeasurement(group.id, { type: firstChild.type });
-        }
-      });
-  }, [ps.measurements, updateMeasurement]);
+const ORIENT_COLOR: Record<string, string> = { H: '#60a5fa', V: '#f87171', D: '#34d399' };
 
-  // ── Derived values ──────────────────────────────────────────────────────────
-  const activeDrawing = useMemo(
-    () => ps.drawings.find((d: { id: any }) => d.id === ps.activeDrawingId) || null,
-    [ps.drawings, ps.activeDrawingId],
-  );
+function formatArea(a: number) {
+  return a >= 1000 ? `${(a / 1000).toFixed(2)}k` : a.toFixed(0);
+}
 
-  const currentScaleFactor = useMemo(
-    () => (activeDrawing ? activeDrawing.scaleFactor : 1),
-    [activeDrawing],
-  );
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-  const activeMeasurements = useMemo(
-    () => ps.measurements.filter((m: { drawingId: any }) => m.drawingId === ps.activeDrawingId),
-    [ps.measurements, ps.activeDrawingId],
-  );
+function readFileAsText(file: File): Promise<string> {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload  = () => res(r.result as string);
+    r.onerror = rej;
+    r.readAsText(file);
+  });
+}
 
-  const toolbarAPIRef = useRef<ViewerToolbarAPI | null>(null);
-  useEffect(() => { toolbarAPIRef.current = toolbarAPI; }, [toolbarAPI]);
+function namespaceIds(svgString: string, prefix: string): string {
+  let out = svgString.replace(/\bid="([^"]+)"/g, `id="${prefix}-$1"`);
+  out = out.replace(/url\(#([^)]+)\)/g, `url(#${prefix}-$1)`);
+  out = out.replace(/(xlink:href|href)="#([^"]+)"/g, `$1="#${prefix}-$2"`);
+  return out;
+}
 
-  // ── Toast helper ────────────────────────────────────────────────────────────
-  const addToast = useCallback((message: string, type: 'success' | 'info' = 'info') => {
-    const id = Math.random().toString(36).substr(2, 9);
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
-  }, []);
+/**
+ * Re-colorise every filled shape inside the room layer with vivid palette colors.
+ * Resets fill-opacity + opacity to 1 on each element so only the layer-level
+ * opacity (set separately) controls transparency. No double-stacking.
+ */
+function coloriseRoomFills(svg: SVGSVGElement, prefix: string) {
+  const roomLayer = svg.getElementById(`${prefix}-layer-rooms`);
+  if (!roomLayer) return;
 
-  // ── Carcass preset generator ────────────────────────────────────────────────
-  const generateGroupedCarcassMeasurements = useCallback((
-    data: Record<string, any>,
-    template: PresetTemplate,
-    drawingId: string,
-    groupId: string,
-  ): { measurements: Partial<TakeoffRow>[]; groupName: string } => {
-    const measurements: Partial<TakeoffRow>[] = [];
+  const shapes = Array.from(
+    roomLayer.querySelectorAll('polygon, path, rect, circle, ellipse'),
+  ).filter(el => {
+    const fill = el.getAttribute('fill');
+    return fill && fill !== 'none' && fill !== 'transparent';
+  });
 
-    const W     = parseFloat(data.width          ?? 600) / 1000;
-    const H     = parseFloat(data.height         ?? 720) / 1000;
-    const D     = parseFloat(data.depth          ?? 550) / 1000;
-    const T     = parseFloat(data.panelThickness ?? 18)  / 1000;
-    const shelves   = parseInt(data.shelfCount ?? 2);
-    const doorCount = parseInt(data.doorCount  ?? 1);
+  shapes.forEach((el, i) => {
+    (el as SVGElement).setAttribute('fill', getRoomColor(i));
+    (el as SVGElement).setAttribute('fill-opacity', '1');
+    (el as SVGElement).setAttribute('opacity', '1');
+  });
+}
 
-    const iW = W - 2 * T;
-    const iH = H - 2 * T;
+function parseSvg(
+  raw: string,
+  idPrefix: string,
+  isAnnotated: boolean,
+): SVGSVGElement | null {
+  const namespacedRaw = namespaceIds(raw, idPrefix);
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(namespacedRaw, 'image/svg+xml');
+  if (doc.querySelector('parsererror')) return null;
 
-    const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
+  const svg = doc.querySelector('svg');
+  if (!svg) return null;
 
-    if (data.hasBack !== false)      measurements.push({ description: 'Back Panel',      type: 'Area',   quantity: +(iW * iH).toFixed(3),         unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasTop  !== false)      measurements.push({ description: 'Top Panel',       type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasBottom !== false)    measurements.push({ description: 'Bottom Panel',    type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasLeftSide  !== false) measurements.push({ description: 'Left Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasRightSide !== false) measurements.push({ description: 'Right Side Panel',type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+  svg.setAttribute('width',  '100%');
+  svg.setAttribute('height', '100%');
+  svg.style.width    = '100%';
+  svg.style.height   = '100%';
+  svg.style.position = 'absolute';
+  svg.style.inset    = '0';
+  svg.style.backgroundColor = 'transparent';
 
-    if (shelves > 0) measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
+  if (!isAnnotated) {
+    svg.querySelectorAll('*').forEach(el => {
+      if (!(el instanceof SVGElement)) return;
+      const fill   = el.getAttribute('fill');
+      const stroke = el.getAttribute('stroke');
+      if (fill   && ['#000', '#000000', 'black'].includes(fill))   el.setAttribute('fill',   '#1C1917');
+      if (stroke && ['#000', '#000000', 'black'].includes(stroke)) el.setAttribute('stroke', '#1C1917');
+    });
+  } else {
+    coloriseRoomFills(svg as SVGSVGElement, idPrefix);
 
-    if (data.hasDoors) {
-      const doorArea = (W / doorCount) * H * doorCount;
-      measurements.push({ description: `Doors (${doorCount} pcs)`,  type: 'Area',  quantity: +doorArea.toFixed(3), unit: 'm²',   notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors',     isOverridden: true });
-      measurements.push({ description: 'Door Hardware',               type: 'Count', quantity: doorCount,            unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,       category: 'Hardware',  isOverridden: true });
-    }
-    if (data.hasDrawers) {
-      const drawerCount = parseInt(data.drawerCount ?? 2);
-      measurements.push({ description: `Drawer Fronts (${drawerCount} pcs)`, type: 'Count', quantity: drawerCount, unit: 'pcs',  notes: `Material: ${data.drawerMaterial || 'Match doors'}`, category: 'Drawers',  isOverridden: true });
-      measurements.push({ description: 'Drawer Hardware',                      type: 'Count', quantity: drawerCount, unit: 'sets', notes: `Drawer slides (1 pair per drawer), handles`,          category: 'Hardware', isOverridden: true });
-    }
+    // Single opacity on the layer — vivid colors at 55% are clearly readable
+    const roomLayer = svg.getElementById(`${idPrefix}-layer-rooms`);
+    if (roomLayer) roomLayer.setAttribute('opacity', '0.55');
 
-    let edgeBanding = 0;
-    if (data.hasTop      !== false) edgeBanding += 2 * (iW + D);
-    if (data.hasBottom   !== false) edgeBanding += 2 * (iW + D);
-    if (data.hasLeftSide !== false) edgeBanding += 2 * (D + H);
-    if (data.hasRightSide!== false) edgeBanding += 2 * (D + H);
-    if (shelves > 0)                edgeBanding += (2 * iW + D) * shelves;
-
-    if (edgeBanding > 0) measurements.push({ description: 'Edge Banding', type: 'Length', quantity: +(edgeBanding * 1.1).toFixed(2), unit: 'm', notes: `Material: ${data.edgeTape || 'PVC 0.4mm'} | All exposed edges +10% waste`, category: 'Finishing', isOverridden: true });
-
-    measurements.push({ description: 'Assembly & Installation', type: 'Count', quantity: 1, unit: 'each', notes: `Labor, cam locks, fixing brackets, assembly hardware`, category: 'Labor', isOverridden: true });
-
-    if (data.hasToeKick) measurements.push({ description: 'Toe Kick / Plinth', type: 'Length', quantity: W, unit: 'm', notes: `Material: ${data.kickboardMaterial || 'Same as carcass'} | Height: ${data.kickboardHeight || '100mm'}`, category: 'Finishing', isOverridden: true });
-
-    return { measurements, groupName };
-  }, []);
-
-  // ── Preset select handler ───────────────────────────────────────────────────
-  const handlePresetSelect = useCallback((data: Record<string, any>, template: PresetTemplate) => {
-    if (!activeDrawing) {
-      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
-      return;
-    }
-
-    const groupId    = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    const groupColor = getPresetColor();
-
-    if (template.id === 'carcass') {
-      const { measurements, groupName } = generateGroupedCarcassMeasurements(data, template, activeDrawing.id, groupId);
-
-      const headerId = `${groupId}-header`;
-
-      const childRows: TakeoffRow[] = measurements.map((m, i) =>
-        buildRow({
-          id:          `${groupId}-child-${i}-${Date.now()}`,
-          drawingId:   activeDrawing.id,
-          groupId,
-          parentId:    headerId,
-          label:       m.description || '',
-          description: m.description || '',
-          type:        m.type        || 'Length',
-          quantity:    m.quantity    ?? 0,
-          unit:        m.unit        || 'm',
-          unitRate:    0,
-          notes:       m.notes       || '',
-          isOverridden: true,
-          category:    m.category,
-          presetData:  data,
-          presetId:    template.id,
-          color:       groupColor,
-          isVisible:   true,
-        }),
-      );
-
-      const headerRow = buildRow({
-        id:            headerId,
-        drawingId:     activeDrawing.id,
-        groupId,
-        groupName,
-        groupType:     template.id,
-        isGroupHeader: true,
-        isExpanded:    true,
-        childIds:      childRows.map(c => c.id),
-        label:         groupName,
-        description:   groupName,
-        type:          'Count',
-        quantity:      1,
-        unit:          'assembly',
-        unitRate:      0,
-        notes:         `Complete ${template.name.toLowerCase()} assembly`,
-        isOverridden:  true,
-        presetId:      template.id,
-        presetData:    data,
-        category:      'Group Header',
-        color:         groupColor,
-        isVisible:     true,
-      });
-
-      addMeasurement(headerRow);
-      childRows.forEach(row => addMeasurement(row));
-
-      addToast(`${groupName} ADDED (${childRows.length} components)`, 'success');
-
-    } else {
-      let quantity = 0;
-      let unit     = 'm';
-
-      switch (template.measurementType) {
-        case 'linear':
-          quantity = parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
-          unit = 'm';
-          break;
-        case 'area':
-          quantity = parseFloat(data.area ?? data.roofArea ?? 0)
-            || (parseFloat(data.width ?? 0) * parseFloat(data.height ?? 0)) / 1e6
-            || 0;
-          unit = 'm²';
-          break;
-        case 'count':
-          quantity = parseInt(data.quantity ?? data.doorCount ?? data.windowCount ?? 1);
-          unit = 'pcs';
-          break;
-        default:
-          quantity = 0;
-      }
-
-      addMeasurement(buildRow({
-        id:          `${activeDrawing.id}-preset-${Date.now()}`,
-        drawingId:   activeDrawing.id,
-        label:       template.name,
-        description: template.name,
-        type:        template.measurementType === 'linear' ? 'Length'
-                   : template.measurementType === 'area'   ? 'Area'
-                   : 'Count',
-        quantity,
-        unit,
-        unitRate:    0,
-        notes:       `Preset: ${template.name} · ${template.category}`,
-        isOverridden: true,
-        presetData:  data,
-        presetId:    template.id,
-        color:       groupColor,
-        isVisible:   true,
-      }));
-
-      addToast(`${template.name.toUpperCase()} ADDED`, 'success');
-    }
-  }, [activeDrawing, addMeasurement, addToast, generateGroupedCarcassMeasurements]);
-
-  // ── Group append handlers ───────────────────────────────────────────────────
-  const handleAddSegmentToGroup = useCallback((groupId: string, groupType: string) => {
-    setAppendToGroupId(groupId);
-    const toolMap: Record<string, ToolType> = {
-      'Length':    'linear',
-      'Polygon':   'polygon',
-      'Rectangle': 'rectangle',
-      'Count':     'count',
-      'Point':     'point',
-    };
-    const newTool = toolMap[groupType] || 'linear';
-    setActiveTool(newTool);
-    addToast(`ADDING TO GROUP: Use ${newTool} tool to draw new item`, 'info');
-  }, [setActiveTool, addToast]);
-
-  const handleAppendComplete = useCallback(() => {
-    setAppendToGroupId(null);
-  }, []);
-
-  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
-      switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear'    as ToolType); break;
-        case 'a': setActiveTool('area'      as ToolType); break;
-        case 'c': setActiveTool('count'     as ToolType); break;
-        case 'p': setActiveTool('point'     as ToolType); break;
-        case 'v': setActiveTool('select'    as ToolType); break;
-        case 'escape': setActiveTool('select' as ToolType); break;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [setActiveTool]);
-
-  // ── onAddMeasurement ────────────────────────────────────────────────────────
-  const handleAddMeasurement = useCallback((m: any) => {
-    if (!activeDrawing) {
-      addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
-      return;
-    }
-    addMeasurement(buildRow({
-      id:            m.id            || crypto.randomUUID(),
-      drawingId:     activeDrawing.id,
-      label:         m.label         ?? '',
-      description:   m.description   || 'Untitled Measurement',
-      type:          m.type          || 'Length',
-      quantity:      m.quantity      ?? 0,
-      unit:          m.unit          || 'm',
-      unitRate:      m.unitRate      ?? 0,
-      notes:         m.notes         || '',
-      points:        m.points        || [],
-      isOverridden:  m.isOverridden  ?? false,
-      childIds:      m.childIds      || [],
-      color:         m.color         || '#EF9F27',
-      isVisible:     m.isVisible     ?? true,
-      isGroupHeader: m.isGroupHeader || false,
-      parentId:      m.parentId,
-      groupId:       m.groupId,
-      groupName:     m.groupName,
-      groupType:     m.groupType,
-      presetData:    m.presetData,
-      presetId:      m.presetId,
-      category:      m.category,
-      icon:          m.icon,
-    }));
-  }, [activeDrawing, addMeasurement, addToast]);
-
-  const handleExport = useCallback(() => setShowExportModal(true), []);
-
-  // ── executeExport now accepts the filename from the modal ──────────────────
-  const executeExport = useCallback((filename: string) => {
-    fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }), // ← sends the user's chosen filename
-    })
-      .then(async res => {
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: res.statusText }));
-          throw new Error(err.details || err.error || `HTTP ${res.status}`);
-        }
-
-        // Use the filename the user typed, falling back to Content-Disposition
-        const disposition = res.headers.get('Content-Disposition');
-        const match       = disposition?.match(/filename="(.+)"/);
-        const finalName   = filename || match?.[1] || `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
-
-        const blob = await res.blob();
-        return { blob, filename: finalName };
-      })
-      .then(({ blob, filename: finalName }) => {
-        const url = URL.createObjectURL(blob);
-        const a   = document.createElement('a');
-        a.href     = url;
-        a.download = finalName;
-        a.click();
-        URL.revokeObjectURL(url);
-        addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
-        setShowExportModal(false);
-      })
-      .catch(err => {
-        console.error('Export failed:', err);
-        addToast(`EXPORT FAILED — ${err.message}`, 'info');
-      });
-  }, [addToast]);
-
-  const handleScaleSet = useCallback((f: number) => {
-    if (activeDrawing) {
-      updateDrawingScale(activeDrawing.id, f);
-      addToast(`SCALE CALIBRATED: 1px = ${f.toFixed(4)}u`, 'info');
-    }
-  }, [activeDrawing, updateDrawingScale, addToast]);
-
-  const handleToolbarReady = useCallback((api: ViewerToolbarAPI) => {
-    setToolbarAPI(api);
-  }, []);
-
-  const api = toolbarAPI;
-
-  if (!isMounted) {
-    return (
-      <div className="flex flex-col h-screen bg-industrial-black">
-        <Navbar
-          projectName={ps.projectName}
-          onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
-          onExport={handleExport}
-          onOpenPresets={() => setShowPresetDrawer(true)}
-        />
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
-            <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
-              LOADING WORKSPACE...
-            </span>
-          </div>
-        </div>
-      </div>
-    );
+    const wallLayer = svg.getElementById(`${idPrefix}-layer-walls`);
+    if (wallLayer) wallLayer.setAttribute('opacity', '0.9');
   }
 
+  return svg as SVGSVGElement;
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function SvgComparePage() {
+
+  const [originalSvgRaw,  setOriginalSvgRaw]  = useState<string | null>(null);
+  const [annotatedSvgRaw, setAnnotatedSvgRaw] = useState<string | null>(null);
+  const [report,          setReport]          = useState<Report | null>(null);
+  const [originalName,    setOriginalName]    = useState('original.svg');
+  const [annotatedName,   setAnnotatedName]   = useState('annotated.svg');
+
+  const [origVisible,  setOrigVisible]  = useState(true);
+  const [annotVisible, setAnnotVisible] = useState(true);
+  const [origOpacity,  setOrigOpacity]  = useState(1);
+  const [annotOpacity, setAnnotOpacity] = useState(1);
+  const [roomFillOpacity, setRoomFillOpacity] = useState(55);
+
+  const [annotLayers, setAnnotLayers] = useState<Record<AnnotLayerId, boolean>>({
+    'rooms':       true,
+    'walls':       true,
+    'room-labels': true,
+    'wall-labels': false,
+    'legend':      true,
+  });
+
+  const [zoom,       setZoom]       = useState(1);
+  const [pan,        setPan]        = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  const dragStart = useRef({ mx: 0, my: 0, px: 0, py: 0 });
+
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [activeTab,   setActiveTab]   = useState<'rooms' | 'walls' | 'groups'>('rooms');
+
+  const origContainerRef  = useRef<HTMLDivElement>(null);
+  const annotContainerRef = useRef<HTMLDivElement>(null);
+
+  // ── Inject original SVG ────────────────────────────────────────────────────
+
+  useEffect(() => {
+    const c = origContainerRef.current;
+    if (!c) return;
+    c.innerHTML = '';
+    if (!originalSvgRaw) return;
+    const svg = parseSvg(originalSvgRaw, 'orig', false);
+    if (svg) c.appendChild(svg);
+  }, [originalSvgRaw]);
+
+  // ── Inject annotated SVG ───────────────────────────────────────────────────
+
+  useEffect(() => {
+    const c = annotContainerRef.current;
+    if (!c) return;
+    c.innerHTML = '';
+    if (!annotatedSvgRaw) return;
+    const svg = parseSvg(annotatedSvgRaw, 'annot', true);
+    if (svg) {
+      c.appendChild(svg);
+      ANNOT_LAYERS.forEach(({ id }) => {
+        const el = svg.getElementById(`annot-layer-${id}`);
+        if (el) el.style.display = annotLayers[id] ? '' : 'none';
+      });
+      const roomLayer = svg.getElementById('annot-layer-rooms');
+      if (roomLayer) roomLayer.setAttribute('opacity', String(roomFillOpacity / 100));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotatedSvgRaw]);
+
+  // ── Sync annotation layer visibility ──────────────────────────────────────
+
+  useEffect(() => {
+    const svg = annotContainerRef.current?.querySelector('svg');
+    if (!svg) return;
+    ANNOT_LAYERS.forEach(({ id }) => {
+      const el = svg.getElementById(`annot-layer-${id}`);
+      if (el) el.style.display = annotLayers[id] ? '' : 'none';
+    });
+  }, [annotLayers]);
+
+  // ── Room fill opacity live-sync ────────────────────────────────────────────
+
+  useEffect(() => {
+    const svg = annotContainerRef.current?.querySelector('svg');
+    if (!svg) return;
+    const layer = svg.getElementById('annot-layer-rooms');
+    if (layer) layer.setAttribute('opacity', String(roomFillOpacity / 100));
+  }, [roomFillOpacity]);
+
+  // ── Upload handlers ────────────────────────────────────────────────────────
+
+  const handleOrigUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setOriginalName(file.name);
+    setOriginalSvgRaw(await readFileAsText(file));
+  }, []);
+
+  const handleAnnotUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    setAnnotatedName(file.name);
+    setAnnotatedSvgRaw(await readFileAsText(file));
+  }, []);
+
+  const handleReportUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    try { setReport(JSON.parse(await readFileAsText(file)) as Report); } catch { /* ignore */ }
+  }, []);
+
+  const toggleAnnotLayer = (id: AnnotLayerId) =>
+    setAnnotLayers(prev => ({ ...prev, [id]: !prev[id] }));
+
+  // ── Pan / zoom ─────────────────────────────────────────────────────────────
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    e.preventDefault();
+    setZoom(z => Math.min(10, Math.max(0.1, z * (e.deltaY > 0 ? 0.9 : 1.1))));
+  }, []);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    setIsDragging(true);
+    dragStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, [pan]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isDragging) return;
+    setPan({ x: dragStart.current.px + e.clientX - dragStart.current.mx, y: dragStart.current.py + e.clientY - dragStart.current.my });
+  }, [isDragging]);
+
+  const handlePointerUp = useCallback(() => setIsDragging(false), []);
+  const resetView = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  const hasAny = !!originalSvgRaw || !!annotatedSvgRaw;
+  const stats  = report?.summary;
+
+  // ─────────────────────────────────────────────────────────────────────────
+
   return (
-    <div className="flex flex-col h-screen overflow-hidden bg-industrial-black">
+    <div className="flex flex-col h-screen overflow-hidden bg-industrial-black font-mono text-zinc-300">
 
-      <Navbar
-        projectName={ps.projectName}
-        onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
-        onExport={handleExport}
-        onOpenPresets={() => setShowPresetDrawer(true)}
-      />
+      {/* ── Toolbar — matches Viewer.tsx header style ─────────────────────── */}
+      <header className="flex-shrink-0 h-11 bg-industrial-panel border-b border-industrial-border flex items-center px-4 gap-2 z-50 shadow-sm">
 
-      <div className="flex flex-1 overflow-hidden mt-14">
-
-        <Sidebar
-          isCollapsed={leftCollapsed}
-          projectState={{ ...ps, activeDrawingId: ps.activeDrawingId ?? undefined }}
-          onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
-          onOpenMaterialLibrary={() => setShowMaterialLibrary(true)}
-          onDrawingAdded={addDrawing}
-          onSelectDrawing={setActiveDrawingId}
-          onUpdateProjectMeta={updateProjectMeta}
-        />
-
-        <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
-          <button
-            onClick={() => setLeftCollapsed(!leftCollapsed)}
-            className="bg-industrial-panel border border-industrial-border p-1.5 text-zinc-500 hover:text-amber-accent transition-colors shadow-lg"
-            title={leftCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
-          >
-            <SidebarIcon className={cn('w-4 h-4 transition-transform', leftCollapsed && 'rotate-180')} />
-          </button>
+        <div className="flex items-center gap-2 mr-2 flex-shrink-0">
+          <div className="w-5 h-5 bg-zinc-700 border border-zinc-600 flex items-center justify-center">
+            <Layers className="w-3 h-3 text-zinc-300" />
+          </div>
+          <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">SVG Viewer</span>
         </div>
 
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+        <div className="w-px h-4 bg-industrial-border flex-shrink-0" />
 
-          {/* Viewer toolbar */}
-          <div className="flex-shrink-0 h-12 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-4 z-30 shadow-sm">
+        <label className="flex items-center gap-1.5 px-2.5 py-1 border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 cursor-pointer text-[9px] uppercase tracking-widest transition-all">
+          <Upload className="w-3 h-3" /> Original
+          <input type="file" accept=".svg" className="hidden" onChange={handleOrigUpload} />
+        </label>
 
-            <div className="flex gap-1 flex-shrink-0">
-              {api?.tools.map(tool => (
-                <button
-                  key={tool.id}
-                  onClick={() => api.setActiveTool(tool.id as any)}
-                  className={cn(
-                    'w-9 h-9 flex items-center justify-center transition-all relative group border',
-                    api.activeTool === tool.id
-                      ? 'bg-zinc-800 border-amber-400 text-amber-400'
-                      : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
-                  )}
-                  title={`${tool.label} (${tool.shortcut})`}
-                >
-                  <tool.icon className="w-4 h-4" />
-                  <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-                    {tool.label} [{tool.shortcut}]
-                  </div>
-                </button>
-              ))}
+        <label className="flex items-center gap-1.5 px-2.5 py-1 border border-amber-500/50 text-amber-400 hover:bg-amber-500/10 hover:border-amber-400 cursor-pointer text-[9px] uppercase tracking-widest transition-all">
+          <Upload className="w-3 h-3" /> Annotated
+          <input type="file" accept=".svg" className="hidden" onChange={handleAnnotUpload} />
+        </label>
+
+        <label className="flex items-center gap-1.5 px-2.5 py-1 border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 cursor-pointer text-[9px] uppercase tracking-widest transition-all">
+          <BarChart2 className="w-3 h-3" /> Report
+          <input type="file" accept=".json" className="hidden" onChange={handleReportUpload} />
+        </label>
+
+        <div className="w-px h-4 bg-industrial-border flex-shrink-0" />
+
+        {/* Layer visibility + opacity */}
+        {[
+          { label: originalName.replace(/\.svg$/i, ''), color: '#60a5fa', visible: origVisible, setV: setOrigVisible, opacity: origOpacity, setO: setOrigOpacity },
+          { label: annotatedName.replace(/\.svg$/i, ''), color: '#fbbf24', visible: annotVisible, setV: setAnnotVisible, opacity: annotOpacity, setO: setAnnotOpacity },
+        ].map(({ label, color, visible, setV, opacity, setO }) => (
+          <div key={label} className="flex items-center gap-1.5">
+            <button
+              onClick={() => setV(!visible)}
+              className={cn(
+                'flex items-center gap-1.5 px-2 py-1 border text-[9px] uppercase tracking-widest transition-all',
+                visible ? 'border-zinc-600 text-zinc-300' : 'border-zinc-800 text-zinc-600 opacity-50',
+              )}
+            >
+              <span className="w-2 h-2 rounded-sm inline-block" style={{ backgroundColor: color }} />
+              <span className="max-w-[72px] truncate">{label}</span>
+              {visible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+            </button>
+            <input
+              type="range" min={0} max={100} step={1}
+              value={Math.round(opacity * 100)}
+              onChange={e => setO(+e.target.value / 100)}
+              className="w-14 accent-zinc-400"
+            />
+            <span className="text-[9px] text-zinc-600 w-7">{Math.round(opacity * 100)}%</span>
+          </div>
+        ))}
+
+        <div className="flex-1" />
+
+        <button onClick={() => setZoom(z => Math.max(0.1, z - 0.2))} className="p-1 text-zinc-500 hover:text-zinc-200 transition-colors"><ZoomOut className="w-3.5 h-3.5" /></button>
+        <span className="text-[9px] text-zinc-500 w-10 text-center">{Math.round(zoom * 100)}%</span>
+        <button onClick={() => setZoom(z => Math.min(10, z + 0.2))} className="p-1 text-zinc-500 hover:text-zinc-200 transition-colors"><ZoomIn className="w-3.5 h-3.5" /></button>
+        <button onClick={resetView} className="p-1 text-zinc-500 hover:text-zinc-200 transition-colors" title="Reset view"><Maximize2 className="w-3.5 h-3.5" /></button>
+
+        <div className="w-px h-4 bg-industrial-border" />
+
+        <button
+          onClick={() => setSidebarOpen(s => !s)}
+          className="p-1.5 text-zinc-500 hover:text-amber-400 border border-zinc-800 hover:border-zinc-600 transition-all"
+        >
+          <Layers className="w-3.5 h-3.5" />
+        </button>
+      </header>
+
+      {/* ── Stats bar ─────────────────────────────────────────────────────── */}
+      {stats && (
+        <div className="flex-shrink-0 h-7 bg-industrial-black border-b border-industrial-border flex items-center px-5 gap-6">
+          {[
+            ['Elements', stats.elements_parsed.toLocaleString()],
+            ['Segments', stats.segments_final.toLocaleString()],
+            ['Rooms',    String(stats.rooms)],
+            ['Walls',    stats.walls.toLocaleString()],
+            ['Groups',   String(stats.shape_groups)],
+          ].map(([label, value]) => (
+            <div key={label} className="flex items-center gap-1.5">
+              <span className="text-[8px] text-zinc-600 uppercase tracking-widest">{label}:</span>
+              <span className="text-[9px] text-amber-400 font-bold">{value}</span>
             </div>
+          ))}
+        </div>
+      )}
 
-            <div className="flex items-center gap-2 flex-1 justify-center flex-wrap mx-4">
+      {/* ── Main ─────────────────────────────────────────────────────────── */}
+      <div className="flex flex-1 overflow-hidden min-h-0">
 
-              {api?.analysisStatus === 'analyzing' && api.analysisPage && (
-                <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                  <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
-                    Analyzing… {api.analysisPage.current}/{api.analysisPage.total}
-                  </span>
-                </div>
-              )}
+        {/* ── Canvas — ONLY this area is light ────────────────────────────── */}
+        <div
+          className="flex-1 relative overflow-hidden select-none"
+          style={{
+            background: '#FAF9F7',
+            cursor: isDragging ? 'grabbing' : 'grab',
+            backgroundImage: 'radial-gradient(circle, #D6D3CD 1px, transparent 1px)',
+            backgroundSize: '24px 24px',
+          }}
+          onWheel={handleWheel}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        >
+          {!hasAny ? (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="border border-dashed border-zinc-300 bg-white/80 p-10 flex flex-col items-center gap-4 max-w-sm text-center">
+                <Layers className="w-8 h-8 text-zinc-400" />
+                <p className="text-xs font-bold text-zinc-500 uppercase tracking-widest font-mono">No SVG loaded</p>
+                <p className="text-[10px] text-zinc-400 leading-relaxed font-sans">
+                  Upload your original and annotated SVG files using the toolbar above.
+                </p>
+                <p className="text-[9px] text-zinc-300 uppercase tracking-widest font-mono">Drag to pan · Scroll to zoom</p>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="absolute inset-0"
+              style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transformOrigin: 'center center', willChange: 'transform' }}
+            >
+              <div ref={origContainerRef}  className="absolute inset-0" style={{ opacity: origVisible  ? origOpacity  : 0, transition: 'opacity 0.15s', pointerEvents: 'none' }} />
+              <div ref={annotContainerRef} className="absolute inset-0" style={{ opacity: annotVisible ? annotOpacity : 0, transition: 'opacity 0.15s', pointerEvents: 'none' }} />
+            </div>
+          )}
 
-              {api?.analysisStatus === 'done' && (
-                <div className="flex items-center gap-1.5 border border-green-500/40 bg-green-500/10 px-2 py-1">
-                  <div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-                  <span className="text-[9px] font-mono text-green-400 uppercase tracking-widest">
-                    {api.currentPageCorners} corners de
-                  </span>
-                </div>
-              )}
+          {originalSvgRaw && (
+            <div className="absolute top-3 left-3 z-10 pointer-events-none">
+              <span className="bg-white/90 border border-zinc-300 text-zinc-600 text-[9px] font-mono px-2 py-1 uppercase tracking-widest shadow-sm">
+                {originalName}
+              </span>
+            </div>
+          )}
+          {annotatedSvgRaw && (
+            <div className="absolute top-3 right-3 z-10 pointer-events-none">
+              <span className="bg-white/90 border border-amber-400/60 text-amber-700 text-[9px] font-mono px-2 py-1 uppercase tracking-widest shadow-sm">
+                {annotatedName}
+              </span>
+            </div>
+          )}
+        </div>
 
-              <button
-                onClick={() => api?.setSnapEnabled(s => !s)}
-                className={cn(
-                  'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-                  api?.snapEnabled
-                    ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
-                    : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-                )}
-              >
-                <Target className="w-3 h-3" />
-                {api?.snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
-              </button>
+        {/* ── Sidebar — dark industrial, matches Viewer.tsx ────────────────── */}
+        {sidebarOpen && (
+          <div className="flex-shrink-0 w-64 bg-industrial-panel border-l border-industrial-border flex flex-col overflow-hidden">
 
-              <button
-                onClick={() => api?.setShowSnapSettings(s => !s)}
-                className={cn(
-                  'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-                  api?.showSnapSettings
-                    ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
-                    : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-                )}
-              >
-                <Settings2 className="w-3 h-3" />
-                SNAP
-              </button>
-
-              <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
-                <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
-                <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
-                  {currentScaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${currentScaleFactor.toFixed(4)}m`}
-                </span>
+            <div className="flex-shrink-0 border-b border-industrial-border p-3">
+              <p className="text-[9px] text-zinc-600 uppercase tracking-widest mb-2 font-bold">
+                Annotation layers
+              </p>
+              <div className="flex flex-col gap-1">
+                {ANNOT_LAYERS.map(layer => (
+                  <button
+                    key={layer.id}
+                    onClick={() => toggleAnnotLayer(layer.id)}
+                    className={cn(
+                      'flex w-full items-center gap-2 px-2 py-1.5 border text-left transition-all',
+                      annotLayers[layer.id]
+                        ? 'border-zinc-700 bg-zinc-900 text-zinc-300'
+                        : 'border-zinc-800 bg-transparent text-zinc-600 opacity-40',
+                    )}
+                  >
+                    <span className="w-2 h-2 rounded-sm flex-shrink-0" style={{ backgroundColor: layer.color }} />
+                    <span className="text-[10px] flex-1 uppercase tracking-wider">{layer.label}</span>
+                    {annotLayers[layer.id]
+                      ? <Eye className="w-3 h-3 text-zinc-500" />
+                      : <EyeOff className="w-3 h-3 text-zinc-700" />}
+                  </button>
+                ))}
               </div>
 
-              <button
-                onClick={() => api?.setActiveTool('scale')}
-                className={cn(
-                  'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
-                  api?.activeTool === 'scale'
-                    ? 'bg-amber-400 text-black border-amber-400'
-                    : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
-                )}
-              >
-                DRAW CALIBRATION
-              </button>
-
-              <button
-                onClick={() => api?.handleManualScale()}
-                className="text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black"
-              >
-                MANUAL SCALE
-              </button>
+              {/* Room fill opacity — gradient track, violet accent */}
+              <div className="mt-3 pt-3 border-t border-zinc-800">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[8px] text-zinc-600 uppercase tracking-widest">Room fill opacity</p>
+                  <span className="text-[9px] font-bold text-violet-400">{roomFillOpacity}%</span>
+                </div>
+                <div className="relative h-5 flex items-center">
+                  <div
+                    className="absolute inset-x-0 h-1.5 rounded-full"
+                    style={{ background: 'linear-gradient(to right, rgba(124,58,237,0.08), rgba(124,58,237,0.85))' }}
+                  />
+                  <input
+                    type="range" min={0} max={100} step={1}
+                    value={roomFillOpacity}
+                    onChange={e => setRoomFillOpacity(+e.target.value)}
+                    className="relative w-full h-5 opacity-0 cursor-pointer"
+                    style={{ zIndex: 2 }}
+                  />
+                  <div
+                    className="absolute w-3 h-3 rounded-full bg-violet-500 border border-violet-300/30 shadow pointer-events-none"
+                    style={{ left: `calc(${roomFillOpacity}% - 6px)`, zIndex: 1 }}
+                  />
+                </div>
+                <div className="flex justify-between mt-1">
+                  <span className="text-[8px] text-zinc-700">transparent</span>
+                  <span className="text-[8px] text-zinc-700">solid</span>
+                </div>
+              </div>
             </div>
 
-            <div className="flex items-center gap-2 flex-shrink-0">
-              <button onClick={() => api?.setScale(s => Math.max(0.1, s - 0.1))} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <span className="text-[10px] font-mono text-zinc-400 w-12 text-center">
-                {api ? `${Math.round(api.scale * 100)}%` : '—'}
-              </span>
-              <button onClick={() => api?.setScale(s => s + 0.1)} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <ZoomIn className="w-4 h-4" />
-              </button>
-              <div className="w-px h-4 bg-industrial-border mx-1" />
-              <button onClick={() => api?.fitToScreen()} className="p-1.5 text-zinc-500 hover:text-zinc-200">
-                <Maximize className="w-4 h-4" />
-              </button>
-            </div>
+            {/* Report tabs */}
+            {report ? (
+              <>
+                <div className="flex-shrink-0 flex border-b border-industrial-border">
+                  {(['rooms', 'walls', 'groups'] as const).map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setActiveTab(tab)}
+                      className={cn(
+                        'flex-1 py-2 text-[9px] uppercase tracking-widest font-bold border-b-2 transition-all',
+                        activeTab === tab
+                          ? 'border-amber-400 text-amber-400'
+                          : 'border-transparent text-zinc-600 hover:text-zinc-400',
+                      )}
+                    >
+                      {tab}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex-1 overflow-y-auto">
+                  {activeTab === 'rooms' && (
+                    <div className="p-2 flex flex-col gap-1">
+                      {report.rooms.map((room, i) => (
+                        <div key={room.face_id} className="flex items-center gap-2 px-2 py-2 border border-zinc-800 hover:border-zinc-700 hover:bg-zinc-900/50 transition-all">
+                          {/* Tall swatch — exact same color as canvas fill */}
+                          <span
+                            className="w-1.5 h-8 rounded-sm flex-shrink-0"
+                            style={{ backgroundColor: getRoomColor(i) }}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-zinc-300">
+                                R{String(room.face_id).padStart(2, '0')}
+                              </span>
+                              <span className="text-[9px] text-zinc-600">{formatArea(room.area)} u²</span>
+                            </div>
+                            <div className="flex gap-2 mt-0.5">
+                              <span className="text-[8px] text-zinc-700">{room.n_walls} walls</span>
+                              <span className="text-[8px] text-zinc-700">cx={room.centroid[0].toFixed(0)} cy={room.centroid[1].toFixed(0)}</span>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeTab === 'walls' && (
+                    <div className="p-2 flex flex-col gap-1">
+                      <p className="text-[8px] text-zinc-700 px-1 mb-1">First 200 of {report.walls.length.toLocaleString()}</p>
+                      {report.walls.slice(0, 200).map(wall => (
+                        <div key={wall.wall_id} className="flex items-center gap-2 px-2 py-1 border border-zinc-800">
+                          <span className="w-1.5 h-1.5 rounded-sm flex-shrink-0" style={{ backgroundColor: ORIENT_COLOR[wall.orientation] ?? '#888' }} />
+                          <span className="text-[9px] text-zinc-500 w-14 flex-shrink-0">{wall.wall_id}</span>
+                          <span className="text-[9px] text-zinc-400 flex-1">{wall.length.toFixed(1)} u</span>
+                          <span className="text-[8px] text-zinc-600">{wall.compass}</span>
+                          <span className="text-[8px] font-bold" style={{ color: ORIENT_COLOR[wall.orientation] ?? '#888' }}>{wall.orientation}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {activeTab === 'groups' && (
+                    <div className="p-2 flex flex-col gap-2">
+                      {report.groups.length === 0
+                        ? <p className="text-[9px] text-zinc-700 px-1 py-4 text-center">No repeated shape groups detected.</p>
+                        : report.groups.map((grp, i) => (
+                          <div key={grp.group_id} className="border border-zinc-800 p-2">
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: `hsl(${(i * 67) % 360},60%,65%)` }} />
+                              <span className="text-[10px] font-bold text-zinc-200">Group {grp.group_id}</span>
+                              <span className="text-[9px] text-amber-400 font-bold ml-auto">×{grp.count}</span>
+                            </div>
+                            <div className="flex gap-4 text-[8px] text-zinc-600">
+                              <span>Template: R{grp.template.face_id}</span>
+                              <span>Area: {formatArea(grp.template.area)} u²</span>
+                            </div>
+                          </div>
+                        ))
+                      }
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                <Info className="w-6 h-6 text-zinc-700" />
+                <p className="text-[9px] text-zinc-700 leading-relaxed uppercase tracking-widest">
+                  Upload <span className="text-zinc-500">_report.json</span> to see room & wall details.
+                </p>
+              </div>
+            )}
           </div>
-
-          <div className="flex flex-1 overflow-hidden relative min-h-0">
-
-            <div className="flex-1 min-w-0 relative">
-              <Viewer
-                activeTool={activeTool as ToolType}
-                setActiveTool={setActiveTool as (tool: ToolType) => void}
-                measurements={activeMeasurements}
-                onAddMeasurement={handleAddMeasurement}
-                onUpdateMeasurement={updateMeasurement}
-                scaleFactor={currentScaleFactor}
-                onScaleSet={handleScaleSet}
-                activeDrawing={activeDrawing}
-                onDrawingAdded={addDrawing}
-                showPresetDrawer={showPresetDrawer}
-                onClosePresetDrawer={() => setShowPresetDrawer(false)}
-                onSelectPreset={handlePresetSelect}
-                hideToolbar={false}  // ← Change from true to false (or remove this line)
-                onToolbarReady={handleToolbarReady}
-                appendToGroupId={appendToGroupId}
-                onAppendComplete={handleAppendComplete}
-              />
-            </div>
-
-            <div className={cn(
-              'flex flex-col h-full overflow-hidden transition-all duration-300 flex-shrink-0',
-              rightCollapsed ? 'w-0' : 'w-96',
-            )}>
-              <TakeoffTable
-                measurements={ps.measurements}
-                materials={ps.materials as Material[]}
-                onUpdate={updateMeasurement}
-                onDelete={deleteMeasurement}
-                onToggleVisibility={toggleVisibility}
-                onExpand={() => router.push('/takeoff-full')}
-                onAddSegmentToGroup={handleAddSegmentToGroup}
-                onAddManual={() => handleAddMeasurement({
-                  id:          crypto.randomUUID(),
-                  drawingId:   activeDrawing?.id || '',
-                  description: 'Manual Item',
-                  type:        'Length',
-                  quantity:    0,
-                  unit:        'm',
-                  unitRate:    0,
-                  notes:       '',
-                  points:      [],
-                  childIds:    [],
-                  isOverridden: true,
-                  label:       '',
-                  color:       '#EF9F27',
-                  isVisible:   true,
-                } as TakeoffRow)}
-              />
-            </div>
-
-            <div className="absolute right-0 bottom-10 z-[60] mr-2">
-              <button
-                onClick={() => setRightCollapsed(!rightCollapsed)}
-                className="bg-industrial-panel border border-industrial-border p-1.5 text-zinc-500 hover:text-amber-accent transition-colors shadow-lg"
-                title={rightCollapsed ? 'Expand Data Panel' : 'Collapse Data Panel'}
-              >
-                <PanelRightClose className={cn('w-4 h-4 transition-transform', rightCollapsed && 'rotate-180')} />
-              </button>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
 
-      <AnimatePresence>
-        {showMaterialLibrary && (
-          <MaterialLibrary
-            materials={ps.materials as Material[]}
-            onUpdateMaterials={(mats: Material[]) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
-            onClose={() => setShowMaterialLibrary(false)}
-          />
-        )}
-        {showExportModal && (
-          <ExportModal
-            projectState={ps}
-            onClose={() => setShowExportModal(false)}
-            onExport={executeExport}  // ← now typed as (filename: string) => void
-          />
-        )}
-      </AnimatePresence>
-
-      <ToastContainer
-        toasts={toasts}
-        onRemove={(id) => setToasts(prev => prev.filter(t => t.id !== id))}
-      />
-
-      <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
-
-        <div className="flex items-center gap-6">
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            Workspace: LOGISTICS_HUB_P2
-          </span>
-          <div className="w-px h-3 bg-zinc-800" />
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            Objects: {ps.measurements.length}
-          </span>
+      {/* ── Status bar — matches Viewer.tsx footer exactly ───────────────── */}
+      <footer className="flex-shrink-0 h-10 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 shadow-sm">
+        <div className="flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
+          <span>Drag to pan</span>
+          <div className="w-px h-3 bg-industrial-border" />
+          <span>Scroll to zoom</span>
         </div>
-
-        <div className="relative flex items-center justify-center group">
-          <div className={cn(
-            'absolute bottom-7 left-1/2 -translate-x-1/2 z-[100]',
-            'bg-[#111] border border-amber-400/60 px-4 py-2.5 min-w-[160px]',
-            'transition-all duration-150 pointer-events-none opacity-0 translate-y-1',
-            'group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto',
-          )}>
-            <p className="text-[8px] text-zinc-600 uppercase tracking-[0.2em] font-bold text-center mb-2">
-              — Presets —
-            </p>
-            {['Carcass Cabinet', 'Door Assembly', 'Roof Framing', 'Pipe Run', 'Window Unit'].map(label => (
-              <button
-                key={label}
-                onClick={() => setShowPresetDrawer(true)}
-                className="flex items-center gap-1.5 w-full text-left text-[9px] text-zinc-500 uppercase tracking-widest font-bold py-0.5 hover:text-amber-400 transition-colors"
-              >
-                <span className="text-[8px]">▸</span>
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <button
-            onClick={() => setShowPresetDrawer(prev => !prev)}
-            className={cn(
-              'relative flex items-center gap-1.5 px-3 h-[22px] overflow-hidden',
-              'border text-[9px] uppercase tracking-widest font-bold transition-all duration-150 group/btn',
-              showPresetDrawer
-                ? 'bg-amber-400 text-black border-amber-400'
-                : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black',
-            )}
-          >
-            <span className="absolute top-0 left-[-60%] w-[40%] h-full bg-gradient-to-r from-transparent via-white/25 to-transparent pointer-events-none group-hover/btn:animate-[shimmer_0.45s_linear_forwards]" />
-            <span className="flex flex-col items-center gap-[1px] animate-[bounceUp_1.4s_ease-in-out_infinite]">
-              <svg width="8" height="5" viewBox="0 0 8 5" fill="none">
-                <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-              <svg width="8" height="5" viewBox="0 0 8 5" fill="none" opacity={0.4}>
-                <polyline points="0,5 4,1 8,5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-              </svg>
-            </span>
-            PRESETS
-          </button>
+        <div className="flex items-center gap-3 text-[9px] uppercase tracking-widest">
+          <span className="text-zinc-600">{originalName}</span>
+          <div className="w-px h-3 bg-industrial-border" />
+          <span className="text-amber-500/70">{annotatedName}</span>
         </div>
-
-        <div className="flex items-center gap-4 justify-end">
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            LAT: 34.0522 N / LON: 118.2437 W
-          </span>
-          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
-        </div>
-
       </footer>
-
-      <style>{`
-        @keyframes bounceUp {
-          0%, 100% { transform: translateY(0); }
-          50%       { transform: translateY(-2px); }
-        }
-        @keyframes shimmer {
-          0%   { left: -60%; }
-          100% { left: 160%; }
-        }
-      `}</style>
     </div>
   );
 }
