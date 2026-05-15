@@ -2,28 +2,24 @@
 Stage 4 — Point Snapper & Deduplicator
 Fixes floating-point drift so the graph in Stage 5 actually connects.
 
-FIXES in this version
----------------------
-  1. area_shape elements (circles, ellipses = column symbols) are excluded
-     from the wall graph entirely — they were creating spurious nodes at
-     column intersections visible as colored dots in the annotated SVG.
+KEY FIX in this version
+-----------------------
+  T-JUNCTION SPLITTER (new pass 8):
+    After collinear merge, partition-wall endpoints that lie ON an outer wall
+    segment (but aren't a node there) cause the DCEL to skip that branch and
+    produce one giant face instead of individual rooms.
+    The new split_at_t_junctions() pass scans every endpoint against every
+    segment and splits any segment where an endpoint lies on its interior.
+    This restores all T-nodes so the DCEL can route correctly around each room.
 
-  2. Closed small rectangles (column box symbols, legend swatches) are
-     excluded when their area is below SMALL_CLOSED_RECT_MAX_AREA.
-
-  3. Outer document-border rectangle is excluded: any single closed polygon
-     whose bounding box covers > BORDER_COVERAGE_THRESHOLD of the total
-     drawing extent is treated as a drawing border, not a wall.
-
-  4. Segments that are axis-aligned AND whose length matches a known grid
-     spacing (identified by being an exact multiple of GRID_SNAP within
-     tolerance) are NOT excluded here — grid removal is Stage 1's job.
-     Stage 4 only removes elements that should never have been structural.
-
-  5. All previous fixes retained:
-     - STRUCTURAL_ONLY=True  (only Stage-1 structural elements enter graph)
-     - MIN_WALL_LENGTH=5.0   (stubs from T-junctions dropped)
-     - gap-aware collinear merge
+Previous fixes retained
+-----------------------
+  1. area_shape elements (circles, ellipses) excluded from wall graph.
+  2. Closed small rectangles excluded (column symbols, legend swatches).
+  3. Outer document-border rectangle excluded.
+  4. STRUCTURAL_ONLY=True (only Stage-1 structural elements enter graph).
+  5. MIN_WALL_LENGTH=5.0 (stubs from T-junctions dropped).
+  6. Gap-aware collinear merge.
 """
 
 from __future__ import annotations
@@ -47,20 +43,11 @@ MERGE_GAP_MAX  = SNAP_EPSILON * 3
 STRUCTURAL_ONLY = True
 MIN_WALL_LENGTH = 5.0
 
-# ── NEW: element-level pre-filters ───────────────────────────────────────────
+# ── Element-level pre-filters ─────────────────────────────────────────────────
 
-# Closed shapes (rect/polygon/path) smaller than this area are column symbols,
-# legend swatches, or door-swing arcs — exclude from wall graph.
-# In SVG units at 1:100 scale, a 400mm×400mm column = 4×4 = 16 sq units.
-# Set to 100 to safely exclude columns up to ~1m² footprint.
 SMALL_CLOSED_SHAPE_MAX_AREA = 100.0
-
-# A single closed polygon whose bounding box spans this fraction of the
-# total drawing extent is the outer document border — exclude it.
-BORDER_COVERAGE_THRESHOLD = 0.80   # 80 % of drawing width AND height
-
-# Circles and ellipses are ALWAYS excluded (column symbols, north arrow, etc.)
-EXCLUDE_AREA_SHAPES = True
+BORDER_COVERAGE_THRESHOLD   = 0.80
+EXCLUDE_AREA_SHAPES         = True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +81,6 @@ class UnionFind:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _shoelace_area(segments: list[dict]) -> float:
-    """Approximate polygon area from a list of segments (shoelace formula)."""
     pts = [seg["start"] for seg in segments]
     n = len(pts)
     if n < 3:
@@ -135,19 +121,10 @@ def _all_segs_bbox(elements: list[dict]) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Element-level pre-filters  (NEW)
+# Element-level pre-filters
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _should_exclude_element(el: dict, drawing_bbox: dict) -> tuple[bool, str]:
-    """
-    Return (True, reason) for elements that must NOT enter the wall graph.
-
-    Checked in priority order:
-      1. area_shape=True  → circle / ellipse (column symbol, north arrow)
-      2. is_closed + small area → column box, legend swatch, door arc
-      3. is_closed + covers >80% of drawing → document border rectangle
-    """
-    # 1. Circles / ellipses — always exclude
     if EXCLUDE_AREA_SHAPES and el.get("area_shape", False):
         return True, "area_shape (circle/ellipse)"
 
@@ -157,13 +134,11 @@ def _should_exclude_element(el: dict, drawing_bbox: dict) -> tuple[bool, str]:
 
     is_closed = el.get("is_closed", False)
 
-    # 2. Small closed shapes (column symbols, legend swatches)
     if is_closed:
         area = _shoelace_area(segs)
         if 0 < area < SMALL_CLOSED_SHAPE_MAX_AREA:
             return True, f"small closed shape (area={area:.1f} < {SMALL_CLOSED_SHAPE_MAX_AREA})"
 
-    # 3. Document border — large closed rectangle
     if is_closed and drawing_bbox["width"] > 0 and drawing_bbox["height"] > 0:
         bb = _seg_bbox(segs)
         w_ratio = bb["width"]  / drawing_bbox["width"]
@@ -205,11 +180,6 @@ def split_structural(elements: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def filter_wall_elements(elements: list[dict]) -> list[dict]:
-    """
-    Remove circles, small closed shapes, and the document border from the
-    structural element list before building the wall graph.
-    """
-    # Compute drawing extent across ALL structural elements first
     drawing_bbox = _all_segs_bbox(elements)
     print(f"[Stage 4] Drawing extent: "
           f"{drawing_bbox['width']:.1f} × {drawing_bbox['height']:.1f} units")
@@ -228,7 +198,7 @@ def filter_wall_elements(elements: list[dict]) -> list[dict]:
 
     if dropped:
         print(f"[Stage 4] Pre-filtered {len(dropped)} non-wall structural elements:")
-        for msg in dropped[:20]:   # cap log at 20 lines
+        for msg in dropped[:20]:
             print(msg)
         if len(dropped) > 20:
             print(f"  ... and {len(dropped)-20} more")
@@ -429,6 +399,133 @@ def merge_collinear_global(elements: list[dict]) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Step 6 — T-junction splitter  ← THE KEY FIX
+#
+# After collinear merge, some segment endpoints (ends of partition walls) lie
+# ON another segment (the outer wall) without being a node there.
+# Example: outer wall runs A→B; partition wall ends at point P mid-way along
+# A→B. After merge A→B is one segment with no node at P, so the DCEL cannot
+# branch at P → the room faces spanning both sides of P get merged into one
+# giant face.
+#
+# This pass:
+#   1. Collects every unique endpoint in the segment set.
+#   2. For each segment, checks whether any endpoint lies strictly on its
+#      interior (not within eps of either endpoint).
+#   3. If so, splits the segment at that point.
+# Result: every T-intersection becomes a real node, enabling correct DCEL
+# face traversal and individual room detection.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def split_at_t_junctions(
+    segments: list[dict],
+    eps: float = SNAP_EPSILON,
+) -> list[dict]:
+    """
+    Split any segment whose interior contains another segment's endpoint.
+
+    Parameters
+    ----------
+    segments : flat list of {start, end} dicts (output of merge_collinear_global)
+    eps      : tolerance for "point lies on segment" test (same as SNAP_EPSILON)
+
+    Returns
+    -------
+    New list of segments with T-junction splits applied.
+    Every T-intersection is now represented by a proper shared node.
+    """
+
+    def point_on_segment_interior(
+        p: tuple, a: tuple, b: tuple, tol: float
+    ) -> tuple[bool, float]:
+        """
+        Return (True, t) if point p lies on the interior of segment a→b
+        within perpendicular distance tol, where t ∈ (0,1) is the
+        parametric position along the segment.
+        Returns (False, 0) if p is at/near an endpoint or off the segment.
+        """
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+        seg_len_sq = dx * dx + dy * dy
+        if seg_len_sq < 1e-12:
+            return False, 0.0
+
+        # Parametric projection
+        t = ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / seg_len_sq
+
+        # Must be strictly interior — not within eps of either endpoint
+        endpoint_margin = tol / math.sqrt(seg_len_sq)
+        if t <= endpoint_margin or t >= 1.0 - endpoint_margin:
+            return False, 0.0
+
+        # Perpendicular distance from p to the infinite line a→b
+        foot_x = a[0] + t * dx
+        foot_y = a[1] + t * dy
+        perp_dist = math.dist(p, (foot_x, foot_y))
+
+        if perp_dist <= tol:
+            return True, t
+        return False, 0.0
+
+    # ── Collect all unique endpoints ──────────────────────────────────────────
+    # Use a rounded-tuple set for fast lookup (same precision as snap stage)
+    ROUND = 4
+    endpoint_set: set[tuple] = set()
+    for seg in segments:
+        endpoint_set.add(
+            (round(seg["start"][0], ROUND), round(seg["start"][1], ROUND))
+        )
+        endpoint_set.add(
+            (round(seg["end"][0], ROUND), round(seg["end"][1], ROUND))
+        )
+
+    endpoints = list(endpoint_set)
+    print(f"[Stage 4] T-junction check: {len(segments)} segments, "
+          f"{len(endpoints)} unique endpoints")
+
+    # ── For each segment, collect split points ────────────────────────────────
+    result: list[dict] = []
+    split_count = 0
+
+    for seg in segments:
+        a = seg["start"]
+        b = seg["end"]
+
+        # Gather all t-values where an endpoint lies on this segment's interior
+        split_ts: list[float] = []
+        for p in endpoints:
+            on_interior, t = point_on_segment_interior(p, a, b, eps)
+            if on_interior:
+                split_ts.append(t)
+
+        if not split_ts:
+            result.append(seg)
+            continue
+
+        # Sort split points and generate sub-segments
+        split_ts.sort()
+        split_count += len(split_ts)
+
+        prev_pt = a
+        dx = b[0] - a[0]
+        dy = b[1] - a[1]
+
+        for t in split_ts:
+            split_pt = (a[0] + t * dx, a[1] + t * dy)
+            if math.dist(prev_pt, split_pt) >= MIN_WALL_LENGTH:
+                result.append({"start": prev_pt, "end": split_pt})
+            prev_pt = split_pt
+
+        # Final sub-segment from last split to b
+        if math.dist(prev_pt, b) >= MIN_WALL_LENGTH:
+            result.append({"start": prev_pt, "end": b})
+
+    print(f"[Stage 4] T-junction split: {len(segments)} → {len(result)} segments "
+          f"({split_count} splits applied)")
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -449,6 +546,8 @@ def snap_and_clean(
     5. Deduplicate exact-duplicate segments
     6. Merge collinear overlapping/touching segments (gap-aware)
     7. Drop merged segments shorter than MIN_WALL_LENGTH
+    8. NEW: Split segments at T-junctions so every partition-wall endpoint
+            becomes a real graph node — required for correct DCEL room detection
     """
     # 1. Structural filter
     structural, _ = split_structural(elements)
@@ -462,7 +561,7 @@ def snap_and_clean(
 
     if not wall_elements:
         print("[Stage 4] WARNING: No wall elements after pre-filter!")
-        wall_elements = structural   # safe fallback
+        wall_elements = structural
 
     # 3. Collect & snap
     all_pts = _collect_all_points(wall_elements)
@@ -492,6 +591,44 @@ def snap_and_clean(
     after_merge = sum(len(e["segments"]) for e in merged)
     print(f"[Stage 4] Collinear merge: {before_merge} → {after_merge} segments")
 
+    # 8. T-junction splitter — THE KEY FIX FOR ROOM DETECTION
+    #    Without this, partition-wall endpoints that land on the interior of
+    #    outer-wall segments are invisible to the DCEL, causing it to trace
+    #    one giant face instead of individual rooms.
+    raw_segs = merged[0]["segments"]
+    split_segs = split_at_t_junctions(raw_segs, eps=eps)
+
+    # Re-snap the new split points so they share exact coordinates with the
+    # endpoints that created them (floating-point drift from the split math)
+    all_split_pts = []
+    for seg in split_segs:
+        all_split_pts.append(seg["start"])
+        all_split_pts.append(seg["end"])
+
+    if all_split_pts:
+        canonical_split = snap_points(all_split_pts, eps)
+        final_segs = []
+        for i, seg in enumerate(split_segs):
+            s = canonical_split[i * 2]
+            e = canonical_split[i * 2 + 1]
+            if math.dist(s, e) >= MIN_WALL_LENGTH:
+                final_segs.append({"start": s, "end": e})
+    else:
+        final_segs = split_segs
+
+    # Remove any duplicates introduced by the split+snap pass
+    seen: set[frozenset] = set()
+    deduped_final = []
+    for seg in final_segs:
+        key = frozenset([seg["start"], seg["end"]])
+        if key not in seen:
+            seen.add(key)
+            deduped_final.append(seg)
+
+    print(f"[Stage 4] Final segments after T-split + re-snap + dedup: "
+          f"{len(deduped_final)}")
+
+    merged[0]["segments"] = deduped_final
     return merged
 
 
