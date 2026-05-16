@@ -17,7 +17,7 @@ const ERODE_R             = 1;
 const PDF_SCALE           = 3;
 const SVG_SCALE           = 3;
 const FILL_GROW           = 3;
-const RDP_EPSILON         = 3;   // final cleanup pass after corner detection
+const RDP_EPSILON         = 3;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -29,8 +29,20 @@ interface Fill {
   areaPx: number;
   perimPx: number;
   polygon: [number, number][];
+  groupId?: number;
 }
+
 type LoadStage = 'idle' | 'loading' | 'ready';
+
+interface SelectRect {
+  x1: number; y1: number; x2: number; y2: number;
+  sx: number; sy: number; sw: number; sh: number;
+}
+
+// ── Async yield helper ────────────────────────────────────────────────────────
+
+const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+const yieldMacro = () => new Promise<void>(r => setTimeout(r, 0));
 
 // ── Mask helpers ──────────────────────────────────────────────────────────────
 
@@ -206,8 +218,6 @@ function closeHoles(filled: Uint8Array, w: number, h: number): Uint8Array {
   return closed;
 }
 
-// ── Outer shape: small erode/dilate to keep corners sharp ─────────────────────
-// Using radius 2 (was 6) so rectangular corners are preserved.
 function outerShape(filled: Uint8Array, w: number, h: number): Uint8Array {
   const eroded   = erodeMaskFast(filled,  w, h, 2);
   const restored = dilateMaskFast(eroded, w, h, 2);
@@ -245,40 +255,22 @@ function measurePerim(perimMask: Uint8Array, w: number, h: number): number {
   return Math.round(c);
 }
 
-// ── Corner-only polygon extraction ────────────────────────────────────────────
-// Strategy:
-//   1. Walk the perimeter with a 4-directional tracer (no diagonals).
-//   2. Record the DIRECTION at each step.
-//   3. A "corner" is where the direction changes. Only those pixels become points.
-//   4. Final RDP pass removes any residual near-collinear corners from pixel noise.
-//
-// Result: a perfectly rectangular room → exactly 4 points.
-//         an L-shaped room → exactly 6 points.
-//         no intermediate points on straight walls at all.
-
 function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
-  // ── Step 1: find topmost-leftmost perimeter pixel ──────────────────────────
   let startIdx = -1;
   for (let i = 0; i < perim.length; i++) {
     if (perim[i]) { startIdx = i; break; }
   }
   if (startIdx === -1) return [];
-
-  // 4 directions: right=0, down=1, left=2, up=3
   const DX = [1, 0, -1,  0];
   const DY = [0, 1,  0, -1];
-
-  // ── Step 2: walk perimeter, record every pixel + its direction ──────────────
   const sx = startIdx % w, sy = (startIdx / w) | 0;
   let cx = sx, cy = sy, dir = 0;
-  const steps: Array<[number, number, number]> = []; // [x, y, direction]
+  const steps: Array<[number, number, number]> = [];
   const maxSteps = perim.length * 2;
   let count = 0;
-
   do {
     steps.push([cx, cy, dir]);
     let moved = false;
-    // try: right-turn, straight, left-turn, U-turn
     for (let t = 0; t < 4; t++) {
       const nd = (dir + 3 + t) % 4;
       const nx = cx + DX[nd], ny = cy + DY[nd];
@@ -289,22 +281,15 @@ function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number]
     if (!moved) break;
     if (++count > maxSteps) break;
   } while (cx !== sx || cy !== sy);
-
   if (steps.length === 0) return [];
-
-  // ── Step 3: keep only pixels where direction changes (= corners) ────────────
   const n = steps.length;
   const corners: [number, number][] = [];
   for (let i = 0; i < n; i++) {
     const prevDir = steps[(i - 1 + n) % n][2];
     const currDir = steps[i][2];
-    if (currDir !== prevDir) {
-      corners.push([steps[i][0], steps[i][1]]);
-    }
+    if (currDir !== prevDir) corners.push([steps[i][0], steps[i][1]]);
   }
-
   if (corners.length < 3) {
-    // fallback: bounding box of all perimeter pixels
     let minX = w, minY = h, maxX = 0, maxY = 0;
     for (let i = 0; i < perim.length; i++) {
       if (!perim[i]) continue;
@@ -314,16 +299,11 @@ function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number]
     }
     return [[minX, minY],[maxX, minY],[maxX, maxY],[minX, maxY]];
   }
-
-  // ── Step 4: RDP pass to remove pixel-noise micro-corners ────────────────────
-  // (e.g. a 1px bump in a wall caused by anti-aliasing or rasterisation)
   return rdpSimplify(corners, RDP_EPSILON);
 }
 
-// ── Ramer-Douglas-Peucker (final noise cleanup only) ─────────────────────────
 function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
   if (pts.length <= 3) return pts;
-
   const distToLine = (p: [number,number], a: [number,number], b: [number,number]) => {
     const [ax, ay] = a, [bx, by] = b, [px, py] = p;
     const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
@@ -331,7 +311,6 @@ function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
     const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
     return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
   };
-
   const keep = new Set<number>([0, pts.length - 1]);
   const rec = (lo: number, hi: number) => {
     if (hi - lo < 2) return;
@@ -345,8 +324,6 @@ function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
   rec(0, pts.length - 1);
   return [...keep].sort((a, b) => a - b).map(i => pts[i]);
 }
-
-// ── Misc helpers ───────────────────────────────────────────────────────────────
 
 function hexToRgb(hex: string) {
   return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)] as const;
@@ -362,6 +339,46 @@ function fmtPerim(px: number, pxPerM: number | null): string {
   if (!pxPerM) return `${px.toLocaleString()} px`;
   const m = px / pxPerM;
   return m >= 1 ? `${m.toFixed(2)} m` : `${(m * 100).toFixed(1)} cm`;
+}
+
+// ── Rect-select: find all non-wall seed points in a canvas rect ───────────────
+
+function findRegionsInRect(
+  mask: Uint8Array, w: number, h: number,
+  rx1: number, ry1: number, rx2: number, ry2: number,
+): Array<{ seed: [number,number]; filled: Uint8Array }> {
+  const x1 = Math.max(0, Math.min(rx1, rx2));
+  const y1 = Math.max(0, Math.min(ry1, ry2));
+  const x2 = Math.min(w-1, Math.max(rx1, rx2));
+  const y2 = Math.min(h-1, Math.max(ry1, ry2));
+
+  const discovered: Array<{ seed: [number,number]; filled: Uint8Array }> = [];
+  const seen = new Uint8Array(w * h);
+
+  const step = Math.max(4, Math.round(Math.min(x2-x1, y2-y1) / 40));
+
+  for (let sy = y1; sy <= y2; sy += step) {
+    for (let sx = x1; sx <= x2; sx += step) {
+      if (mask[sy*w+sx]) continue;
+      if (seen[sy*w+sx]) continue;
+
+      const filled = multiSeedFill(mask, w, h, sx, sy);
+      if (!filled) continue;
+
+      let overlaps = false;
+      for (let ty = y1; ty <= y2 && !overlaps; ty++) {
+        for (let tx = x1; tx <= x2 && !overlaps; tx++) {
+          if (filled[ty*w+tx]) overlaps = true;
+        }
+      }
+      if (!overlaps) continue;
+
+      for (let i = 0; i < filled.length; i++) if (filled[i]) seen[i] = 1;
+
+      discovered.push({ seed: [sx, sy], filled });
+    }
+  }
+  return discovered;
 }
 
 // ── Loading screen ─────────────────────────────────────────────────────────────
@@ -407,7 +424,7 @@ function LoadingScreen({ stage, progress, fileName }: { stage: LoadStage; progre
             <div style={{ display:'flex',gap:10,justifyContent:'center' }}>
               {['PDF','SVG'].map(t=><div key={t} style={{ border:'1px solid #1e1e1e',padding:'6px 18px',fontSize:9,color:'#2a2a2a',textTransform:'uppercase',letterSpacing:'.12em' }}>{t}</div>)}
             </div>
-            <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.08em',marginTop:20,lineHeight:2 }}>Perimeter highlighted · Area + perimeter measured · Wall-safe outline</p>
+            <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.08em',marginTop:20,lineHeight:2 }}>Left-click: fill · Drag: pan · Space+drag: select multiple</p>
           </>
         )}
         {stage==='loading' && (
@@ -427,6 +444,88 @@ function LoadingScreen({ stage, progress, fileName }: { stage: LoadStage; progre
             <div style={{ fontSize:8,color:'#2a2a2a',textTransform:'uppercase',letterSpacing:'.1em' }}>{progress}</div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Fill progress overlay ─────────────────────────────────────────────────────
+
+function FillProgressOverlay({
+  active, message, sub, progress,
+}: {
+  active: boolean;
+  message: string;
+  sub?: string;
+  progress?: { done: number; total: number } | null;
+}) {
+  const [dots, setDots] = useState('');
+  useEffect(() => {
+    if (!active) { setDots(''); return; }
+    const id = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 350);
+    return () => clearInterval(id);
+  }, [active]);
+  if (!active) return null;
+
+  const pct = progress && progress.total > 0
+    ? Math.round((progress.done / progress.total) * 100)
+    : null;
+
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 80,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(10,10,10,0.45)', backdropFilter: 'blur(1px)',
+      pointerEvents: 'none',
+    }}>
+      <style>{`
+        @keyframes fillspin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+        @keyframes fillpulse{0%,100%{opacity:.7}50%{opacity:1}}
+        @keyframes barslide{from{width:0%}to{width:100%}}
+      `}</style>
+      <div style={{
+        background: '#0d0d0d', border: '1px solid #2a2a2a',
+        padding: '20px 32px', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', gap: 14, minWidth: 240,
+        boxShadow: '0 8px 40px rgba(0,0,0,0.7)',
+      }}>
+        {/* Spinner */}
+        <div style={{ position: 'relative', width: 36, height: 36 }}>
+          <div style={{ position:'absolute',inset:0,border:'1.5px solid #1c1c1c',borderRadius:'50%' }}/>
+          <div style={{ position:'absolute',inset:0,border:'1.5px solid transparent',borderTopColor:'#f59e0b',borderRadius:'50%',animation:'fillspin .7s linear infinite' }}/>
+          <div style={{ position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',fontSize:14,color:'#f59e0b',animation:'fillpulse 1.4s ease-in-out infinite' }}>⊕</div>
+        </div>
+
+        {/* Message */}
+        <div style={{ textAlign: 'center', width: '100%' }}>
+          <div style={{ fontSize: 9, color: '#ccc', textTransform: 'uppercase', letterSpacing: '.1em', fontFamily:"'Courier New',monospace" }}>
+            {message}{dots}
+          </div>
+          {sub && (
+            <div style={{ fontSize: 8, color: '#555', textTransform: 'uppercase', letterSpacing: '.07em', marginTop: 5, fontFamily:"'Courier New',monospace" }}>
+              {sub}
+            </div>
+          )}
+
+          {/* Progress bar */}
+          {pct !== null && (
+            <div style={{ marginTop: 12, width: '100%' }}>
+              <div style={{ height: 3, background: '#1a1a1a', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
+                <div style={{
+                  height: '100%',
+                  width: `${pct}%`,
+                  background: 'linear-gradient(90deg, #f59e0b, #fbbf24)',
+                  borderRadius: 2,
+                  transition: 'width 0.15s ease',
+                  boxShadow: '0 0 8px rgba(245,158,11,0.6)',
+                }}/>
+              </div>
+              <div style={{ fontSize: 8, color: '#555', textAlign: 'right', marginTop: 4, fontFamily:"'Courier New',monospace", letterSpacing: '.05em' }}>
+                {progress!.done} / {progress!.total}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -455,6 +554,53 @@ function ScaleBar({ pxPerM, onChange }: { pxPerM: number | null; onChange: (v: n
   );
 }
 
+// ── Rect-select overlay ────────────────────────────────────────────────────────
+
+function SelectionOverlay({ rect, zoom, pan }: { rect: SelectRect | null; zoom: number; pan: {x:number;y:number} }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const c = canvasRef.current; if (!c) return;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (!rect) return;
+    const sx = rect.x1 * zoom + pan.x;
+    const sy = rect.y1 * zoom + pan.y;
+    const sw = (rect.x2 - rect.x1) * zoom;
+    const sh = (rect.y2 - rect.y1) * zoom;
+    ctx.fillStyle = 'rgba(96,165,250,0.08)';
+    ctx.fillRect(sx, sy, sw, sh);
+    ctx.strokeStyle = 'rgba(96,165,250,0.9)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(sx, sy, sw, sh);
+    ctx.setLineDash([]);
+    const handles = [[sx,sy],[sx+sw,sy],[sx+sw,sy+sh],[sx,sy+sh]];
+    for (const [hx, hy] of handles) {
+      ctx.fillStyle = '#60a5fa';
+      ctx.fillRect(hx-4, hy-4, 8, 8);
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(hx-4, hy-4, 8, 8);
+    }
+    const wPx = Math.abs(rect.x2 - rect.x1), hPx = Math.abs(rect.y2 - rect.y1);
+    ctx.font = '10px "Courier New"';
+    ctx.fillStyle = 'rgba(96,165,250,0.85)';
+    ctx.fillText(`${wPx}×${hPx}px`, sx + 6, sy + 16);
+  }, [rect, zoom, pan]);
+
+  useEffect(() => {
+    const resize = () => {
+      const c = canvasRef.current; if (!c) return;
+      c.width = c.offsetWidth; c.height = c.offsetHeight;
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
+  }, []);
+
+  return <canvas ref={canvasRef} style={{ position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:20 }}/>;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function FloodFillPage() {
@@ -465,9 +611,13 @@ export default function FloodFillPage() {
   const [mode,           setMode]           = useState<'fill'|'pan'>('fill');
   const [isDragging,     setIsDragging]     = useState(false);
   const [isFilling,      setIsFilling]      = useState(false);
+  const [fillMsg,        setFillMsg]        = useState('');
+  const [fillSub,        setFillSub]        = useState<string|undefined>(undefined);
+  const [fillProgress,   setFillProgress]   = useState<{done:number;total:number}|null>(null);
   const [fills,          setFills]          = useState<Fill[]>([]);
   const [hiddenIds,      setHiddenIds]      = useState<Set<number>>(new Set());
   const [selectedId,     setSelectedId]     = useState<number|null>(null);
+  const [selectedGroup,  setSelectedGroup]  = useState<number|null>(null);
   const [hoveredId,      setHoveredId]      = useState<number|null>(null);
   const [hoverPos,       setHoverPos]       = useState<{x:number,y:number}>({x:0,y:0});
   const [holesClosedIds, setHolesClosedIds] = useState<Set<number>>(new Set());
@@ -477,6 +627,14 @@ export default function FloodFillPage() {
   const [loadStage,      setLoadStage]      = useState<LoadStage>('idle');
   const [loadProgress,   setLoadProgress]   = useState('');
   const [pxPerM,         setPxPerM]         = useState<number|null>(null);
+
+  const [selectRect,     setSelectRect]     = useState<SelectRect|null>(null);
+  const [isSelecting,    setIsSelecting]    = useState(false);
+  const [spaceHeld,      setSpaceHeld]      = useState(false);
+  const isRectSelecting  = useRef(false);
+  const rectStart        = useRef<{cx:number;cy:number;sx:number;sy:number}|null>(null);
+  const spaceHeldRef     = useRef(false);
+  const hasDraggedRef    = useRef(false);
 
   const viewportRef   = useRef<HTMLDivElement>(null);
   const wrapRef       = useRef<HTMLDivElement>(null);
@@ -488,6 +646,7 @@ export default function FloodFillPage() {
   const basePixelsRef = useRef<Uint8ClampedArray|null>(null);
   const dragRef       = useRef({ mx:0,my:0,px:0,py:0 });
   const fillCountRef  = useRef(0);
+  const groupCountRef = useRef(0);
   const fileInputRef  = useRef<HTMLInputElement>(null);
   const snapshots     = useRef<ImageData[]>([]);
   const fillPixelMaps = useRef<Map<number, Uint8Array>>(new Map());
@@ -497,10 +656,41 @@ export default function FloodFillPage() {
   const showPolygonRef = useRef(showPolygon);
   useEffect(() => { showPolygonRef.current = showPolygon; }, [showPolygon]);
 
+  const panRef = useRef(pan);
+  const zoomRef = useRef(zoom);
+  useEffect(() => { panRef.current = pan; }, [pan]);
+  useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+
   useEffect(() => {
     if (wrapRef.current)
       wrapRef.current.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
   }, [pan, zoom]);
+
+  // ── Space key tracking ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !(e.target instanceof HTMLInputElement)) {
+        e.preventDefault();
+        spaceHeldRef.current = true;
+        setSpaceHeld(true);
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spaceHeldRef.current = false;
+        setSpaceHeld(false);
+        if (isRectSelecting.current) {
+          isRectSelecting.current = false;
+          rectStart.current = null;
+          setIsSelecting(false);
+          setSelectRect(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => { window.removeEventListener('keydown', onKeyDown); window.removeEventListener('keyup', onKeyUp); };
+  }, []);
 
   const centerCanvas = useCallback(() => {
     const vp=viewportRef.current, bc=baseCanvasRef.current; if(!vp||!bc) return;
@@ -509,12 +699,13 @@ export default function FloodFillPage() {
     setZoom(fz); setPan({ x:(vr.width-bc.width*fz)/2, y:(vr.height-bc.height*fz)/2 });
   }, []);
 
-  // ── Polygon canvas redraw ──────────────────────────────────────────────────
+  // ── Polygon canvas redraw — NO VERTEX DOTS ─────────────────────────────────
 
   const redrawPolygons = useCallback((
     currentFills: Fill[],
     currentHidden: Set<number>,
     currentSelected: number | null,
+    currentGroup: number | null,
   ) => {
     const pc = polyCanvasRef.current, bc = baseCanvasRef.current;
     if (!pc || !bc) return;
@@ -523,59 +714,54 @@ export default function FloodFillPage() {
     }
     const ctx = pc.getContext('2d')!;
     ctx.clearRect(0, 0, pc.width, pc.height);
-
     if (!showPolygonRef.current) return;
 
     currentFills.forEach(f => {
       if (currentHidden.has(f.id) || f.polygon.length < 3) return;
+      // Skip axis-aligned 4-point bounding-box fallbacks — they look like unwanted rectangles
+      if (f.polygon.length === 4) {
+        const xs = f.polygon.map(p => p[0]);
+        const ys = f.polygon.map(p => p[1]);
+        const uniqueX = new Set(xs).size, uniqueY = new Set(ys).size;
+        if (uniqueX === 2 && uniqueY === 2) return; // pure rect fallback — skip
+      }
       const pts = f.polygon;
       const [r, g, b] = hexToRgb(f.color);
       const isSelected = f.id === currentSelected;
+      const isInGroup  = currentGroup != null && f.groupId === currentGroup;
 
-      // Outer polygon stroke
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      ctx.closePath();
-      ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected ? 1 : 0.7})`;
-      ctx.lineWidth   = isSelected ? 2.5 : 1.8;
+      const drawPath = () => {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+      };
+
+      // Soft glow behind for selected / group
+      if (isSelected || isInGroup) {
+        ctx.save();
+        drawPath();
+        ctx.strokeStyle = isInGroup
+          ? `rgba(96,165,250,0.18)`
+          : `rgba(${r},${g},${b},0.18)`;
+        ctx.lineWidth = 8;
+        ctx.setLineDash([]);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Primary color outline — single clean stroke, no dashes
+      drawPath();
+      ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected || isInGroup ? 1 : 0.8})`;
+      ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
       ctx.setLineDash([]);
       ctx.stroke();
-
-      // Dashed inner outline
-      ctx.beginPath();
-      ctx.moveTo(pts[0][0], pts[0][1]);
-      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-      ctx.closePath();
-      ctx.strokeStyle = `rgba(255,255,255,${isSelected ? 0.25 : 0.12})`;
-      ctx.lineWidth   = isSelected ? 1 : 0.7;
-      ctx.setLineDash([5, 4]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Vertex dots
-      pts.forEach(([x, y]) => {
-        ctx.beginPath();
-        ctx.arc(x, y, isSelected ? 5 : 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(255,255,255,${isSelected ? 0.9 : 0.6})`;
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(x, y, isSelected ? 3.5 : 2.5, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},1)`;
-        ctx.fill();
-
-        ctx.beginPath();
-        ctx.arc(x, y, isSelected ? 1.5 : 1, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fill();
-      });
     });
   }, []);
 
   useEffect(() => {
-    redrawPolygons(fills, hiddenIds, selectedId);
-  }, [fills, selectedId, hiddenIds, showPolygon, redrawPolygons]);
+    redrawPolygons(fills, hiddenIds, selectedId, selectedGroup);
+  }, [fills, selectedId, selectedGroup, hiddenIds, showPolygon, redrawPolygons]);
 
   // ── Mask building ──────────────────────────────────────────────────────────
 
@@ -593,14 +779,14 @@ export default function FloodFillPage() {
             maskRef.current       = erodeMaskFast(dilated,w,h,ERODE_R);
             fillDataRef.current   = new ImageData(w,h);
             basePixelsRef.current = new Uint8ClampedArray(id.data);
-            fillCountRef.current  = 0;
+            fillCountRef.current  = 0; groupCountRef.current = 0;
             snapshots.current     = [];
             fillPixelMaps.current.clear();
             fc.width=w; fc.height=h;
             const pc = polyCanvasRef.current;
             if (pc) { pc.width=w; pc.height=h; pc.getContext('2d')!.clearRect(0,0,w,h); }
             setFills([]); setHiddenIds(new Set()); setSelectedId(null);
-            setHoveredId(null); setHolesClosedIds(new Set());
+            setSelectedGroup(null); setHoveredId(null); setHolesClosedIds(new Set());
             resolve();
           });
         });
@@ -618,7 +804,7 @@ export default function FloodFillPage() {
       });
     }
     pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
-    setLoadProgress('Parsing PDF…'); await new Promise(r=>setTimeout(r,0));
+    setLoadProgress('Parsing PDF…'); await yieldMacro();
     const ab=await file.arrayBuffer();
     const doc=await pdfjsLib.getDocument({data:ab}).promise;
     const page=await doc.getPage(1);
@@ -627,14 +813,14 @@ export default function FloodFillPage() {
     bc.width=vp.width; bc.height=vp.height;
     const ctx=bc.getContext('2d')!;
     ctx.fillStyle='#ffffff'; ctx.fillRect(0,0,bc.width,bc.height);
-    setLoadProgress('Rendering page…'); await new Promise(r=>setTimeout(r,0));
+    setLoadProgress('Rendering page…'); await yieldMacro();
     await page.render({canvasContext:ctx,viewport:vp}).promise;
     await buildMaskAsync(bc,fc);
     setStatus(`Loaded · page 1/${doc.numPages} · ${bc.width}×${bc.height}px`);
   }, [buildMaskAsync]);
 
   const loadSvg = useCallback(async (file: File) => {
-    setLoadProgress('Reading SVG…'); await new Promise(r=>setTimeout(r,0));
+    setLoadProgress('Reading SVG…'); await yieldMacro();
     const text=await file.text();
     const parser=new DOMParser();
     const d=parser.parseFromString(text,'image/svg+xml');
@@ -674,8 +860,6 @@ export default function FloodFillPage() {
   }, [loadPdf, loadSvg, centerCanvas]);
 
   // ── Shared fill processing ─────────────────────────────────────────────────
-  // Uses outerShape (small r=2 erode/dilate) → findPerimeter → buildPolygon
-  // (4-dir trace → removeCollinear → rdpSimplify with eps=8)
 
   const processFilledMask = useCallback((grown: Uint8Array, w: number, h: number) => {
     const areaPx = (() => { let c=0; for(let i=0;i<grown.length;i++) if(grown[i]) c++; return c; })();
@@ -686,10 +870,11 @@ export default function FloodFillPage() {
     return { areaPx, perimPx, polygon };
   }, []);
 
-  // ── Fill click ─────────────────────────────────────────────────────────────
+  // ── Single-click fill — non-blocking ──────────────────────────────────────
 
   const doFill = useCallback(async (e: React.MouseEvent) => {
     if (mode!=='fill'||isFilling||loadStage!=='ready') return;
+    if (spaceHeldRef.current) return;
     if (!maskRef.current||!fillDataRef.current||!basePixelsRef.current) return;
     const vp=viewportRef.current!;
     const vr=vp.getBoundingClientRect();
@@ -698,26 +883,45 @@ export default function FloodFillPage() {
     const bc=baseCanvasRef.current!;
     if(px<0||px>=bc.width||py<0||py>=bc.height) return;
 
-    setIsFilling(true); setStatus('Filling…');
-    await new Promise<void>(r=>requestAnimationFrame(()=>r()));
+    setIsFilling(true);
+    setFillMsg('Computing fill');
+    setFillSub(undefined);
+    setFillProgress(null);
+    setSelectedGroup(null);
+
+    // Yield so the overlay renders before heavy work begins
+    await yieldFrame();
 
     snapshots.current.push(new ImageData(
       new Uint8ClampedArray(fillDataRef.current!.data),
       fillDataRef.current!.width, fillDataRef.current!.height,
     ));
 
+    // Flood fill
+    await yieldMacro();
+    setFillMsg('Flood filling region');
     const filled=multiSeedFill(maskRef.current,bc.width,bc.height,px,py);
     if(!filled) {
-      snapshots.current.pop(); setIsFilling(false);
+      snapshots.current.pop();
+      setIsFilling(false); setFillMsg('');
       setStatus('Clicked on a wall — try the room centre'); return;
     }
 
+    // Dilate
+    await yieldMacro();
+    setFillMsg('Growing fill');
     const grown = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
-    const [r,g,b] = hexToRgb(activeColor);
 
+    // Paint
+    await yieldMacro();
+    setFillMsg('Painting');
+    const [r,g,b] = hexToRgb(activeColor);
     paintFill(grown, fillDataRef.current!, r, g, b, fillOpacity/100);
     fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
 
+    // Measure
+    await yieldMacro();
+    setFillMsg('Measuring');
     const { areaPx, perimPx, polygon } = processFilledMask(grown, bc.width, bc.height);
 
     fillCountRef.current += 1;
@@ -726,22 +930,198 @@ export default function FloodFillPage() {
       label: `Fill ${fillCountRef.current}`,
       color: activeColor,
       opacity: fillOpacity,
-      areaPx,
-      perimPx,
-      polygon,
+      areaPx, perimPx, polygon,
     };
-
     fillPixelMaps.current.set(newFill.id, grown);
-
     setFills(prev => {
       const next = [...prev, newFill];
-      setTimeout(() => redrawPolygons(next, hiddenIds, newFill.id), 0);
+      setTimeout(() => redrawPolygons(next, hiddenIds, newFill.id, null), 0);
       return next;
     });
     setSelectedId(newFill.id);
     setIsFilling(false);
+    setFillMsg('');
+    setFillProgress(null);
     setStatus(`Filled · ${polygon.length} corners · area ${fmtArea(areaPx,pxPerM)} · perimeter ${fmtPerim(perimPx,pxPerM)}`);
   }, [mode,isFilling,loadStage,pan,zoom,activeColor,fillOpacity,pxPerM,hiddenIds,redrawPolygons,processFilledMask]);
+
+  // ── Rectangle-select batch fill — non-blocking with progress ──────────────
+
+  const screenToCanvas = useCallback((sx: number, sy: number) => {
+    const vp = viewportRef.current!;
+    const vr = vp.getBoundingClientRect();
+    return {
+      cx: Math.round((sx - vr.left - panRef.current.x) / zoomRef.current),
+      cy: Math.round((sy - vr.top  - panRef.current.y) / zoomRef.current),
+    };
+  }, []);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+  }, []);
+
+  const commitRectSelect = useCallback(async (x1: number, y1: number, x2: number, y2: number) => {
+    const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+    if (rw < 5 || rh < 5) return;
+    if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current || isFilling) return;
+    const bc = baseCanvasRef.current!;
+
+    setIsFilling(true);
+    setFillMsg('Detecting regions');
+    setFillSub('Scanning selection…');
+    setFillProgress(null);
+
+    await yieldFrame();
+
+    const regions = findRegionsInRect(
+      maskRef.current, bc.width, bc.height,
+      Math.min(x1,x2), Math.min(y1,y2), Math.max(x1,x2), Math.max(y1,y2),
+    );
+
+    if (regions.length === 0) {
+      setIsFilling(false); setFillMsg('');
+      setStatus('No fillable regions found in selection'); return;
+    }
+
+    setFillSub(`Found ${regions.length} region${regions.length > 1 ? 's' : ''}`);
+    setFillProgress({ done: 0, total: regions.length });
+    await yieldFrame();
+
+    snapshots.current.push(new ImageData(
+      new Uint8ClampedArray(fillDataRef.current!.data), bc.width, bc.height,
+    ));
+
+    groupCountRef.current += 1;
+    const gId = groupCountRef.current;
+    const [r, g, b] = hexToRgb(activeColor);
+    const newFills: Fill[] = [];
+
+    for (let i = 0; i < regions.length; i++) {
+      const { filled } = regions[i];
+
+      setFillMsg(`Filling region ${i + 1} / ${regions.length}`);
+      setFillProgress({ done: i, total: regions.length });
+
+      // Yield every region so the progress bar updates
+      await yieldFrame();
+
+      const grown = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
+      paintFill(grown, fillDataRef.current!, r, g, b, fillOpacity / 100);
+      const { areaPx, perimPx, polygon } = processFilledMask(grown, bc.width, bc.height);
+      fillCountRef.current += 1;
+      const nf: Fill = {
+        id: Date.now() + Math.random(),
+        label: `Fill ${fillCountRef.current}`,
+        color: activeColor,
+        opacity: fillOpacity,
+        areaPx, perimPx, polygon,
+        groupId: gId,
+      };
+      fillPixelMaps.current.set(nf.id, grown);
+      newFills.push(nf);
+
+      // Flush to canvas every 5 regions so user sees partial results
+      if (i % 5 === 0 || i === regions.length - 1) {
+        fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
+      }
+    }
+
+    setFillProgress({ done: regions.length, total: regions.length });
+    setFillMsg('Finalising');
+    await yieldFrame();
+
+    fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
+    setFills(prev => {
+      const next = [...prev, ...newFills];
+      setTimeout(() => redrawPolygons(next, hiddenIds, null, gId), 0);
+      return next;
+    });
+    setSelectedId(null);
+    setSelectedGroup(gId);
+    setIsFilling(false);
+    setFillMsg('');
+    setFillProgress(null);
+    const totalArea = newFills.reduce((s, f) => s + f.areaPx, 0);
+    setStatus(`Batch filled ${newFills.length} regions · total area ${fmtArea(totalArea, pxPerM)}`);
+  }, [isFilling, activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, processFilledMask]);
+
+  // ── Unified pointer handlers ───────────────────────────────────────────────
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    const vp = e.currentTarget as HTMLElement;
+
+    if (e.button !== 0 && e.button !== 2) return;
+
+    const isSpaceSelect = e.button === 0 && spaceHeldRef.current;
+    const isRightClick  = e.button === 2;
+    if ((isSpaceSelect || isRightClick) && loadStage === 'ready') {
+      e.preventDefault();
+      setIsDragging(false);
+      const { cx, cy } = screenToCanvas(e.clientX, e.clientY);
+      rectStart.current = { cx, cy, sx: e.clientX, sy: e.clientY };
+      isRectSelecting.current = true;
+      setIsSelecting(true);
+      setSelectRect(null);
+      vp.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    if (e.button === 0 && !spaceHeldRef.current) {
+      hasDraggedRef.current = false;
+      setIsDragging(true);
+      dragRef.current = { mx: e.clientX, my: e.clientY, px: panRef.current.x, py: panRef.current.y };
+      vp.setPointerCapture(e.pointerId);
+    }
+  }, [loadStage, screenToCanvas]);
+
+  const handlePointerMove = useCallback((e: React.PointerEvent) => {
+    if (isRectSelecting.current && rectStart.current) {
+      const { cx: x1, cy: y1 } = rectStart.current;
+      const { cx: x2, cy: y2 } = screenToCanvas(e.clientX, e.clientY);
+      setSelectRect({ x1, y1, x2, y2, sx: 0, sy: 0, sw: 0, sh: 0 });
+      return;
+    }
+
+    if (isDragging) {
+      const dx = e.clientX - dragRef.current.mx;
+      const dy = e.clientY - dragRef.current.my;
+      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) hasDraggedRef.current = true;
+      setPan({ x: dragRef.current.px + dx, y: dragRef.current.py + dy });
+      return;
+    }
+
+    if (loadStage === 'ready' && mode === 'fill') {
+      const vp = viewportRef.current!;
+      const vr = vp.getBoundingClientRect();
+      const px = Math.round((e.clientX - vr.left - panRef.current.x) / zoomRef.current);
+      const py = Math.round((e.clientY - vr.top  - panRef.current.y) / zoomRef.current);
+      const bc = baseCanvasRef.current!;
+      if (px < 0 || px >= bc.width || py < 0 || py >= bc.height) { setHoveredId(null); return; }
+      const idx = py * bc.width + px;
+      let found: number | null = null;
+      const cf = fillsRef.current;
+      for (let i = cf.length - 1; i >= 0; i--) {
+        const map = fillPixelMaps.current.get(cf[i].id);
+        if (map && map[idx]) { found = cf[i].id; break; }
+      }
+      setHoveredId(found);
+      setHoverPos({ x: e.clientX - vr.left, y: e.clientY - vr.top });
+    }
+  }, [isDragging, loadStage, mode, screenToCanvas]);
+
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    if (isDragging) { setIsDragging(false); return; }
+
+    if (isRectSelecting.current && rectStart.current) {
+      const { cx: x1, cy: y1 } = rectStart.current;
+      const { cx: x2, cy: y2 } = screenToCanvas(e.clientX, e.clientY);
+      isRectSelecting.current = false;
+      rectStart.current = null;
+      setIsSelecting(false);
+      setSelectRect(null);
+      commitRectSelect(x1, y1, x2, y2);
+    }
+  }, [isDragging, screenToCanvas, commitRectSelect]);
 
   // ── Undo ───────────────────────────────────────────────────────────────────
 
@@ -751,15 +1131,24 @@ export default function FloodFillPage() {
     fillDataRef.current.data.set(prev.data);
     fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
     setFills(f => {
-      const next = f.slice(0,-1);
-      if(f.length > 0) fillPixelMaps.current.delete(f[f.length-1].id);
+      if (f.length === 0) return f;
+      const last = f[f.length - 1];
+      let next: Fill[];
+      if (last.groupId != null) {
+        const gid = last.groupId;
+        next = f.filter(x => x.groupId !== gid);
+        next.forEach(x => fillPixelMaps.current.delete(x.id === last.id ? x.id : -1));
+        f.filter(x => x.groupId === gid).forEach(x => fillPixelMaps.current.delete(x.id));
+      } else {
+        next = f.slice(0, -1);
+        fillPixelMaps.current.delete(last.id);
+      }
       const newSelected = next.length ? next[next.length-1].id : null;
-      setSelectedId(newSelected);
-      setTimeout(() => redrawPolygons(next, hiddenIds, newSelected), 0);
+      setSelectedId(newSelected); setSelectedGroup(null);
+      setTimeout(() => redrawPolygons(next, hiddenIds, newSelected, null), 0);
       return next;
     });
-    setHoveredId(null);
-    setStatus('Undo');
+    setHoveredId(null); setStatus('Undo');
   }, [hiddenIds, redrawPolygons]);
 
   // ── Clear all ──────────────────────────────────────────────────────────────
@@ -770,73 +1159,87 @@ export default function FloodFillPage() {
     fillCanvasRef.current!.getContext('2d')!.clearRect(0,0,fillCanvasRef.current!.width,fillCanvasRef.current!.height);
     const pc = polyCanvasRef.current;
     if(pc) pc.getContext('2d')!.clearRect(0,0,pc.width,pc.height);
-    snapshots.current = []; fillCountRef.current = 0;
+    snapshots.current = []; fillCountRef.current = 0; groupCountRef.current = 0;
     fillPixelMaps.current.clear();
-    setFills([]); setHiddenIds(new Set()); setSelectedId(null);
+    setFills([]); setHiddenIds(new Set()); setSelectedId(null); setSelectedGroup(null);
     setHoveredId(null); setHolesClosedIds(new Set()); setStatus('Cleared');
   }, []);
 
   // ── Fill holes ─────────────────────────────────────────────────────────────
 
-  const handleFillHoles = useCallback(async () => {
-    if (!selectedId || !fillDataRef.current || !basePixelsRef.current) return;
-    const pixMap = fillPixelMaps.current.get(selectedId);
+  const closeFillHoles = useCallback(async (fId: number) => {
+    if (!fillDataRef.current || !basePixelsRef.current) return;
+    const pixMap = fillPixelMaps.current.get(fId);
     if (!pixMap) return;
     const bc = baseCanvasRef.current!;
     const w = bc.width, h = bc.height;
-    const fill = fillsRef.current.find(f => f.id === selectedId);
+    const fill = fillsRef.current.find(f => f.id === fId);
     if (!fill) return;
-
-    setIsFilling(true); setStatus('Closing holes…');
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
-
-    snapshots.current.push(new ImageData(
-      new Uint8ClampedArray(fillDataRef.current!.data), w, h,
-    ));
 
     const closed = closeHoles(pixMap, w, h);
     const added  = new Uint8Array(w * h);
     for (let i = 0; i < w * h; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
-
     const [r, g, b] = hexToRgb(fill.color);
     paintFill(added, fillDataRef.current!, r, g, b, fill.opacity / 100);
-    fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
 
     const { areaPx, perimPx, polygon } = processFilledMask(closed, w, h);
-    fillPixelMaps.current.set(selectedId, closed);
+    fillPixelMaps.current.set(fId, closed);
+    return { areaPx, perimPx, polygon };
+  }, [processFilledMask]);
+
+  const handleFillHoles = useCallback(async () => {
+    if (!selectedId && selectedGroup == null) return;
+    if (!fillDataRef.current || !basePixelsRef.current) return;
+    const bc = baseCanvasRef.current!;
+
+    setIsFilling(true);
+    setFillMsg('Closing holes');
+    setFillSub(undefined);
+    setFillProgress(null);
+
+    await yieldFrame();
+
+    snapshots.current.push(new ImageData(
+      new Uint8ClampedArray(fillDataRef.current!.data), bc.width, bc.height,
+    ));
+
+    const targetIds: number[] = selectedGroup != null
+      ? fillsRef.current.filter(f => f.groupId === selectedGroup).map(f => f.id)
+      : (selectedId != null ? [selectedId] : []);
+
+    if (targetIds.length === 0) { snapshots.current.pop(); setIsFilling(false); setFillMsg(''); return; }
+
+    if (targetIds.length > 1) setFillProgress({ done: 0, total: targetIds.length });
+
+    const updates: Record<number, { areaPx:number; perimPx:number; polygon:[number,number][] }> = {};
+    for (let i = 0; i < targetIds.length; i++) {
+      if (targetIds.length > 1) {
+        setFillProgress({ done: i, total: targetIds.length });
+        await yieldFrame();
+      }
+      const res = await closeFillHoles(targetIds[i]);
+      if (res) updates[targetIds[i]] = res;
+    }
+
+    fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
 
     setFills(prev => {
-      const next = prev.map(f =>
-        f.id === selectedId ? { ...f, areaPx, perimPx, polygon } : f
-      );
-      setTimeout(() => redrawPolygons(next, hiddenIds, selectedId), 0);
+      const next = prev.map(f => updates[f.id] ? { ...f, ...updates[f.id] } : f);
+      setTimeout(() => redrawPolygons(next, hiddenIds, selectedId, selectedGroup), 0);
       return next;
     });
-    setHolesClosedIds(prev => new Set(prev).add(selectedId));
+    setHolesClosedIds(prev => {
+      const s = new Set(prev);
+      targetIds.forEach(id => s.add(id));
+      return s;
+    });
     setIsFilling(false);
-    setStatus(`Holes closed · ${polygon.length} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
-  }, [selectedId, pxPerM, hiddenIds, redrawPolygons, processFilledMask]);
-
-  // ── Hover hit-test ─────────────────────────────────────────────────────────
-
-  const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    if (loadStage !== 'ready' || mode !== 'fill') { setHoveredId(null); return; }
-    const vp = viewportRef.current!;
-    const vr = vp.getBoundingClientRect();
-    const px = Math.round((e.clientX - vr.left - pan.x) / zoom);
-    const py = Math.round((e.clientY - vr.top  - pan.y) / zoom);
-    const bc = baseCanvasRef.current!;
-    if (px < 0 || px >= bc.width || py < 0 || py >= bc.height) { setHoveredId(null); return; }
-    const idx = py * bc.width + px;
-    let found: number | null = null;
-    const cf = fillsRef.current;
-    for (let i = cf.length - 1; i >= 0; i--) {
-      const map = fillPixelMaps.current.get(cf[i].id);
-      if (map && map[idx]) { found = cf[i].id; break; }
-    }
-    setHoveredId(found);
-    setHoverPos({ x: e.clientX - vr.left, y: e.clientY - vr.top });
-  }, [loadStage, mode, pan, zoom]);
+    setFillMsg('');
+    setFillProgress(null);
+    setStatus(targetIds.length > 1
+      ? `Holes closed on ${targetIds.length} regions`
+      : `Holes closed · ${Object.values(updates)[0]?.polygon.length ?? 0} corners`);
+  }, [selectedId, selectedGroup, closeFillHoles, hiddenIds, redrawPolygons]);
 
   // ── Wheel zoom ─────────────────────────────────────────────────────────────
 
@@ -862,20 +1265,6 @@ export default function FloodFillPage() {
     return () => vp.removeEventListener('wheel',h);
   }, []);
 
-  // ── Pointer pan ────────────────────────────────────────────────────────────
-
-  const handlePointerDown = useCallback((e: React.PointerEvent) => {
-    if(mode!=='pan') return;
-    setIsDragging(true);
-    dragRef.current = { mx:e.clientX, my:e.clientY, px:pan.x, py:pan.y };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [mode, pan]);
-  const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if(!isDragging) return;
-    setPan({ x:dragRef.current.px+e.clientX-dragRef.current.mx, y:dragRef.current.py+e.clientY-dragRef.current.my });
-  }, [isDragging]);
-  const handlePointerUp = useCallback(() => setIsDragging(false), []);
-
   // ── Export ─────────────────────────────────────────────────────────────────
 
   const handleExport = useCallback(() => {
@@ -883,17 +1272,29 @@ export default function FloodFillPage() {
     if(!bc||!fc) return;
     const out = document.createElement('canvas'); out.width=bc.width; out.height=bc.height;
     const ctx = out.getContext('2d')!;
-    ctx.drawImage(bc,0,0);
-    ctx.drawImage(fc,0,0);
+    ctx.drawImage(bc,0,0); ctx.drawImage(fc,0,0);
     if(pc && showPolygon) ctx.drawImage(pc,0,0);
     out.toBlob(bl=>{ if(!bl) return; const url=URL.createObjectURL(bl); Object.assign(document.createElement('a'),{href:url,download:(fileName||'floodfill')+'_filled.png'}).click(); URL.revokeObjectURL(url); },'image/png');
   }, [fileName, showPolygon]);
 
-  const selectedFill = fills.find(f=>f.id===selectedId) ?? null;
-  const hoveredFill  = fills.find(f=>f.id===hoveredId)  ?? null;
-  const cursor = mode==='fill' ? (isFilling?'wait':'crosshair') : (isDragging?'grabbing':'grab');
-  const tooltipLeft = hoverPos.x + 20;
-  const tooltipTop  = hoverPos.y - 10;
+  // ── Derived state ──────────────────────────────────────────────────────────
+
+  const selectedFill  = fills.find(f=>f.id===selectedId) ?? null;
+  const hoveredFill   = fills.find(f=>f.id===hoveredId)  ?? null;
+  const groupFills    = selectedGroup != null ? fills.filter(f=>f.groupId===selectedGroup) : [];
+  const cursor = spaceHeld
+    ? 'crosshair'
+    : isDragging
+      ? 'grabbing'
+      : isFilling
+        ? 'wait'
+        : isRectSelecting.current
+          ? 'crosshair'
+          : 'grab';
+  const tooltipLeft   = hoverPos.x + 20;
+  const tooltipTop    = hoverPos.y - 10;
+
+  const hasSelection  = selectedId != null || selectedGroup != null;
 
   return (
     <div style={{ display:'flex',flexDirection:'column',height:'100vh',background:'#151515',color:'#ccc',fontFamily:"'Courier New',monospace",overflow:'hidden' }}>
@@ -911,6 +1312,11 @@ export default function FloodFillPage() {
         {(['fill','pan'] as const).map(m=>(
           <button key={m} onClick={()=>setMode(m)} style={tbBtn(mode===m)}>{m==='fill'?'Fill ⊕':'Pan ⊙'}</button>
         ))}
+        {mode==='fill' && spaceHeld && (
+          <span style={{ fontSize:7,color:'#60a5fa',border:'1px solid rgba(96,165,250,.4)',padding:'2px 6px',textTransform:'uppercase',letterSpacing:'.08em',flexShrink:0 }}>
+            ␣ Select
+          </span>
+        )}
         <Sep/>
         <div style={{ display:'flex',gap:3,alignItems:'center' }}>
           {COLORS.map(c=>(
@@ -927,10 +1333,12 @@ export default function FloodFillPage() {
         <ScaleBar pxPerM={pxPerM} onChange={setPxPerM}/>
         <Sep/>
         {fills.length>0 && <button onClick={handleUndo} style={tbBtn(false)}>↩ Undo</button>}
-        {selectedId!=null && (
+        {hasSelection && (
           <button onClick={handleFillHoles}
             style={{...tbBtn(false),color:'#34d399',borderColor:'rgba(52,211,153,.35)'}}
-            title="Close enclosed gaps in selected fill">⊞ Fill Holes</button>
+            title={selectedGroup!=null ? `Close holes in all ${groupFills.length} selected regions` : 'Close enclosed gaps in selected fill'}>
+            ⊞ Fill Holes {selectedGroup!=null ? `(${groupFills.length})` : ''}
+          </button>
         )}
         {fills.length>0 && <button onClick={handleClearAll} style={{...tbBtn(false),color:'#f87171'}}>✕ Clear</button>}
         <div style={{ flex:1 }}/>
@@ -951,12 +1359,13 @@ export default function FloodFillPage() {
         <div
           ref={viewportRef}
           style={{ flex:1,position:'relative',overflow:'hidden',background:'#F8F7F3',backgroundImage:'radial-gradient(circle,#D0CEC8 1px,transparent 1px)',backgroundSize:'20px 20px',cursor,userSelect:'none' }}
-          onClick={doFill}
-          onMouseMove={handleMouseMove}
-          onMouseLeave={()=>setHoveredId(null)}
+          onClick={e => { if (e.button === 0 && !isRectSelecting.current && !spaceHeldRef.current && !hasDraggedRef.current) doFill(e); }}
+          onMouseLeave={()=>{ setHoveredId(null); }}
+          onContextMenu={handleContextMenu}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onPointerLeave={()=>{ setHoveredId(null); }}
         >
           <LoadingScreen stage={loadStage} progress={loadProgress} fileName={fileName}/>
 
@@ -966,18 +1375,34 @@ export default function FloodFillPage() {
             <canvas ref={polyCanvasRef} style={{ display:'block',position:'absolute',top:0,left:0,pointerEvents:'none',imageRendering:'auto' }}/>
           </div>
 
+          <SelectionOverlay rect={selectRect} zoom={zoom} pan={pan}/>
+
+          {/* Non-blocking fill progress overlay */}
+          <FillProgressOverlay
+            active={isFilling}
+            message={fillMsg}
+            sub={fillSub}
+            progress={fillProgress}
+          />
+
+          {isSelecting && (
+            <div style={{ position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',background:'rgba(10,10,10,.85)',border:'1px solid #60a5fa',padding:'4px 12px',fontSize:8,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none',zIndex:30 }}>
+              Release to fill all rooms in selection
+            </div>
+          )}
+
           {loadStage==='ready' && fileName && (
             <div style={{ position:'absolute',bottom:10,left:10,background:'rgba(255,255,255,.92)',border:'1px solid #ccc',padding:'3px 8px',fontSize:9,color:'#666',textTransform:'uppercase',letterSpacing:'.08em',pointerEvents:'none' }}>
               {fileName}
             </div>
           )}
 
-          {/* Hover tooltip */}
           {hoveredFill && loadStage==='ready' && (
             <div style={{ position:'absolute',left:tooltipLeft,top:tooltipTop,background:'rgba(10,10,10,.97)',border:'1px solid #2a2a2a',padding:'10px 14px',pointerEvents:'none',minWidth:210,zIndex:50,boxShadow:'0 4px 24px rgba(0,0,0,.6)' }}>
               <div style={{ fontSize:8,color:'#f59e0b',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:8,display:'flex',alignItems:'center',gap:6 }}>
                 <div style={{ width:9,height:9,borderRadius:1,background:hoveredFill.color,flexShrink:0 }}/>
                 {hoveredFill.label}
+                {hoveredFill.groupId != null && <span style={{ color:'#60a5fa',fontSize:7,marginLeft:2 }}>· group {hoveredFill.groupId}</span>}
               </div>
               <div style={{ height:1,background:'#1e1e1e',marginBottom:8 }}/>
               <MeasRow label="Area"      value={fmtArea(hoveredFill.areaPx,   pxPerM)} sub={`${hoveredFill.areaPx.toLocaleString()} px²`}/>
@@ -986,9 +1411,32 @@ export default function FloodFillPage() {
               {holesClosedIds.has(hoveredFill.id) && (
                 <div style={{ marginTop:7,display:'flex',alignItems:'center',gap:5,borderTop:'1px solid #1e1e1e',paddingTop:6 }}>
                   <span style={{ fontSize:8,color:'#34d399' }}>⊞</span>
-                  <span style={{ fontSize:7,color:'#34d399',textTransform:'uppercase',letterSpacing:'.07em' }}>Holes closed · outer perimeter</span>
+                  <span style={{ fontSize:7,color:'#34d399',textTransform:'uppercase',letterSpacing:'.07em' }}>Holes closed</span>
                 </div>
               )}
+            </div>
+          )}
+
+          {selectedGroup!=null && groupFills.length>0 && !hoveredFill && loadStage==='ready' && (
+            <div style={{ position:'absolute',bottom:10,right:10,background:'rgba(13,13,13,.95)',border:'1px solid #60a5fa',padding:'10px 14px',pointerEvents:'none',minWidth:230,boxShadow:'0 4px 24px rgba(0,0,0,.5)' }}>
+              <div style={{ fontSize:8,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:7,display:'flex',alignItems:'center',gap:6 }}>
+                <span style={{ fontSize:11 }}>⬡</span>
+                {groupFills.length} regions selected
+                <span style={{ color:'#383838',marginLeft:2,fontSize:7 }}>group {selectedGroup}</span>
+              </div>
+              <div style={{ height:1,background:'#1e1e1e',marginBottom:8 }}/>
+              <MeasRow label="Total Area"  value={fmtArea(groupFills.reduce((s,f)=>s+f.areaPx,0),   pxPerM)} sub={`${groupFills.reduce((s,f)=>s+f.areaPx,0).toLocaleString()} px²`}/>
+              <MeasRow label="Total Perim" value={fmtPerim(groupFills.reduce((s,f)=>s+f.perimPx,0), pxPerM)} sub={`${groupFills.reduce((s,f)=>s+f.perimPx,0).toLocaleString()} px`}/>
+              <div style={{ marginTop:8,borderTop:'1px solid #1a1a1a',paddingTop:7 }}>
+                {groupFills.map(f=>(
+                  <div key={f.id} style={{ display:'flex',alignItems:'center',gap:5,marginBottom:3 }}>
+                    <div style={{ width:7,height:7,borderRadius:1,background:f.color,flexShrink:0 }}/>
+                    <span style={{ fontSize:7,color:'#555',flex:1 }}>{f.label}</span>
+                    <span style={{ fontSize:7,color:'#888' }}>{fmtArea(f.areaPx,pxPerM)}</span>
+                    {holesClosedIds.has(f.id) && <span style={{ fontSize:7,color:'#34d399' }}>⊞</span>}
+                  </div>
+                ))}
+              </div>
               {pxPerM == null && (
                 <div style={{ fontSize:7,color:'#3a3a3a',marginTop:8,textTransform:'uppercase',letterSpacing:'.07em',lineHeight:1.7,borderTop:'1px solid #181818',paddingTop:6 }}>
                   Set px/m in toolbar for real-world units
@@ -997,8 +1445,7 @@ export default function FloodFillPage() {
             </div>
           )}
 
-          {/* Pinned selected panel */}
-          {selectedFill && !hoveredFill && loadStage==='ready' && (
+          {selectedFill && !hoveredFill && selectedGroup==null && loadStage==='ready' && (
             <div style={{ position:'absolute',bottom:10,right:10,background:'rgba(13,13,13,.95)',border:'1px solid #2a2a2a',padding:'10px 14px',pointerEvents:'none',minWidth:210,boxShadow:'0 4px 24px rgba(0,0,0,.5)' }}>
               <div style={{ fontSize:8,color:'#f59e0b',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:7,display:'flex',alignItems:'center',gap:6 }}>
                 <div style={{ width:8,height:8,borderRadius:1,background:selectedFill.color }}/>
@@ -1012,12 +1459,7 @@ export default function FloodFillPage() {
               {holesClosedIds.has(selectedFill.id) && (
                 <div style={{ marginTop:7,display:'flex',alignItems:'center',gap:5,borderTop:'1px solid #1e1e1e',paddingTop:6 }}>
                   <span style={{ fontSize:8,color:'#34d399' }}>⊞</span>
-                  <span style={{ fontSize:7,color:'#34d399',textTransform:'uppercase',letterSpacing:'.07em' }}>Holes closed · outer perimeter</span>
-                </div>
-              )}
-              {pxPerM == null && (
-                <div style={{ fontSize:7,color:'#3a3a3a',marginTop:8,textTransform:'uppercase',letterSpacing:'.07em',lineHeight:1.7,borderTop:'1px solid #181818',paddingTop:6 }}>
-                  Set px/m in toolbar for real-world units
+                  <span style={{ fontSize:7,color:'#34d399',textTransform:'uppercase',letterSpacing:'.07em' }}>Holes closed</span>
                 </div>
               )}
             </div>
@@ -1037,6 +1479,14 @@ export default function FloodFillPage() {
             </div>
           </div>
 
+          <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',background:'#0a0a0a' }}>
+            <div style={{ fontSize:7,color:'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em',lineHeight:2 }}>
+              Left-click · fill single room<br/>
+              Drag · pan canvas<br/>
+              Space+drag · batch select
+            </div>
+          </div>
+
           {fills.length>0 && (
             <div style={{ padding:10,borderBottom:'1px solid #1a1a1a' }}>
               <div style={sectionLabel}>Totals — {fills.length} fills</div>
@@ -1051,44 +1501,49 @@ export default function FloodFillPage() {
 
           <div style={{ flex:1,overflowY:'auto',padding:6,display:'flex',flexDirection:'column',gap:3 }}>
             {fills.length===0
-              ? <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'28px 8px',lineHeight:2.2 }}>Switch to Fill mode<br/>then click any room</p>
-              : fills.map(f=>(
-                <div
-                  key={f.id}
-                  onClick={()=>setSelectedId(f.id)}
-                  style={{
-                    border:`1px solid ${selectedId===f.id?'#f59e0b':hoveredId===f.id?'#555':'#1e1e1e'}`,
-                    padding:'5px 6px', fontSize:9,
-                    opacity:hiddenIds.has(f.id)?.35:1,
-                    cursor:'pointer',
-                    background:selectedId===f.id?'rgba(245,158,11,.04)':hoveredId===f.id?'rgba(255,255,255,.02)':'transparent',
-                    transition:'border-color .1s,background .1s',
-                  }}
-                >
-                  <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:3 }}>
-                    <div style={{ width:10,height:10,borderRadius:2,background:f.color,flexShrink:0 }}/>
-                    <span style={{ flex:1,color:'#777' }}>{f.label}</span>
-                    <span style={{ color:'#444',fontSize:8 }}>{f.opacity}%</span>
-                    <button
-                      title="Close enclosed holes"
-                      onClick={e=>{ e.stopPropagation(); setSelectedId(f.id); setTimeout(()=>handleFillHoles(),0); }}
-                      style={{ background:'none',border:'none',color:'#34d399',cursor:'pointer',fontSize:10,padding:'0 2px',lineHeight:1 }}>⊞</button>
-                    <button
-                      onClick={e=>{ e.stopPropagation(); setHiddenIds(p=>{ const s=new Set(p); s.has(f.id)?s.delete(f.id):s.add(f.id); return s; }); }}
-                      style={{ background:'none',border:'none',color:'#444',cursor:'pointer',fontSize:11,padding:'0 2px',lineHeight:1 }}>
-                      {hiddenIds.has(f.id)?'○':'●'}
-                    </button>
-                    <button
-                      onClick={e=>{ e.stopPropagation(); fillPixelMaps.current.delete(f.id); setFills(p=>{ const next=p.filter(x=>x.id!==f.id); setTimeout(()=>redrawPolygons(next,hiddenIds,selectedId),0); return next; }); if(selectedId===f.id) setSelectedId(null); if(hoveredId===f.id) setHoveredId(null); }}
-                      style={{ background:'none',border:'none',color:'#444',cursor:'pointer',fontSize:11,padding:'0 2px',lineHeight:1 }}>✕</button>
+              ? <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'28px 8px',lineHeight:2.2 }}>Left-click to fill a room<br/>Right-drag or Space+drag<br/>to select multiple</p>
+              : fills.map(f=>{
+                const isGrouped = f.groupId != null;
+                const isInSel   = f.id===selectedId || (selectedGroup!=null && f.groupId===selectedGroup);
+                return (
+                  <div
+                    key={f.id}
+                    onClick={()=>{ setSelectedId(f.id); setSelectedGroup(null); }}
+                    style={{
+                      border:`1px solid ${isInSel?( isGrouped?'#60a5fa':'#f59e0b'):hoveredId===f.id?'#555':'#1e1e1e'}`,
+                      padding:'5px 6px', fontSize:9,
+                      opacity:hiddenIds.has(f.id)?.35:1,
+                      cursor:'pointer',
+                      background: isInSel?(isGrouped?'rgba(96,165,250,.04)':'rgba(245,158,11,.04)'):hoveredId===f.id?'rgba(255,255,255,.02)':'transparent',
+                      transition:'border-color .1s,background .1s',
+                    }}
+                  >
+                    <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:3 }}>
+                      <div style={{ width:10,height:10,borderRadius:2,background:f.color,flexShrink:0 }}/>
+                      <span style={{ flex:1,color:'#777' }}>{f.label}</span>
+                      {isGrouped && <span style={{ fontSize:7,color:'#60a5fa',padding:'1px 3px',border:'1px solid rgba(96,165,250,.3)' }}>G{f.groupId}</span>}
+                      <span style={{ color:'#444',fontSize:8 }}>{f.opacity}%</span>
+                      <button
+                        title="Close holes"
+                        onClick={e=>{ e.stopPropagation(); setSelectedId(f.id); setSelectedGroup(null); setTimeout(()=>{ closeFillHoles(f.id).then(res=>{ if(!res) return; fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!,0,0); setFills(p=>{ const next=p.map(x=>x.id===f.id?{...x,...res}:x); setTimeout(()=>redrawPolygons(next,hiddenIds,f.id,null),0); return next; }); setHolesClosedIds(p=>new Set(p).add(f.id)); }); },0); }}
+                        style={{ background:'none',border:'none',color:'#34d399',cursor:'pointer',fontSize:10,padding:'0 2px',lineHeight:1 }}>⊞</button>
+                      <button
+                        onClick={e=>{ e.stopPropagation(); setHiddenIds(p=>{ const s=new Set(p); s.has(f.id)?s.delete(f.id):s.add(f.id); return s; }); }}
+                        style={{ background:'none',border:'none',color:'#444',cursor:'pointer',fontSize:11,padding:'0 2px',lineHeight:1 }}>
+                        {hiddenIds.has(f.id)?'○':'●'}
+                      </button>
+                      <button
+                        onClick={e=>{ e.stopPropagation(); fillPixelMaps.current.delete(f.id); setFills(p=>{ const next=p.filter(x=>x.id!==f.id); setTimeout(()=>redrawPolygons(next,hiddenIds,selectedId,selectedGroup),0); return next; }); if(selectedId===f.id) setSelectedId(null); if(hoveredId===f.id) setHoveredId(null); }}
+                        style={{ background:'none',border:'none',color:'#444',cursor:'pointer',fontSize:11,padding:'0 2px',lineHeight:1 }}>✕</button>
+                    </div>
+                    <div style={{ paddingLeft:16,display:'flex',flexDirection:'column',gap:2 }}>
+                      <FillMeasRow icon="▣" label="Area"    value={fmtArea(f.areaPx,   pxPerM)}/>
+                      <FillMeasRow icon="◻" label="Perim"   value={fmtPerim(f.perimPx, pxPerM)}/>
+                      <FillMeasRow icon="⬡" label="Corners" value={String(f.polygon.length)}/>
+                    </div>
                   </div>
-                  <div style={{ paddingLeft:16,display:'flex',flexDirection:'column',gap:2 }}>
-                    <FillMeasRow icon="▣" label="Area"    value={fmtArea(f.areaPx,   pxPerM)}/>
-                    <FillMeasRow icon="◻" label="Perim"   value={fmtPerim(f.perimPx, pxPerM)}/>
-                    <FillMeasRow icon="⬡" label="Corners" value={String(f.polygon.length)}/>
-                  </div>
-                </div>
-              ))
+                );
+              })
             }
           </div>
 
@@ -1107,7 +1562,7 @@ export default function FloodFillPage() {
 
       {/* Status bar */}
       <div style={{ height:24,background:'#0a0a0a',borderTop:'1px solid #1a1a1a',display:'flex',alignItems:'center',padding:'0 10px',gap:12,flexShrink:0 }}>
-        {['Fill: click room centre','Pan: drag in pan mode','Ctrl+scroll to zoom','Hover filled region to inspect'].map((h,i)=>(
+        {['Left-click: fill room','Drag: pan','Space+drag: select multiple','Ctrl+scroll: zoom'].map((h,i)=>(
           <React.Fragment key={h}>
             {i>0 && <div style={{ width:1,height:12,background:'#1e1e1e' }}/>}
             <span style={{ fontSize:8,color:'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
