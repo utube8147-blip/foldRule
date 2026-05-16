@@ -631,10 +631,13 @@ export default function FloodFillPage() {
   const [selectRect,     setSelectRect]     = useState<SelectRect|null>(null);
   const [isSelecting,    setIsSelecting]    = useState(false);
   const [spaceHeld,      setSpaceHeld]      = useState(false);
+  const [batchMode,      setBatchMode]      = useState(false);
   const isRectSelecting  = useRef(false);
   const rectStart        = useRef<{cx:number;cy:number;sx:number;sy:number}|null>(null);
   const spaceHeldRef     = useRef(false);
+  const batchModeRef     = useRef(false);
   const hasDraggedRef    = useRef(false);
+  const lastClickTime    = useRef(0);
 
   const viewportRef   = useRef<HTMLDivElement>(null);
   const wrapRef       = useRef<HTMLDivElement>(null);
@@ -660,6 +663,7 @@ export default function FloodFillPage() {
   const zoomRef = useRef(zoom);
   useEffect(() => { panRef.current = pan; }, [pan]);
   useEffect(() => { zoomRef.current = zoom; }, [zoom]);
+  useEffect(() => { batchModeRef.current = batchMode; }, [batchMode]);
 
   useEffect(() => {
     if (wrapRef.current)
@@ -679,7 +683,8 @@ export default function FloodFillPage() {
       if (e.code === 'Space') {
         spaceHeldRef.current = false;
         setSpaceHeld(false);
-        if (isRectSelecting.current) {
+        // Only cancel rect-select on space-up if batch mode isn't keeping it active
+        if (isRectSelecting.current && !batchModeRef.current) {
           isRectSelecting.current = false;
           rectStart.current = null;
           setIsSelecting(false);
@@ -1046,15 +1051,42 @@ export default function FloodFillPage() {
   }, [isFilling, activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, processFilledMask]);
 
   // ── Unified pointer handlers ───────────────────────────────────────────────
+  // Left-drag         → pan
+  // Right-click drag  → pan
+  // Space+left drag   → rect-select (batch fill)
+  // Batch mode + left drag → rect-select (batch fill)  [toggled by double-click]
+  // Double-click      → toggle persistent batch-select mode
 
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     const vp = e.currentTarget as HTMLElement;
-
     if (e.button !== 0 && e.button !== 2) return;
 
-    const isSpaceSelect = e.button === 0 && spaceHeldRef.current;
-    const isRightClick  = e.button === 2;
-    if ((isSpaceSelect || isRightClick) && loadStage === 'ready') {
+    // Detect double-click on left button to toggle batch mode
+    if (e.button === 0 && loadStage === 'ready') {
+      const now = Date.now();
+      const isDouble = (now - lastClickTime.current) < 300;
+      lastClickTime.current = now;
+      if (isDouble) {
+        const next = !batchModeRef.current;
+        batchModeRef.current = next;
+        setBatchMode(next);
+        // Don't start a drag on double-click
+        return;
+      }
+    }
+
+    // Right-click → pan
+    if (e.button === 2) {
+      e.preventDefault();
+      hasDraggedRef.current = false;
+      setIsDragging(true);
+      dragRef.current = { mx: e.clientX, my: e.clientY, px: panRef.current.x, py: panRef.current.y };
+      vp.setPointerCapture(e.pointerId);
+      return;
+    }
+
+    // Left + (Space OR batch mode) → rect-select
+    if (e.button === 0 && (spaceHeldRef.current || batchModeRef.current) && loadStage === 'ready') {
       e.preventDefault();
       setIsDragging(false);
       const { cx, cy } = screenToCanvas(e.clientX, e.clientY);
@@ -1066,7 +1098,8 @@ export default function FloodFillPage() {
       return;
     }
 
-    if (e.button === 0 && !spaceHeldRef.current) {
+    // Left → pan
+    if (e.button === 0) {
       hasDraggedRef.current = false;
       setIsDragging(true);
       dragRef.current = { mx: e.clientX, my: e.clientY, px: panRef.current.x, py: panRef.current.y };
@@ -1282,7 +1315,7 @@ export default function FloodFillPage() {
   const selectedFill  = fills.find(f=>f.id===selectedId) ?? null;
   const hoveredFill   = fills.find(f=>f.id===hoveredId)  ?? null;
   const groupFills    = selectedGroup != null ? fills.filter(f=>f.groupId===selectedGroup) : [];
-  const cursor = spaceHeld
+  const cursor = spaceHeld || batchMode
     ? 'crosshair'
     : isDragging
       ? 'grabbing'
@@ -1312,6 +1345,15 @@ export default function FloodFillPage() {
         {(['fill','pan'] as const).map(m=>(
           <button key={m} onClick={()=>setMode(m)} style={tbBtn(mode===m)}>{m==='fill'?'Fill ⊕':'Pan ⊙'}</button>
         ))}
+        {mode==='fill' && (
+          <button
+            onClick={() => { const next = !batchMode; setBatchMode(next); batchModeRef.current = next; }}
+            style={{ ...tbBtn(batchMode), color: batchMode ? '#60a5fa' : '#555', borderColor: batchMode ? 'rgba(96,165,250,.6)' : '#2a2a2a', background: batchMode ? 'rgba(96,165,250,.08)' : 'transparent' }}
+            title="Double-click canvas to toggle · or click here"
+          >
+            ⊞ Batch {batchMode ? '●' : '○'}
+          </button>
+        )}
         {mode==='fill' && spaceHeld && (
           <span style={{ fontSize:7,color:'#60a5fa',border:'1px solid rgba(96,165,250,.4)',padding:'2px 6px',textTransform:'uppercase',letterSpacing:'.08em',flexShrink:0 }}>
             ␣ Select
@@ -1359,7 +1401,7 @@ export default function FloodFillPage() {
         <div
           ref={viewportRef}
           style={{ flex:1,position:'relative',overflow:'hidden',background:'#F8F7F3',backgroundImage:'radial-gradient(circle,#D0CEC8 1px,transparent 1px)',backgroundSize:'20px 20px',cursor,userSelect:'none' }}
-          onClick={e => { if (e.button === 0 && !isRectSelecting.current && !spaceHeldRef.current && !hasDraggedRef.current) doFill(e); }}
+          onClick={e => { if (e.button === 0 && !isRectSelecting.current && !spaceHeldRef.current && !batchModeRef.current && !hasDraggedRef.current) doFill(e); }}
           onMouseLeave={()=>{ setHoveredId(null); }}
           onContextMenu={handleContextMenu}
           onPointerDown={handlePointerDown}
