@@ -18,7 +18,6 @@ const PDF_SCALE           = 3;
 const SVG_SCALE           = 3;
 const FILL_GROW           = 3;
 const RDP_EPSILON         = 3;   // final cleanup pass after corner detection
-const CORNER_ANGLE_TOL    = 15;  // degrees — direction must change by this much to count as a corner
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -246,11 +245,19 @@ function measurePerim(perimMask: Uint8Array, w: number, h: number): number {
   return Math.round(c);
 }
 
-// ── 4-directional contour tracing (no diagonals = no zigzag steps) ────────────
-// Uses square tracing algorithm: always tries to turn right first.
-// Produces a clean axis-aligned chain that RDP can then aggressively simplify.
-function traceContour(perim: Uint8Array, w: number, h: number): [number, number][] {
-  // Find topmost-leftmost perimeter pixel
+// ── Corner-only polygon extraction ────────────────────────────────────────────
+// Strategy:
+//   1. Walk the perimeter with a 4-directional tracer (no diagonals).
+//   2. Record the DIRECTION at each step.
+//   3. A "corner" is where the direction changes. Only those pixels become points.
+//   4. Final RDP pass removes any residual near-collinear corners from pixel noise.
+//
+// Result: a perfectly rectangular room → exactly 4 points.
+//         an L-shaped room → exactly 6 points.
+//         no intermediate points on straight walls at all.
+
+function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
+  // ── Step 1: find topmost-leftmost perimeter pixel ──────────────────────────
   let startIdx = -1;
   for (let i = 0; i < perim.length; i++) {
     if (perim[i]) { startIdx = i; break; }
@@ -258,59 +265,64 @@ function traceContour(perim: Uint8Array, w: number, h: number): [number, number]
   if (startIdx === -1) return [];
 
   // 4 directions: right=0, down=1, left=2, up=3
-  const DX = [1, 0, -1, 0];
-  const DY = [0, 1, 0, -1];
+  const DX = [1, 0, -1,  0];
+  const DY = [0, 1,  0, -1];
 
-  const pts: [number, number][] = [];
+  // ── Step 2: walk perimeter, record every pixel + its direction ──────────────
   const sx = startIdx % w, sy = (startIdx / w) | 0;
-  let cx = sx, cy = sy;
-  // Starting moving right; try right-turn first (clockwise boundary walk)
-  let dir = 0;
-  const maxSteps = perim.length;
-  let steps = 0;
+  let cx = sx, cy = sy, dir = 0;
+  const steps: Array<[number, number, number]> = []; // [x, y, direction]
+  const maxSteps = perim.length * 2;
+  let count = 0;
 
   do {
-    pts.push([cx, cy]);
-    // Try turning right, then straight, then left, then back
+    steps.push([cx, cy, dir]);
     let moved = false;
+    // try: right-turn, straight, left-turn, U-turn
     for (let t = 0; t < 4; t++) {
-      const nd = (dir + 3 + t) % 4; // right turn = (dir-1+4)%4, then straight, left, back
+      const nd = (dir + 3 + t) % 4;
       const nx = cx + DX[nd], ny = cy + DY[nd];
       if (nx >= 0 && nx < w && ny >= 0 && ny < h && perim[ny * w + nx]) {
         cx = nx; cy = ny; dir = nd; moved = true; break;
       }
     }
     if (!moved) break;
-    if (++steps > maxSteps) break;
+    if (++count > maxSteps) break;
   } while (cx !== sx || cy !== sy);
 
-  return pts;
-}
+  if (steps.length === 0) return [];
 
-// ── Remove collinear points (runs of same direction) ─────────────────────────
-// This is the KEY step: a straight wall produces dozens of collinear pixels.
-// Merging them before RDP means RDP gets clean segment endpoints, not noise.
-function removeCollinear(pts: [number, number][], tol: number): [number, number][] {
-  if (pts.length < 3) return pts;
-  const distToLine = (p: [number,number], a: [number,number], b: [number,number]) => {
-    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
-    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
-    if (len2 === 0) return Math.hypot(px - ax, py - ay);
-    const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
-    return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
-  };
-  const out: [number, number][] = [pts[0]];
-  for (let i = 1; i < pts.length - 1; i++) {
-    const d = distToLine(pts[i], out[out.length - 1], pts[i + 1]);
-    if (d > tol) out.push(pts[i]);
+  // ── Step 3: keep only pixels where direction changes (= corners) ────────────
+  const n = steps.length;
+  const corners: [number, number][] = [];
+  for (let i = 0; i < n; i++) {
+    const prevDir = steps[(i - 1 + n) % n][2];
+    const currDir = steps[i][2];
+    if (currDir !== prevDir) {
+      corners.push([steps[i][0], steps[i][1]]);
+    }
   }
-  out.push(pts[pts.length - 1]);
-  return out;
+
+  if (corners.length < 3) {
+    // fallback: bounding box of all perimeter pixels
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    for (let i = 0; i < perim.length; i++) {
+      if (!perim[i]) continue;
+      const x = i % w, y = (i / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return [[minX, minY],[maxX, minY],[maxX, maxY],[minX, maxY]];
+  }
+
+  // ── Step 4: RDP pass to remove pixel-noise micro-corners ────────────────────
+  // (e.g. a 1px bump in a wall caused by anti-aliasing or rasterisation)
+  return rdpSimplify(corners, RDP_EPSILON);
 }
 
-// ── Ramer-Douglas-Peucker simplification ─────────────────────────────────────
+// ── Ramer-Douglas-Peucker (final noise cleanup only) ─────────────────────────
 function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
-  if (pts.length <= 2) return pts;
+  if (pts.length <= 3) return pts;
 
   const distToLine = (p: [number,number], a: [number,number], b: [number,number]) => {
     const [ax, ay] = a, [bx, by] = b, [px, py] = p;
@@ -332,14 +344,6 @@ function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
   };
   rec(0, pts.length - 1);
   return [...keep].sort((a, b) => a - b).map(i => pts[i]);
-}
-
-// ── Combined: trace → remove collinear → RDP ─────────────────────────────────
-function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
-  const raw        = traceContour(perim, w, h);
-  const decollined = removeCollinear(raw, COLLINEAR_TOL);
-  const simplified = rdpSimplify(decollined, RDP_EPSILON);
-  return simplified;
 }
 
 // ── Misc helpers ───────────────────────────────────────────────────────────────
