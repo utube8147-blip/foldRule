@@ -3,10 +3,12 @@
 // ─── ViewerCanvas.tsx ─────────────────────────────────────────────────────────
 //
 // CHANGES:
-//   • selectedClusterId state (useState) — tracks which cluster is selected
-//   • drawClusterCanvas now receives selectedClusterId
-//   • clusterCanvasRef onClick handler — hit-tests clusters, toggles selection
-//   • Escape key clears selection
+//   • `readyToDraw` prop — drawing canvas, pin canvas, count pins, finish
+//     buttons and snap flashes are all hidden (opacity 0 / pointer-events none)
+//     until Viewer signals that pdfDimensions match the settled scale.
+//     This prevents misaligned marks appearing mid-zoom.
+//   • Dead `pointInPolygon` helper removed — room hit-testing lives in Viewer.
+//   • Selected-cluster tooltip always on top (z-[80]).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
@@ -21,39 +23,23 @@ import { SVG_SNAP_COLOURS } from '@/hooks/useSvgSnapPoints';
 import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
 import type { SvgArea } from '@/hooks/useSvgInteraction';
 
-import { drawSvgAreaCanvas }              from '@/hooks/drawSvgAreaCanvas';
+import { drawSvgAreaCanvas }               from '@/hooks/drawSvgAreaCanvas';
 import { drawClusterCanvas, hitTestClusters } from '@/hooks/drawClusterCanvas';
-import { getRoomCategory, CATEGORY_COLORS }   from '@/lib/svgLabelUtils';
-import type { ShapeCluster }              from '@/hooks/useShapeCluster';
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function pointInPolygon(
-  x: number, y: number,
-  poly: Array<{ x: number; y: number }>,
-): boolean {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x, yi = poly[i].y;
-    const xj = poly[j].x, yj = poly[j].y;
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
-      inside = !inside;
-  }
-  return inside;
-}
+import { getRoomCategory, CATEGORY_COLORS }  from '@/lib/svgLabelUtils';
+import type { ShapeCluster }               from '@/hooks/useShapeCluster';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SnapFlash { id: string; x: number; y: number; }
 
 interface ViewerCanvasProps {
-  pdfCanvasRef:      React.RefObject<HTMLCanvasElement | null>;
-  drawingCanvasRef:  React.RefObject<HTMLCanvasElement | null>;
-  pinCanvasRef:      React.RefObject<HTMLCanvasElement | null>;
-  roomCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
-  wallCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
-  vectorCanvasRef:   React.RefObject<HTMLCanvasElement | null>;
-  svgAreaCanvasRef:  React.RefObject<HTMLCanvasElement | null>;
+  pdfCanvasRef:        React.RefObject<HTMLCanvasElement | null>;
+  drawingCanvasRef:    React.RefObject<HTMLCanvasElement | null>;
+  pinCanvasRef:        React.RefObject<HTMLCanvasElement | null>;
+  roomCanvasRef:       React.RefObject<HTMLCanvasElement | null>;
+  wallCanvasRef:       React.RefObject<HTMLCanvasElement | null>;
+  vectorCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
+  svgAreaCanvasRef:    React.RefObject<HTMLCanvasElement | null>;
   roomLabelCanvasRef?: React.RefObject<HTMLCanvasElement | null>;
 
   pdf:             any;
@@ -73,11 +59,11 @@ interface ViewerCanvasProps {
   showWalls:        boolean;
   wallSegmentCount: number;
 
-  showRooms:       boolean;
-  rooms:           DetectedRoom[];
-  hoveredRoomId:   string | null;
-  setHoveredRoomId:(id: string | null) => void;
-  onRoomClick:     (room: DetectedRoom) => void;
+  showRooms:        boolean;
+  rooms:            DetectedRoom[];
+  hoveredRoomId:    string | null;
+  setHoveredRoomId: (id: string | null) => void;
+  onRoomClick:      (room: DetectedRoom) => void;
 
   svgContent?:       string | null;
   showSvgOverlay?:   boolean;
@@ -87,6 +73,10 @@ interface ViewerCanvasProps {
 
   clusters?:     ShapeCluster[];
   showClusters?: boolean;
+
+  /** True only after the PDF has re-rendered at the settled scale and
+   *  pdfDimensions are confirmed correct. Drawings are hidden until then. */
+  readyToDraw?: boolean;
 
   toCanvas: (x: number, y: number) => { x: number; y: number };
 
@@ -131,7 +121,8 @@ function drawSvgSnapDebugCanvas(
       ctx.beginPath(); ctx.arc(px, py, R, 0, Math.PI * 2); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(px - R - 4, py); ctx.lineTo(px + R + 4, py); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(px, py - R - 4); ctx.lineTo(px, py + R + 4); ctx.stroke();
-      ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI * 2); ctx.fillStyle = colour; ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, 2, 0, Math.PI * 2);
+      ctx.fillStyle = colour; ctx.fill();
       ctx.restore();
     } else {
       ctx.beginPath(); ctx.arc(px, py, 4, 0, Math.PI * 2);
@@ -167,11 +158,11 @@ function drawRoomLabelsCanvas(
     const colors = CATEGORY_COLORS[getRoomCategory(label)] ?? CATEGORY_COLORS.default;
 
     ctx.font = 'bold 11px ui-monospace,SFMono-Regular,Menlo,monospace';
-    const tw = ctx.measureText(label).width;
+    const tw   = ctx.measureText(label).width;
     const pillW = tw + 16, pillH = 20;
 
     ctx.shadowBlur = 6; ctx.shadowColor = 'rgba(0,0,0,0.35)';
-    ctx.fillStyle = colors.pill;
+    ctx.fillStyle  = colors.pill;
     ctx.beginPath();
     (ctx as any).roundRect?.(cx - pillW / 2, cy - pillH / 2, pillW, pillH, 5);
     ctx.fill();
@@ -188,8 +179,7 @@ function drawRoomLabelsCanvas(
 
 export function ViewerCanvas({
   pdfCanvasRef, drawingCanvasRef, pinCanvasRef, roomCanvasRef,
-  wallCanvasRef, vectorCanvasRef, svgAreaCanvasRef,
-  roomLabelCanvasRef,
+  wallCanvasRef, vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
   pdf, loading, pdfDimensions,
   activeTool, showPins, isPanning, spaceHeld,
   tempPoints, measurements, activeDrawingId,
@@ -204,12 +194,12 @@ export function ViewerCanvas({
   showSvgSnapDebug = false,
   clusters         = [],
   showClusters     = true,
+  readyToDraw      = true,
   handleCanvasClick, handleContextMenu,
   handleCanvasPointerMove, handleCanvasPointerDown,
   handleCanvasPointerUp, handleDrawingCanvasPointerDown,
   setCursorPoint, cursorPointRef, redrawPinCanvas,
-  handleFinishMeasurement,
-  handleFileUpload,
+  handleFinishMeasurement, handleFileUpload,
   containerRef, CANVAS_PADDING,
 }: ViewerCanvasProps) {
 
@@ -217,10 +207,9 @@ export function ViewerCanvas({
   const svgDebugCanvasRef = React.useRef<HTMLCanvasElement | null>(null);
   const clusterCanvasRef  = React.useRef<HTMLCanvasElement | null>(null);
 
-  // ── Cluster selection state ───────────────────────────────────────────────
+  // ── Cluster selection ─────────────────────────────────────────────────────
   const [selectedClusterId, setSelectedClusterId] = React.useState<string | null>(null);
 
-  // Clear selection on Escape
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setSelectedClusterId(null);
@@ -229,17 +218,14 @@ export function ViewerCanvas({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  // ── Cluster canvas click — hit test + toggle selection ────────────────────
   const handleClusterCanvasClick = React.useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (!pdfDimensions || clusters.length === 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const nx   = (e.clientX - rect.left)  / pdfDimensions.w;
-      const ny   = (e.clientY - rect.top)   / pdfDimensions.h;
+      const nx   = (e.clientX - rect.left) / pdfDimensions.w;
+      const ny   = (e.clientY - rect.top)  / pdfDimensions.h;
       const hit  = hitTestClusters(nx, ny, clusters);
-      // Toggle: clicking the same cluster deselects; clicking another selects it
-      setSelectedClusterId(prev => prev === hit ? null : hit);
-      // If we hit something, stop it reaching the drawing canvas
+      setSelectedClusterId(prev => (prev === hit ? null : hit));
       if (hit) e.stopPropagation();
     },
     [pdfDimensions, clusters],
@@ -289,7 +275,7 @@ export function ViewerCanvas({
     drawSvgSnapDebugCanvas(canvas, svgSnapPoints, pdfDimensions);
   }, [svgSnapPoints, showSvgSnapDebug, pdfDimensions]);
 
-  // ── Cluster canvas — redraws on clusters, visibility, OR selection change ─
+  // ── Cluster canvas ────────────────────────────────────────────────────────
   React.useEffect(() => {
     const canvas = clusterCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -303,28 +289,29 @@ export function ViewerCanvas({
     drawRoomLabelsCanvas(canvas, rooms, pdfDimensions, showRooms);
   }, [rooms, showRooms, pdfDimensions, roomLabelCanvasRef]);
 
+  // ── Cursor class ──────────────────────────────────────────────────────────
   const drawingCanvasCursor = spaceHeld
     ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
     : activeTool !== 'select' && !isPanning
     ? 'cursor-crosshair'
     : isPanning ? 'cursor-grabbing' : 'cursor-grab';
 
-  const handleRoomPointerMove = React.useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!showRooms || !pdfDimensions || !rooms.length) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
-    const hit = rooms.find(r => {
-      const pts = r.polygon.map(p => ({ x: p.nx * pdfDimensions.w, y: p.ny * pdfDimensions.h }));
-      return pointInPolygon(mx, my, pts);
-    });
-    setHoveredRoomId(hit?.id ?? null);
-  }, [showRooms, pdfDimensions, rooms, setHoveredRoomId]);
-
-  const handleRoomClick = React.useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!showRooms || !hoveredRoomId) return;
-    const room = rooms.find(r => r.id === hoveredRoomId);
-    if (room) { e.stopPropagation(); onRoomClick(room); }
-  }, [showRooms, hoveredRoomId, rooms, onRoomClick]);
+  // ── Wrappers div positioning ──────────────────────────────────────────────
+  const canvasWrapStyle: React.CSSProperties | undefined = pdfDimensions
+    ? (() => {
+        const vw   = containerRef.current?.clientWidth  ?? 0;
+        const vh   = containerRef.current?.clientHeight ?? 0;
+        const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw  * 3);
+        const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
+        return {
+          position: 'absolute' as const,
+          left:  Math.round((wrapW - pdfDimensions.w) / 2),
+          top:   Math.round((wrapH - pdfDimensions.h) / 2),
+          width:  pdfDimensions.w,
+          height: pdfDimensions.h,
+        };
+      })()
+    : undefined;
 
   return (
     <>
@@ -342,7 +329,11 @@ export function ViewerCanvas({
           </div>
           <label className="bg-amber-400 hover:bg-amber-300 text-black px-10 py-3 font-mono font-bold text-xs uppercase tracking-widest cursor-pointer transition-all shadow-xl shadow-amber-400/10 active:scale-95">
             Select File(s)
-            <input type="file" multiple className="hidden" accept=".pdf,.png,.jpg,.jpeg,.dwg" onChange={handleFileUpload} />
+            <input
+              type="file" multiple className="hidden"
+              accept=".pdf,.png,.jpg,.jpeg,.dwg"
+              onChange={handleFileUpload}
+            />
           </label>
         </div>
       )}
@@ -361,15 +352,7 @@ export function ViewerCanvas({
       {pdf && (
         <div
           className="relative shadow-2xl border border-industrial-border bg-white"
-          style={pdfDimensions ? (() => {
-            const vw    = containerRef.current?.clientWidth  ?? 0;
-            const vh    = containerRef.current?.clientHeight ?? 0;
-            const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw  * 3);
-            const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
-            const left  = Math.round((wrapW - pdfDimensions.w) / 2);
-            const top   = Math.round((wrapH - pdfDimensions.h) / 2);
-            return { position: 'absolute' as const, left, top, width: pdfDimensions.w, height: pdfDimensions.h };
-          })() : {}}
+          style={canvasWrapStyle}
         >
           {/* Layer 0: PDF raster */}
           <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
@@ -407,18 +390,16 @@ export function ViewerCanvas({
             }}
           />
 
-          {/* Layer 1.65: Cluster bounding boxes — INTERACTIVE */}
+          {/* Layer 1.65: Cluster bounding boxes — interactive */}
           <canvas
             ref={clusterCanvasRef}
             className="absolute inset-0 z-[165]"
             style={{
-              opacity:    showClusters && clusters.length > 0 ? 1 : 0,
-              transition: 'opacity 0.2s',
-              width:      pdfDimensions?.w,
-              height:     pdfDimensions?.h,
-              // Show pointer cursor when clusters are visible so user knows it's clickable
-              cursor:     showClusters && clusters.length > 0 ? 'pointer' : 'default',
-              // When a tool is active (not select), let events pass through
+              opacity:       showClusters && clusters.length > 0 ? 1 : 0,
+              transition:    'opacity 0.2s',
+              width:         pdfDimensions?.w,
+              height:        pdfDimensions?.h,
+              cursor:        showClusters && clusters.length > 0 ? 'pointer' : 'default',
               pointerEvents: activeTool === 'select' && showClusters ? 'auto' : 'none',
             }}
             onClick={handleClusterCanvasClick}
@@ -450,7 +431,9 @@ export function ViewerCanvas({
             style={{ opacity: showWalls && wallSegmentCount > 0 ? 1 : 0, transition: 'opacity 0.2s' }}
           />
 
-          {/* Layer 4: Drawing canvas */}
+          {/* Layer 4: Drawing canvas
+              Hidden (opacity 0) until readyToDraw — prevents misaligned marks
+              flashing at the wrong position mid-zoom. */}
           <canvas
             ref={drawingCanvasRef}
             onClick={handleCanvasClick}
@@ -466,27 +449,44 @@ export function ViewerCanvas({
               cursorPointRef.current = null;
               redrawPinCanvas();
             }}
-            className={cn('absolute inset-0 z-40 w-full h-full mix-blend-multiply', drawingCanvasCursor)}
+            className={cn(
+              'absolute inset-0 z-40 w-full h-full mix-blend-multiply',
+              drawingCanvasCursor,
+            )}
+            style={{
+              opacity:    readyToDraw ? 1 : 0,
+              transition: readyToDraw ? 'opacity 0.15s' : 'none',
+            }}
           />
 
           {/* Layer 5: Snap pin canvas */}
           <canvas
             ref={pinCanvasRef}
             className="absolute inset-0 z-50 w-full h-full pointer-events-none"
-            style={{ opacity: showPins && activeTool !== 'select' ? 1 : 0, transition: 'opacity 0.2s' }}
+            style={{
+              opacity: showPins && activeTool !== 'select' && readyToDraw ? 1 : 0,
+              transition: 'opacity 0.2s',
+            }}
           />
 
-          {/* Layer 6: Count pin overlay */}
-          <CountPinOverlay
-            measurements={measurements}
-            pdfDimensions={pdfDimensions}
-            toCanvas={toCanvas}
-            activeDrawingId={activeDrawingId}
-            activeTool={activeTool}
-          />
+          {/* Layer 6: Count pin overlay — hidden until positions are correct */}
+          <div
+            style={{
+              opacity:    readyToDraw ? 1 : 0,
+              transition: readyToDraw ? 'opacity 0.15s' : 'none',
+            }}
+          >
+            <CountPinOverlay
+              measurements={measurements}
+              pdfDimensions={pdfDimensions}
+              toCanvas={toCanvas}
+              activeDrawingId={activeDrawingId}
+              activeTool={activeTool}
+            />
+          </div>
 
-          {/* Layer 7: Snap flashes */}
-          {snapFlashes.map(flash => (
+          {/* Layer 7: Snap flashes — only when positions are correct */}
+          {readyToDraw && snapFlashes.map(flash => (
             <div
               key={flash.id}
               className="absolute pointer-events-none z-[60]"
@@ -500,8 +500,11 @@ export function ViewerCanvas({
           ))}
 
           {/* Layer 8: Finish button — Count */}
-          {tempPoints.length > 0 && activeTool === 'count' && (() => {
-            const last = toCanvas(tempPoints[tempPoints.length - 1].x, tempPoints[tempPoints.length - 1].y);
+          {readyToDraw && tempPoints.length > 0 && activeTool === 'count' && (() => {
+            const last = toCanvas(
+              tempPoints[tempPoints.length - 1].x,
+              tempPoints[tempPoints.length - 1].y,
+            );
             return (
               <button
                 className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
@@ -516,10 +519,14 @@ export function ViewerCanvas({
           })()}
 
           {/* Layer 8: Finish button — Polygon / Rectangle / Linear */}
-          {tempPoints.length > 1 &&
+          {readyToDraw &&
+            tempPoints.length > 1 &&
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
             (() => {
-              const last = toCanvas(tempPoints[tempPoints.length - 1].x, tempPoints[tempPoints.length - 1].y);
+              const last = toCanvas(
+                tempPoints[tempPoints.length - 1].x,
+                tempPoints[tempPoints.length - 1].y,
+              );
               return (
                 <button
                   className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
@@ -533,11 +540,10 @@ export function ViewerCanvas({
               );
             })()}
 
-          {/* ── Selected cluster info tooltip ── */}
+          {/* Selected cluster tooltip */}
           {selectedClusterId && (() => {
             const c = clusters.find(x => x.id === selectedClusterId);
             if (!c || !pdfDimensions) return null;
-            // Position tooltip near the first instance
             const b  = c.instanceBounds[0];
             const px = b.minNX * pdfDimensions.w;
             const py = b.minNY * pdfDimensions.h;
