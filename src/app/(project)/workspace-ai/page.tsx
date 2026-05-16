@@ -17,7 +17,8 @@ const ERODE_R             = 1;
 const PDF_SCALE           = 3;
 const SVG_SCALE           = 3;
 const FILL_GROW           = 3;
-const RDP_EPSILON         = 4;
+const RDP_EPSILON         = 3;   // final cleanup pass after corner detection
+const CORNER_ANGLE_TOL    = 15;  // degrees — direction must change by this much to count as a corner
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -206,31 +207,11 @@ function closeHoles(filled: Uint8Array, w: number, h: number): Uint8Array {
   return closed;
 }
 
-function measurePerim(perimMask: Uint8Array, w: number, h: number): number {
-  let c = 0;
-  for (let i = 0; i < perimMask.length; i++) {
-    if (!perimMask[i]) continue;
-    const x = i % w, y = (i / w) | 0;
-    const diag =
-      (x > 0   && y > 0   && perimMask[(y-1)*w+(x-1)]) ||
-      (x < w-1 && y > 0   && perimMask[(y-1)*w+(x+1)]) ||
-      (x > 0   && y < h-1 && perimMask[(y+1)*w+(x-1)]) ||
-      (x < w-1 && y < h-1 && perimMask[(y+1)*w+(x+1)]);
-    c += diag ? 1.41 : 1;
-  }
-  return Math.round(c);
-}
-
-// ── Outer-only perimeter ──────────────────────────────────────────────────────
-/**
- * Returns only the TRUE outer boundary of `filled`.
- * Strategy: heavily erode → re-dilate to produce a blob with NO interior holes
- * captured, then take its perimeter. This is the shape used for both the
- * perimeter measurement AND the polygon — so they are always consistent.
- */
+// ── Outer shape: small erode/dilate to keep corners sharp ─────────────────────
+// Using radius 2 (was 6) so rectangular corners are preserved.
 function outerShape(filled: Uint8Array, w: number, h: number): Uint8Array {
-  const eroded   = erodeMaskFast(filled,  w, h, 6);
-  const restored = dilateMaskFast(eroded, w, h, 6);
+  const eroded   = erodeMaskFast(filled,  w, h, 2);
+  const restored = dilateMaskFast(eroded, w, h, 2);
   return restored;
 }
 
@@ -250,41 +231,84 @@ function findPerimeter(filled: Uint8Array, w: number, h: number): Uint8Array {
   return perim;
 }
 
-// ── Perimeter polygon tracing ─────────────────────────────────────────────────
+function measurePerim(perimMask: Uint8Array, w: number, h: number): number {
+  let c = 0;
+  for (let i = 0; i < perimMask.length; i++) {
+    if (!perimMask[i]) continue;
+    const x = i % w, y = (i / w) | 0;
+    const diag =
+      (x > 0   && y > 0   && perimMask[(y-1)*w+(x-1)]) ||
+      (x < w-1 && y > 0   && perimMask[(y-1)*w+(x+1)]) ||
+      (x > 0   && y < h-1 && perimMask[(y+1)*w+(x-1)]) ||
+      (x < w-1 && y < h-1 && perimMask[(y+1)*w+(x+1)]);
+    c += diag ? 1.41 : 1;
+  }
+  return Math.round(c);
+}
 
-function tracePerimeterPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
+// ── 4-directional contour tracing (no diagonals = no zigzag steps) ────────────
+// Uses square tracing algorithm: always tries to turn right first.
+// Produces a clean axis-aligned chain that RDP can then aggressively simplify.
+function traceContour(perim: Uint8Array, w: number, h: number): [number, number][] {
+  // Find topmost-leftmost perimeter pixel
   let startIdx = -1;
   for (let i = 0; i < perim.length; i++) {
     if (perim[i]) { startIdx = i; break; }
   }
   if (startIdx === -1) return [];
 
-  const dx = [ 1, 1, 0,-1,-1,-1, 0, 1];
-  const dy = [ 0, 1, 1, 1, 0,-1,-1,-1];
+  // 4 directions: right=0, down=1, left=2, up=3
+  const DX = [1, 0, -1, 0];
+  const DY = [0, 1, 0, -1];
 
   const pts: [number, number][] = [];
-  const visited = new Uint8Array(w * h);
-  let cx = startIdx % w, cy = (startIdx / w) | 0;
+  const sx = startIdx % w, sy = (startIdx / w) | 0;
+  let cx = sx, cy = sy;
+  // Starting moving right; try right-turn first (clockwise boundary walk)
   let dir = 0;
+  const maxSteps = perim.length;
+  let steps = 0;
 
   do {
     pts.push([cx, cy]);
-    visited[cy * w + cx] = 1;
-    let found = false;
-    for (let i = 0; i < 8; i++) {
-      const nd = (dir + 7 + i) % 8;
-      const nx = cx + dx[nd], ny = cy + dy[nd];
-      if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-      if (perim[ny * w + nx] && !visited[ny * w + nx]) {
-        cx = nx; cy = ny; dir = nd; found = true; break;
+    // Try turning right, then straight, then left, then back
+    let moved = false;
+    for (let t = 0; t < 4; t++) {
+      const nd = (dir + 3 + t) % 4; // right turn = (dir-1+4)%4, then straight, left, back
+      const nx = cx + DX[nd], ny = cy + DY[nd];
+      if (nx >= 0 && nx < w && ny >= 0 && ny < h && perim[ny * w + nx]) {
+        cx = nx; cy = ny; dir = nd; moved = true; break;
       }
     }
-    if (!found) break;
-  } while (pts.length < perim.length);
+    if (!moved) break;
+    if (++steps > maxSteps) break;
+  } while (cx !== sx || cy !== sy);
 
   return pts;
 }
 
+// ── Remove collinear points (runs of same direction) ─────────────────────────
+// This is the KEY step: a straight wall produces dozens of collinear pixels.
+// Merging them before RDP means RDP gets clean segment endpoints, not noise.
+function removeCollinear(pts: [number, number][], tol: number): [number, number][] {
+  if (pts.length < 3) return pts;
+  const distToLine = (p: [number,number], a: [number,number], b: [number,number]) => {
+    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
+    return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
+  };
+  const out: [number, number][] = [pts[0]];
+  for (let i = 1; i < pts.length - 1; i++) {
+    const d = distToLine(pts[i], out[out.length - 1], pts[i + 1]);
+    if (d > tol) out.push(pts[i]);
+  }
+  out.push(pts[pts.length - 1]);
+  return out;
+}
+
+// ── Ramer-Douglas-Peucker simplification ─────────────────────────────────────
 function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
   if (pts.length <= 2) return pts;
 
@@ -308,6 +332,14 @@ function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
   };
   rec(0, pts.length - 1);
   return [...keep].sort((a, b) => a - b).map(i => pts[i]);
+}
+
+// ── Combined: trace → remove collinear → RDP ─────────────────────────────────
+function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
+  const raw        = traceContour(perim, w, h);
+  const decollined = removeCollinear(raw, COLLINEAR_TOL);
+  const simplified = rdpSimplify(decollined, RDP_EPSILON);
+  return simplified;
 }
 
 // ── Misc helpers ───────────────────────────────────────────────────────────────
@@ -474,9 +506,6 @@ export default function FloodFillPage() {
   }, []);
 
   // ── Polygon canvas redraw ──────────────────────────────────────────────────
-  // Draws ALL fills' outer polygon outlines + vertex dots on the poly canvas.
-  // Also draws the solid outer-edge stroke (replaces the old paintPerimeterSafe
-  // on the fill canvas — this way only the true outer wall boundary is visible).
 
   const redrawPolygons = useCallback((
     currentFills: Fill[],
@@ -499,7 +528,7 @@ export default function FloodFillPage() {
       const [r, g, b] = hexToRgb(f.color);
       const isSelected = f.id === currentSelected;
 
-      // ── Outer stroke along the polygon (replaces fill-canvas perimeter paint) ──
+      // Outer polygon stroke
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
@@ -509,7 +538,7 @@ export default function FloodFillPage() {
       ctx.setLineDash([]);
       ctx.stroke();
 
-      // ── Dashed inner outline for visual depth ──
+      // Dashed inner outline
       ctx.beginPath();
       ctx.moveTo(pts[0][0], pts[0][1]);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
@@ -520,21 +549,18 @@ export default function FloodFillPage() {
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // ── Vertex dots at each corner ──
+      // Vertex dots
       pts.forEach(([x, y]) => {
-        // White halo
         ctx.beginPath();
         ctx.arc(x, y, isSelected ? 5 : 3.5, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(255,255,255,${isSelected ? 0.9 : 0.6})`;
         ctx.fill();
 
-        // Coloured centre
         ctx.beginPath();
         ctx.arc(x, y, isSelected ? 3.5 : 2.5, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(${r},${g},${b},1)`;
         ctx.fill();
 
-        // Tiny dark core for crispness
         ctx.beginPath();
         ctx.arc(x, y, isSelected ? 1.5 : 1, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(0,0,0,0.5)';
@@ -644,17 +670,15 @@ export default function FloodFillPage() {
   }, [loadPdf, loadSvg, centerCanvas]);
 
   // ── Shared fill processing ─────────────────────────────────────────────────
-  // Given a grown pixel mask, returns { areaPx, perimPx, polygon }.
-  // Uses outerShape() so the perimeter and polygon both reflect only the
-  // true outer wall boundary — no internal furniture/door-arc edges.
+  // Uses outerShape (small r=2 erode/dilate) → findPerimeter → buildPolygon
+  // (4-dir trace → removeCollinear → rdpSimplify with eps=8)
 
   const processFilledMask = useCallback((grown: Uint8Array, w: number, h: number) => {
     const areaPx = (() => { let c=0; for(let i=0;i<grown.length;i++) if(grown[i]) c++; return c; })();
-    const outer    = outerShape(grown, w, h);
+    const outer     = outerShape(grown, w, h);
     const perimMask = findPerimeter(outer, w, h);
-    const perimPx  = measurePerim(perimMask, w, h);
-    const rawPoly  = tracePerimeterPolygon(perimMask, w, h);
-    const polygon  = rdpSimplify(rawPoly, RDP_EPSILON);
+    const perimPx   = measurePerim(perimMask, w, h);
+    const polygon   = buildPolygon(perimMask, w, h);
     return { areaPx, perimPx, polygon };
   }, []);
 
@@ -687,11 +711,9 @@ export default function FloodFillPage() {
     const grown = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
     const [r,g,b] = hexToRgb(activeColor);
 
-    // Paint flat colour fill only — NO perimeter painted on fill canvas
     paintFill(grown, fillDataRef.current!, r, g, b, fillOpacity/100);
     fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
 
-    // Compute outer-only perimeter + polygon
     const { areaPx, perimPx, polygon } = processFilledMask(grown, bc.width, bc.height);
 
     fillCountRef.current += 1;
