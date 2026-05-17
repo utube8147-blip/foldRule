@@ -1,18 +1,14 @@
 'use client';
 
-// ─── Viewer.tsx ───────────────────────────────────────────────────────────────
+// ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-// FIXES:
-//   • Zoom no longer clears drawing canvas mid-gesture
-//     - `scale` drives CSS-only scaling of every overlay canvas during zoom
-//     - `committedScale` (150 ms debounce) is the only dep that triggers a true
-//       PDF re-render + canvas pixel-buffer resize
-//   • Drawings / takeoff marks only appear AFTER pdfDimensions is confirmed
-//     correct for the settled scale (via `readyToDrawRef` gate)
-//   • All canvas .width= assignments are guarded — no needless clears
-//   • Duplicate clusters console-log effect removed
-//   • Dead `wrapDims` recalc removed — values derived inline
-//   • `svgRooms.length` auto-show effect tightened (runs once on first non-zero)
+//  FIX: mfPxPerM renamed to mfMetersPerPixel throughout, and the prop name
+//  passed to all MagicFillUI components updated from pxPerM → metersPerPixel.
+//  This matches the corrected fmtArea/fmtPerim signatures in MagicFillUI.tsx
+//  which now MULTIPLY by metersPerPixel instead of dividing.
+//
+//  scaleFactor = real / ptLen  (meters per pixel), so we store and pass it
+//  as-is — no inversion needed here.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -29,19 +25,7 @@ import { Minimap }           from './Minimap';
 import { SnapSettingsPanel } from './SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/useSnapEngine';
 import { useMeasurements }   from '@/hooks/useMeasurements';
-import { useRoomDetection }  from '@/hooks/useRoomDetection';
-import { drawRoomsOnCanvas } from '@/hooks/useSnapEngine/drawRoomsOnCanvas';
-import { drawWallsOnCanvas } from '@/hooks/useSnapEngine/drawWallsOnCanvas';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
-import type { DetectedRoom } from '@/hooks/useSnapEngine/detectRooms';
-import { useSvgSnapPoints }  from '@/hooks/useSvgSnapPoints';
-import { useSvgInteraction } from '@/hooks/useSvgInteraction';
-import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
-import { useShapeCluster }   from '@/hooks/useShapeCluster';
-
-import {
-  isSvgDoor, isSvgPillar, isSvgWindow, isSvgStructural,
-} from '@/lib/svgLabelUtils';
 
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
@@ -53,18 +37,25 @@ import {
   CANVAS_PADDING, ZOOM_SENSITIVITY, MIN_ZOOM, MAX_ZOOM, VIEWER_TOOLS,
 } from './Viewer/ViewerConstants';
 
-export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
+// ── Magic Fill imports ────────────────────────────────────────────────────────
+import { useMagicFill }    from '@/hooks/useMagicFill';
+import type { MagicFill }  from '@/hooks/useMagicFill';
+import {
+  MagicFillCanvas,
+  getNextFillColor,
+  resetFillColorIdx,
+} from '@/components/Viewer/MagicFillCanvas';
+import {
+  MagicFillProgressOverlay,
+  MagicFillHoverTooltip,
+  MagicFillGroupPanel,
+  MagicFillSelectedPanel,
+  MagicFillSidebar,
+  fmtArea,
+  fmtPerim,
+} from '@/components/Viewer/MagicFillUI';
 
-// ─── Overlay canvas refs that must follow PDF dimensions ──────────────────────
-const OVERLAY_REFS_KEYS = [
-  'drawingCanvasRef',
-  'pinCanvasRef',
-  'roomCanvasRef',
-  'wallCanvasRef',
-  'vectorCanvasRef',
-  'svgAreaCanvasRef',
-  'roomLabelCanvasRef',
-] as const;
+export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
 export function Viewer({
   activeTool, setActiveTool,
@@ -77,24 +68,49 @@ export function Viewer({
   appendToGroupId: propAppendToGroupId,
   onAppendComplete,
   onToolbarReady,
-  externalShowRooms,
-  onExternalShowRoomsChange,
-}: import('./Viewer/ViewerConstants').ViewerProps & {
-  externalShowRooms?: boolean;
-  onExternalShowRoomsChange?: (show: boolean) => void;
-}) {
+}: import('./Viewer/ViewerConstants').ViewerProps) {
 
   // ── Canvas refs ────────────────────────────────────────────────────────────
-  const pdfCanvasRef       = useRef<HTMLCanvasElement>(null);
-  const drawingCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const pinCanvasRef       = useRef<HTMLCanvasElement>(null);
-  const roomCanvasRef      = useRef<HTMLCanvasElement>(null);
-  const wallCanvasRef      = useRef<HTMLCanvasElement>(null);
-  const vectorCanvasRef    = useRef<HTMLCanvasElement>(null);
-  const svgAreaCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const roomLabelCanvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef       = useRef<HTMLDivElement>(null);
-  const currentPdfPageRef  = useRef<PDFPageProxy | null>(null);
+  const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
+  const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
+  const pinCanvasRef     = useRef<HTMLCanvasElement>(null);
+  const vectorCanvasRef  = useRef<HTMLCanvasElement>(null);
+  const fillCanvasRef    = useRef<HTMLCanvasElement>(null);
+  const containerRef     = useRef<HTMLDivElement>(null);
+  const currentPdfPageRef = useRef<PDFPageProxy | null>(null);
+
+  // ── Magic Fill hook ────────────────────────────────────────────────────────
+  const magicFill = useMagicFill();
+
+  const yieldFrame = useCallback(
+    () => new Promise<void>(r => requestAnimationFrame(() => r())),
+    [],
+  );
+
+  // ── Magic Fill UI state ────────────────────────────────────────────────────
+  const [magicFills,         setMagicFills]         = useState<MagicFill[]>([]);
+  const [mfHiddenIds,        setMfHiddenIds]        = useState<Set<number>>(new Set());
+  const [mfSelectedId,       setMfSelectedId]       = useState<number | null>(null);
+  const [mfSelectedGroup,    setMfSelectedGroup]    = useState<number | null>(null);
+  const [mfHoveredId,        setMfHoveredId]        = useState<number | null>(null);
+  const [mfHoverPos,         setMfHoverPos]         = useState({ x: 0, y: 0 });
+  const [mfHolesClosed,      setMfHolesClosed]      = useState<Set<number>>(new Set());
+  const [mfIsFilling,        setMfIsFilling]        = useState(false);
+  const [mfFillMsg,          setMfFillMsg]          = useState('');
+  const [mfFillSub,          setMfFillSub]          = useState<string | undefined>(undefined);
+  const [mfFillProgress,     setMfFillProgress]     = useState<{ done: number; total: number } | null>(null);
+  // FIX: renamed from mfPxPerM to mfMetersPerPixel — scaleFactor is m/px, not px/m.
+  const [mfMetersPerPixel,   setMfMetersPerPixel]   = useState<number | null>(null);
+  const mfGroupCounter = useRef(0);
+  const mfFillCounter  = useRef(0);
+
+  // FIX: store scaleFactor directly as metersPerPixel — no inversion.
+  useEffect(() => {
+    setMfMetersPerPixel(scaleFactor > 0 ? scaleFactor : null);
+  }, [scaleFactor]);
+
+  const magicFillsRef = useRef<MagicFill[]>([]);
+  useEffect(() => { magicFillsRef.current = magicFills; }, [magicFills]);
 
   // ── Core state ─────────────────────────────────────────────────────────────
   const [pdf, setPdf]               = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -104,51 +120,19 @@ export function Viewer({
   const [spaceHeld, setSpaceHeld]   = useState(false);
   const spaceHeldRef                = useRef(false);
 
-  // ── Scale: two-tier ────────────────────────────────────────────────────────
-  // `scale`          → updated on every wheel tick → drives CSS transform only
-  // `committedScale` → debounced 150 ms            → triggers true PDF re-render
   const [scale, setScale]                   = useState(1.5);
   const [committedScale, setCommittedScale] = useState(1.5);
-
-  // Track whether the current committedScale render has finished and
-  // pdfDimensions are valid — drawings are hidden until this is true.
   const readyToDrawRef = useRef(false);
 
   useEffect(() => {
-    readyToDrawRef.current = false;           // hide drawings while re-rendering
+    readyToDrawRef.current = false;
     const t = setTimeout(() => setCommittedScale(scale), 150);
     return () => clearTimeout(t);
   }, [scale]);
 
   // ── Dimensions ─────────────────────────────────────────────────────────────
-  const [pdfDimensions, setPdfDimensions]       = useState<PdfDimensions | null>(null);
-  const [pdfIntrinsicDims, setPdfIntrinsicDims] = useState<PdfDimensions | null>(null);
-  const [pdfRenderCount, setPdfRenderCount]     = useState(0);
-
-  // ── Visibility ─────────────────────────────────────────────────────────────
-  const [internalShowRooms, setInternalShowRooms] = useState(false);
-  const showRooms = externalShowRooms !== undefined ? externalShowRooms : internalShowRooms;
-  const setShowRooms = useCallback((value: boolean | ((prev: boolean) => boolean)) => {
-    const next = typeof value === 'function'
-      ? value(externalShowRooms !== undefined ? externalShowRooms : internalShowRooms)
-      : value;
-    if (externalShowRooms !== undefined && onExternalShowRoomsChange) {
-      onExternalShowRoomsChange(next);
-    } else {
-      setInternalShowRooms(next);
-    }
-  }, [externalShowRooms, internalShowRooms, onExternalShowRoomsChange]);
-
-  const [showWalls,        setShowWalls]        = useState(true);
-  const [showVectors,      setShowVectors]      = useState(false);
-  const [vectorPathCount,  setVectorPathCount]  = useState(0);
-  const [hoveredRoomId,    setHoveredRoomId]    = useState<string | null>(null);
-  const [showClusters,     setShowClusters]     = useState(false);
-
-  // ── SVG overlay ────────────────────────────────────────────────────────────
-  const [svgContent,        setSvgContent]        = useState<string | null>(null);
-  const [showSvgOverlay,    setShowSvgOverlay]    = useState(true);
-  const [showSvgSnapDebug,  setShowSvgSnapDebug]  = useState(false);
+  const [pdfDimensions, setPdfDimensions] = useState<PdfDimensions | null>(null);
+  const [pdfRenderCount, setPdfRenderCount] = useState(0);
 
   // ── Stable refs ────────────────────────────────────────────────────────────
   const pdfDimensionsRef = useRef<PdfDimensions | null>(null);
@@ -181,10 +165,10 @@ export function Viewer({
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
   // ── Dialog state ───────────────────────────────────────────────────────────
-  const [showCalibrationDialog, setShowCalibrationDialog]   = useState(false);
-  const [pendingPtLen,          setPendingPtLen]            = useState(0);
-  const [calibrationInput,      setCalibrationInput]        = useState('');
-  const [showMeasurementDialog, setShowMeasurementDialog]   = useState(false);
+  const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
+  const [pendingPtLen,           setPendingPtLen]           = useState(0);
+  const [calibrationInput,       setCalibrationInput]       = useState('');
+  const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<
     { id: string; type: string; description: string } | null>(null);
 
@@ -203,110 +187,6 @@ export function Viewer({
   const handleUndo  = useCallback(() => { undo();  undoRedoRef.current.setCursorPoint(null); }, [undo]);
   const handleRedo  = useCallback(() => { redo();  undoRedoRef.current.setCursorPoint(null); }, [redo]);
 
-  // ── SVG content ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    let cancelled = false;
-    const file = activeDrawingFileRef.current;
-
-    if (file && (file.type === 'image/svg+xml' || file.name?.toLowerCase().endsWith('.svg'))) {
-      const reader = new FileReader();
-      reader.onload  = (e) => { if (!cancelled) setSvgContent(e.target?.result as string); };
-      reader.onerror = ()  => { if (!cancelled) setSvgContent(null); };
-      reader.readAsText(file);
-      return () => { cancelled = true; };
-    }
-
-    if (activeDrawingUrl?.toLowerCase().endsWith('.svg')) {
-      fetch(activeDrawingUrl)
-        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
-        .then(t => { if (!cancelled) setSvgContent(t); })
-        .catch(() => { if (!cancelled) setSvgContent(null); });
-      return () => { cancelled = true; };
-    }
-
-    if (!activeDrawingUrl && !file) { setSvgContent(null); return; }
-    if (!showRooms)                 { setSvgContent(null); return; }
-
-    fetch('/svg-overlay.svg')
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
-      .then(t => { if (!cancelled) setSvgContent(t); })
-      .catch(() => { if (!cancelled) setSvgContent(null); });
-
-    return () => { cancelled = true; };
-  }, [activeDrawingId, activeDrawingUrl, showRooms]);
-
-  // ── SVG derived data ───────────────────────────────────────────────────────
-  const svgSnapPoints = useSvgSnapPoints(svgContent, pdfIntrinsicDims);
-
-  const { elements: svgElements } = useSvgInteraction({
-    svgContent,
-    pdfIntrinsicDims,
-    detectScale: MAX_ZOOM,
-    enabled: !!svgContent && !!pdfIntrinsicDims,
-  });
-
-  const svgLines = useMemo(
-    () => svgElements.filter((el): el is SvgLine => el.type === 'line'),
-    [svgElements],
-  );
-  const svgAreas = useMemo(
-    () => svgElements.filter((el): el is SvgArea => el.type === 'area'),
-    [svgElements],
-  );
-
-  // ── Shape clusters ─────────────────────────────────────────────────────────
-  const { clusters } = useShapeCluster(svgElements, {
-    clusterAreas:    true,
-    clusterCompound: true,
-  });
-
-  useEffect(() => {
-    if (clusters.length === 0) return;
-    console.group('[Viewer] Shape clusters');
-    clusters.forEach(c => console.log(
-      `${c.id} (${c.type}) — ${c.members.length} members`,
-      `x[${c.bounds.minNX.toFixed(3)}–${c.bounds.maxNX.toFixed(3)}]`,
-      `y[${c.bounds.minNY.toFixed(3)}–${c.bounds.maxNY.toFixed(3)}]`,
-    ));
-    console.groupEnd();
-  }, [clusters]);
-
-  // ── SVG rooms / pillars / windows / doors ──────────────────────────────────
-  const svgRooms = useMemo<DetectedRoom[]>(() => {
-    if (!pdfDimensions) return [];
-    return svgAreas
-      .filter(a => {
-        if (a.points.length < 3)    return false;
-        if (isSvgStructural(a))     return false;
-        const MIN_AREA_N = 800 / (pdfDimensions.w * pdfDimensions.h);
-        if (a.areaN < MIN_AREA_N)   return false;
-        const aspect = (a.bounds.maxNX - a.bounds.minNX) /
-                       (a.bounds.maxNY - a.bounds.minNY);
-        if (aspect < 0.08 || aspect > 12.0) return false;
-        return true;
-      })
-      .map((area, i) => ({
-        id:       `svg-room-${i}`,
-        label:    area.label ?? `Room ${i + 1}`,
-        polygon:  area.points.map(p => ({ nx: p.nx, ny: p.ny })),
-        areaNorm: area.areaN,
-      }));
-  }, [svgAreas, pdfDimensions]);
-
-  const svgPillars   = useMemo(() => svgAreas.filter(isSvgPillar),  [svgAreas]);
-  const svgWindows   = useMemo(() => svgAreas.filter(isSvgWindow),  [svgAreas]);
-  const svgDoorAreas = useMemo(() => svgAreas.filter(isSvgDoor),    [svgAreas]);
-
-  // Auto-show rooms the first time SVG rooms appear
-  const svgRoomsShownRef = useRef(false);
-  useEffect(() => {
-    if (svgRooms.length > 0 && !svgRoomsShownRef.current) {
-      svgRoomsShownRef.current = true;
-      setShowRooms(true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [svgRooms.length]);
-
   // ── Snap engine ────────────────────────────────────────────────────────────
   const {
     pageData, analysisStatus, analysisPage, snapFlashes,
@@ -317,7 +197,6 @@ export function Viewer({
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<PdfDimensions>,
     pageNumberRef:    pageNumberRef    as React.RefObject<number>,
     snapEnabled, showPins, snapThreshold, confidenceFilter,
-    svgSnapPoints, svgLines, svgAreas,
   });
 
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
@@ -326,94 +205,6 @@ export function Viewer({
     (t: string) => setActiveTool(t as ToolType),
     [setActiveTool],
   );
-
-  // ── Room detection ─────────────────────────────────────────────────────────
-  const {
-    rooms, geometryCandidates, wallSegments, walls,
-    phase: roomPhase, detecting: detectingRooms, error: roomError, forceRedetect,
-  } = useRoomDetection(
-    pageData, pdfIntrinsicDims, pageNumber, showRooms,
-    pdfCanvasRef.current, currentPdfPageRef.current,
-  );
-
-  const mergedRooms = useMemo(
-    () => (svgRooms.length > 0 ? svgRooms : rooms),
-    [svgRooms, rooms],
-  );
-
-  useEffect(() => { setVectorPathCount(wallSegments.length); }, [wallSegments.length]);
-  useEffect(() => {
-    if (roomError) console.error('[Viewer] Room detection error:', roomError);
-  }, [roomError]);
-
-  // ── Debug logging ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (svgSnapPoints.length > 0)
-      console.log('[Viewer] SVG snap points:', svgSnapPoints.length);
-  }, [svgSnapPoints]);
-
-  useEffect(() => {
-    if (svgPillars.length > 0)
-      console.log(`[Viewer] SVG PILLARS: ${svgPillars.length}`);
-    if (svgWindows.length > 0)
-      console.log(`[Viewer] SVG WINDOWS: ${svgWindows.length}`);
-  }, [svgPillars.length, svgWindows.length]);
-
-  useEffect(() => {
-    if (mergedRooms.length > 0)
-      console.log(
-        `[Viewer] ROOMS (${svgRooms.length > 0 ? 'SVG' : 'detected'}):`,
-        mergedRooms.map(r => r.label),
-      );
-  }, [mergedRooms, svgRooms.length]);
-
-  // ── SVG keyboard shortcuts ─────────────────────────────────────────────────
-  useEffect(() => {
-    const handle = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.shiftKey && e.key === 'D') setShowSvgSnapDebug(p => !p);
-      if (e.ctrlKey && e.shiftKey && e.key === 'S') setShowSvgOverlay(p => !p);
-    };
-    window.addEventListener('keydown', handle);
-    return () => window.removeEventListener('keydown', handle);
-  }, []);
-
-  // ── Wall canvas ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = wallCanvasRef.current;
-    if (!canvas || !pdfDimensions) return;
-    if (!showWalls || wallSegments.length === 0) {
-      canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-    drawWallsOnCanvas(canvas, wallSegments, { w: canvas.width, h: canvas.height }, {
-      wallColor:  'rgba(59, 130, 246, 0.75)',
-      thinColor:  'rgba(148, 163, 184, 0.30)',
-      curveColor: 'rgba(16, 185, 129, 0.70)',
-      wallsOnly:  false,
-    });
-  }, [wallSegments, showWalls, pdfRenderCount, pdfDimensions]);
-
-  // ── Room canvas ────────────────────────────────────────────────────────────
-  useEffect(() => {
-    const canvas = roomCanvasRef.current;
-    if (!canvas || !pdfDimensions) return;
-    if (!showRooms) {
-      canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
-      return;
-    }
-    const displayRooms = mergedRooms.length > 0 ? mergedRooms : geometryCandidates;
-    drawRoomsOnCanvas(canvas, displayRooms, { w: canvas.width, h: canvas.height }, hoveredRoomId);
-  }, [mergedRooms, geometryCandidates, showRooms, hoveredRoomId, pdfRenderCount, pdfDimensions]);
-
-  // ── Room click → polygon measurement ──────────────────────────────────────
-  const handleRoomClick = useCallback((room: DetectedRoom) => {
-    if (!pdfDimensions) return;
-    room.polygon
-      .map(p => ({ x: p.nx, y: p.ny, snapped: false }))
-      .forEach(p => pushPoint(p));
-    commitMeasurement({ type: 'polygon', label: room.label, pageNumber });
-    clearTempPoints();
-  }, [pdfDimensions, pushPoint, commitMeasurement, clearTempPoints, pageNumber]);
 
   // ── Calibration ────────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
@@ -450,6 +241,230 @@ export function Viewer({
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
+  // ── Magic Fill: rebuild mask when PDF renders ──────────────────────────────
+  useEffect(() => {
+    const canvas = pdfCanvasRef.current;
+    if (!canvas || !pdfDimensions) return;
+    magicFill.buildMask(canvas);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfRenderCount, pdfDimensions]);
+
+  // ── Magic Fill: reset when drawing changes ─────────────────────────────────
+  useEffect(() => {
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+    magicFill.clearAll(fc);
+    setMagicFills([]);
+    setMfHiddenIds(new Set());
+    setMfSelectedId(null);
+    setMfSelectedGroup(null);
+    setMfHoveredId(null);
+    setMfHolesClosed(new Set());
+    mfFillCounter.current  = 0;
+    mfGroupCounter.current = 0;
+    resetFillColorIdx();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeDrawingId]);
+
+  // ── Magic Fill: single click ───────────────────────────────────────────────
+  const handleMagicSingleClick = useCallback(async (canvasX: number, canvasY: number) => {
+    const fc = fillCanvasRef.current;
+    if (!fc || mfIsFilling) return;
+
+    setMfIsFilling(true);
+    setMfFillMsg('Computing fill');
+    setMfFillSub(undefined);
+    setMfFillProgress(null);
+    await yieldFrame();
+
+    magicFill.pushSnapshot(fc);
+    setMfFillMsg('Flood filling region');
+    await yieldFrame();
+
+    mfFillCounter.current += 1;
+    const label = `Fill ${mfFillCounter.current}`;
+    const color = getNextFillColor();
+
+    setMfFillMsg('Growing fill');
+    await yieldFrame();
+
+    const result = magicFill.fillAt(canvasX, canvasY, fc, color, 40, label);
+
+    if (!result) {
+      magicFill.undo(fc);
+      mfFillCounter.current -= 1;
+      setMfIsFilling(false);
+      setMfFillMsg('');
+      return;
+    }
+
+    setMfFillMsg('Measuring');
+    await yieldFrame();
+
+    setMagicFills(prev => [...prev, result]);
+    setMfSelectedId(result.id);
+    setMfSelectedGroup(null);
+    setMfIsFilling(false);
+    setMfFillMsg('');
+  }, [mfIsFilling, magicFill, yieldFrame]);
+
+  // ── Magic Fill: batch rect ─────────────────────────────────────────────────
+  const handleMagicBatchRect = useCallback(async (
+    x1: number, y1: number, x2: number, y2: number,
+  ) => {
+    const fc = fillCanvasRef.current;
+    if (!fc || mfIsFilling) return;
+    if (Math.abs(x2 - x1) < 5 || Math.abs(y2 - y1) < 5) return;
+
+    setMfIsFilling(true);
+    setMfFillMsg('Detecting regions');
+    setMfFillSub('Scanning selection…');
+    setMfFillProgress(null);
+    await yieldFrame();
+
+    magicFill.pushSnapshot(fc);
+
+    mfGroupCounter.current += 1;
+    const groupId = mfGroupCounter.current;
+    const color   = getNextFillColor();
+
+    const results = await magicFill.fillRect(
+      x1, y1, x2, y2, fc, color, 40, `Fill`, groupId,
+      (done, total) => {
+        setMfFillProgress({ done, total });
+        setMfFillMsg(`Filling region ${done + 1} / ${total}`);
+        setMfFillSub(`Found ${total} region${total > 1 ? 's' : ''}`);
+      },
+    );
+
+    if (results.length === 0) {
+      magicFill.undo(fc);
+      mfGroupCounter.current -= 1;
+      setMfIsFilling(false);
+      setMfFillMsg('');
+      setMfFillProgress(null);
+      return;
+    }
+
+    setMfFillMsg('Finalising');
+    setMfFillSub(undefined);
+    await yieldFrame();
+
+    const numbered = results.map((r, i) => ({
+      ...r,
+      label: `Fill ${mfFillCounter.current + i + 1}`,
+    }));
+    mfFillCounter.current += results.length;
+
+    setMagicFills(prev => [...prev, ...numbered]);
+    setMfSelectedId(null);
+    setMfSelectedGroup(groupId);
+    setMfIsFilling(false);
+    setMfFillMsg('');
+    setMfFillProgress(null);
+  }, [mfIsFilling, magicFill, yieldFrame]);
+
+  // ── Magic Fill: hover ─────────────────────────────────────────────────────
+  const handleMagicHover = useCallback((canvasX: number, canvasY: number) => {
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+    const id = magicFill.getPixelAt(canvasX, canvasY, fc);
+    setMfHoveredId(id > 0 ? id : null);
+    setMfHoverPos({ x: canvasX, y: canvasY });
+  }, [magicFill]);
+ 
+
+  const handleMagicHoverLeave = useCallback(() => setMfHoveredId(null), []);
+
+  // ── Magic Fill: fill holes ────────────────────────────────────────────────
+  const handleMagicFillHoles = useCallback(async (id: number) => {
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+    const fill = magicFillsRef.current.find(f => f.id === id);
+    if (!fill) return;
+
+    setMfIsFilling(true);
+    setMfFillMsg('Closing holes');
+    setMfFillSub(undefined);
+    setMfFillProgress(null);
+    await yieldFrame();
+
+    magicFill.pushSnapshot(fc);
+    setMfFillMsg('Patching interior gaps');
+    await yieldFrame();
+
+    const result = magicFill.fillHoles(id, fill, fc);
+    if (!result) {
+      magicFill.undo(fc);
+      setMfIsFilling(false);
+      setMfFillMsg('');
+      return;
+    }
+
+    setMfFillMsg('Measuring');
+    await yieldFrame();
+
+    setMagicFills(prev => prev.map(f => f.id === id ? { ...f, ...result } : f));
+    setMfHolesClosed(prev => new Set(prev).add(id));
+    setMfIsFilling(false);
+    setMfFillMsg('');
+  }, [magicFill, yieldFrame]);
+
+  // ── Magic Fill: undo ──────────────────────────────────────────────────────
+  const handleMagicUndo = useCallback(() => {
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+    const ok = magicFill.undo(fc);
+    if (!ok) return;
+
+    setMagicFills(prev => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      if (last.groupId != null) {
+        const gid = last.groupId;
+        prev.filter(f => f.groupId === gid).forEach(f => magicFill.unregisterFill(f.id));
+        return prev.filter(f => f.groupId !== gid);
+      }
+      magicFill.unregisterFill(last.id);
+      return prev.slice(0, -1);
+    });
+    setMfSelectedId(null);
+    setMfSelectedGroup(null);
+  }, [magicFill]);
+
+  // ── Magic Fill: clear all ─────────────────────────────────────────────────
+  const handleMagicClear = useCallback(() => {
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+    magicFill.clearAll(fc);
+    setMagicFills([]);
+    setMfHiddenIds(new Set());
+    setMfSelectedId(null);
+    setMfSelectedGroup(null);
+    setMfHoveredId(null);
+    setMfHolesClosed(new Set());
+    mfFillCounter.current  = 0;
+    mfGroupCounter.current = 0;
+    resetFillColorIdx();
+  }, [magicFill]);
+
+  // ── Magic Fill: delete single fill ────────────────────────────────────────
+  const handleMagicDelete = useCallback((id: number) => {
+    magicFill.unregisterFill(id);
+    setMagicFills(prev => prev.filter(f => f.id !== id));
+    if (mfSelectedId === id) setMfSelectedId(null);
+    if (mfHoveredId  === id) setMfHoveredId(null);
+  }, [magicFill, mfSelectedId, mfHoveredId]);
+
+  // ── Magic Fill: toggle visibility ─────────────────────────────────────────
+  const handleMagicToggleHide = useCallback((id: number) => {
+    setMfHiddenIds(prev => {
+      const s = new Set(prev);
+      s.has(id) ? s.delete(id) : s.add(id);
+      return s;
+    });
+  }, []);
+
   // ── Viewport helpers ───────────────────────────────────────────────────────
   const centerDocumentInViewport = useCallback(() => {
     const c = containerRef.current; if (!c) return;
@@ -481,10 +496,7 @@ export function Viewer({
     if (!s) return;
     if (s.includes(':')) {
       const [paper, real] = s.split(':').map(parseFloat);
-      if (!isNaN(paper) && !isNaN(real) && real > 0) {
-        alert('Ratio parsing applied. Use Draw Calibration for pixel-accurate mapping.');
-        onScaleSetRef.current(real / paper);
-      }
+      if (!isNaN(paper) && !isNaN(real) && real > 0) onScaleSetRef.current(real / paper);
     } else {
       const f = parseFloat(s); if (!isNaN(f) && f > 0) onScaleSetRef.current(f);
     }
@@ -526,30 +538,11 @@ export function Viewer({
     pdf, pageNumber,
     fitToScreen: () => fitToScreen(), handleManualScale,
     canUndo, canRedo, handleUndo, handleRedo,
-    showRooms, setShowRooms, detectingRooms,
-    roomPhase, forceRedetect,
-    showWalls, setShowWalls,
-    wallSegmentCount: wallSegments.length,
-    showVectors, setShowVectors, vectorPathCount,
-    showSvgOverlay, setShowSvgOverlay,
-    showSvgSnapDebug, setShowSvgSnapDebug,
-    svgSnapPointCount: svgSnapPoints.length,
-    svgLineCount:      svgLines.length,
-    svgAreaCount:      svgAreas.length,
-    svgRoomCount:      svgRooms.length,
-    svgPillarCount:    svgPillars.length,
-    svgWindowCount:    svgWindows.length,
   }), [
     activeTool, setActiveTool, scale, scaleFactor,
     snapEnabled, showSnapSettings, showPins, snapThreshold, confidenceFilter,
     analysisStatus, analysisPage, pageData, pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
-    showRooms, detectingRooms, roomPhase, forceRedetect,
-    showWalls, wallSegments.length,
-    showVectors, vectorPathCount,
-    showSvgOverlay, showSvgSnapDebug,
-    svgSnapPoints.length, svgLines.length, svgAreas.length,
-    svgRooms.length, svgPillars.length, svgWindows.length,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -562,7 +555,7 @@ export function Viewer({
   useEffect(() => {
     let mounted = true;
     if (!activeDrawingUrl) {
-      setPdf(null); setPdfDimensions(null); setPdfIntrinsicDims(null);
+      setPdf(null); setPdfDimensions(null);
       currentPdfPageRef.current = null;
       return;
     }
@@ -580,7 +573,6 @@ export function Viewer({
           fit = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
             Math.min(vW / vp.width, vH / vp.height) * 0.97));
       }
-      // Set both together so they start in sync
       setPdf(doc); setPageNumber(1); setScale(fit); setCommittedScale(fit);
       setTimeout(() => {
         if (!mounted) return;
@@ -606,9 +598,7 @@ export function Viewer({
     return () => { mounted = false; };
   }, [activeDrawingId, activeDrawingUrl, centerDocumentInViewport]);
 
-  // ── PDF render (fires on committedScale, not raw scale) ────────────────────
-  // During zoom we only CSS-scale the overlay canvases — no pixel-buffer clear.
-  // When committedScale settles we do the true render then unhide drawings.
+  // ── PDF render ─────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!pdf) return;
     let active = true; let task: any = null;
@@ -624,11 +614,9 @@ export function Viewer({
         const dpr     = Math.min(rawDpr, safeDpr, 3);
         const physVP  = page.getViewport({ scale: committedScale * dpr });
 
-        // ── PDF canvas ─────────────────────────────────────────────────────
         const canvas = pdfCanvasRef.current; if (!canvas) return;
         const ctx    = canvas.getContext('2d');  if (!ctx)    return;
 
-        // Guard: only resize pixel buffer when size actually changes
         if (canvas.width !== physVP.width || canvas.height !== physVP.height) {
           canvas.width  = physVP.width;
           canvas.height = physVP.height;
@@ -636,40 +624,37 @@ export function Viewer({
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
-        // ── Overlay canvases — resize pixel buffers (guarded) ──────────────
         for (const ref of [
-          drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef,
-          vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
+          drawingCanvasRef, pinCanvasRef, vectorCanvasRef, fillCanvasRef,
         ]) {
           const c = ref.current; if (!c) continue;
           if (c.width !== logVP.width || c.height !== logVP.height) {
-            c.width  = logVP.width;
-            c.height = logVP.height;
+            if (ref === fillCanvasRef && (c.width > 0 && c.height > 0)) {
+              const tmp = document.createElement('canvas');
+              tmp.width = c.width; tmp.height = c.height;
+              tmp.getContext('2d')!.drawImage(c, 0, 0);
+              c.width  = logVP.width;
+              c.height = logVP.height;
+              c.getContext('2d')!.drawImage(tmp, 0, 0, logVP.width, logVP.height);
+            } else {
+              c.width  = logVP.width;
+              c.height = logVP.height;
+            }
           }
           c.style.width  = `${logVP.width}px`;
           c.style.height = `${logVP.height}px`;
         }
 
-        // Update dimensions state (guarded against no-op re-renders)
         setPdfDimensions(prev =>
           prev?.w === logVP.width && prev?.h === logVP.height
             ? prev
             : { w: logVP.width, h: logVP.height },
         );
 
-        const intrinsicVP = page.getViewport({ scale: 1 });
-        setPdfIntrinsicDims(prev =>
-          prev?.w === intrinsicVP.width && prev?.h === intrinsicVP.height
-            ? prev
-            : { w: intrinsicVP.width, h: intrinsicVP.height },
-        );
-
-        // ── Render ─────────────────────────────────────────────────────────
         task = page.render({ canvasContext: ctx, viewport: physVP, canvas: canvas as any } as any);
         await task.promise;
 
         if (active) {
-          // Mark drawings as safe to show — positions are now correct
           readyToDrawRef.current = true;
           setPdfRenderCount(c => c + 1);
         }
@@ -680,24 +665,18 @@ export function Viewer({
     })();
 
     return () => { active = false; task?.cancel(); };
-  }, [pdf, pageNumber, committedScale]);   // ← committedScale, NOT scale
+  }, [pdf, pageNumber, committedScale]);
 
-  // ── CSS-only scale of overlay canvases during live zoom ───────────────────
-  // While the user is still scrolling (scale !== committedScale) we CSS-stretch
-  // all overlay canvases so they stay visually aligned with the PDF canvas
-  // without clearing their pixel buffers.
+  // ── CSS-only scale during live zoom ───────────────────────────────────────
   useEffect(() => {
-    if (scale === committedScale) return;   // settled — PDF effect handles this
+    if (scale === committedScale) return;
     if (!pdfDimensions) return;
 
     const ratio = scale / committedScale;
     const newW  = pdfDimensions.w * ratio;
     const newH  = pdfDimensions.h * ratio;
 
-    for (const ref of [
-      drawingCanvasRef, pinCanvasRef, roomCanvasRef, wallCanvasRef,
-      vectorCanvasRef, svgAreaCanvasRef, roomLabelCanvasRef,
-    ]) {
+    for (const ref of [drawingCanvasRef, pinCanvasRef, vectorCanvasRef, fillCanvasRef]) {
       const c = ref.current; if (!c) continue;
       c.style.width  = `${newW}px`;
       c.style.height = `${newH}px`;
@@ -814,7 +793,7 @@ export function Viewer({
     [startPan],
   );
 
-  // ── Wrap dimensions (derived, no extra state) ──────────────────────────────
+  // ── Wrap style ─────────────────────────────────────────────────────────────
   const wrapStyle = useMemo(() => {
     if (!pdf || !pdfDimensions) return undefined;
     const el = containerRef.current;
@@ -825,7 +804,15 @@ export function Viewer({
       height: Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3),
     } as React.CSSProperties;
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdf, pdfDimensions]);          // containerRef.current size doesn't need to be a dep
+  }, [pdf, pdfDimensions]);
+
+  // ── Derived magic-fill state ───────────────────────────────────────────────
+  const isMagicFillTool = activeTool === 'magic-fill';
+  const mfHoveredFill   = magicFills.find(f => f.id === mfHoveredId)  ?? null;
+  const mfSelectedFill  = magicFills.find(f => f.id === mfSelectedId) ?? null;
+  const mfGroupFills    = mfSelectedGroup != null
+    ? magicFills.filter(f => f.groupId === mfSelectedGroup)
+    : [];
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -843,12 +830,6 @@ export function Viewer({
           currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
           scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
           MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
-          showRooms={showRooms} setShowRooms={setShowRooms} detectingRooms={detectingRooms}
-          showWalls={showWalls} setShowWalls={setShowWalls} wallSegmentCount={wallSegments.length}
-          showVectors={showVectors} setShowVectors={setShowVectors} vectorPathCount={vectorPathCount}
-          showSvgOverlay={showSvgOverlay} setShowSvgOverlay={setShowSvgOverlay}
-          showSvgSnapDebug={showSvgSnapDebug} setShowSvgSnapDebug={setShowSvgSnapDebug}
-          svgSnapPointCount={svgSnapPoints.length}
         />
       )}
 
@@ -861,72 +842,126 @@ export function Viewer({
         />
       )}
 
-      <div
-        ref={containerRef}
-        className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
-        onKeyDown={e => {
-          if (e.code === 'Space') e.preventDefault();
-          if (e.key === 'Escape') {
-            if (tempPoints.length > 0) handleFinishMeasurement();
-            else setActiveTool('select');
-          }
-          if (e.key === 'Enter') { e.preventDefault(); if (tempPoints.length > 0) handleFinishMeasurement(); }
-        }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handleContainerPointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerUp}
-        tabIndex={0}
-      >
+      <div className="flex flex-1 overflow-hidden min-h-0 relative">
+
+        {isMagicFillTool && (
+          <MagicFillProgressOverlay
+            active={mfIsFilling}
+            message={mfFillMsg}
+            sub={mfFillSub}
+            progress={mfFillProgress}
+          />
+        )}
+
         <div
-          className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
-          style={wrapStyle}
+          ref={containerRef}
+          className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
+          onKeyDown={e => {
+            if (e.code === 'Space') e.preventDefault();
+            if (e.key === 'Escape') {
+              if (tempPoints.length > 0) handleFinishMeasurement();
+              else setActiveTool('select');
+            }
+            if (e.key === 'Enter') { e.preventDefault(); if (tempPoints.length > 0) handleFinishMeasurement(); }
+          }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handleContainerPointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+          tabIndex={0}
         >
-          <ViewerCanvas
-            pdfCanvasRef={pdfCanvasRef}
-            drawingCanvasRef={drawingCanvasRef}
-            pinCanvasRef={pinCanvasRef}
-            roomCanvasRef={roomCanvasRef}
-            wallCanvasRef={wallCanvasRef}
-            vectorCanvasRef={vectorCanvasRef}
-            svgAreaCanvasRef={svgAreaCanvasRef}
-            roomLabelCanvasRef={roomLabelCanvasRef}
-            pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
-            activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
-            tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
-            snapFlashes={snapFlashes} toCanvas={toCanvas}
-            showRooms={showRooms} rooms={mergedRooms}
-            showWalls={showWalls} wallSegmentCount={wallSegments.length}
-            showVectors={showVectors} vectorPathCount={vectorPathCount}
-            svgContent={svgContent}
-            showSvgOverlay={showSvgOverlay}
-            clusters={clusters}
-            showClusters={showClusters}
-            svgAreas={svgAreas}
-            svgSnapPoints={svgSnapPoints}
-            showSvgSnapDebug={showSvgSnapDebug}
-            hoveredRoomId={hoveredRoomId} setHoveredRoomId={setHoveredRoomId}
-            onRoomClick={handleRoomClick}
-            // Gate: hide drawing canvas until positions are confirmed correct
-            readyToDraw={readyToDrawRef.current}
-            handleCanvasClick={handleCanvasClick} handleContextMenu={handleContextMenu}
-            handleCanvasPointerMove={handleCanvasPointerMove}
-            handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
-            handleCanvasPointerUp={handleCanvasPointerUp}
-            handleDrawingCanvasPointerDown={handleDrawingCanvasPointerDown}
-            setCursorPoint={setCursorPoint} cursorPointRef={cursorPointRef}
-            redrawPinCanvas={redrawPinCanvas}
-            handleFinishMeasurement={handleFinishMeasurement}
-            handleFileUpload={handleFileUpload}
-            containerRef={containerRef} CANVAS_PADDING={CANVAS_PADDING}
+          <div
+            className={cn(!pdf ? 'min-h-full min-w-full flex items-center justify-center p-8' : 'relative')}
+            style={wrapStyle}
+          >
+            <ViewerCanvas
+              pdfCanvasRef={pdfCanvasRef}
+              drawingCanvasRef={drawingCanvasRef}
+              pinCanvasRef={pinCanvasRef}
+              vectorCanvasRef={vectorCanvasRef}
+              fillCanvasRef={fillCanvasRef}
+              pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
+              activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
+              tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
+              snapFlashes={snapFlashes} toCanvas={toCanvas}
+              readyToDraw={readyToDrawRef.current}
+              handleCanvasClick={handleCanvasClick} handleContextMenu={handleContextMenu}
+              handleCanvasPointerMove={handleCanvasPointerMove}
+              handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
+              handleCanvasPointerUp={handleCanvasPointerUp}
+              handleDrawingCanvasPointerDown={handleDrawingCanvasPointerDown}
+              setCursorPoint={setCursorPoint} cursorPointRef={cursorPointRef}
+              redrawPinCanvas={redrawPinCanvas}
+              handleFinishMeasurement={handleFinishMeasurement}
+              handleFileUpload={handleFileUpload}
+              containerRef={containerRef} CANVAS_PADDING={CANVAS_PADDING}
+            >
+              <MagicFillCanvas
+                pdfDimensions={pdfDimensions}
+                active={isMagicFillTool}
+                isFilling={mfIsFilling}
+                fills={magicFills}
+                hiddenIds={mfHiddenIds}
+                selectedId={mfSelectedId}
+                selectedGroup={mfSelectedGroup}
+                onSingleClick={handleMagicSingleClick}
+                onBatchRect={handleMagicBatchRect}
+                onHover={handleMagicHover}
+                onHoverLeave={handleMagicHoverLeave}
+              />
+
+              {isMagicFillTool && mfHoveredFill && !mfIsFilling && (
+                <MagicFillHoverTooltip
+                  fill={mfHoveredFill}
+                  metersPerPixel={mfMetersPerPixel}
+                  holesClosed={mfHolesClosed}
+                  viewportPos={mfHoverPos}
+                />
+              )}
+
+              {isMagicFillTool && mfSelectedGroup != null && mfGroupFills.length > 0 && !mfHoveredFill && (
+                <MagicFillGroupPanel
+                  groupFills={mfGroupFills}
+                  groupId={mfSelectedGroup}
+                  metersPerPixel={mfMetersPerPixel}
+                  holesClosed={mfHolesClosed}
+                />
+              )}
+
+              {isMagicFillTool && mfSelectedFill && mfSelectedGroup == null && !mfHoveredFill && (
+                <MagicFillSelectedPanel
+                  fill={mfSelectedFill}
+                  metersPerPixel={mfMetersPerPixel}
+                  holesClosed={mfHolesClosed}
+                />
+              )}
+            </ViewerCanvas>
+          </div>
+
+          <SnapCandidateWired
+            pendingSnapCandidates={pendingSnapCandidates}
+            setPendingSnapCandidates={setPendingSnapCandidates}
+            measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
           />
         </div>
 
-        <SnapCandidateWired
-          pendingSnapCandidates={pendingSnapCandidates}
-          setPendingSnapCandidates={setPendingSnapCandidates}
-          measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
-        />
+        {isMagicFillTool && (
+          <MagicFillSidebar
+            fills={magicFills}
+            hiddenIds={mfHiddenIds}
+            selectedId={mfSelectedId}
+            selectedGroup={mfSelectedGroup}
+            metersPerPixel={mfMetersPerPixel}
+            holesClosed={mfHolesClosed}
+            canUndo={true}
+            onSelect={(id) => { setMfSelectedId(id); setMfSelectedGroup(null); }}
+            onToggleHide={handleMagicToggleHide}
+            onDelete={handleMagicDelete}
+            onFillHoles={handleMagicFillHoles}
+            onUndo={handleMagicUndo}
+            onClear={handleMagicClear}
+          />
+        )}
       </div>
 
       {pdf && pdfDimensions && (
@@ -963,79 +998,26 @@ export function Viewer({
           </div>
 
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
-            {!showRooms && (
-              <span>
-                Double-click or right-click to finish · ESC to cancel / select · Enter to finish
-              </span>
-            )}
-
-            {showRooms && (
+            {isMagicFillTool ? (
               <>
+                <span className="text-amber-400">
+                  ⊕ Magic Fill — {magicFills.length} fill{magicFills.length !== 1 ? 's' : ''}
+                </span>
+                {magicFills.length > 0 && (
+                  <>
+                    <div className="w-px h-3 bg-industrial-border" />
+                    <span>
+                      Total: {fmtArea(magicFills.reduce((s, f) => s + f.areaPx, 0), mfMetersPerPixel)}
+                    </span>
+                  </>
+                )}
                 <div className="w-px h-3 bg-industrial-border" />
-
-                {svgSnapPoints.length > 0 && (
-                  <>
-                    <span className="text-purple-400">{svgSnapPoints.length} SVG snap pts</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {svgLines.length > 0 && (
-                  <>
-                    <span className="text-sky-400">{svgLines.length} SVG lines</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {svgRooms.length > 0 && (
-                  <>
-                    <span className="text-green-400">{svgRooms.length} SVG rooms</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {svgPillars.length > 0 && (
-                  <>
-                    <span className="text-amber-400">{svgPillars.length} PILLARS</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {svgWindows.length > 0 && (
-                  <>
-                    <span className="text-cyan-400">{svgWindows.length} WINDOWS</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {clusters.length > 0 && (
-                  <>
-                    <div className="w-px h-3 bg-industrial-border" />
-                    <button
-                      onClick={() => setShowClusters(p => !p)}
-                      className={cn(
-                        'text-[9px] uppercase tracking-widest transition-colors',
-                        showClusters ? 'text-violet-300' : 'text-violet-500 hover:text-violet-300',
-                      )}
-                    >
-                      {clusters.length} clusters {showClusters ? '●' : '○'}
-                    </button>
-                  </>
-                )}
-                {svgDoorAreas.length > 0 && (
-                  <>
-                    <span className="text-emerald-400">{svgDoorAreas.length} doors</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {wallSegments.length > 0 && (
-                  <>
-                    <span className="text-blue-400">{wallSegments.length} wall segments</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
-                {walls.length > 0 && (
-                  <>
-                    <span className="text-emerald-400">{walls.length} walls paired</span>
-                    <div className="w-px h-3 bg-industrial-border" />
-                  </>
-                )}
+                <span>Click: fill · Drag: batch fill</span>
               </>
+            ) : (
+              <span>
+                Double-click or right-click to finish · ESC to cancel · Enter to finish
+              </span>
             )}
             <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
           </div>
@@ -1052,9 +1034,9 @@ export function Viewer({
         onConfirm={handleDialogConfirm} onSkip={handleDialogSkip}
       />
       <PresetDrawerWired
-        showPresetDrawer={showPresetDrawer}
-        onClosePresetDrawer={onClosePresetDrawer}
-        onSelectPreset={onSelectPreset}
+        showPresetDrawer={showPresetDrawer ?? false}
+        onClosePresetDrawer={onClosePresetDrawer ?? (() => {})}
+        onSelectPreset={onSelectPreset ?? (() => {})}
       />
       <AppendGroupBanner
         appendToGroupId={propAppendToGroupId}

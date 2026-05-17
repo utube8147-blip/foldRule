@@ -2,23 +2,17 @@
 
 // ─── ViewerToolbar.tsx ────────────────────────────────────────────────────────
 //
-//  Renders the top toolbar bar: tool buttons, undo/redo, snap controls,
-//  scale display, zoom controls, and fit-to-screen.
-//
-//  ADDED: unit conversion dropdown (m / cm / mm / ft / in) next to scale.
-//         Reads/writes displayUnit from TakeoffContext — no prop needed.
-//
-//  ADDED: room detection toggle button
-//
-//  All state lives in Viewer.tsx — this is purely presentational.
-//
+//  CHANGES:
+//   • All SVG / room-detection / wall / vector / cluster props REMOVED
+//   • Magic Fill tool renders automatically via VIEWER_TOOLS array
+//   • Unit conversion dropdown retained
+//   • Snap controls retained
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
 import {
   ZoomIn, ZoomOut, Maximize,
   Undo2, Redo2, Target, Settings2,
-  Layers,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
@@ -39,10 +33,10 @@ interface ViewerToolbarProps {
   handleRedo:      () => void;
   tempPointsCount: number;
 
-  snapEnabled:          boolean;
-  setSnapEnabled:       (v: boolean) => void;
-  showSnapSettings:     boolean;
-  setShowSnapSettings:  (v: boolean) => void;
+  snapEnabled:         boolean;
+  setSnapEnabled:      (v: boolean) => void;
+  showSnapSettings:    boolean;
+  setShowSnapSettings: (v: boolean) => void;
 
   scaleFactor:       number;
   handleManualScale: () => void;
@@ -58,11 +52,6 @@ interface ViewerToolbarProps {
   MIN_ZOOM:         number;
   MAX_ZOOM:         number;
   ZOOM_SENSITIVITY: number;
-
-  // ── Room detection props ─────────────────────────────────────────────────
-  showRooms:       boolean;
-  setShowRooms:    (v: boolean) => void;
-  detectingRooms:  boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -76,12 +65,10 @@ export function ViewerToolbar({
   analysisStatus, analysisPage, currentPageCorners,
   scale, setScale, fitToScreen,
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
-  showRooms, setShowRooms, detectingRooms,
 }: ViewerToolbarProps) {
-  const isAnalyzing = analysisStatus === 'analyzing';
+  const isAnalyzing    = analysisStatus === 'analyzing';
   const isAnalysisDone = analysisStatus === 'done';
 
-  // ── pull displayUnit from context ────────────────────────────────────────
   const { displayUnit, setDisplayUnit } = useTakeoffContext();
 
   return (
@@ -96,14 +83,23 @@ export function ViewerToolbar({
             className={cn(
               'w-9 h-9 flex items-center justify-center transition-all relative group border',
               activeTool === tool.id
-                ? 'bg-zinc-800 border-amber-400 text-amber-400'
+                ? tool.id === 'magic-fill'
+                  ? 'bg-zinc-800 border-violet-400 text-violet-400'
+                  : 'bg-zinc-800 border-amber-400 text-amber-400'
                 : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
             )}
             title={`${tool.label} (${tool.shortcut})`}
           >
             <tool.icon className="w-4 h-4" />
+            {/* Magic Fill active glow pulse */}
+            {tool.id === 'magic-fill' && activeTool === 'magic-fill' && (
+              <span className="absolute inset-0 rounded-sm animate-pulse bg-violet-400/10 pointer-events-none" />
+            )}
             <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
               {tool.label} [{tool.shortcut}]
+              {tool.id === 'magic-fill' && (
+                <span className="block text-violet-400 mt-0.5">Click or drag to fill rooms</span>
+              )}
             </div>
           </button>
         ))}
@@ -157,7 +153,7 @@ export function ViewerToolbar({
       {/* ── Centre: Status + Snap + Scale ── */}
       <div className="flex flex-row items-center gap-2 flex-1 justify-center">
 
-        {/* Only show analysis when snap is ON */}
+        {/* Analysis progress */}
         {snapEnabled && isAnalyzing && analysisPage && (
           <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
             <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
@@ -167,7 +163,9 @@ export function ViewerToolbar({
           </div>
         )}
 
-        {/* Main Snap toggle - always visible */}
+        
+
+        {/* Snap toggle */}
         <button
           onClick={() => setSnapEnabled(!snapEnabled)}
           className={cn(
@@ -176,13 +174,13 @@ export function ViewerToolbar({
               ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
               : 'bg-amber-500/10 border-amber-500/50 text-amber-400 hover:bg-amber-500/20',
           )}
-          title={snapEnabled ? "Snap is ON - Click to disable" : "Snap is OFF - Click to enable analysis"}
+          title={snapEnabled ? 'Snap is ON' : 'Snap is OFF'}
         >
           <Target className="w-3 h-3" />
           {snapEnabled ? 'SNAP ACTIVE' : 'SNAP INACTIVE'}
         </button>
 
-        {/* Snap Settings - only when snap is ON AND analysis is done */}
+        {/* Snap Settings */}
         {snapEnabled && isAnalysisDone && (
           <button
             onClick={() => setShowSnapSettings(!showSnapSettings)}
@@ -199,24 +197,6 @@ export function ViewerToolbar({
           </button>
         )}
 
-        {/* Room detection toggle - available when analysis is done, regardless of snap state */}
-        {isAnalysisDone && (
-          <button
-            onClick={() => setShowRooms(!showRooms)}
-            className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-              showRooms
-                ? 'bg-blue-500/10 border-blue-500/50 text-blue-400 hover:bg-blue-500/20'
-                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-            )}
-            title="Toggle room detection overlay"
-          >
-            <Layers className="w-3 h-3" />
-            {detectingRooms ? 'DETECTING...' : showRooms ? 'ROOMS ON' : 'ROOMS OFF'}
-          </button>
-        )}
-
-        {/* Separator */}
         <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
 
         {/* Scale display */}

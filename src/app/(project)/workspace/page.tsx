@@ -1,6 +1,13 @@
-// ─── workspace/page.tsx ───────────────────────────────────────────────────────
-
 'use client';
+
+// ─── workspace/page.tsx ───────────────────────────────────────────────────────
+//
+// CHANGES:
+//   • externalShowRooms / onExternalShowRoomsChange props REMOVED from Viewer
+//   • showRooms / setShowRooms / detectingRooms props REMOVED from ViewerToolbar
+//   • showWalls / showVectors / showSvgOverlay / showSvgSnapDebug removed
+//   • Magic Fill tool works automatically — no workspace plumbing needed
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -10,7 +17,6 @@ import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
 import { ViewerToolbar } from '@/components/Viewer/ViewerToolbar';
-import { Layers } from 'lucide-react';
 
 const Viewer = dynamic(
   () => import('@/components/Viewer').then(m => m.Viewer),
@@ -38,7 +44,7 @@ const PRESET_COLORS = [
 let colorIndex = 0;
 const getPresetColor = () => PRESET_COLORS[colorIndex++ % PRESET_COLORS.length];
 
-// ─── Safe row builder — ensures every required TakeoffRow field is present ────
+// ─── Safe row builder ─────────────────────────────────────────────────────────
 function buildRow(overrides: Partial<TakeoffRow> & { id: string; drawingId: string }): TakeoffRow {
   return {
     label:         '',
@@ -87,17 +93,15 @@ export default function Workspace() {
   const [toasts, setToasts]                           = useState<any[]>([]);
   const [isMounted, setIsMounted]                     = useState(false);
   const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
+  const [appendToGroupId, setAppendToGroupId]         = useState<string | null>(null);
 
-  const [appendToGroupId, setAppendToGroupId] = useState<string | null>(null);
-
-  // ── State for toolbar props that need to be managed at workspace level ──
-  const [snapEnabled, setSnapEnabled] = useState(false);
+  // ── Toolbar state managed at workspace level ────────────────────────────────
+  const [snapEnabled,      setSnapEnabled]      = useState(false);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
-  const [showRooms, setShowRooms] = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
 
-  // ── Fix existing groups with mismatched types ───────────────────────────────
+  // ── Fix existing groups with mismatched types ──────────────────────────────
   useEffect(() => {
     ps.measurements
       .filter(m => m.isGroupHeader && m.childIds && m.childIds.length > 0)
@@ -156,18 +160,18 @@ export default function Workspace() {
 
     const groupName = `${data.customName || 'Cabinet'} (${data.width || 600}×${data.height || 720}×${data.depth || 550}mm)`;
 
-    if (data.hasBack !== false)      measurements.push({ description: 'Back Panel',      type: 'Area',   quantity: +(iW * iH).toFixed(3),         unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasTop  !== false)      measurements.push({ description: 'Top Panel',       type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasBottom !== false)    measurements.push({ description: 'Bottom Panel',    type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasLeftSide  !== false) measurements.push({ description: 'Left Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
-    if (data.hasRightSide !== false) measurements.push({ description: 'Right Side Panel',type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasBack !== false)      measurements.push({ description: 'Back Panel',       type: 'Area',   quantity: +(iW * iH).toFixed(3),         unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasTop  !== false)      measurements.push({ description: 'Top Panel',        type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasBottom !== false)    measurements.push({ description: 'Bottom Panel',     type: 'Area',   quantity: +(iW * D).toFixed(3),          unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasLeftSide  !== false) measurements.push({ description: 'Left Side Panel',  type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
+    if (data.hasRightSide !== false) measurements.push({ description: 'Right Side Panel', type: 'Area',   quantity: +(D * H).toFixed(3),           unit: 'm²',   notes: `Material: ${data.boardMaterial || '18mm MDF'}`,                                                                         category: 'Board Materials', isOverridden: true });
 
     if (shelves > 0) measurements.push({ description: `Shelves (${shelves} pcs)`, type: 'Area', quantity: +(iW * D * shelves).toFixed(3), unit: 'm²', notes: `Material: ${data.shelfMaterial || data.boardMaterial || '18mm MDF'} | Spacing: ${data.shelfSpacing || 'Equal'}`, category: 'Shelves', isOverridden: true });
 
     if (data.hasDoors) {
       const doorArea = (W / doorCount) * H * doorCount;
       measurements.push({ description: `Doors (${doorCount} pcs)`,  type: 'Area',  quantity: +doorArea.toFixed(3), unit: 'm²',   notes: `Material: ${data.doorMaterial || 'MDF Primed'} | Style: ${data.doorSwing || 'Standard'}`, category: 'Doors',     isOverridden: true });
-      measurements.push({ description: 'Door Hardware',               type: 'Count', quantity: doorCount,            unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,       category: 'Hardware',  isOverridden: true });
+      measurements.push({ description: 'Door Hardware',              type: 'Count', quantity: doorCount,            unit: 'sets', notes: `Hinges (2 per door), handles (1 per door) | Type: ${data.hingeType || 'Concealed'}`,       category: 'Hardware',  isOverridden: true });
     }
     if (data.hasDrawers) {
       const drawerCount = parseInt(data.drawerCount ?? 2);
@@ -203,9 +207,7 @@ export default function Workspace() {
 
     if (template.id === 'carcass') {
       const { measurements, groupName } = generateGroupedCarcassMeasurements(data, template, activeDrawing.id, groupId);
-
       const headerId = `${groupId}-header`;
-
       const childRows: TakeoffRow[] = measurements.map((m, i) =>
         buildRow({
           id:          `${groupId}-child-${i}-${Date.now()}`,
@@ -227,7 +229,6 @@ export default function Workspace() {
           isVisible:   true,
         }),
       );
-
       const headerRow = buildRow({
         id:            headerId,
         drawingId:     activeDrawing.id,
@@ -251,16 +252,12 @@ export default function Workspace() {
         color:         groupColor,
         isVisible:     true,
       });
-
       addMeasurement(headerRow);
       childRows.forEach(row => addMeasurement(row));
-
       addToast(`${groupName} ADDED (${childRows.length} components)`, 'success');
-
     } else {
       let quantity = 0;
       let unit     = 'm';
-
       switch (template.measurementType) {
         case 'linear':
           quantity = parseFloat(data.length ?? data.pipeLength ?? data.roofPitch ?? 0) || 0;
@@ -276,29 +273,25 @@ export default function Workspace() {
           quantity = parseInt(data.quantity ?? data.doorCount ?? data.windowCount ?? 1);
           unit = 'pcs';
           break;
-        default:
-          quantity = 0;
       }
-
       addMeasurement(buildRow({
-        id:          `${activeDrawing.id}-preset-${Date.now()}`,
-        drawingId:   activeDrawing.id,
-        label:       template.name,
-        description: template.name,
-        type:        template.measurementType === 'linear' ? 'Length'
-                   : template.measurementType === 'area'   ? 'Area'
-                   : 'Count',
+        id:           `${activeDrawing.id}-preset-${Date.now()}`,
+        drawingId:    activeDrawing.id,
+        label:        template.name,
+        description:  template.name,
+        type:         template.measurementType === 'linear' ? 'Length'
+                    : template.measurementType === 'area'   ? 'Area'
+                    : 'Count',
         quantity,
         unit,
-        unitRate:    0,
-        notes:       `Preset: ${template.name} · ${template.category}`,
+        unitRate:     0,
+        notes:        `Preset: ${template.name} · ${template.category}`,
         isOverridden: true,
-        presetData:  data,
-        presetId:    template.id,
-        color:       groupColor,
-        isVisible:   true,
+        presetData:   data,
+        presetId:     template.id,
+        color:        groupColor,
+        isVisible:    true,
       }));
-
       addToast(`${template.name.toUpperCase()} ADDED`, 'success');
     }
   }, [activeDrawing, addMeasurement, addToast, generateGroupedCarcassMeasurements]);
@@ -318,20 +311,19 @@ export default function Workspace() {
     addToast(`ADDING TO GROUP: Use ${newTool} tool to draw new item`, 'info');
   }, [setActiveTool, addToast]);
 
-  const handleAppendComplete = useCallback(() => {
-    setAppendToGroupId(null);
-  }, []);
+  const handleAppendComplete = useCallback(() => setAppendToGroupId(null), []);
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
       switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear'    as ToolType); break;
-        case 'a': setActiveTool('area'      as ToolType); break;
-        case 'c': setActiveTool('count'     as ToolType); break;
-        case 'p': setActiveTool('point'     as ToolType); break;
-        case 'v': setActiveTool('select'    as ToolType); break;
+        case 'l': setActiveTool('linear'     as ToolType); break;
+        case 'a': setActiveTool('area'       as ToolType); break;
+        case 'c': setActiveTool('count'      as ToolType); break;
+        case 'p': setActiveTool('point'      as ToolType); break;
+        case 'v': setActiveTool('select'     as ToolType); break;
+        case 'm': setActiveTool('magic-fill' as ToolType); break;
         case 'escape': setActiveTool('select' as ToolType); break;
       }
     };
@@ -374,7 +366,6 @@ export default function Workspace() {
 
   const handleExport = useCallback(() => setShowExportModal(true), []);
 
-  // ── executeExport now accepts the filename from the modal ──────────────────
   const executeExport = useCallback((filename: string) => {
     fetch('/api/export', {
       method: 'POST',
@@ -386,20 +377,16 @@ export default function Workspace() {
           const err = await res.json().catch(() => ({ error: res.statusText }));
           throw new Error(err.details || err.error || `HTTP ${res.status}`);
         }
-
         const disposition = res.headers.get('Content-Disposition');
         const match       = disposition?.match(/filename="(.+)"/);
         const finalName   = filename || match?.[1] || `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
-
         const blob = await res.blob();
         return { blob, filename: finalName };
       })
       .then(({ blob, filename: finalName }) => {
         const url = URL.createObjectURL(blob);
         const a   = document.createElement('a');
-        a.href     = url;
-        a.download = finalName;
-        a.click();
+        a.href = url; a.download = finalName; a.click();
         URL.revokeObjectURL(url);
         addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
         setShowExportModal(false);
@@ -478,7 +465,7 @@ export default function Workspace() {
 
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
-          {/* ── ViewerToolbar Component ── */}
+          {/* ── Toolbar (hoisted to workspace) ── */}
           <ViewerToolbar
             activeTool={activeTool as ToolType}
             setActiveTool={setActiveTool as (tool: ToolType) => void}
@@ -497,20 +484,11 @@ export default function Workspace() {
             analysisPage={api?.analysisPage ?? null}
             currentPageCorners={api?.currentPageCorners ?? 0}
             scale={api?.scale ?? 1}
-            setScale={(s) => {
-              if (typeof s === 'function') {
-                api?.setScale?.(s);
-              } else {
-                api?.setScale?.(s);
-              }
-            }}
+            setScale={(s) => api?.setScale?.(s)}
             fitToScreen={() => api?.fitToScreen?.()}
             MIN_ZOOM={0.1}
             MAX_ZOOM={5}
             ZOOM_SENSITIVITY={0.1}
-            showRooms={showRooms}
-            setShowRooms={setShowRooms}
-            detectingRooms={api?.detectingRooms ?? false}
           />
 
           <div className="flex flex-1 overflow-hidden relative min-h-0">
@@ -533,7 +511,6 @@ export default function Workspace() {
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}
-                externalShowRooms={showRooms}  // Pass room visibility to Viewer
               />
             </div>
 
