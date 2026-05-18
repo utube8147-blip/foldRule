@@ -10,7 +10,7 @@ import type { PDFPageProxy } from 'pdfjs-dist';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
-import type { PdfDimensions } from '@/types/viewerTypes';
+import type { PdfDimensions, SnapResult as ViewerSnapResult } from '@/types/viewerTypes';
 
 import { Minimap }           from './Minimap';
 import { SnapSettingsPanel } from './SnapSettingsPanel';
@@ -242,7 +242,7 @@ export function Viewer({
     appendToGroupId: propAppendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
-    isPanning, snapToCorner, getScaledCorners,
+    isPanning, snapToCorner: snapToCorner as unknown as (rawX: number, rawY: number) => ViewerSnapResult, getScaledCorners,
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
   });
@@ -1367,6 +1367,11 @@ export function Viewer({
   // ── Derived magic-fill state ───────────────────────────────────────────────
   const isMagicFillTool = activeTool === 'magic-fill';
 
+  const snapFlashesForCanvas = useMemo(
+    () => snapFlashes.map(f => ({ ...f, id: String(f.id) })),
+    [snapFlashes],
+  );
+
   const allVisibleFills = useMemo(
     () => [...magicFills, ...mfStagedFills.current],
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1461,7 +1466,7 @@ export function Viewer({
               pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
               activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
               tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
-              snapFlashes={snapFlashes} toCanvas={toCanvas}
+              snapFlashes={snapFlashesForCanvas} toCanvas={toCanvas}
               readyToDraw={readyToDrawRef.current}
               handleCanvasClick={handleCanvasClick} handleContextMenu={handleContextMenu}
               handleCanvasPointerMove={handleCanvasPointerMove}

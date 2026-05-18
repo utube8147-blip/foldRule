@@ -1,1 +1,0 @@
-detectRoomsVector.ts

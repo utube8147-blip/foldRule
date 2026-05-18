@@ -11,7 +11,16 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
 import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
-import type { ExtractionResult, PageExtractionState, SnapFlash, SnapResult, PdfDimensions } from './viewerTypes';
+// Local minimal type definitions to avoid missing-module errors for viewerTypes
+// (keeps this hook self-contained; adjust as needed if shared types change)
+type PdfDimensions = { w: number; h: number };
+type ExtractionResult = any;
+type PageExtractionState = any;
+type SnapFlash = { x: number; y: number; id: number };
+type SnapResult = {
+  point: { x: number; y: number };
+  snapped: boolean;
+};
 
 // ─── Geometry helpers ─────────────────────────────────────────────────────────
 

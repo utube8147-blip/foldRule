@@ -579,13 +579,16 @@ function classifyFaces(
   }
 
   // STEP 1: Calculate connections for ALL faces FIRST
+  // Ensure connections arrays exist to satisfy TypeScript and simplify logic
+  for (const f of inner) {
+    if (!f.connections) f.connections = [];
+  }
   for (let i = 0; i < inner.length; i++) {
     for (let j = i + 1; j < inner.length; j++) {
       if (doFacesShareEdge(inner[i], inner[j])) {
-        if (!inner[i].connections) inner[i].connections = [];
-        if (!inner[j].connections) inner[j].connections = [];
-        inner[i].connections.push(inner[j].id);
-        inner[j].connections.push(inner[i].id);
+        // connections initialized above; use non-null assertion to satisfy TS
+        inner[i].connections!.push(inner[j].id);
+        inner[j].connections!.push(inner[i].id);
       }
     }
   }

@@ -275,6 +275,7 @@ export function useWallLineInteraction({
       unit:        type === 'Area' ? 'm²' : 'm',
       unitRate:    0,
       notes:       `${segs.length} segment(s) chained from wall detection`,
+      childIds:    [],
       points,
       isOverridden: false,
       color:       '#F59E0B',

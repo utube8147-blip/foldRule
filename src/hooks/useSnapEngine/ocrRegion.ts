@@ -192,10 +192,10 @@ export async function ocrRegionFromCanvas(
 
     if (signal?.aborted) return null;
 
-    const words = data.words ?? [];
+    const words = (data as any).words ?? [];
     if (words.length === 0) return null;
 
-    const bestConfidence = Math.max(...words.map(w => w.confidence));
+    const bestConfidence = Math.max(...words.map((w: any) => w.confidence));
     if (bestConfidence < confidenceThreshold) {
       if (process.env.NODE_ENV !== 'production') {
         console.debug(

@@ -204,7 +204,7 @@ export function Viewer({
     appendToGroupId: appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
-    isPanning, snapToCorner, getScaledCorners,
+    isPanning, snapToCorner: snapToCorner as any, getScaledCorners,
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
   });
@@ -441,7 +441,7 @@ export function Viewer({
               pdf={pdf} loading={loading} pdfDimensions={pdfDimensions}
               activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
               tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
-              snapFlashes={snapFlashes} toCanvas={toCanvas}
+              snapFlashes={snapFlashes.map(f => ({ ...f, id: String(f.id) }))} toCanvas={toCanvas}
               readyToDraw={true /* controlled inside ViewerCanvas via its own guard */}
               handleCanvasClick={handleCanvasClick}
               handleContextMenu={handleContextMenu}

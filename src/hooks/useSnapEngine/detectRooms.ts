@@ -355,7 +355,8 @@ async function getTesseractWorker(): Promise<any> {
     await worker.setParameters({
       tessedit_char_whitelist:
         'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz 0123456789/.-',
-      tessedit_pageseg_mode: '7',
+      // PSM 7 = Treat the image as a single text line
+      tessedit_pageseg_mode: '7' as any,
     });
     tesseractWorker = worker;
     return worker;

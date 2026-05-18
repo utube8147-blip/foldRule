@@ -108,7 +108,8 @@ export interface ExtractAllVectorsResult {
 // ─── Color helpers ────────────────────────────────────────────────────────────
 
 function rgbToHex(r: number, g: number, b: number): string {
-  const toHex = (v: number) => Math.round(Math.clamp(v, 0, 1) * 255).toString(16).padStart(2, '0');
+  const clamp = (v: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, v));
+  const toHex = (v: number) => Math.round(clamp(v, 0, 1) * 255).toString(16).padStart(2, '0');
   return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
 }
 
@@ -167,8 +168,16 @@ function cloneState(s: GraphicsState): GraphicsState {
   return {
     ...s,
     ctm:         [...s.ctm],
-    strokeColor: s.strokeColor ? [...s.strokeColor] as RGBColor : null,
-    fillColor:   s.fillColor   ? [...s.fillColor]   as RGBColor : null,
+    strokeColor: s.strokeColor
+      ? (Array.isArray(s.strokeColor)
+          ? ([...(s.strokeColor as any)] as unknown as RGBColor)
+          : ({...(s.strokeColor as any)} as unknown as RGBColor))
+      : null,
+    fillColor: s.fillColor
+      ? (Array.isArray(s.fillColor)
+          ? ([...(s.fillColor as any)] as unknown as RGBColor)
+          : ({...(s.fillColor as any)} as unknown as RGBColor))
+      : null,
   };
 }
 

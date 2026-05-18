@@ -12,8 +12,6 @@ const ROOM_CATEGORY: Record<string, string> = {
   DIRECTOR: 'office',
   STUDY: 'office',
   PRIVATE_OFFICE: 'office',
-  OPEN_OFFICE: 'office',
-  WORKSPACE: 'office',
   DESK: 'office',
   CUBICLE: 'office',
   

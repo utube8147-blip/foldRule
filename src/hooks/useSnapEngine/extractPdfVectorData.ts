@@ -642,7 +642,8 @@ function detectOpenings(walls: Wall[], allSegments: RawSegment[]): void {
       const intervals: Array<[number, number]> = collinear.map(s => {
         const t0 = projectOntoSegment(wall.cx0, wall.cy0, wall.cx1, wall.cy1, s.x0, s.y0);
         const t1 = projectOntoSegment(wall.cx0, wall.cy0, wall.cx1, wall.cy1, s.x1, s.y1);
-        return [Math.min(t0, t1), Math.max(t0, t1)];
+        const tuple: [number, number] = [Math.min(t0, t1), Math.max(t0, t1)];
+        return tuple;
       }).sort((a, b) => a[0] - b[0]);
 
       // Merge overlapping intervals, then find gaps
