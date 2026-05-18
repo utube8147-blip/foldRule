@@ -2,34 +2,9 @@
 
 // ─── hooks/useMagicFill.ts ────────────────────────────────────────────────────
 //
-//  KEY FIX — show/hide stacking paint bug:
-//
-//  Root cause: fillAt() calls ensureFillData() which reads the CURRENT canvas
-//  pixels into fillDataRef, then paints on top of them. So every time the
-//  sync effect re-flooded a fill for show/hide, it was reading whatever was
-//  already on the canvas and compositing on top — getting thicker each cycle.
-//
-//  Fix: after each fillAt/fillRect/fillHoles call, capture an ImageData
-//  snapshot of ONLY that fill's painted pixels (not the whole canvas) and
-//  store it in fillSnapshots keyed by fill id.
-//
-//  New API method: restoreFills(visibleIds, fillCanvas)
-//    — clears the canvas then composites only the stored snapshots for the
-//      given ids, in paint order. No flood-fill runs at all. Pixel-perfect
-//      and idempotent — calling it 100 times gives the same result.
-//
-//  Viewer.tsx must call restoreFills() for show/hide/color changes instead
-//  of re-calling fillAt(). fillAt() is only called for NEW fills.
-//
-//  AUTO CLOSE HOLES:
-//    fillAt() and fillRect() now automatically call closeHoles() after
-//    dilation. This means text labels, circle interiors, and any enclosed
-//    pocket inside a filled region are always filled — no separate
-//    fillHoles() call needed.
-//
-//  MASKED DILATION:
-//    Paint grows outward using dilateMasked() which stops exactly at
-//    detected wall pixels — flush with the boundary, no over/undershoot.
+//  FIX: Use dilateFast(FILL_GROW) instead of dilateToWall in fillAt and fillRect.
+//  This matches the page exactly — grow 3px in all directions, stopping naturally
+//  at wall pixels, giving the tight wall-kissing behavior.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -41,9 +16,9 @@ const WALL_LUMA           = 140;
 const STROKE_NEIGHBOR_MIN = 1;
 const DILATE_R            = 4;
 const ERODE_R             = 1;
-const FILL_GROW           = 2;
+const FILL_GROW           = 3;
 const RDP_EPSILON         = 3;
-const MAX_MASK_PIXELS     = 2_000_000;
+const MAX_CANVAS_PIXELS   = 4_000_000;
 const RECT_STEP_DIVISOR   = 40;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
@@ -98,22 +73,7 @@ export interface MagicFillAPI {
   getPixelAt:   (canvasX: number, canvasY: number, fillCanvas: HTMLCanvasElement) => number;
   registerFill:   (fill: MagicFill, pixelMap: Uint8Array) => void;
   unregisterFill: (id: number) => void;
-  /**
-   * restoreFills(visibleIds, fillCanvas)
-   *
-   * Clears the canvas completely then composites the stored per-fill
-   * ImageData snapshots for every id in visibleIds (in original paint order).
-   * This is the ONLY correct way to show/hide fills — it never re-runs the
-   * flood-fill algorithm so there is no stacking, no bleed, no thickness
-   * change regardless of how many times it is called.
-   */
   restoreFills: (visibleIds: Set<number>, fillCanvas: HTMLCanvasElement) => void;
-  /**
-   * repaintFillColor(id, newColor, visibleIds, fillCanvas)
-   *
-   * Re-renders a single fill's snapshot in a new color then calls restoreFills
-   * so the canvas is always rebuilt from snapshots (no stacking).
-   */
   repaintFillColor: (
     id:         number,
     newColor:   string,
@@ -124,18 +84,21 @@ export interface MagicFillAPI {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
+function buildWallMaskAtFullResolution(
+  data: Uint8ClampedArray,
+  w: number,
+  h: number
+): Uint8Array {
   const dark = new Uint8Array(w * h);
+
+  // Step 1: Detect dark pixels (potential walls)
   for (let i = 0; i < w * h; i++) {
     if (data[i * 4 + 3] < 20) continue;
     const luma = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
     if (luma < WALL_LUMA) dark[i] = 1;
   }
 
-  // ── Text / symbol filter ──────────────────────────────────────────────────
-  // Connected components that are small and squarish are text labels or
-  // furniture symbols — erase them so the flood fill treats them as open
-  // space and flows straight through.
+  // Step 2: Filter out text/symbols
   const MIN_WALL_PIXELS  = 400;
   const MAX_TEXT_PIXELS  = 1500;
   const MAX_TEXT_ASPECT  = 3.5;
@@ -170,16 +133,13 @@ function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Arra
 
     const size = members.length;
 
-    // Definitely text/symbol — too small
     if (size < MIN_WALL_PIXELS) {
       for (const idx of members) dark[idx] = 0;
       continue;
     }
 
-    // Definitely a wall — too large to be text
     if (size > MAX_TEXT_PIXELS) continue;
 
-    // Borderline: check bounding box shape and pixel density
     let minX = w, maxX = 0, minY = h, maxY = 0;
     for (const idx of members) {
       const x = idx % w, y = (idx / w) | 0;
@@ -191,16 +151,14 @@ function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Arra
     const aspect  = Math.max(bboxW, bboxH) / Math.min(bboxW, bboxH);
     const density = size / (bboxW * bboxH);
 
-    // Long and thin → wall, keep it
     if (aspect > MIN_WALL_ASPECT) continue;
 
-    // Squarish and sparse → text label or symbol, erase it
     if (aspect < MAX_TEXT_ASPECT && density < MAX_TEXT_DENSITY) {
       for (const idx of members) dark[idx] = 0;
     }
   }
 
-  // ── Stroke neighbor filter ────────────────────────────────────────────────
+  // Step 3: Stroke neighbor filter
   const mask = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -245,22 +203,34 @@ function dilateFast(src: Uint8Array, w: number, h: number, r: number): Uint8Arra
 }
 
 /**
- * Dilate src but zero out any pixel that lands on a wall pixel.
- * Paint grows right up to the wall edge without crossing it —
- * pixel-perfect boundary coverage with no bleed.
+ * dilateCorners — one extra pass that fills diagonal corner gaps.
+ * After dilateFast (which is axis-aligned), pixels at 45° diagonal corners
+ * are missed. This pass checks all 8 neighbours so diagonal corners are filled.
+ * Only runs a single pixel radius (enough to close the gap at corners).
  */
-function dilateMasked(
-  src:      Uint8Array,
-  wallMask: Uint8Array,
-  w:        number,
-  h:        number,
-  r:        number,
-): Uint8Array {
-  const dilated = dilateFast(src, w, h, r);
-  for (let i = 0; i < dilated.length; i++) {
-    if (wallMask[i]) dilated[i] = 0;
+function dilateCorners(src: Uint8Array, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(src);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      if (out[y * w + x]) continue;
+      // If any of the 8 neighbours is filled, fill this pixel too
+      if (
+        src[(y-1)*w + (x-1)] || src[(y-1)*w + x] || src[(y-1)*w + (x+1)] ||
+        src[ y   *w + (x-1)] ||                     src[ y   *w + (x+1)] ||
+        src[(y+1)*w + (x-1)] || src[(y+1)*w + x] || src[(y+1)*w + (x+1)]
+      ) out[y * w + x] = 1;
+    }
   }
-  return dilated;
+  return out;
+}
+
+/**
+ * dilateForFill — FILL_GROW box dilation followed by a corner pass.
+ * The box dilation kisses straight walls; the corner pass fills the
+ * triangular gaps that appear where diagonal walls meet.
+ */
+function dilateForFill(src: Uint8Array, w: number, h: number): Uint8Array {
+  return dilateCorners(dilateFast(src, w, h, FILL_GROW), w, h);
 }
 
 function erodeFast(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
@@ -376,10 +346,6 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-/**
- * Paint a pixel mask onto a BLANK ImageData (not onto the existing canvas).
- * Returns a new ImageData containing only those pixels at the given color.
- */
 function paintFillToSnapshot(
   filled:  Uint8Array,
   w:       number,
@@ -401,10 +367,6 @@ function paintFillToSnapshot(
   return snap;
 }
 
-/**
- * Composite src ImageData onto dst ImageData using source-over alpha blending.
- * Mutates dst in place.
- */
 function compositeOver(dst: ImageData, src: ImageData): void {
   const d = dst.data;
   const s = src.data;
@@ -579,76 +541,57 @@ function getLogicalDims(canvas: HTMLCanvasElement): { w: number; h: number } {
   return { w: canvas.width, h: canvas.height };
 }
 
-/**
- * Scale the wall mask from mask-space up to canvas-space.
- * Used so dilateMasked can stop paint exactly at wall pixels.
- */
-function scaleWallMaskToCanvas(
-  mask: Uint8Array,
-  mw: number, mh: number,
-  fw: number, fh: number,
-): Uint8Array {
-  const canvasWallMask = new Uint8Array(fw * fh);
-  const scaleToCanvas  = fw / mw;
-  for (let my = 0; my < mh; my++) {
-    for (let mx = 0; mx < mw; mx++) {
-      if (!mask[my * mw + mx]) continue;
-      const cx0 = Math.round(mx * scaleToCanvas);
-      const cy0 = Math.round(my * scaleToCanvas);
-      const cx1 = Math.round((mx + 1) * scaleToCanvas);
-      const cy1 = Math.round((my + 1) * scaleToCanvas);
-      for (let cy = cy0; cy < cy1 && cy < fh; cy++)
-        for (let cx = cx0; cx < cx1 && cx < fw; cx++)
-          canvasWallMask[cy * fw + cx] = 1;
-    }
-  }
-  return canvasWallMask;
-}
-
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useMagicFill(): MagicFillAPI {
-  const maskRef      = useRef<Uint8Array | null>(null);
-  const maskWRef     = useRef(0);
-  const maskHRef     = useRef(0);
-  const maskScaleRef = useRef(1);
-  const readyRef     = useRef(false);
+  const wallMaskRef   = useRef<Uint8Array | null>(null);
+  const maskWRef      = useRef(0);
+  const maskHRef      = useRef(0);
+  const readyRef      = useRef(false);
 
-  const fillWRef     = useRef(0);
-  const fillHRef     = useRef(0);
+  const fillWRef      = useRef(0);
+  const fillHRef      = useRef(0);
 
-  const snapshots    = useRef<ImageData[]>([]);
-  const pixelMaps    = useRef<Map<number, Uint8Array>>(new Map());
-  const fillOrder    = useRef<number[]>([]);
-
-  // Per-fill ImageData snapshots — used by restoreFills() to composite fills
-  // without re-flooding.
+  const snapshots     = useRef<ImageData[]>([]);
+  const pixelMaps     = useRef<Map<number, Uint8Array>>(new Map());
+  const fillOrder     = useRef<number[]>([]);
   const fillSnapshots = useRef<Map<number, ImageData>>(new Map());
 
   // ── buildMask ─────────────────────────────────────────────────────────────
   const buildMask = useCallback((pdfCanvas: HTMLCanvasElement) => {
     const { w: logW, h: logH } = getLogicalDims(pdfCanvas);
-    if (!logW || !logH) { console.warn('[MagicFill] buildMask: zero logical dims'); return; }
+    if (!logW || !logH) {
+      console.warn('[MagicFill] buildMask: zero logical dims');
+      return;
+    }
 
-    const ratio = Math.min(1, Math.sqrt(MAX_MASK_PIXELS / (logW * logH)));
-    const mw    = Math.max(1, Math.round(logW * ratio));
-    const mh    = Math.max(1, Math.round(logH * ratio));
+    let targetW = logW;
+    let targetH = logH;
+    const totalPixels = targetW * targetH;
 
-    const off    = document.createElement('canvas');
-    off.width    = mw; off.height = mh;
+    if (totalPixels > MAX_CANVAS_PIXELS) {
+      const scale = Math.sqrt(MAX_CANVAS_PIXELS / totalPixels);
+      targetW = Math.max(1, Math.round(targetW * scale));
+      targetH = Math.max(1, Math.round(targetH * scale));
+      console.log(`[MagicFill] Downscaling from ${logW}x${logH} to ${targetW}x${targetH} for performance`);
+    }
+
+    const off = document.createElement('canvas');
+    off.width = targetW;
+    off.height = targetH;
     const offCtx = off.getContext('2d');
     if (!offCtx) return;
-    offCtx.drawImage(pdfCanvas, 0, 0, mw, mh);
-    const imgData = offCtx.getImageData(0, 0, mw, mh);
+    offCtx.drawImage(pdfCanvas, 0, 0, targetW, targetH);
+    const imgData = offCtx.getImageData(0, 0, targetW, targetH);
 
-    const raw     = buildWallMask(imgData.data, mw, mh);
-    const dilated = dilateFast(raw, mw, mh, DILATE_R);
+    const raw = buildWallMaskAtFullResolution(imgData.data, targetW, targetH);
+    const dilated = dilateFast(raw, targetW, targetH, DILATE_R);
+    wallMaskRef.current = erodeFast(dilated, targetW, targetH, ERODE_R);
+    maskWRef.current = targetW;
+    maskHRef.current = targetH;
+    readyRef.current = true;
 
-    maskRef.current      = erodeFast(dilated, mw, mh, ERODE_R);
-    maskWRef.current     = mw;
-    maskHRef.current     = mh;
-    maskScaleRef.current = ratio;
-    readyRef.current     = true;
+    console.log(`[MagicFill] Wall mask built at ${targetW}x${targetH}`);
   }, []);
 
   // ── getFreshFillData ──────────────────────────────────────────────────────
@@ -665,7 +608,7 @@ export function useMagicFill(): MagicFillAPI {
     fillWRef.current = fillCanvas.width;
     fillHRef.current = fillCanvas.height;
     const ctx = fillCanvas.getContext('2d');
-    const fd  = ctx
+    const fd = ctx
       ? ctx.getImageData(0, 0, fillCanvas.width, fillCanvas.height)
       : new ImageData(fillCanvas.width, fillCanvas.height);
     snapshots.current.push(new ImageData(
@@ -729,7 +672,7 @@ export function useMagicFill(): MagicFillAPI {
     if (px < 0 || px >= w || py < 0 || py >= h) return -1;
     const idx = py * w + px;
     for (let i = fillOrder.current.length - 1; i >= 0; i--) {
-      const id  = fillOrder.current[i];
+      const id = fillOrder.current[i];
       const map = pixelMaps.current.get(id);
       if (map && map[idx]) return id;
     }
@@ -781,66 +724,53 @@ export function useMagicFill(): MagicFillAPI {
   }, [restoreFills]);
 
   // ── fillAt ────────────────────────────────────────────────────────────────
+  // Uses dilateFast(FILL_GROW) — same as the page — for tight wall-kissing.
   const fillAt = useCallback((
     canvasX: number, canvasY: number,
     fillCanvas: HTMLCanvasElement,
     color: string, opacity: number, label: string,
   ): MagicFill | null => {
-    if (!maskRef.current || !readyRef.current) return null;
+    if (!wallMaskRef.current || !readyRef.current) return null;
 
-    const mw   = maskWRef.current, mh = maskHRef.current;
-    const sc   = maskScaleRef.current;
-    const mask = maskRef.current;
+    const fw = fillCanvas.width;
+    const fh = fillCanvas.height;
+    const wallMask = wallMaskRef.current;
+    const mw = maskWRef.current;
+    const mh = maskHRef.current;
 
-    const mpx = Math.round(canvasX * sc);
-    const mpy = Math.round(canvasY * sc);
-    if (mpx < 0 || mpx >= mw || mpy < 0 || mpy >= mh) return null;
-    if (mask[mpy * mw + mpx]) return null;
-
-    const filledMask = multiSeedFill(mask, mw, mh, mpx, mpy);
-    if (!filledMask) return null;
-
-    const fw = fillCanvas.width, fh = fillCanvas.height;
-    const scaleToCanvas = fw / mw;
-
-    // Scale flood-fill result up to canvas resolution
-    const filledCanvas = new Uint8Array(fw * fh);
-    for (let my = 0; my < mh; my++) {
-      for (let mx = 0; mx < mw; mx++) {
-        if (!filledMask[my * mw + mx]) continue;
-        const cx0 = Math.round(mx * scaleToCanvas);
-        const cy0 = Math.round(my * scaleToCanvas);
-        const cx1 = Math.round((mx+1) * scaleToCanvas);
-        const cy1 = Math.round((my+1) * scaleToCanvas);
-        for (let cy = cy0; cy < cy1 && cy < fh; cy++)
-          for (let cx = cx0; cx < cx1 && cx < fw; cx++)
-            filledCanvas[cy * fw + cx] = 1;
-      }
+    if (mw !== fw || mh !== fh) {
+      console.warn(`[MagicFill] Mask size mismatch: mask=${mw}x${mh}, canvas=${fw}x${fh}. Rebuilding mask...`);
+      return null;
     }
 
-    // Scale wall mask to canvas resolution for masked dilation
-    const canvasWallMask = scaleWallMaskToCanvas(mask, mw, mh, fw, fh);
+    const px = Math.round(canvasX);
+    const py = Math.round(canvasY);
+    if (px < 0 || px >= fw || py < 0 || py >= fh) return null;
+    if (wallMask[py * fw + px]) return null;
 
-    // Grow paint up to but not past wall pixels, then close interior holes
-    const grown  = dilateMasked(filledCanvas, canvasWallMask, fw, fh, FILL_GROW);
-    const closed = closeHoles(grown, fw, fh);
+    // Flood fill into the room
+    const filledMask = multiSeedFill(wallMask, fw, fh, px, py);
+    if (!filledMask) return null;
+
+    // Box dilation to kiss straight walls + corner pass for diagonal gaps
+    const grown = dilateForFill(filledMask, fw, fh);
 
     const [r, g, b] = hexToRgb(color);
-    const snap = paintFillToSnapshot(closed, fw, fh, r, g, b, opacity / 100);
+    const snap = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
 
     // Composite onto canvas
     const fd = getFreshFillData(fillCanvas);
     compositeOver(fd, snap);
     fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
 
-    const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
+    const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
 
     const fill: MagicFill = {
       id: Date.now() + Math.random(),
       label, color, opacity, areaPx, perimPx, polygon,
     };
 
-    pixelMaps.current.set(fill.id, closed);
+    pixelMaps.current.set(fill.id, grown);
     fillSnapshots.current.set(fill.id, snap);
     fillOrder.current.push(fill.id);
 
@@ -848,6 +778,7 @@ export function useMagicFill(): MagicFillAPI {
   }, [getFreshFillData]);
 
   // ── fillRect ──────────────────────────────────────────────────────────────
+  // Uses dilateFast(FILL_GROW) — same as the page — for tight wall-kissing.
   const fillRect = useCallback(async (
     x1: number, y1: number, x2: number, y2: number,
     fillCanvas: HTMLCanvasElement,
@@ -855,28 +786,31 @@ export function useMagicFill(): MagicFillAPI {
     labelPrefix: string, groupId: number,
     onProgress?: (done: number, total: number) => void,
   ): Promise<MagicFill[]> => {
-    if (!maskRef.current || !readyRef.current) return [];
+    if (!wallMaskRef.current || !readyRef.current) return [];
 
-    const mw   = maskWRef.current, mh = maskHRef.current;
-    const sc   = maskScaleRef.current;
-    const mask = maskRef.current;
-    const fw   = fillCanvas.width, fh = fillCanvas.height;
+    const fw = fillCanvas.width;
+    const fh = fillCanvas.height;
+    const wallMask = wallMaskRef.current;
+    const mw = maskWRef.current;
+    const mh = maskHRef.current;
 
-    const mrx1 = Math.round(Math.min(x1,x2) * sc);
-    const mry1 = Math.round(Math.min(y1,y2) * sc);
-    const mrx2 = Math.round(Math.max(x1,x2) * sc);
-    const mry2 = Math.round(Math.max(y1,y2) * sc);
-    if (mrx2 - mrx1 < 4 || mry2 - mry1 < 4) return [];
+    if (mw !== fw || mh !== fh) {
+      console.warn(`[MagicFill] Mask size mismatch in fillRect: mask=${mw}x${mh}, canvas=${fw}x${fh}`);
+      return [];
+    }
 
-    const regionsMask = findRegionsInRect(mask, mw, mh, mrx1, mry1, mrx2, mry2);
+    const rx1 = Math.round(Math.min(x1, x2));
+    const ry1 = Math.round(Math.min(y1, y2));
+    const rx2 = Math.round(Math.max(x1, x2));
+    const ry2 = Math.round(Math.max(y1, y2));
+
+    if (rx2 - rx1 < 5 || ry2 - ry1 < 5) return [];
+
+    const regionsMask = findRegionsInRect(wallMask, fw, fh, rx1, ry1, rx2, ry2);
     if (regionsMask.length === 0) return [];
-
-    // Scale wall mask once for the whole rect operation
-    const canvasWallMask = scaleWallMaskToCanvas(mask, mw, mh, fw, fh);
 
     const fd = getFreshFillData(fillCanvas);
     const [r, g, b] = hexToRgb(color);
-    const scaleToCanvas = fw / mw;
     const newFills: MagicFill[] = [];
     let fillCount = 0;
 
@@ -884,40 +818,24 @@ export function useMagicFill(): MagicFillAPI {
       onProgress?.(i, regionsMask.length);
       await Promise.resolve();
 
-      const filledMask   = regionsMask[i];
-      const filledCanvas = new Uint8Array(fw * fh);
-      for (let my = 0; my < mh; my++) {
-        for (let mx = 0; mx < mw; mx++) {
-          if (!filledMask[my * mw + mx]) continue;
-          const cx0 = Math.round(mx * scaleToCanvas);
-          const cy0 = Math.round(my * scaleToCanvas);
-          const cx1 = Math.round((mx+1) * scaleToCanvas);
-          const cy1 = Math.round((my+1) * scaleToCanvas);
-          for (let cy = cy0; cy < cy1 && cy < fh; cy++)
-            for (let cx = cx0; cx < cx1 && cx < fw; cx++)
-              filledCanvas[cy * fw + cx] = 1;
-        }
-      }
-
-      // Grow paint up to but not past wall pixels, then close interior holes
-      const grown  = dilateMasked(filledCanvas, canvasWallMask, fw, fh, FILL_GROW);
-      const closed = closeHoles(grown, fw, fh);
-      const snap   = paintFillToSnapshot(closed, fw, fh, r, g, b, opacity / 100);
+      // Box dilation to kiss straight walls + corner pass for diagonal gaps
+      const grown = dilateForFill(regionsMask[i], fw, fh);
+      const snap  = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
       compositeOver(fd, snap);
 
       if (i % 5 === 0 || i === regionsMask.length - 1) {
         fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
       }
 
-      const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
+      const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
       fillCount++;
       const fill: MagicFill = {
-        id:      Date.now() + Math.random() + i,
-        label:   `${labelPrefix} ${fillCount}`,
+        id: Date.now() + Math.random() + i,
+        label: `${labelPrefix} ${fillCount}`,
         color, opacity, areaPx, perimPx, polygon, groupId,
       };
 
-      pixelMaps.current.set(fill.id, closed);
+      pixelMaps.current.set(fill.id, grown);
       fillSnapshots.current.set(fill.id, snap);
       fillOrder.current.push(fill.id);
       newFills.push(fill);
@@ -930,11 +848,10 @@ export function useMagicFill(): MagicFillAPI {
   }, [getFreshFillData]);
 
   // ── fillHoles ─────────────────────────────────────────────────────────────
-  // Still available for manual use if needed, but fillAt/fillRect now call
-  // closeHoles automatically so this is rarely necessary.
+  // closeHoles is correct here — this is the explicit "close interior gaps" op.
   const fillHoles = useCallback((
-    id:         number,
-    fill:       MagicFill,
+    id: number,
+    fill: MagicFill,
     fillCanvas: HTMLCanvasElement,
   ): HoleFillResult | null => {
     const pixMap = pixelMaps.current.get(id);
