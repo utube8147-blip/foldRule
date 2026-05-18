@@ -70,19 +70,24 @@ interface MagicFillHit {
   areaPx: number;
 }
 
-export function Viewer({
-  activeTool, setActiveTool,
-  measurements,
-  onAddMeasurement: onAddMeasurementProp,
-  onUpdateMeasurement: onUpdateMeasurementProp,
-  onDeleteMeasurement: onDeleteMeasurementProp,
-  scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
-  showPresetDrawer, onClosePresetDrawer, onSelectPreset,
-  hideToolbar = false,
-  appendToGroupId: propAppendToGroupId,
-  onAppendComplete,
-  onToolbarReady,
-}: import('./Viewer/ViewerConstants').ViewerProps) {
+export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
+  const {
+    activeTool, setActiveTool,
+    measurements,
+    onAddMeasurement: onAddMeasurementProp,
+    onUpdateMeasurement: onUpdateMeasurementProp,
+    scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
+    showPresetDrawer, onClosePresetDrawer, onSelectPreset,
+    hideToolbar = false,
+    appendToGroupId: propAppendToGroupId,
+    onAppendComplete,
+    onToolbarReady,
+  } = props as any;
+
+  // backward-compat: ViewerProps may not declare onDeleteMeasurement, read if present
+  const onDeleteMeasurementProp = (props as any).onDeleteMeasurement as
+    | ((...args: any[]) => any)
+    | undefined;
 
   // ── Canvas refs ────────────────────────────────────────────────────────────
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null!);

@@ -52,14 +52,15 @@ export function Viewer({
   measurements,
   onAddMeasurement: onAddMeasurementProp,
   onUpdateMeasurement: onUpdateMeasurementProp,
-  onDeleteMeasurement: onDeleteMeasurementProp,
   scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
   showPresetDrawer, onClosePresetDrawer, onSelectPreset,
   hideToolbar = false,
   appendToGroupId: propAppendToGroupId,
   onAppendComplete,
   onToolbarReady,
+  ...viewerProps
 }: import('./Viewer/ViewerConstants').ViewerProps) {
+  const onDeleteMeasurementProp = (viewerProps as { onDeleteMeasurement?: (id: string) => void }).onDeleteMeasurement;
 
   // ── Canvas refs ────────────────────────────────────────────────────────────
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);

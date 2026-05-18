@@ -31,7 +31,10 @@ export const MAX_ZOOM = 8;
 
 // ─── PDF worker ───────────────────────────────────────────────────────────────
 
-import workerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
+export const pdfWorkerUrl =
+  `/pdf.worker.min.js`;
+
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 // ─── Viewer tools ────────────────────────────────────────────────────────────
 
@@ -60,8 +63,6 @@ export interface ViewerProps {
     id: string,
     updates: Partial<TakeoffRow>
   ) => void;
-
-  onDeleteMeasurement?: (id: string) => void;
 
   scaleFactor: number;
   onScaleSet: (factor: number) => void;
