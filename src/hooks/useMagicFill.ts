@@ -2,36 +2,24 @@
 
 // ─── hooks/useMagicFill.ts ────────────────────────────────────────────────────
 //
-//  FIX: Use dilateFast(FILL_GROW) instead of dilateToWall in fillAt and fillRect.
-//  This matches the page exactly — grow 3px in all directions, stopping naturally
-//  at wall pixels, giving the tight wall-kissing behavior.
+//  Worker loaded from /src/workers/maskWorker.js via Webpack worker syntax.
+//  Auto hole-filling is applied after every fillAt / fillRect call.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useRef, useCallback } from 'react';
+import { useRef, useCallback, useEffect } from 'react';
 
-// ─── Tunables ─────────────────────────────────────────────────────────────────
-
-const WALL_LUMA           = 140;
-const STROKE_NEIGHBOR_MIN = 1;
-const DILATE_R            = 4;
-const ERODE_R             = 1;
-const FILL_GROW           = 3;
-const RDP_EPSILON         = 3;
-const MAX_CANVAS_PIXELS   = 4_000_000;
-const RECT_STEP_DIVISOR   = 40;
-
-// ─── Public types ─────────────────────────────────────────────────────────────
+// ─── Public types (unchanged) ─────────────────────────────────────────────────
 
 export interface MagicFill {
-  id:        number;
-  label:     string;
-  color:     string;
-  opacity:   number;
-  areaPx:    number;
-  perimPx:   number;
-  polygon:   [number, number][];
-  groupId?:  number;
+  id:       number;
+  label:    string;
+  color:    string;
+  opacity:  number;
+  areaPx:   number;
+  perimPx:  number;
+  polygon:  [number, number][];
+  groupId?: number;
 }
 
 export interface HoleFillResult {
@@ -41,397 +29,163 @@ export interface HoleFillResult {
 }
 
 export interface MagicFillAPI {
-  ready:        boolean;
-  buildMask:    (pdfCanvas: HTMLCanvasElement) => void;
-  fillAt:       (
-    canvasX:    number,
-    canvasY:    number,
-    fillCanvas: HTMLCanvasElement,
-    color:      string,
-    opacity:    number,
-    label:      string,
-  ) => MagicFill | null;
-  fillRect:     (
-    x1: number, y1: number,
-    x2: number, y2: number,
-    fillCanvas:  HTMLCanvasElement,
-    color:       string,
-    opacity:     number,
-    labelPrefix: string,
-    groupId:     number,
-    onProgress?: (done: number, total: number) => void,
-  ) => Promise<MagicFill[]>;
-  fillHoles:    (
-    id:         number,
-    fill:       MagicFill,
-    fillCanvas: HTMLCanvasElement,
-  ) => HoleFillResult | null;
-  undo:         (fillCanvas: HTMLCanvasElement) => boolean;
-  clearAll:     (fillCanvas: HTMLCanvasElement) => void;
-  pushSnapshot: (fillCanvas: HTMLCanvasElement) => void;
-  getPixelMap:  (id: number) => Uint8Array | undefined;
-  getPixelAt:   (canvasX: number, canvasY: number, fillCanvas: HTMLCanvasElement) => number;
-  registerFill:   (fill: MagicFill, pixelMap: Uint8Array) => void;
-  unregisterFill: (id: number) => void;
-  restoreFills: (visibleIds: Set<number>, fillCanvas: HTMLCanvasElement) => void;
-  repaintFillColor: (
-    id:         number,
-    newColor:   string,
-    visibleIds: Set<number>,
-    fillCanvas: HTMLCanvasElement,
-  ) => void;
+  ready:            boolean;
+  buildMask:        (pdfCanvas: HTMLCanvasElement) => void;
+  fillAt:           (cx: number, cy: number, fc: HTMLCanvasElement,
+                     color: string, opacity: number, label: string) => Promise<MagicFill | null>;
+  fillRect:         (x1: number, y1: number, x2: number, y2: number,
+                     fc: HTMLCanvasElement, color: string, opacity: number,
+                     labelPrefix: string, groupId: number,
+                     onProgress?: (done: number, total: number) => void) => Promise<MagicFill[]>;
+  fillHoles:        (id: number, fill: MagicFill, fc: HTMLCanvasElement) => HoleFillResult | null;
+  undo:             (fc: HTMLCanvasElement) => boolean;
+  clearAll:         (fc: HTMLCanvasElement) => void;
+  pushSnapshot:     (fc: HTMLCanvasElement) => void;
+  getPixelMap:      (id: number) => Uint8Array | undefined;
+  getPixelAt:       (cx: number, cy: number, fc: HTMLCanvasElement) => number;
+  registerFill:     (fill: MagicFill, pixelMap: Uint8Array) => void;
+  unregisterFill:   (id: number) => void;
+  restoreFills:     (visibleIds: Set<number>, fc: HTMLCanvasElement) => void;
+  repaintFillColor: (id: number, newColor: string,
+                     visibleIds: Set<number>, fc: HTMLCanvasElement) => void;
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
+// ─── Tunables ─────────────────────────────────────────────────────────────────
 
-function buildWallMaskAtFullResolution(
-  data: Uint8ClampedArray,
-  w: number,
-  h: number
-): Uint8Array {
-  const dark = new Uint8Array(w * h);
+const FILL_GROW   = 2;
+const RDP_EPSILON = 3;
 
-  // Step 1: Detect dark pixels (potential walls)
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] < 20) continue;
-    const luma = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
-    if (luma < WALL_LUMA) dark[i] = 1;
-  }
+// ─── Main-thread helpers ──────────────────────────────────────────────────────
 
-  // Step 2: Filter out text/symbols
-  const MIN_WALL_PIXELS  = 400;
-  const MAX_TEXT_PIXELS  = 1500;
-  const MAX_TEXT_ASPECT  = 3.5;
-  const MIN_WALL_ASPECT  = 5.0;
-  const MAX_TEXT_DENSITY = 0.55;
-
-  const visited = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    if (!dark[i] || visited[i]) continue;
-
-    const stack: number[] = [i];
-    const members: number[] = [];
-    visited[i] = 1;
-
-    while (stack.length) {
-      const idx = stack.pop()!;
-      members.push(idx);
-      const x = idx % w, y = (idx / w) | 0;
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue;
-          const nx = x + dx, ny = y + dy;
-          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
-          const ni = ny * w + nx;
-          if (dark[ni] && !visited[ni]) {
-            visited[ni] = 1;
-            stack.push(ni);
-          }
-        }
-      }
-    }
-
-    const size = members.length;
-
-    if (size < MIN_WALL_PIXELS) {
-      for (const idx of members) dark[idx] = 0;
-      continue;
-    }
-
-    if (size > MAX_TEXT_PIXELS) continue;
-
-    let minX = w, maxX = 0, minY = h, maxY = 0;
-    for (const idx of members) {
-      const x = idx % w, y = (idx / w) | 0;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    const bboxW   = maxX - minX + 1;
-    const bboxH   = maxY - minY + 1;
-    const aspect  = Math.max(bboxW, bboxH) / Math.min(bboxW, bboxH);
-    const density = size / (bboxW * bboxH);
-
-    if (aspect > MIN_WALL_ASPECT) continue;
-
-    if (aspect < MAX_TEXT_ASPECT && density < MAX_TEXT_DENSITY) {
-      for (const idx of members) dark[idx] = 0;
-    }
-  }
-
-  // Step 3: Stroke neighbor filter
-  const mask = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!dark[y * w + x]) continue;
-      let n = 0;
-      if (x > 0   && dark[y * w + x - 1])           n++;
-      if (x < w-1 && dark[y * w + x + 1])           n++;
-      if (y > 0   && dark[(y-1) * w + x])           n++;
-      if (y < h-1 && dark[(y+1) * w + x])           n++;
-      if (x > 0   && y > 0   && dark[(y-1)*w+x-1]) n++;
-      if (x < w-1 && y > 0   && dark[(y-1)*w+x+1]) n++;
-      if (x > 0   && y < h-1 && dark[(y+1)*w+x-1]) n++;
-      if (x < w-1 && y < h-1 && dark[(y+1)*w+x+1]) n++;
-      if (n >= STROKE_NEIGHBOR_MIN) mask[y * w + x] = 1;
-    }
-  }
-  return mask;
+function hexToRgb(hex: string): [number, number, number] {
+  return [
+    parseInt(hex.slice(1, 3), 16),
+    parseInt(hex.slice(3, 5), 16),
+    parseInt(hex.slice(5, 7), 16),
+  ];
 }
 
 function dilateFast(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
   const horiz = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
-    let count = 0;
-    for (let x = 0; x < r && x < w; x++) if (src[y*w+x]) count++;
+    let c = 0;
+    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) c++;
     for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && src[y*w+add]) count++;
-      if (count > 0) horiz[y*w+x] = 1;
-      const rem = x - r; if (rem >= 0 && src[y*w+rem]) count--;
+      if (x + r < w && src[y * w + x + r]) c++;
+      if (c > 0) horiz[y * w + x] = 1;
+      if (x - r >= 0 && src[y * w + x - r]) c--;
     }
   }
   const out = new Uint8Array(w * h);
   for (let x = 0; x < w; x++) {
-    let count = 0;
-    for (let y = 0; y < r && y < h; y++) if (horiz[y*w+x]) count++;
+    let c = 0;
+    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) c++;
     for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && horiz[add*w+x]) count++;
-      if (count > 0) out[y*w+x] = 1;
-      const rem = y - r; if (rem >= 0 && horiz[rem*w+x]) count--;
+      if (y + r < h && horiz[(y + r) * w + x]) c++;
+      if (c > 0) out[y * w + x] = 1;
+      if (y - r >= 0 && horiz[(y - r) * w + x]) c--;
     }
   }
   return out;
-}
-
-/**
- * dilateCorners — one extra pass that fills diagonal corner gaps.
- * After dilateFast (which is axis-aligned), pixels at 45° diagonal corners
- * are missed. This pass checks all 8 neighbours so diagonal corners are filled.
- * Only runs a single pixel radius (enough to close the gap at corners).
- */
-function dilateCorners(src: Uint8Array, w: number, h: number): Uint8Array {
-  const out = new Uint8Array(src);
-  for (let y = 1; y < h - 1; y++) {
-    for (let x = 1; x < w - 1; x++) {
-      if (out[y * w + x]) continue;
-      // If any of the 8 neighbours is filled, fill this pixel too
-      if (
-        src[(y-1)*w + (x-1)] || src[(y-1)*w + x] || src[(y-1)*w + (x+1)] ||
-        src[ y   *w + (x-1)] ||                     src[ y   *w + (x+1)] ||
-        src[(y+1)*w + (x-1)] || src[(y+1)*w + x] || src[(y+1)*w + (x+1)]
-      ) out[y * w + x] = 1;
-    }
-  }
-  return out;
-}
-
-/**
- * dilateForFill — FILL_GROW box dilation followed by a corner pass.
- * The box dilation kisses straight walls; the corner pass fills the
- * triangular gaps that appear where diagonal walls meet.
- */
-function dilateForFill(src: Uint8Array, w: number, h: number): Uint8Array {
-  return dilateCorners(dilateFast(src, w, h, FILL_GROW), w, h);
-}
-
-function erodeFast(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
-  const horiz = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let zeros = 0;
-    for (let x = 0; x < r && x < w; x++) if (!src[y*w+x]) zeros++;
-    for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && !src[y*w+add]) zeros++;
-      if (zeros === 0) horiz[y*w+x] = 1;
-      const rem = x - r; if (rem >= 0 && !src[y*w+rem]) zeros--;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  for (let x = 0; x < w; x++) {
-    let zeros = 0;
-    for (let y = 0; y < r && y < h; y++) if (!horiz[y*w+x]) zeros++;
-    for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && !horiz[add*w+x]) zeros++;
-      if (zeros === 0) out[y*w+x] = 1;
-      const rem = y - r; if (rem >= 0 && !horiz[rem*w+x]) zeros--;
-    }
-  }
-  return out;
-}
-
-function closeHoles(filled: Uint8Array, w: number, h: number): Uint8Array {
-  const outside = new Uint8Array(w * h);
-  const stack: number[] = [];
-  const push = (i: number) => {
-    if (i >= 0 && i < w * h && !filled[i] && !outside[i]) {
-      outside[i] = 1; stack.push(i);
-    }
-  };
-  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
-  for (let y = 1; y < h - 1; y++) { push(y * w); push(y * w + w - 1); }
-  while (stack.length) {
-    const i = stack.pop()!;
-    const x = i % w, y = (i / w) | 0;
-    if (x > 0)   push(i - 1);
-    if (x < w-1) push(i + 1);
-    if (y > 0)   push(i - w);
-    if (y < h-1) push(i + w);
-  }
-  const closed = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    closed[i] = filled[i] || (!outside[i] ? 1 : 0);
-  }
-  return closed;
-}
-
-function scanlineFill(mask: Uint8Array, w: number, h: number, sx: number, sy: number): Uint8Array | null {
-  if (sx < 0 || sx >= w || sy < 0 || sy >= h || mask[sy*w+sx]) return null;
-  const filled  = new Uint8Array(w * h);
-  const visited = new Uint8Array(w * h);
-  const stack   = new Int32Array(w * h);
-  let top = 0;
-  stack[top++] = sy * w + sx;
-  visited[sy*w+sx] = 1;
-  while (top > 0) {
-    const idx = stack[--top];
-    const cy  = (idx / w) | 0;
-    const cx  = idx % w;
-    let left = cx;
-    while (left > 0 && !mask[cy*w+left-1] && !visited[cy*w+left-1]) left--;
-    let right = cx;
-    while (right < w-1 && !mask[cy*w+right+1] && !visited[cy*w+right+1]) right++;
-    for (let x = left; x <= right; x++) { filled[cy*w+x] = 1; visited[cy*w+x] = 1; }
-    const up = (cy-1)*w, dn = (cy+1)*w;
-    for (let x = left; x <= right; x++) {
-      if (cy > 0   && !mask[up+x] && !visited[up+x]) { visited[up+x]=1; stack[top++]=up+x; }
-      if (cy < h-1 && !mask[dn+x] && !visited[dn+x]) { visited[dn+x]=1; stack[top++]=dn+x; }
-    }
-  }
-  let count = 0;
-  for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
-  return count > 4 ? filled : null;
-}
-
-function multiSeedFill(mask: Uint8Array, w: number, h: number, cx: number, cy: number): Uint8Array | null {
-  const OFFSETS: [number,number][] = [
-    [0,0],[1,0],[-1,0],[0,1],[0,-1],
-    [2,0],[-2,0],[0,2],[0,-2],
-    [1,1],[-1,1],[1,-1],[-1,-1],
-  ];
-  let merged: Uint8Array | null = null;
-  let mergedDilated: Uint8Array | null = null;
-  for (const [dx, dy] of OFFSETS) {
-    const f = scanlineFill(mask, w, h, cx+dx, cy+dy);
-    if (!f) continue;
-    if (!merged) {
-      merged = f;
-      mergedDilated = dilateFast(f, w, h, FILL_GROW + 2);
-    } else {
-      let overlaps = false;
-      for (let i = 0; i < f.length; i++) {
-        if (f[i] && mergedDilated![i]) { overlaps = true; break; }
-      }
-      if (overlaps) {
-        for (let i = 0; i < merged.length; i++) if (f[i]) merged[i] = 1;
-        mergedDilated = dilateFast(merged, w, h, FILL_GROW + 2);
-      }
-    }
-  }
-  return merged;
-}
-
-function hexToRgb(hex: string): [number, number, number] {
-  return [
-    parseInt(hex.slice(1,3), 16),
-    parseInt(hex.slice(3,5), 16),
-    parseInt(hex.slice(5,7), 16),
-  ];
 }
 
 function paintFillToSnapshot(
-  filled:  Uint8Array,
-  w:       number,
-  h:       number,
-  r: number, g: number, b: number,
-  opacity: number,
+  filled: Uint8Array, w: number, h: number,
+  r: number, g: number, b: number, opacity: number,
 ): ImageData {
   const snap = new ImageData(w, h);
-  const d    = snap.data;
+  const d = snap.data;
   const a255 = Math.round(opacity * 255);
   for (let i = 0; i < filled.length; i++) {
     if (!filled[i]) continue;
-    const di  = i * 4;
-    d[di]     = r;
-    d[di + 1] = g;
-    d[di + 2] = b;
-    d[di + 3] = a255;
+    d[i * 4]     = r;
+    d[i * 4 + 1] = g;
+    d[i * 4 + 2] = b;
+    d[i * 4 + 3] = a255;
   }
   return snap;
 }
 
 function compositeOver(dst: ImageData, src: ImageData): void {
-  const d = dst.data;
-  const s = src.data;
-  const n = d.length;
-  for (let i = 0; i < n; i += 4) {
+  const d = dst.data, s = src.data;
+  for (let i = 0; i < d.length; i += 4) {
     const sa = s[i + 3] / 255;
-    if (sa === 0) continue;
-    const da   = d[i + 3] / 255;
-    const outA = sa + da * (1 - sa);
-    if (outA === 0) continue;
-    d[i]     = ((s[i]     * sa + d[i]     * da * (1 - sa)) / outA + 0.5) | 0;
-    d[i + 1] = ((s[i + 1] * sa + d[i + 1] * da * (1 - sa)) / outA + 0.5) | 0;
-    d[i + 2] = ((s[i + 2] * sa + d[i + 2] * da * (1 - sa)) / outA + 0.5) | 0;
-    d[i + 3] = (outA * 255 + 0.5) | 0;
+    if (!sa) continue;
+    const da  = d[i + 3] / 255;
+    const oa  = sa + da * (1 - sa);
+    if (!oa) continue;
+    d[i]     = ((s[i]     * sa + d[i]     * da * (1 - sa)) / oa + 0.5) | 0;
+    d[i + 1] = ((s[i + 1] * sa + d[i + 1] * da * (1 - sa)) / oa + 0.5) | 0;
+    d[i + 2] = ((s[i + 2] * sa + d[i + 2] * da * (1 - sa)) / oa + 0.5) | 0;
+    d[i + 3] = (oa * 255 + 0.5) | 0;
   }
-}
-
-function outerShape(filled: Uint8Array, w: number, h: number): Uint8Array {
-  return dilateFast(erodeFast(filled, w, h, 2), w, h, 2);
 }
 
 function findPerimeter(filled: Uint8Array, w: number, h: number): Uint8Array {
-  const perim = new Uint8Array(w * h);
+  const p = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (!filled[y*w+x]) continue;
+      if (!filled[y * w + x]) continue;
       if (
-        x === 0     || !filled[y*w+x-1] ||
-        x === w - 1 || !filled[y*w+x+1] ||
-        y === 0     || !filled[(y-1)*w+x] ||
-        y === h - 1 || !filled[(y+1)*w+x]
-      ) perim[y*w+x] = 1;
+        x === 0     || !filled[y * w + x - 1]   ||
+        x === w - 1 || !filled[y * w + x + 1]   ||
+        y === 0     || !filled[(y - 1) * w + x]  ||
+        y === h - 1 || !filled[(y + 1) * w + x]
+      ) p[y * w + x] = 1;
     }
   }
-  return perim;
+  return p;
 }
 
-function measurePerim(perimMask: Uint8Array, w: number, h: number): number {
+function measurePerim(p: Uint8Array, w: number, h: number): number {
   let c = 0;
-  for (let i = 0; i < perimMask.length; i++) {
-    if (!perimMask[i]) continue;
+  for (let i = 0; i < p.length; i++) {
+    if (!p[i]) continue;
     const x = i % w, y = (i / w) | 0;
     const diag =
-      (x > 0   && y > 0   && perimMask[(y-1)*w+x-1]) ||
-      (x < w-1 && y > 0   && perimMask[(y-1)*w+x+1]) ||
-      (x > 0   && y < h-1 && perimMask[(y+1)*w+x-1]) ||
-      (x < w-1 && y < h-1 && perimMask[(y+1)*w+x+1]);
+      (x > 0   && y > 0   && p[(y - 1) * w + x - 1]) ||
+      (x < w-1 && y > 0   && p[(y - 1) * w + x + 1]) ||
+      (x > 0   && y < h-1 && p[(y + 1) * w + x - 1]) ||
+      (x < w-1 && y < h-1 && p[(y + 1) * w + x + 1]);
     c += diag ? 1.41 : 1;
   }
   return Math.round(c);
 }
 
-function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
-  let startIdx = -1;
-  for (let i = 0; i < perim.length; i++) {
-    if (perim[i]) { startIdx = i; break; }
-  }
-  if (startIdx === -1) return [];
+function rdpSimplify(pts: [number, number][], eps: number): [number, number][] {
+  if (pts.length <= 3) return pts;
+  const distToLine = (
+    p: [number, number], a: [number, number], b: [number, number],
+  ) => {
+    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (!len2) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1,
+      ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / len2));
+    return Math.hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay)));
+  };
+  const keep = new Set<number>([0, pts.length - 1]);
+  const rec = (lo: number, hi: number) => {
+    if (hi - lo < 2) return;
+    let maxD = 0, idx = lo;
+    for (let i = lo + 1; i < hi; i++) {
+      const d = distToLine(pts[i], pts[lo], pts[hi]);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > eps) { keep.add(idx); rec(lo, idx); rec(idx, hi); }
+  };
+  rec(0, pts.length - 1);
+  return [...keep].sort((a, b) => a - b).map(i => pts[i]);
+}
 
-  const DX = [1, 0, -1, 0];
-  const DY = [0, 1,  0, -1];
-  const sx = startIdx % w, sy = (startIdx / w) | 0;
+function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number][] {
+  let si = -1;
+  for (let i = 0; i < perim.length; i++) { if (perim[i]) { si = i; break; } }
+  if (si === -1) return [];
+  const DX = [1, 0, -1, 0], DY = [0, 1, 0, -1];
+  const sx = si % w, sy = (si / w) | 0;
   let cx = sx, cy = sy, dir = 0;
   const steps: [number, number, number][] = [];
-  const maxSteps = perim.length * 2;
   let count = 0;
   do {
     steps.push([cx, cy, dir]);
@@ -439,209 +193,448 @@ function buildPolygon(perim: Uint8Array, w: number, h: number): [number, number]
     for (let t = 0; t < 4; t++) {
       const nd = (dir + 3 + t) % 4;
       const nx = cx + DX[nd], ny = cy + DY[nd];
-      if (nx >= 0 && nx < w && ny >= 0 && ny < h && perim[ny*w+nx]) {
+      if (nx >= 0 && nx < w && ny >= 0 && ny < h && perim[ny * w + nx]) {
         cx = nx; cy = ny; dir = nd; moved = true; break;
       }
     }
-    if (!moved) break;
-    if (++count > maxSteps) break;
+    if (!moved || ++count > perim.length * 2) break;
   } while (cx !== sx || cy !== sy);
-
-  if (steps.length === 0) return [];
   const n = steps.length;
   const corners: [number, number][] = [];
   for (let i = 0; i < n; i++) {
-    const prevDir = steps[(i - 1 + n) % n][2];
-    const currDir = steps[i][2];
-    if (currDir !== prevDir) corners.push([steps[i][0], steps[i][1]]);
+    if (steps[i][2] !== steps[(i - 1 + n) % n][2])
+      corners.push([steps[i][0], steps[i][1]]);
   }
-  if (corners.length < 3) {
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    for (let i = 0; i < perim.length; i++) {
-      if (!perim[i]) continue;
-      const px = i % w, py = (i / w) | 0;
-      if (px < minX) minX = px; if (px > maxX) maxX = px;
-      if (py < minY) minY = py; if (py > maxY) maxY = py;
-    }
-    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
-  }
-  return rdpSimplify(corners, RDP_EPSILON);
-}
-
-function rdpSimplify(pts: [number,number][], eps: number): [number,number][] {
-  if (pts.length <= 3) return pts;
-  const distToLine = (p: [number,number], a: [number,number], b: [number,number]) => {
-    const [ax,ay]=a,[bx,by]=b,[px,py]=p;
-    const len2 = (bx-ax)**2+(by-ay)**2;
-    if (len2 === 0) return Math.hypot(px-ax,py-ay);
-    const t = Math.max(0,Math.min(1,((px-ax)*(bx-ax)+(py-ay)*(by-ay))/len2));
-    return Math.hypot(px-(ax+t*(bx-ax)),py-(ay+t*(by-ay)));
-  };
-  const keep = new Set<number>([0, pts.length-1]);
-  const rec = (lo: number, hi: number) => {
-    if (hi-lo < 2) return;
-    let maxD = 0, idx = lo;
-    for (let i = lo+1; i < hi; i++) {
-      const d = distToLine(pts[i],pts[lo],pts[hi]);
-      if (d > maxD) { maxD = d; idx = i; }
-    }
-    if (maxD > eps) { keep.add(idx); rec(lo,idx); rec(idx,hi); }
-  };
-  rec(0, pts.length-1);
-  return [...keep].sort((a,b)=>a-b).map(i=>pts[i]);
+  return corners.length >= 3 ? rdpSimplify(corners, RDP_EPSILON) : [[sx, sy]];
 }
 
 function processMask(grown: Uint8Array, w: number, h: number) {
   const areaPx   = grown.reduce((s, v) => s + v, 0);
-  const outer    = outerShape(grown, w, h);
-  const perimMsk = findPerimeter(outer, w, h);
+  const dilated  = dilateFast(grown, w, h, 2);
+  const perimMsk = findPerimeter(dilated, w, h);
   const perimPx  = measurePerim(perimMsk, w, h);
   const polygon  = buildPolygon(perimMsk, w, h);
   return { areaPx, perimPx, polygon };
 }
 
-function findRegionsInRect(
-  mask: Uint8Array, w: number, h: number,
-  rx1: number, ry1: number, rx2: number, ry2: number,
-): Uint8Array[] {
-  const x1 = Math.max(0, Math.min(rx1, rx2));
-  const y1 = Math.max(0, Math.min(ry1, ry2));
-  const x2 = Math.min(w-1, Math.max(rx1, rx2));
-  const y2 = Math.min(h-1, Math.max(ry1, ry2));
-  const results: Uint8Array[] = [];
-  const seen = new Uint8Array(w * h);
-  const step = Math.max(4, Math.round(Math.min(x2-x1, y2-y1) / RECT_STEP_DIVISOR));
-  for (let sy = y1; sy <= y2; sy += step) {
-    for (let sx = x1; sx <= x2; sx += step) {
-      if (mask[sy*w+sx] || seen[sy*w+sx]) continue;
-      const filled = multiSeedFill(mask, w, h, sx, sy);
-      if (!filled) continue;
-      let overlaps = false;
-      for (let ty = y1; ty <= y2 && !overlaps; ty++)
-        for (let tx = x1; tx <= x2 && !overlaps; tx++)
-          if (filled[ty*w+tx]) overlaps = true;
-      if (!overlaps) continue;
-      for (let i = 0; i < filled.length; i++) if (filled[i]) seen[i] = 1;
-      results.push(filled);
-    }
-  }
-  return results;
-}
-
-function getLogicalDims(canvas: HTMLCanvasElement): { w: number; h: number } {
-  const sw = parseFloat(canvas.style.width);
-  const sh = parseFloat(canvas.style.height);
-  if (sw > 0 && sh > 0) return { w: sw, h: sh };
-  const ow = canvas.offsetWidth;
-  const oh = canvas.offsetHeight;
-  if (ow > 0 && oh > 0) return { w: ow, h: oh };
-  const cw = canvas.clientWidth;
-  const ch = canvas.clientHeight;
-  if (cw > 0 && ch > 0) return { w: cw, h: ch };
-  return { w: canvas.width, h: canvas.height };
-}
-
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useMagicFill(): MagicFillAPI {
-  const wallMaskRef   = useRef<Uint8Array | null>(null);
-  const maskWRef      = useRef(0);
-  const maskHRef      = useRef(0);
-  const readyRef      = useRef(false);
 
-  const fillWRef      = useRef(0);
-  const fillHRef      = useRef(0);
+  // ── Worker + CCL state ────────────────────────────────────────────────────
+  const workerRef        = useRef<Worker | null>(null);
+  const readyRef         = useRef(false);
 
+  // Calls that arrived before the worker was ready are queued here and
+  // replayed automatically the moment the 'ready' message arrives.
+  type PendingFillAt = {
+    cx: number; cy: number; fc: HTMLCanvasElement;
+    color: string; opacity: number; label: string;
+    resolve: (v: MagicFill | null) => void;
+  };
+  const pendingFillAt = useRef<PendingFillAt[]>([]);
+
+  // Stable ref to the drain function — assigned after all callbacks are
+  // defined so the useEffect closure can call it without capturing undefined.
+  const drainRef = useRef<(() => void) | null>(null);
+
+  const labelMapRef      = useRef<Uint32Array | null>(null);
+  const regionPixelsRef  = useRef<Int32Array  | null>(null);
+  const regionOffsetsRef = useRef<Int32Array  | null>(null);
+  const maskWRef         = useRef(0);
+  const maskHRef         = useRef(0);
+
+  // ── Paint state ───────────────────────────────────────────────────────────
   const snapshots     = useRef<ImageData[]>([]);
   const pixelMaps     = useRef<Map<number, Uint8Array>>(new Map());
   const fillOrder     = useRef<number[]>([]);
   const fillSnapshots = useRef<Map<number, ImageData>>(new Map());
+  const fillWRef      = useRef(0);
+  const fillHRef      = useRef(0);
+
+  // ── Boot worker from file ─────────────────────────────────────────────────
+  useEffect(() => {
+    // Webpack 5: new URL(..., import.meta.url) emits a proper worker chunk.
+    // If you use a different bundler, adjust the Worker constructor accordingly.
+    const w = new Worker(
+      new URL('../workers/maskWorker.js', import.meta.url),
+    );
+    workerRef.current = w;
+
+    w.onerror = (e) => {
+      console.error('[useMagicFill] worker error:', e.message, e);
+    };
+
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'error') {
+        console.error('[useMagicFill] worker reported error:', msg.message);
+        return;
+      }
+      if (msg.type === 'ready') {
+        console.log('[useMagicFill] worker ready —',
+          msg.regionCount, 'regions at', msg.width, 'x', msg.height);
+        labelMapRef.current      = new Uint32Array(msg.labelMap);
+        regionPixelsRef.current  = new Int32Array(msg.pixelsBuf);
+        regionOffsetsRef.current = new Int32Array(msg.offsetsBuf);
+        maskWRef.current         = msg.width;
+        maskHRef.current         = msg.height;
+        readyRef.current         = true;
+
+        // Drain via stable ref — callbacks are defined after this useEffect
+        drainRef.current?.();
+      }
+    };
+
+    return () => { w.terminate(); };
+  }, []);
 
   // ── buildMask ─────────────────────────────────────────────────────────────
   const buildMask = useCallback((pdfCanvas: HTMLCanvasElement) => {
-    const { w: logW, h: logH } = getLogicalDims(pdfCanvas);
-    if (!logW || !logH) {
-      console.warn('[MagicFill] buildMask: zero logical dims');
+    const pw = pdfCanvas.width, ph = pdfCanvas.height;
+    if (!pw || !ph) {
+      console.warn('[useMagicFill] buildMask: canvas has zero dimensions');
       return;
     }
+    readyRef.current = false;
 
-    let targetW = logW;
-    let targetH = logH;
-    const totalPixels = targetW * targetH;
+    const ctx = pdfCanvas.getContext('2d');
+    if (!ctx) { console.warn('[useMagicFill] buildMask: no 2d context'); return; }
 
-    if (totalPixels > MAX_CANVAS_PIXELS) {
-      const scale = Math.sqrt(MAX_CANVAS_PIXELS / totalPixels);
-      targetW = Math.max(1, Math.round(targetW * scale));
-      targetH = Math.max(1, Math.round(targetH * scale));
-      console.log(`[MagicFill] Downscaling from ${logW}x${logH} to ${targetW}x${targetH} for performance`);
+    const MAX_PX = 4_000_000;
+    let tw = pw, th = ph;
+    if (pw * ph > MAX_PX) {
+      const sc = Math.sqrt(MAX_PX / (pw * ph));
+      tw = Math.max(1, Math.round(pw * sc));
+      th = Math.max(1, Math.round(ph * sc));
+      console.log(`[useMagicFill] downscaling ${pw}x${ph} → ${tw}x${th} for worker`);
     }
 
-    const off = document.createElement('canvas');
-    off.width = targetW;
-    off.height = targetH;
-    const offCtx = off.getContext('2d');
-    if (!offCtx) return;
-    offCtx.drawImage(pdfCanvas, 0, 0, targetW, targetH);
-    const imgData = offCtx.getImageData(0, 0, targetW, targetH);
+    let imgData: ImageData;
+    if (tw !== pw || th !== ph) {
+      const off = document.createElement('canvas');
+      off.width = tw; off.height = th;
+      off.getContext('2d')!.drawImage(pdfCanvas, 0, 0, tw, th);
+      imgData = off.getContext('2d')!.getImageData(0, 0, tw, th);
+    } else {
+      imgData = ctx.getImageData(0, 0, pw, ph);
+    }
 
-    const raw = buildWallMaskAtFullResolution(imgData.data, targetW, targetH);
-    const dilated = dilateFast(raw, targetW, targetH, DILATE_R);
-    wallMaskRef.current = erodeFast(dilated, targetW, targetH, ERODE_R);
-    maskWRef.current = targetW;
-    maskHRef.current = targetH;
-    readyRef.current = true;
+    const buffer = imgData.data.buffer.slice(0);
+    console.log('[useMagicFill] posting to worker —', tw, 'x', th,
+      'buffer bytes:', buffer.byteLength);
 
-    console.log(`[MagicFill] Wall mask built at ${targetW}x${targetH}`);
+    workerRef.current?.postMessage(
+      { type: 'build', buffer, width: tw, height: th },
+      [buffer],
+    );
   }, []);
 
-  // ── getFreshFillData ──────────────────────────────────────────────────────
-  const getFreshFillData = useCallback((fillCanvas: HTMLCanvasElement): ImageData => {
-    const w = fillCanvas.width, h = fillCanvas.height;
-    fillWRef.current = w;
-    fillHRef.current = h;
-    const ctx = fillCanvas.getContext('2d');
+  // ── Build fill-canvas region mask from CCL result ─────────────────────────
+  const getRegionMask = useCallback((
+    canvasX: number, canvasY: number, fw: number, fh: number,
+  ): Uint8Array | null => {
+    const lm = labelMapRef.current;
+    const rp = regionPixelsRef.current;
+    const ro = regionOffsetsRef.current;
+    const mw = maskWRef.current, mh = maskHRef.current;
+    if (!lm || !rp || !ro || !mw || !mh) return null;
+
+    const px = Math.round(canvasX * mw / fw);
+    const py = Math.round(canvasY * mh / fh);
+    if (px < 0 || px >= mw || py < 0 || py >= mh) return null;
+
+    const regionId = lm[py * mw + px];
+    if (regionId === 0xFFFFFFFF) return null;
+
+    const start = ro[regionId], end = ro[regionId + 1];
+    if (end - start < 10) return null;
+
+    const mask   = new Uint8Array(fw * fh);
+    const scaleX = fw / mw, scaleY = fh / mh;
+
+    for (let i = start; i < end; i++) {
+      const mi  = rp[i];
+      const mx  = mi % mw, my = (mi / mw) | 0;
+      const fx0 = Math.round(mx * scaleX);
+      const fy0 = Math.round(my * scaleY);
+      const fx1 = Math.min(fw, Math.round((mx + 1) * scaleX));
+      const fy1 = Math.min(fh, Math.round((my + 1) * scaleY));
+      for (let fy = fy0; fy < fy1; fy++)
+        for (let fx = fx0; fx < fx1; fx++)
+          mask[fy * fw + fx] = 1;
+    }
+    return mask;
+  }, []);
+
+  // ── Shared paint helper ───────────────────────────────────────────────────
+  const getFreshFillData = useCallback((fc: HTMLCanvasElement): ImageData => {
+    const w = fc.width, h = fc.height;
+    fillWRef.current = w; fillHRef.current = h;
+    const ctx = fc.getContext('2d');
     return ctx ? ctx.getImageData(0, 0, w, h) : new ImageData(w, h);
   }, []);
 
-  // ── pushSnapshot ──────────────────────────────────────────────────────────
-  const pushSnapshot = useCallback((fillCanvas: HTMLCanvasElement) => {
-    fillWRef.current = fillCanvas.width;
-    fillHRef.current = fillCanvas.height;
-    const ctx = fillCanvas.getContext('2d');
-    const fd = ctx
-      ? ctx.getImageData(0, 0, fillCanvas.width, fillCanvas.height)
-      : new ImageData(fillCanvas.width, fillCanvas.height);
-    snapshots.current.push(new ImageData(
-      new Uint8ClampedArray(fd.data),
-      fd.width, fd.height,
-    ));
+  // ── Auto hole-fill: flood from border, close interior gaps ───────────────
+  //
+  //  Works purely on the pixel map — no canvas read required.
+  //  Returns the closed mask and also updates pixelMaps + fillSnapshots in place
+  //  so restoreFills() / repaintFillColor() always see the latest shape.
+  //
+  const applyAutoHoleFill = useCallback((
+    fill: MagicFill,
+    pixMap: Uint8Array,
+    fw: number,
+    fh: number,
+    fc: HTMLCanvasElement,
+  ): { closed: Uint8Array; result: HoleFillResult } => {
+    // Flood-fill from every border pixel to find "outside"
+    const outside = new Uint8Array(fw * fh);
+    const stack: number[] = [];
+
+    const push = (i: number) => {
+      if (i >= 0 && i < fw * fh && !pixMap[i] && !outside[i]) {
+        outside[i] = 1;
+        stack.push(i);
+      }
+    };
+
+    for (let x = 0; x < fw; x++) { push(x); push((fh - 1) * fw + x); }
+    for (let y = 1; y < fh - 1; y++) { push(y * fw); push(y * fw + fw - 1); }
+
+    while (stack.length) {
+      const i = stack.pop()!;
+      const x = i % fw, y = (i / fw) | 0;
+      if (x > 0)    push(i - 1);
+      if (x < fw-1) push(i + 1);
+      if (y > 0)    push(i - fw);
+      if (y < fh-1) push(i + fw);
+    }
+
+    // Everything not outside and not already filled = a hole → fill it
+    const closed = new Uint8Array(fw * fh);
+    for (let i = 0; i < fw * fh; i++)
+      closed[i] = pixMap[i] || (outside[i] ? 0 : 1);
+
+    const [r, g, b] = hexToRgb(fill.color);
+    const a         = fill.opacity / 100;
+
+    // Paint only the newly added hole pixels on top of the canvas
+    const added = new Uint8Array(fw * fh);
+    for (let i = 0; i < fw * fh; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
+
+    if (added.some(Boolean)) {
+      const fd = getFreshFillData(fc);
+      compositeOver(fd, paintFillToSnapshot(added, fw, fh, r, g, b, a));
+      fc.getContext('2d')!.putImageData(fd, 0, 0);
+    }
+
+    // Update stored maps so future operations see the complete shape
+    pixelMaps.current.set(fill.id, closed);
+    fillSnapshots.current.set(fill.id,
+      paintFillToSnapshot(closed, fw, fh, r, g, b, a));
+
+    return { closed, result: processMask(closed, fw, fh) };
+  }, [getFreshFillData]);
+
+  const paintRegion = useCallback((
+    regionMask: Uint8Array, fw: number, fh: number,
+    color: string, opacity: number, label: string,
+    fc: HTMLCanvasElement,
+  ): MagicFill => {
+    const grown    = dilateFast(regionMask, fw, fh, FILL_GROW);
+    const [r, g, b] = hexToRgb(color);
+    const snap     = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
+    const fd       = getFreshFillData(fc);
+    compositeOver(fd, snap);
+    fc.getContext('2d')!.putImageData(fd, 0, 0);
+    const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
+    const fill: MagicFill = {
+      id: Date.now() + Math.random(),
+      label, color, opacity, areaPx, perimPx, polygon,
+    };
+    pixelMaps.current.set(fill.id, grown);
+    fillSnapshots.current.set(fill.id, snap);
+    fillOrder.current.push(fill.id);
+    return fill;
+  }, [getFreshFillData]);
+
+  // ── fillAt — paints region then auto-closes holes ─────────────────────────
+  //
+  //  Returns a Promise so the call is never lost when the worker is still
+  //  warming up after mount. If already ready the promise resolves in the
+  //  same microtask tick so callers feel no latency difference.
+  //
+  const fillAt = useCallback((
+    canvasX: number, canvasY: number, fc: HTMLCanvasElement,
+    color: string, opacity: number, label: string,
+  ): Promise<MagicFill | null> => {
+    // Worker not ready yet — queue and replay once the mask arrives
+    if (!readyRef.current) {
+      console.log('[useMagicFill] worker not ready — queuing fillAt');
+      return new Promise<MagicFill | null>((resolve) => {
+        pendingFillAt.current.push({
+          cx: canvasX, cy: canvasY, fc, color, opacity, label, resolve,
+        });
+      });
+    }
+
+    const fw = fc.width, fh = fc.height;
+    fillWRef.current = fw; fillHRef.current = fh;
+
+    const regionMask = getRegionMask(canvasX, canvasY, fw, fh);
+    if (!regionMask) return Promise.resolve(null);
+
+    const fill = paintRegion(regionMask, fw, fh, color, opacity, label, fc);
+
+    // Auto hole-fill: update fill metrics with closed shape
+    const pixMap = pixelMaps.current.get(fill.id)!;
+    const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, fc);
+    fill.areaPx  = result.areaPx;
+    fill.perimPx = result.perimPx;
+    fill.polygon = result.polygon;
+
+    return Promise.resolve(fill);
+  }, [getRegionMask, paintRegion, applyAutoHoleFill]);
+
+  // ── fillRect — paints all regions in rect then auto-closes holes ──────────
+  const fillRect = useCallback(async (
+    x1: number, y1: number, x2: number, y2: number,
+    fc: HTMLCanvasElement, color: string, opacity: number,
+    labelPrefix: string, groupId: number,
+    onProgress?: (done: number, total: number) => void,
+  ): Promise<MagicFill[]> => {
+    if (!readyRef.current) return [];
+    const lm = labelMapRef.current;
+    const ro = regionOffsetsRef.current;
+    const rp = regionPixelsRef.current;
+    const mw = maskWRef.current, mh = maskHRef.current;
+    const fw = fc.width, fh = fc.height;
+    if (!lm || !ro || !rp || !mw) return [];
+
+    const rx1 = Math.round(Math.min(x1, x2) * mw / fw);
+    const ry1 = Math.round(Math.min(y1, y2) * mh / fh);
+    const rx2 = Math.round(Math.max(x1, x2) * mw / fw);
+    const ry2 = Math.round(Math.max(y1, y2) * mh / fh);
+    if (rx2 - rx1 < 5 || ry2 - ry1 < 5) return [];
+
+    const found = new Set<number>();
+    const step  = Math.max(2, Math.round(Math.min(rx2 - rx1, ry2 - ry1) / 60));
+    for (let sy = ry1; sy <= ry2; sy += step)
+      for (let sx = rx1; sx <= rx2; sx += step) {
+        const id = lm[sy * mw + sx];
+        if (id !== 0xFFFFFFFF) found.add(id);
+      }
+
+    const ids     = [...found];
+    const results: MagicFill[] = [];
+    let count = 0;
+    const scaleX = fw / mw, scaleY = fh / mh;
+
+    for (const regionId of ids) {
+      onProgress?.(count, ids.length);
+      await Promise.resolve();
+
+      const start = ro[regionId], end = ro[regionId + 1];
+      if (end - start < 10) { count++; continue; }
+
+      const regionMask = new Uint8Array(fw * fh);
+      for (let i = start; i < end; i++) {
+        const mi  = rp[i];
+        const mx  = mi % mw, my = (mi / mw) | 0;
+        const fx0 = Math.round(mx * scaleX);
+        const fy0 = Math.round(my * scaleY);
+        const fx1 = Math.min(fw, Math.round((mx + 1) * scaleX));
+        const fy1 = Math.min(fh, Math.round((my + 1) * scaleY));
+        for (let fy = fy0; fy < fy1; fy++)
+          for (let fx = fx0; fx < fx1; fx++)
+            regionMask[fy * fw + fx] = 1;
+      }
+
+      const fill = paintRegion(regionMask, fw, fh, color, opacity,
+        `${labelPrefix} ${++count}`, fc);
+      fill.groupId = groupId;
+
+      // Auto hole-fill each region
+      const pixMap = pixelMaps.current.get(fill.id)!;
+      const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, fc);
+      fill.areaPx  = result.areaPx;
+      fill.perimPx = result.perimPx;
+      fill.polygon = result.polygon;
+
+      results.push(fill);
+    }
+
+    onProgress?.(ids.length, ids.length);
+    return results;
+  }, [paintRegion, applyAutoHoleFill]);
+
+  // ── fillHoles (manual, still exposed for explicit calls) ──────────────────
+  const fillHoles = useCallback((
+    id: number, fill: MagicFill, fc: HTMLCanvasElement,
+  ): HoleFillResult | null => {
+    const pixMap = pixelMaps.current.get(id);
+    if (!pixMap) return null;
+    const fw = fc.width, fh = fc.height;
+    const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, fc);
+    return result;
+  }, [applyAutoHoleFill]);
+
+  // ── Wire up drain function (must be after all callbacks are defined) ────
+  //
+  //  drainRef is called by the worker onmessage once the mask is ready.
+  //  By assigning it here (body of the hook, after all useCallbacks) every
+  //  function it references is already a stable, defined value.
+  drainRef.current = () => {
+    const pending = pendingFillAt.current.splice(0);
+    if (!pending.length) return;
+    console.log(`[useMagicFill] draining ${pending.length} queued fillAt call(s)`);
+    for (const p of pending) {
+      const fw = p.fc.width, fh = p.fc.height;
+      const regionMask = getRegionMask(p.cx, p.cy, fw, fh);
+      if (!regionMask) { p.resolve(null); continue; }
+      const fill = paintRegion(regionMask, fw, fh, p.color, p.opacity, p.label, p.fc);
+      const pixMap = pixelMaps.current.get(fill.id)!;
+      const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, p.fc);
+      fill.areaPx  = result.areaPx;
+      fill.perimPx = result.perimPx;
+      fill.polygon = result.polygon;
+      p.resolve(fill);
+    }
+  };
+
+  // ── pushSnapshot / undo / clearAll ────────────────────────────────────────
+  const pushSnapshot = useCallback((fc: HTMLCanvasElement) => {
+    fillWRef.current = fc.width; fillHRef.current = fc.height;
+    const ctx = fc.getContext('2d');
+    const fd  = ctx
+      ? ctx.getImageData(0, 0, fc.width, fc.height)
+      : new ImageData(fc.width, fc.height);
+    snapshots.current.push(
+      new ImageData(new Uint8ClampedArray(fd.data), fd.width, fd.height),
+    );
   }, []);
 
-  // ── undo ──────────────────────────────────────────────────────────────────
-  const undo = useCallback((fillCanvas: HTMLCanvasElement): boolean => {
+  const undo = useCallback((fc: HTMLCanvasElement): boolean => {
     if (!snapshots.current.length) return false;
     const prev = snapshots.current.pop()!;
-    fillWRef.current = prev.width;
-    fillHRef.current = prev.height;
-    fillCanvas.getContext('2d')!.putImageData(prev, 0, 0);
+    fillWRef.current = prev.width; fillHRef.current = prev.height;
+    fc.getContext('2d')!.putImageData(prev, 0, 0);
     return true;
   }, []);
 
-  // ── clearAll ──────────────────────────────────────────────────────────────
-  const clearAll = useCallback((fillCanvas: HTMLCanvasElement) => {
-    const ctx = fillCanvas.getContext('2d');
-    if (ctx) ctx.clearRect(0, 0, fillCanvas.width, fillCanvas.height);
-    fillWRef.current = fillCanvas.width;
-    fillHRef.current = fillCanvas.height;
+  const clearAll = useCallback((fc: HTMLCanvasElement) => {
+    fc.getContext('2d')?.clearRect(0, 0, fc.width, fc.height);
+    fillWRef.current = fc.width; fillHRef.current = fc.height;
     snapshots.current = [];
     pixelMaps.current.clear();
     fillSnapshots.current.clear();
     fillOrder.current = [];
   }, []);
 
-  // ── registerFill / unregisterFill ─────────────────────────────────────────
-  const registerFill = useCallback((fill: MagicFill, pixelMap: Uint8Array) => {
-    pixelMaps.current.set(fill.id, pixelMap);
+  // ── Registry ──────────────────────────────────────────────────────────────
+  const registerFill = useCallback((fill: MagicFill, pm: Uint8Array) => {
+    pixelMaps.current.set(fill.id, pm);
     fillOrder.current.push(fill.id);
   }, []);
 
@@ -651,233 +644,57 @@ export function useMagicFill(): MagicFillAPI {
     fillOrder.current = fillOrder.current.filter(x => x !== id);
   }, []);
 
-  // ── getPixelMap ───────────────────────────────────────────────────────────
-  const getPixelMap = useCallback((id: number) => pixelMaps.current.get(id), []);
+  const getPixelMap = useCallback(
+    (id: number) => pixelMaps.current.get(id), [],
+  );
 
-  // ── getPixelAt ────────────────────────────────────────────────────────────
   const getPixelAt = useCallback((
-    canvasX:    number,
-    canvasY:    number,
-    fillCanvas: HTMLCanvasElement,
+    cx: number, cy: number, fc: HTMLCanvasElement,
   ): number => {
-    const w = fillCanvas.width;
-    const h = fillCanvas.height;
-    if (fillWRef.current !== w || fillHRef.current !== h) {
-      fillWRef.current = w;
-      fillHRef.current = h;
-    }
-    if (!w || !h) return -1;
-    const px = Math.round(canvasX);
-    const py = Math.round(canvasY);
+    const w = fc.width, h = fc.height;
+    const px = Math.round(cx), py = Math.round(cy);
     if (px < 0 || px >= w || py < 0 || py >= h) return -1;
     const idx = py * w + px;
     for (let i = fillOrder.current.length - 1; i >= 0; i--) {
-      const id = fillOrder.current[i];
+      const id  = fillOrder.current[i];
       const map = pixelMaps.current.get(id);
       if (map && map[idx]) return id;
     }
     return -1;
   }, []);
 
-  // ── restoreFills ──────────────────────────────────────────────────────────
+  // ── restoreFills / repaintFillColor ───────────────────────────────────────
   const restoreFills = useCallback((
-    visibleIds: Set<number>,
-    fillCanvas: HTMLCanvasElement,
+    visibleIds: Set<number>, fc: HTMLCanvasElement,
   ) => {
-    const ctx = fillCanvas.getContext('2d');
+    const ctx = fc.getContext('2d');
     if (!ctx) return;
-
-    const w = fillCanvas.width;
-    const h = fillCanvas.height;
+    const w = fc.width, h = fc.height;
     ctx.clearRect(0, 0, w, h);
-
-    if (visibleIds.size === 0) return;
-
+    if (!visibleIds.size) return;
     const composite = new ImageData(w, h);
-
     for (const id of fillOrder.current) {
       if (!visibleIds.has(id)) continue;
       const snap = fillSnapshots.current.get(id);
-      if (!snap) continue;
-      if (snap.width !== w || snap.height !== h) continue;
-      compositeOver(composite, snap);
+      if (snap && snap.width === w && snap.height === h)
+        compositeOver(composite, snap);
     }
-
     ctx.putImageData(composite, 0, 0);
   }, []);
 
-  // ── repaintFillColor ──────────────────────────────────────────────────────
   const repaintFillColor = useCallback((
-    id:         number,
-    newColor:   string,
-    visibleIds: Set<number>,
-    fillCanvas: HTMLCanvasElement,
+    id: number, newColor: string,
+    visibleIds: Set<number>, fc: HTMLCanvasElement,
   ) => {
-    const pixMap = pixelMaps.current.get(id);
-    if (!pixMap) return;
-    const w = fillCanvas.width;
-    const h = fillCanvas.height;
+    const pm = pixelMaps.current.get(id);
+    if (!pm) return;
+    const w = fc.width, h = fc.height;
     const [r, g, b] = hexToRgb(newColor);
-    const newSnap = paintFillToSnapshot(pixMap, w, h, r, g, b, 40 / 100);
-    fillSnapshots.current.set(id, newSnap);
-    restoreFills(visibleIds, fillCanvas);
+    fillSnapshots.current.set(id, paintFillToSnapshot(pm, w, h, r, g, b, 40 / 100));
+    restoreFills(visibleIds, fc);
   }, [restoreFills]);
 
-  // ── fillAt ────────────────────────────────────────────────────────────────
-  // Uses dilateFast(FILL_GROW) — same as the page — for tight wall-kissing.
-  const fillAt = useCallback((
-    canvasX: number, canvasY: number,
-    fillCanvas: HTMLCanvasElement,
-    color: string, opacity: number, label: string,
-  ): MagicFill | null => {
-    if (!wallMaskRef.current || !readyRef.current) return null;
-
-    const fw = fillCanvas.width;
-    const fh = fillCanvas.height;
-    const wallMask = wallMaskRef.current;
-    const mw = maskWRef.current;
-    const mh = maskHRef.current;
-
-    if (mw !== fw || mh !== fh) {
-      console.warn(`[MagicFill] Mask size mismatch: mask=${mw}x${mh}, canvas=${fw}x${fh}. Rebuilding mask...`);
-      return null;
-    }
-
-    const px = Math.round(canvasX);
-    const py = Math.round(canvasY);
-    if (px < 0 || px >= fw || py < 0 || py >= fh) return null;
-    if (wallMask[py * fw + px]) return null;
-
-    // Flood fill into the room
-    const filledMask = multiSeedFill(wallMask, fw, fh, px, py);
-    if (!filledMask) return null;
-
-    // Box dilation to kiss straight walls + corner pass for diagonal gaps
-    const grown = dilateForFill(filledMask, fw, fh);
-
-    const [r, g, b] = hexToRgb(color);
-    const snap = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
-
-    // Composite onto canvas
-    const fd = getFreshFillData(fillCanvas);
-    compositeOver(fd, snap);
-    fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
-
-    const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
-
-    const fill: MagicFill = {
-      id: Date.now() + Math.random(),
-      label, color, opacity, areaPx, perimPx, polygon,
-    };
-
-    pixelMaps.current.set(fill.id, grown);
-    fillSnapshots.current.set(fill.id, snap);
-    fillOrder.current.push(fill.id);
-
-    return fill;
-  }, [getFreshFillData]);
-
-  // ── fillRect ──────────────────────────────────────────────────────────────
-  // Uses dilateFast(FILL_GROW) — same as the page — for tight wall-kissing.
-  const fillRect = useCallback(async (
-    x1: number, y1: number, x2: number, y2: number,
-    fillCanvas: HTMLCanvasElement,
-    color: string, opacity: number,
-    labelPrefix: string, groupId: number,
-    onProgress?: (done: number, total: number) => void,
-  ): Promise<MagicFill[]> => {
-    if (!wallMaskRef.current || !readyRef.current) return [];
-
-    const fw = fillCanvas.width;
-    const fh = fillCanvas.height;
-    const wallMask = wallMaskRef.current;
-    const mw = maskWRef.current;
-    const mh = maskHRef.current;
-
-    if (mw !== fw || mh !== fh) {
-      console.warn(`[MagicFill] Mask size mismatch in fillRect: mask=${mw}x${mh}, canvas=${fw}x${fh}`);
-      return [];
-    }
-
-    const rx1 = Math.round(Math.min(x1, x2));
-    const ry1 = Math.round(Math.min(y1, y2));
-    const rx2 = Math.round(Math.max(x1, x2));
-    const ry2 = Math.round(Math.max(y1, y2));
-
-    if (rx2 - rx1 < 5 || ry2 - ry1 < 5) return [];
-
-    const regionsMask = findRegionsInRect(wallMask, fw, fh, rx1, ry1, rx2, ry2);
-    if (regionsMask.length === 0) return [];
-
-    const fd = getFreshFillData(fillCanvas);
-    const [r, g, b] = hexToRgb(color);
-    const newFills: MagicFill[] = [];
-    let fillCount = 0;
-
-    for (let i = 0; i < regionsMask.length; i++) {
-      onProgress?.(i, regionsMask.length);
-      await Promise.resolve();
-
-      // Box dilation to kiss straight walls + corner pass for diagonal gaps
-      const grown = dilateForFill(regionsMask[i], fw, fh);
-      const snap  = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
-      compositeOver(fd, snap);
-
-      if (i % 5 === 0 || i === regionsMask.length - 1) {
-        fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
-      }
-
-      const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
-      fillCount++;
-      const fill: MagicFill = {
-        id: Date.now() + Math.random() + i,
-        label: `${labelPrefix} ${fillCount}`,
-        color, opacity, areaPx, perimPx, polygon, groupId,
-      };
-
-      pixelMaps.current.set(fill.id, grown);
-      fillSnapshots.current.set(fill.id, snap);
-      fillOrder.current.push(fill.id);
-      newFills.push(fill);
-    }
-
-    fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
-    onProgress?.(regionsMask.length, regionsMask.length);
-
-    return newFills;
-  }, [getFreshFillData]);
-
-  // ── fillHoles ─────────────────────────────────────────────────────────────
-  // closeHoles is correct here — this is the explicit "close interior gaps" op.
-  const fillHoles = useCallback((
-    id: number,
-    fill: MagicFill,
-    fillCanvas: HTMLCanvasElement,
-  ): HoleFillResult | null => {
-    const pixMap = pixelMaps.current.get(id);
-    if (!pixMap) return null;
-
-    const fw = fillCanvas.width, fh = fillCanvas.height;
-    const closed = closeHoles(pixMap, fw, fh);
-
-    const added = new Uint8Array(fw * fh);
-    for (let i = 0; i < fw * fh; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
-
-    const [r, g, b] = hexToRgb(fill.color);
-
-    const fd = getFreshFillData(fillCanvas);
-    const addedSnap = paintFillToSnapshot(added, fw, fh, r, g, b, fill.opacity / 100);
-    compositeOver(fd, addedSnap);
-    fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
-
-    pixelMaps.current.set(id, closed);
-    const fullSnap = paintFillToSnapshot(closed, fw, fh, r, g, b, fill.opacity / 100);
-    fillSnapshots.current.set(id, fullSnap);
-
-    const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
-    return { areaPx, perimPx, polygon };
-  }, [getFreshFillData]);
-
+  // ── Public API ────────────────────────────────────────────────────────────
   return {
     get ready() { return readyRef.current; },
     buildMask,
