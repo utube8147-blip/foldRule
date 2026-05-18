@@ -21,17 +21,27 @@
 //  Viewer.tsx must call restoreFills() for show/hide/color changes instead
 //  of re-calling fillAt(). fillAt() is only called for NEW fills.
 //
+//  AUTO CLOSE HOLES:
+//    fillAt() and fillRect() now automatically call closeHoles() after
+//    dilation. This means text labels, circle interiors, and any enclosed
+//    pocket inside a filled region are always filled — no separate
+//    fillHoles() call needed.
+//
+//  MASKED DILATION:
+//    Paint grows outward using dilateMasked() which stops exactly at
+//    detected wall pixels — flush with the boundary, no over/undershoot.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useCallback } from 'react';
 
 // ─── Tunables ─────────────────────────────────────────────────────────────────
 
-const WALL_LUMA           = 120;
-const STROKE_NEIGHBOR_MIN = 2;
-const DILATE_R            = 2;
+const WALL_LUMA           = 140;
+const STROKE_NEIGHBOR_MIN = 1;
+const DILATE_R            = 4;
 const ERODE_R             = 1;
-const FILL_GROW           = 3;
+const FILL_GROW           = 2;
 const RDP_EPSILON         = 3;
 const MAX_MASK_PIXELS     = 2_000_000;
 const RECT_STEP_DIVISOR   = 40;
@@ -89,25 +99,20 @@ export interface MagicFillAPI {
   registerFill:   (fill: MagicFill, pixelMap: Uint8Array) => void;
   unregisterFill: (id: number) => void;
   /**
-   * NEW — restoreFills(visibleIds, fillCanvas)
+   * restoreFills(visibleIds, fillCanvas)
    *
    * Clears the canvas completely then composites the stored per-fill
    * ImageData snapshots for every id in visibleIds (in original paint order).
    * This is the ONLY correct way to show/hide fills — it never re-runs the
    * flood-fill algorithm so there is no stacking, no bleed, no thickness
    * change regardless of how many times it is called.
-   *
-   * Pass the ids of fills that SHOULD BE VISIBLE. Hidden fills are simply
-   * omitted — their snapshots are kept in memory for when they become visible
-   * again.
    */
   restoreFills: (visibleIds: Set<number>, fillCanvas: HTMLCanvasElement) => void;
   /**
-   * NEW — repaintFill(id, newColor, fillCanvas)
+   * repaintFillColor(id, newColor, visibleIds, fillCanvas)
    *
    * Re-renders a single fill's snapshot in a new color then calls restoreFills
    * so the canvas is always rebuilt from snapshots (no stacking).
-   * Used when a color swatch change arrives from TakeoffContext.
    */
   repaintFillColor: (
     id:         number,
@@ -126,6 +131,76 @@ function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Arra
     const luma = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
     if (luma < WALL_LUMA) dark[i] = 1;
   }
+
+  // ── Text / symbol filter ──────────────────────────────────────────────────
+  // Connected components that are small and squarish are text labels or
+  // furniture symbols — erase them so the flood fill treats them as open
+  // space and flows straight through.
+  const MIN_WALL_PIXELS  = 400;
+  const MAX_TEXT_PIXELS  = 1500;
+  const MAX_TEXT_ASPECT  = 3.5;
+  const MIN_WALL_ASPECT  = 5.0;
+  const MAX_TEXT_DENSITY = 0.55;
+
+  const visited = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    if (!dark[i] || visited[i]) continue;
+
+    const stack: number[] = [i];
+    const members: number[] = [];
+    visited[i] = 1;
+
+    while (stack.length) {
+      const idx = stack.pop()!;
+      members.push(idx);
+      const x = idx % w, y = (idx / w) | 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx, ny = y + dy;
+          if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+          const ni = ny * w + nx;
+          if (dark[ni] && !visited[ni]) {
+            visited[ni] = 1;
+            stack.push(ni);
+          }
+        }
+      }
+    }
+
+    const size = members.length;
+
+    // Definitely text/symbol — too small
+    if (size < MIN_WALL_PIXELS) {
+      for (const idx of members) dark[idx] = 0;
+      continue;
+    }
+
+    // Definitely a wall — too large to be text
+    if (size > MAX_TEXT_PIXELS) continue;
+
+    // Borderline: check bounding box shape and pixel density
+    let minX = w, maxX = 0, minY = h, maxY = 0;
+    for (const idx of members) {
+      const x = idx % w, y = (idx / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    const bboxW   = maxX - minX + 1;
+    const bboxH   = maxY - minY + 1;
+    const aspect  = Math.max(bboxW, bboxH) / Math.min(bboxW, bboxH);
+    const density = size / (bboxW * bboxH);
+
+    // Long and thin → wall, keep it
+    if (aspect > MIN_WALL_ASPECT) continue;
+
+    // Squarish and sparse → text label or symbol, erase it
+    if (aspect < MAX_TEXT_ASPECT && density < MAX_TEXT_DENSITY) {
+      for (const idx of members) dark[idx] = 0;
+    }
+  }
+
+  // ── Stroke neighbor filter ────────────────────────────────────────────────
   const mask = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -167,6 +242,25 @@ function dilateFast(src: Uint8Array, w: number, h: number, r: number): Uint8Arra
     }
   }
   return out;
+}
+
+/**
+ * Dilate src but zero out any pixel that lands on a wall pixel.
+ * Paint grows right up to the wall edge without crossing it —
+ * pixel-perfect boundary coverage with no bleed.
+ */
+function dilateMasked(
+  src:      Uint8Array,
+  wallMask: Uint8Array,
+  w:        number,
+  h:        number,
+  r:        number,
+): Uint8Array {
+  const dilated = dilateFast(src, w, h, r);
+  for (let i = 0; i < dilated.length; i++) {
+    if (wallMask[i]) dilated[i] = 0;
+  }
+  return dilated;
 }
 
 function erodeFast(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
@@ -285,7 +379,6 @@ function hexToRgb(hex: string): [number, number, number] {
 /**
  * Paint a pixel mask onto a BLANK ImageData (not onto the existing canvas).
  * Returns a new ImageData containing only those pixels at the given color.
- * This is used to build per-fill snapshots.
  */
 function paintFillToSnapshot(
   filled:  Uint8Array,
@@ -309,8 +402,8 @@ function paintFillToSnapshot(
 }
 
 /**
- * Composite a source ImageData onto a destination ImageData using
- * standard source-over alpha blending. Mutates dst in place.
+ * Composite src ImageData onto dst ImageData using source-over alpha blending.
+ * Mutates dst in place.
  */
 function compositeOver(dst: ImageData, src: ImageData): void {
   const d = dst.data;
@@ -486,6 +579,32 @@ function getLogicalDims(canvas: HTMLCanvasElement): { w: number; h: number } {
   return { w: canvas.width, h: canvas.height };
 }
 
+/**
+ * Scale the wall mask from mask-space up to canvas-space.
+ * Used so dilateMasked can stop paint exactly at wall pixels.
+ */
+function scaleWallMaskToCanvas(
+  mask: Uint8Array,
+  mw: number, mh: number,
+  fw: number, fh: number,
+): Uint8Array {
+  const canvasWallMask = new Uint8Array(fw * fh);
+  const scaleToCanvas  = fw / mw;
+  for (let my = 0; my < mh; my++) {
+    for (let mx = 0; mx < mw; mx++) {
+      if (!mask[my * mw + mx]) continue;
+      const cx0 = Math.round(mx * scaleToCanvas);
+      const cy0 = Math.round(my * scaleToCanvas);
+      const cx1 = Math.round((mx + 1) * scaleToCanvas);
+      const cy1 = Math.round((my + 1) * scaleToCanvas);
+      for (let cy = cy0; cy < cy1 && cy < fh; cy++)
+        for (let cx = cx0; cx < cx1 && cx < fw; cx++)
+          canvasWallMask[cy * fw + cx] = 1;
+    }
+  }
+  return canvasWallMask;
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useMagicFill(): MagicFillAPI {
@@ -502,9 +621,8 @@ export function useMagicFill(): MagicFillAPI {
   const pixelMaps    = useRef<Map<number, Uint8Array>>(new Map());
   const fillOrder    = useRef<number[]>([]);
 
-  // ── NEW: per-fill ImageData snapshots ─────────────────────────────────────
-  // Stores the pixels for each fill in isolation (transparent background).
-  // Used by restoreFills() to composite fills without re-flooding.
+  // Per-fill ImageData snapshots — used by restoreFills() to composite fills
+  // without re-flooding.
   const fillSnapshots = useRef<Map<number, ImageData>>(new Map());
 
   // ── buildMask ─────────────────────────────────────────────────────────────
@@ -533,9 +651,7 @@ export function useMagicFill(): MagicFillAPI {
     readyRef.current     = true;
   }, []);
 
-  // ── ensureFillData ────────────────────────────────────────────────────────
-  // Only used internally during fillAt/fillRect/fillHoles to get a working
-  // ImageData. We no longer cache it between calls — always read fresh.
+  // ── getFreshFillData ──────────────────────────────────────────────────────
   const getFreshFillData = useCallback((fillCanvas: HTMLCanvasElement): ImageData => {
     const w = fillCanvas.width, h = fillCanvas.height;
     fillWRef.current = w;
@@ -621,11 +737,6 @@ export function useMagicFill(): MagicFillAPI {
   }, []);
 
   // ── restoreFills ──────────────────────────────────────────────────────────
-  //
-  // THE correct way to show/hide fills. Never re-floods. Just:
-  //   1. clearRect the canvas
-  //   2. composite stored per-fill snapshots for visible ids in paint order
-  //
   const restoreFills = useCallback((
     visibleIds: Set<number>,
     fillCanvas: HTMLCanvasElement,
@@ -639,14 +750,12 @@ export function useMagicFill(): MagicFillAPI {
 
     if (visibleIds.size === 0) return;
 
-    // Build a composite ImageData by layering snapshots in original paint order
     const composite = new ImageData(w, h);
 
     for (const id of fillOrder.current) {
       if (!visibleIds.has(id)) continue;
       const snap = fillSnapshots.current.get(id);
       if (!snap) continue;
-      // If canvas was resized the snapshot dims won't match — skip safely
       if (snap.width !== w || snap.height !== h) continue;
       compositeOver(composite, snap);
     }
@@ -655,9 +764,6 @@ export function useMagicFill(): MagicFillAPI {
   }, []);
 
   // ── repaintFillColor ──────────────────────────────────────────────────────
-  //
-  // Rebuild a fill's snapshot in a new color then call restoreFills.
-  //
   const repaintFillColor = useCallback((
     id:         number,
     newColor:   string,
@@ -669,7 +775,6 @@ export function useMagicFill(): MagicFillAPI {
     const w = fillCanvas.width;
     const h = fillCanvas.height;
     const [r, g, b] = hexToRgb(newColor);
-    // Rebuild the snapshot for this fill with the new color
     const newSnap = paintFillToSnapshot(pixMap, w, h, r, g, b, 40 / 100);
     fillSnapshots.current.set(id, newSnap);
     restoreFills(visibleIds, fillCanvas);
@@ -683,8 +788,8 @@ export function useMagicFill(): MagicFillAPI {
   ): MagicFill | null => {
     if (!maskRef.current || !readyRef.current) return null;
 
-    const mw = maskWRef.current, mh = maskHRef.current;
-    const sc = maskScaleRef.current;
+    const mw   = maskWRef.current, mh = maskHRef.current;
+    const sc   = maskScaleRef.current;
     const mask = maskRef.current;
 
     const mpx = Math.round(canvasX * sc);
@@ -697,7 +802,9 @@ export function useMagicFill(): MagicFillAPI {
 
     const fw = fillCanvas.width, fh = fillCanvas.height;
     const scaleToCanvas = fw / mw;
-    const filledCanvas  = new Uint8Array(fw * fh);
+
+    // Scale flood-fill result up to canvas resolution
+    const filledCanvas = new Uint8Array(fw * fh);
     for (let my = 0; my < mh; my++) {
       for (let mx = 0; mx < mw; mx++) {
         if (!filledMask[my * mw + mx]) continue;
@@ -711,26 +818,29 @@ export function useMagicFill(): MagicFillAPI {
       }
     }
 
-    const grown = dilateFast(filledCanvas, fw, fh, FILL_GROW);
+    // Scale wall mask to canvas resolution for masked dilation
+    const canvasWallMask = scaleWallMaskToCanvas(mask, mw, mh, fw, fh);
+
+    // Grow paint up to but not past wall pixels, then close interior holes
+    const grown  = dilateMasked(filledCanvas, canvasWallMask, fw, fh, FILL_GROW);
+    const closed = closeHoles(grown, fw, fh);
+
     const [r, g, b] = hexToRgb(color);
+    const snap = paintFillToSnapshot(closed, fw, fh, r, g, b, opacity / 100);
 
-    // Build a per-fill snapshot (isolated, transparent background)
-    const snap = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
-
-    // Composite this new fill ON TOP of whatever is already on the canvas
-    // by reading the current canvas, compositing, then writing back.
+    // Composite onto canvas
     const fd = getFreshFillData(fillCanvas);
     compositeOver(fd, snap);
     fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
 
-    const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
+    const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
 
     const fill: MagicFill = {
       id: Date.now() + Math.random(),
       label, color, opacity, areaPx, perimPx, polygon,
     };
 
-    pixelMaps.current.set(fill.id, grown);
+    pixelMaps.current.set(fill.id, closed);
     fillSnapshots.current.set(fill.id, snap);
     fillOrder.current.push(fill.id);
 
@@ -761,7 +871,9 @@ export function useMagicFill(): MagicFillAPI {
     const regionsMask = findRegionsInRect(mask, mw, mh, mrx1, mry1, mrx2, mry2);
     if (regionsMask.length === 0) return [];
 
-    // Start with current canvas pixels
+    // Scale wall mask once for the whole rect operation
+    const canvasWallMask = scaleWallMaskToCanvas(mask, mw, mh, fw, fh);
+
     const fd = getFreshFillData(fillCanvas);
     const [r, g, b] = hexToRgb(color);
     const scaleToCanvas = fw / mw;
@@ -787,15 +899,17 @@ export function useMagicFill(): MagicFillAPI {
         }
       }
 
-      const grown = dilateFast(filledCanvas, fw, fh, FILL_GROW);
-      const snap  = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
+      // Grow paint up to but not past wall pixels, then close interior holes
+      const grown  = dilateMasked(filledCanvas, canvasWallMask, fw, fh, FILL_GROW);
+      const closed = closeHoles(grown, fw, fh);
+      const snap   = paintFillToSnapshot(closed, fw, fh, r, g, b, opacity / 100);
       compositeOver(fd, snap);
 
       if (i % 5 === 0 || i === regionsMask.length - 1) {
         fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
       }
 
-      const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
+      const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
       fillCount++;
       const fill: MagicFill = {
         id:      Date.now() + Math.random() + i,
@@ -803,7 +917,7 @@ export function useMagicFill(): MagicFillAPI {
         color, opacity, areaPx, perimPx, polygon, groupId,
       };
 
-      pixelMaps.current.set(fill.id, grown);
+      pixelMaps.current.set(fill.id, closed);
       fillSnapshots.current.set(fill.id, snap);
       fillOrder.current.push(fill.id);
       newFills.push(fill);
@@ -816,6 +930,8 @@ export function useMagicFill(): MagicFillAPI {
   }, [getFreshFillData]);
 
   // ── fillHoles ─────────────────────────────────────────────────────────────
+  // Still available for manual use if needed, but fillAt/fillRect now call
+  // closeHoles automatically so this is rarely necessary.
   const fillHoles = useCallback((
     id:         number,
     fill:       MagicFill,
@@ -827,19 +943,16 @@ export function useMagicFill(): MagicFillAPI {
     const fw = fillCanvas.width, fh = fillCanvas.height;
     const closed = closeHoles(pixMap, fw, fh);
 
-    // Build the additional pixels (just the holes)
     const added = new Uint8Array(fw * fh);
     for (let i = 0; i < fw * fh; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
 
     const [r, g, b] = hexToRgb(fill.color);
 
-    // Paint added pixels onto canvas
     const fd = getFreshFillData(fillCanvas);
     const addedSnap = paintFillToSnapshot(added, fw, fh, r, g, b, fill.opacity / 100);
     compositeOver(fd, addedSnap);
     fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
 
-    // Update the stored pixel map and snapshot for this fill
     pixelMaps.current.set(id, closed);
     const fullSnap = paintFillToSnapshot(closed, fw, fh, r, g, b, fill.opacity / 100);
     fillSnapshots.current.set(id, fullSnap);
