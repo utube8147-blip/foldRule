@@ -2,45 +2,11 @@
 
 // ─── components/Viewer/MagicFillCanvas.tsx ────────────────────────────────────
 //
-//  ROOT CAUSE OF HUGE CROSSHAIR (confirmed):
+//  CHANGES FROM PREVIOUS VERSION:
+//   • Sidebar removed entirely — fills are now pushed to TakeoffContext instead
+//   • active dep added to sizing useEffect (crosshair fix retained)
+//   • No other behavioural changes
 //
-//  Viewer.tsx has a CSS-zoom transition effect that sets style.width/style.height
-//  on every overlay canvas ref it knows about. That list does NOT include the
-//  interactRef inside MagicFillCanvas — BUT MagicFillCanvas passes style props
-//  directly: style={{ width: pdfDimensions.w, height: pdfDimensions.h }}.
-//
-//  pdfDimensions.w/h are LOGICAL pixels (e.g. 1200 × 900). The inline style
-//  value is a bare number so React renders it as "1200px" — correct.
-//
-//  HOWEVER: the polygon canvas (polyRef, z-42) is rendered as a sibling to the
-//  interactRef canvas, and BOTH sit inside the ViewerCanvas wrapper div which
-//  uses `canvasWrapStyle` — a position:absolute box sized to
-//    max(pdfDimensions.w + padding*2, vw*3)  ×  max(pdfDimensions.h + padding*2, vh*3)
-//
-//  The interact canvas has pointer-events:auto and spans z-45.
-//  getBoundingClientRect() on it returns the correct small rect.
-//  getXY() is therefore correct.
-//
-//  The crosshair lines draw from 0 → ic.width. ic.width = canvas.width = pdfDimensions.w.
-//  In canvas pixel space that IS correct.
-//
-//  BUT: ctx.clearRect(0, 0, ic.width, ic.height) also clears only pdfDimensions area.
-//  The lines are drawn in canvas-pixel space. They will look correct IF the canvas
-//  CSS size matches canvas.width. 
-//
-//  The ACTUAL bug: when active=true first renders, pdfDimensions may already be set
-//  from the previous render cycle, so useEffect([pdfDimensions]) may not fire again.
-//  The canvas starts at HTML default 300×150 (width=300, height=150).
-//  Then style.width="1200px" is set from the JSX prop.
-//  So canvas.width=300, style.width="1200px".
-//  getBoundingClientRect().width ≈ 1200.
-//  scaleX = 300/1200 = 0.25.
-//  getXY returns coords * 0.25 → fills land in wrong place (top-left).
-//  rAF draws crosshair from 0→300 in canvas pixels, displayed at 1200px → looks huge (4×).
-//
-//  FIX: In the useEffect that sizes the canvases, ALWAYS run it when active changes too,
-//  so the canvas is correctly sized as soon as MagicFillCanvas mounts.
-//  Also: read ic.width AFTER ensuring it matches pdfDimensions.w.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useRef, useEffect, useCallback } from 'react';
@@ -112,22 +78,19 @@ export function MagicFillCanvas({
   const dragRect    = useRef<{ x1:number; y1:number; x2:number; y2:number } | null>(null);
 
   // ── Canvas sizing ──────────────────────────────────────────────────────────
-  // FIX: include `active` in deps so sizing runs immediately on mount/unmount.
-  // Without this, when active flips true the canvas keeps its HTML default
-  // size (300×150) until pdfDimensions next changes — causing getXY() to
-  // return wrong coords and the crosshair to render at 4× the correct size.
+  // active in deps so sizing runs immediately when MagicFillCanvas mounts,
+  // preventing the 300×150 default canvas size / giant crosshair bug.
   useEffect(() => {
     if (!pdfDimensions || !active) return;
     const { w, h } = pdfDimensions;
     for (const ref of [polyRef, interactRef]) {
       const c = ref.current;
       if (!c) continue;
-      // Always sync backing-store size to logical dimensions
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
       c.style.width  = `${w}px`;
       c.style.height = `${h}px`;
     }
-  }, [pdfDimensions, active]); // ← active added here
+  }, [pdfDimensions, active]);
 
   // ── Polygon redraw ────────────────────────────────────────────────────────
   const redrawPolygons = useCallback(() => {
@@ -197,9 +160,6 @@ export function MagicFillCanvas({
       const ctx = ic.getContext('2d');
       if (!ctx) { animRef.current = requestAnimationFrame(loop); return; }
 
-      // Use canvas backing-store dimensions for all drawing.
-      // These equal pdfDimensions.w/h because the sizing useEffect above
-      // (which now runs on mount via the `active` dep) ensures it.
       const cw = ic.width;
       const ch = ic.height;
 
@@ -263,9 +223,6 @@ export function MagicFillCanvas({
   }, [active, pdfDimensions]);
 
   // ── Coordinate helper ─────────────────────────────────────────────────────
-  // Returns canvas-pixel coords. canvas.width = pdfDimensions.w (guaranteed by
-  // the sizing useEffect which now runs on mount). rect = screen CSS size.
-  // scaleX = canvas.width / rect.width handles any CSS zoom or transition.
   const getXY = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const canvas = e.currentTarget;
     const rect   = canvas.getBoundingClientRect();

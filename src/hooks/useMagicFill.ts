@@ -2,31 +2,24 @@
 
 // ─── hooks/useMagicFill.ts ────────────────────────────────────────────────────
 //
-//  FIX (hover on existing fills):
+//  KEY FIX — show/hide stacking paint bug:
 //
-//  getPixelAt() used fillWRef.current / fillHRef.current to compute the pixel
-//  index into each fill's pixelMap. Those refs are set inside ensureFillData(),
-//  which is only called during fill operations (fillAt, fillRect, fillHoles).
+//  Root cause: fillAt() calls ensureFillData() which reads the CURRENT canvas
+//  pixels into fillDataRef, then paints on top of them. So every time the
+//  sync effect re-flooded a fill for show/hide, it was reading whatever was
+//  already on the canvas and compositing on top — getting thicker each cycle.
 //
-//  When the user zooms and a new PDF render commits, Viewer.tsx resizes the
-//  fillCanvas (new canvas.width / canvas.height). fillWRef / fillHRef are NOT
-//  updated at that point because ensureFillData() is not called again until the
-//  next fill. So getPixelAt() was computing the index with stale dimensions,
-//  landing in the wrong position in every pixelMap → always returning -1 →
-//  mfHoveredId stays null → tooltip never shows.
+//  Fix: after each fillAt/fillRect/fillHoles call, capture an ImageData
+//  snapshot of ONLY that fill's painted pixels (not the whole canvas) and
+//  store it in fillSnapshots keyed by fill id.
 //
-//  FIX 1 – getPixelAt now accepts the fillCanvas element directly so it can
-//           read canvas.width / canvas.height live, and also refreshes the refs.
+//  New API method: restoreFills(visibleIds, fillCanvas)
+//    — clears the canvas then composites only the stored snapshots for the
+//      given ids, in paint order. No flood-fill runs at all. Pixel-perfect
+//      and idempotent — calling it 100 times gives the same result.
 //
-//  FIX 2 – clearAll, undo, and pushSnapshot also sync the refs so they are
-//           never stale after a canvas resize / reset.
-//
-//  API surface change: getPixelAt(canvasX, canvasY, fillCanvas)
-//    — fillCanvas is the third argument (optional for back-compat; falls back
-//      to the cached refs so callers that don't pass it still work).
-//
-//  Caller change required in Viewer.tsx:
-//    handleMagicHover passes fillCanvasRef.current as third arg to getPixelAt.
+//  Viewer.tsx must call restoreFills() for show/hide/color changes instead
+//  of re-calling fillAt(). fillAt() is only called for NEW fills.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -92,13 +85,39 @@ export interface MagicFillAPI {
   clearAll:     (fillCanvas: HTMLCanvasElement) => void;
   pushSnapshot: (fillCanvas: HTMLCanvasElement) => void;
   getPixelMap:  (id: number) => Uint8Array | undefined;
-  /** FIX: fillCanvas is now required so live dimensions are always used. */
   getPixelAt:   (canvasX: number, canvasY: number, fillCanvas: HTMLCanvasElement) => number;
   registerFill:   (fill: MagicFill, pixelMap: Uint8Array) => void;
   unregisterFill: (id: number) => void;
+  /**
+   * NEW — restoreFills(visibleIds, fillCanvas)
+   *
+   * Clears the canvas completely then composites the stored per-fill
+   * ImageData snapshots for every id in visibleIds (in original paint order).
+   * This is the ONLY correct way to show/hide fills — it never re-runs the
+   * flood-fill algorithm so there is no stacking, no bleed, no thickness
+   * change regardless of how many times it is called.
+   *
+   * Pass the ids of fills that SHOULD BE VISIBLE. Hidden fills are simply
+   * omitted — their snapshots are kept in memory for when they become visible
+   * again.
+   */
+  restoreFills: (visibleIds: Set<number>, fillCanvas: HTMLCanvasElement) => void;
+  /**
+   * NEW — repaintFill(id, newColor, fillCanvas)
+   *
+   * Re-renders a single fill's snapshot in a new color then calls restoreFills
+   * so the canvas is always rebuilt from snapshots (no stacking).
+   * Used when a color swatch change arrives from TakeoffContext.
+   */
+  repaintFillColor: (
+    id:         number,
+    newColor:   string,
+    visibleIds: Set<number>,
+    fillCanvas: HTMLCanvasElement,
+  ) => void;
 }
 
-// ─── Internal helpers (unchanged) ─────────────────────────────────────────────
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
   const dark = new Uint8Array(w * h);
@@ -255,34 +274,59 @@ function multiSeedFill(mask: Uint8Array, w: number, h: number, cx: number, cy: n
   return merged;
 }
 
-function paintFill(
-  filled:   Uint8Array,
-  fillData: ImageData,
-  r: number, g: number, b: number,
-  opacity:  number,
-): void {
-  const d    = fillData.data;
-  const newA = opacity;
-  for (let i = 0; i < filled.length; i++) {
-    if (!filled[i]) continue;
-    const di = i * 4;
-    const existA = d[di+3] / 255;
-    const outA   = newA + existA * (1 - newA);
-    if (outA > 0) {
-      d[di]   = ((r * newA + d[di]   * existA * (1 - newA)) / outA) | 0;
-      d[di+1] = ((g * newA + d[di+1] * existA * (1 - newA)) / outA) | 0;
-      d[di+2] = ((b * newA + d[di+2] * existA * (1 - newA)) / outA) | 0;
-      d[di+3] = (outA * 255) | 0;
-    }
-  }
-}
-
 function hexToRgb(hex: string): [number, number, number] {
   return [
     parseInt(hex.slice(1,3), 16),
     parseInt(hex.slice(3,5), 16),
     parseInt(hex.slice(5,7), 16),
   ];
+}
+
+/**
+ * Paint a pixel mask onto a BLANK ImageData (not onto the existing canvas).
+ * Returns a new ImageData containing only those pixels at the given color.
+ * This is used to build per-fill snapshots.
+ */
+function paintFillToSnapshot(
+  filled:  Uint8Array,
+  w:       number,
+  h:       number,
+  r: number, g: number, b: number,
+  opacity: number,
+): ImageData {
+  const snap = new ImageData(w, h);
+  const d    = snap.data;
+  const a255 = Math.round(opacity * 255);
+  for (let i = 0; i < filled.length; i++) {
+    if (!filled[i]) continue;
+    const di  = i * 4;
+    d[di]     = r;
+    d[di + 1] = g;
+    d[di + 2] = b;
+    d[di + 3] = a255;
+  }
+  return snap;
+}
+
+/**
+ * Composite a source ImageData onto a destination ImageData using
+ * standard source-over alpha blending. Mutates dst in place.
+ */
+function compositeOver(dst: ImageData, src: ImageData): void {
+  const d = dst.data;
+  const s = src.data;
+  const n = d.length;
+  for (let i = 0; i < n; i += 4) {
+    const sa = s[i + 3] / 255;
+    if (sa === 0) continue;
+    const da   = d[i + 3] / 255;
+    const outA = sa + da * (1 - sa);
+    if (outA === 0) continue;
+    d[i]     = ((s[i]     * sa + d[i]     * da * (1 - sa)) / outA + 0.5) | 0;
+    d[i + 1] = ((s[i + 1] * sa + d[i + 1] * da * (1 - sa)) / outA + 0.5) | 0;
+    d[i + 2] = ((s[i + 2] * sa + d[i + 2] * da * (1 - sa)) / outA + 0.5) | 0;
+    d[i + 3] = (outA * 255 + 0.5) | 0;
+  }
 }
 
 function outerShape(filled: Uint8Array, w: number, h: number): Uint8Array {
@@ -451,13 +495,17 @@ export function useMagicFill(): MagicFillAPI {
   const maskScaleRef = useRef(1);
   const readyRef     = useRef(false);
 
-  const fillDataRef  = useRef<ImageData | null>(null);
   const fillWRef     = useRef(0);
   const fillHRef     = useRef(0);
 
   const snapshots    = useRef<ImageData[]>([]);
   const pixelMaps    = useRef<Map<number, Uint8Array>>(new Map());
   const fillOrder    = useRef<number[]>([]);
+
+  // ── NEW: per-fill ImageData snapshots ─────────────────────────────────────
+  // Stores the pixels for each fill in isolation (transparent background).
+  // Used by restoreFills() to composite fills without re-flooding.
+  const fillSnapshots = useRef<Map<number, ImageData>>(new Map());
 
   // ── buildMask ─────────────────────────────────────────────────────────────
   const buildMask = useCallback((pdfCanvas: HTMLCanvasElement) => {
@@ -486,39 +534,36 @@ export function useMagicFill(): MagicFillAPI {
   }, []);
 
   // ── ensureFillData ────────────────────────────────────────────────────────
-  const ensureFillData = useCallback((fillCanvas: HTMLCanvasElement): ImageData => {
+  // Only used internally during fillAt/fillRect/fillHoles to get a working
+  // ImageData. We no longer cache it between calls — always read fresh.
+  const getFreshFillData = useCallback((fillCanvas: HTMLCanvasElement): ImageData => {
     const w = fillCanvas.width, h = fillCanvas.height;
-    if (!fillDataRef.current || fillWRef.current !== w || fillHRef.current !== h) {
-      const ctx = fillCanvas.getContext('2d');
-      fillDataRef.current = ctx
-        ? ctx.getImageData(0, 0, w, h)
-        : new ImageData(w, h);
-      fillWRef.current = w;
-      fillHRef.current = h;
-    }
-    return fillDataRef.current;
+    fillWRef.current = w;
+    fillHRef.current = h;
+    const ctx = fillCanvas.getContext('2d');
+    return ctx ? ctx.getImageData(0, 0, w, h) : new ImageData(w, h);
   }, []);
 
   // ── pushSnapshot ──────────────────────────────────────────────────────────
   const pushSnapshot = useCallback((fillCanvas: HTMLCanvasElement) => {
-    // Sync dims so refs are always fresh
     fillWRef.current = fillCanvas.width;
     fillHRef.current = fillCanvas.height;
-    const fd = ensureFillData(fillCanvas);
+    const ctx = fillCanvas.getContext('2d');
+    const fd  = ctx
+      ? ctx.getImageData(0, 0, fillCanvas.width, fillCanvas.height)
+      : new ImageData(fillCanvas.width, fillCanvas.height);
     snapshots.current.push(new ImageData(
       new Uint8ClampedArray(fd.data),
       fd.width, fd.height,
     ));
-  }, [ensureFillData]);
+  }, []);
 
   // ── undo ──────────────────────────────────────────────────────────────────
   const undo = useCallback((fillCanvas: HTMLCanvasElement): boolean => {
     if (!snapshots.current.length) return false;
     const prev = snapshots.current.pop()!;
-    fillDataRef.current = prev;
-    // FIX: always sync refs after restoring a snapshot
-    fillWRef.current    = prev.width;
-    fillHRef.current    = prev.height;
+    fillWRef.current = prev.width;
+    fillHRef.current = prev.height;
     fillCanvas.getContext('2d')!.putImageData(prev, 0, 0);
     return true;
   }, []);
@@ -527,13 +572,12 @@ export function useMagicFill(): MagicFillAPI {
   const clearAll = useCallback((fillCanvas: HTMLCanvasElement) => {
     const ctx = fillCanvas.getContext('2d');
     if (ctx) ctx.clearRect(0, 0, fillCanvas.width, fillCanvas.height);
-    // FIX: sync refs on clear
-    fillWRef.current     = fillCanvas.width;
-    fillHRef.current     = fillCanvas.height;
-    fillDataRef.current  = new ImageData(fillCanvas.width, fillCanvas.height);
-    snapshots.current    = [];
+    fillWRef.current = fillCanvas.width;
+    fillHRef.current = fillCanvas.height;
+    snapshots.current = [];
     pixelMaps.current.clear();
-    fillOrder.current    = [];
+    fillSnapshots.current.clear();
+    fillOrder.current = [];
   }, []);
 
   // ── registerFill / unregisterFill ─────────────────────────────────────────
@@ -544,6 +588,7 @@ export function useMagicFill(): MagicFillAPI {
 
   const unregisterFill = useCallback((id: number) => {
     pixelMaps.current.delete(id);
+    fillSnapshots.current.delete(id);
     fillOrder.current = fillOrder.current.filter(x => x !== id);
   }, []);
 
@@ -551,37 +596,22 @@ export function useMagicFill(): MagicFillAPI {
   const getPixelMap = useCallback((id: number) => pixelMaps.current.get(id), []);
 
   // ── getPixelAt ────────────────────────────────────────────────────────────
-  //
-  // FIX: Accept fillCanvas as a required argument and read canvas.width /
-  // canvas.height directly. This guarantees we always use the current backing-
-  // store size even after a zoom-commit resize, instead of stale cached refs.
-  // We also update the refs here so ensureFillData() stays in sync.
-  //
   const getPixelAt = useCallback((
     canvasX:    number,
     canvasY:    number,
     fillCanvas: HTMLCanvasElement,
   ): number => {
-    // Read live dimensions from the canvas element
     const w = fillCanvas.width;
     const h = fillCanvas.height;
-
-    // Keep refs in sync so subsequent fill operations don't need to re-read
     if (fillWRef.current !== w || fillHRef.current !== h) {
       fillWRef.current = w;
       fillHRef.current = h;
-      // Invalidate cached ImageData so ensureFillData re-reads on next fill
-      fillDataRef.current = null;
     }
-
     if (!w || !h) return -1;
-
     const px = Math.round(canvasX);
     const py = Math.round(canvasY);
     if (px < 0 || px >= w || py < 0 || py >= h) return -1;
-
     const idx = py * w + px;
-    // Walk newest → oldest so the topmost fill wins
     for (let i = fillOrder.current.length - 1; i >= 0; i--) {
       const id  = fillOrder.current[i];
       const map = pixelMaps.current.get(id);
@@ -589,6 +619,61 @@ export function useMagicFill(): MagicFillAPI {
     }
     return -1;
   }, []);
+
+  // ── restoreFills ──────────────────────────────────────────────────────────
+  //
+  // THE correct way to show/hide fills. Never re-floods. Just:
+  //   1. clearRect the canvas
+  //   2. composite stored per-fill snapshots for visible ids in paint order
+  //
+  const restoreFills = useCallback((
+    visibleIds: Set<number>,
+    fillCanvas: HTMLCanvasElement,
+  ) => {
+    const ctx = fillCanvas.getContext('2d');
+    if (!ctx) return;
+
+    const w = fillCanvas.width;
+    const h = fillCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    if (visibleIds.size === 0) return;
+
+    // Build a composite ImageData by layering snapshots in original paint order
+    const composite = new ImageData(w, h);
+
+    for (const id of fillOrder.current) {
+      if (!visibleIds.has(id)) continue;
+      const snap = fillSnapshots.current.get(id);
+      if (!snap) continue;
+      // If canvas was resized the snapshot dims won't match — skip safely
+      if (snap.width !== w || snap.height !== h) continue;
+      compositeOver(composite, snap);
+    }
+
+    ctx.putImageData(composite, 0, 0);
+  }, []);
+
+  // ── repaintFillColor ──────────────────────────────────────────────────────
+  //
+  // Rebuild a fill's snapshot in a new color then call restoreFills.
+  //
+  const repaintFillColor = useCallback((
+    id:         number,
+    newColor:   string,
+    visibleIds: Set<number>,
+    fillCanvas: HTMLCanvasElement,
+  ) => {
+    const pixMap = pixelMaps.current.get(id);
+    if (!pixMap) return;
+    const w = fillCanvas.width;
+    const h = fillCanvas.height;
+    const [r, g, b] = hexToRgb(newColor);
+    // Rebuild the snapshot for this fill with the new color
+    const newSnap = paintFillToSnapshot(pixMap, w, h, r, g, b, 40 / 100);
+    fillSnapshots.current.set(id, newSnap);
+    restoreFills(visibleIds, fillCanvas);
+  }, [restoreFills]);
 
   // ── fillAt ────────────────────────────────────────────────────────────────
   const fillAt = useCallback((
@@ -627,9 +712,15 @@ export function useMagicFill(): MagicFillAPI {
     }
 
     const grown = dilateFast(filledCanvas, fw, fh, FILL_GROW);
-    const fd    = ensureFillData(fillCanvas);
     const [r, g, b] = hexToRgb(color);
-    paintFill(grown, fd, r, g, b, opacity / 100);
+
+    // Build a per-fill snapshot (isolated, transparent background)
+    const snap = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
+
+    // Composite this new fill ON TOP of whatever is already on the canvas
+    // by reading the current canvas, compositing, then writing back.
+    const fd = getFreshFillData(fillCanvas);
+    compositeOver(fd, snap);
     fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
 
     const { areaPx, perimPx, polygon } = processMask(grown, fw, fh);
@@ -640,10 +731,11 @@ export function useMagicFill(): MagicFillAPI {
     };
 
     pixelMaps.current.set(fill.id, grown);
+    fillSnapshots.current.set(fill.id, snap);
     fillOrder.current.push(fill.id);
 
     return fill;
-  }, [ensureFillData]);
+  }, [getFreshFillData]);
 
   // ── fillRect ──────────────────────────────────────────────────────────────
   const fillRect = useCallback(async (
@@ -669,7 +761,8 @@ export function useMagicFill(): MagicFillAPI {
     const regionsMask = findRegionsInRect(mask, mw, mh, mrx1, mry1, mrx2, mry2);
     if (regionsMask.length === 0) return [];
 
-    const fd  = ensureFillData(fillCanvas);
+    // Start with current canvas pixels
+    const fd = getFreshFillData(fillCanvas);
     const [r, g, b] = hexToRgb(color);
     const scaleToCanvas = fw / mw;
     const newFills: MagicFill[] = [];
@@ -695,7 +788,8 @@ export function useMagicFill(): MagicFillAPI {
       }
 
       const grown = dilateFast(filledCanvas, fw, fh, FILL_GROW);
-      paintFill(grown, fd, r, g, b, opacity / 100);
+      const snap  = paintFillToSnapshot(grown, fw, fh, r, g, b, opacity / 100);
+      compositeOver(fd, snap);
 
       if (i % 5 === 0 || i === regionsMask.length - 1) {
         fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
@@ -710,6 +804,7 @@ export function useMagicFill(): MagicFillAPI {
       };
 
       pixelMaps.current.set(fill.id, grown);
+      fillSnapshots.current.set(fill.id, snap);
       fillOrder.current.push(fill.id);
       newFills.push(fill);
     }
@@ -718,7 +813,7 @@ export function useMagicFill(): MagicFillAPI {
     onProgress?.(regionsMask.length, regionsMask.length);
 
     return newFills;
-  }, [ensureFillData]);
+  }, [getFreshFillData]);
 
   // ── fillHoles ─────────────────────────────────────────────────────────────
   const fillHoles = useCallback((
@@ -732,19 +827,26 @@ export function useMagicFill(): MagicFillAPI {
     const fw = fillCanvas.width, fh = fillCanvas.height;
     const closed = closeHoles(pixMap, fw, fh);
 
+    // Build the additional pixels (just the holes)
     const added = new Uint8Array(fw * fh);
     for (let i = 0; i < fw * fh; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
 
     const [r, g, b] = hexToRgb(fill.color);
-    const fd = ensureFillData(fillCanvas);
-    paintFill(added, fd, r, g, b, fill.opacity / 100);
+
+    // Paint added pixels onto canvas
+    const fd = getFreshFillData(fillCanvas);
+    const addedSnap = paintFillToSnapshot(added, fw, fh, r, g, b, fill.opacity / 100);
+    compositeOver(fd, addedSnap);
     fillCanvas.getContext('2d')!.putImageData(fd, 0, 0);
 
+    // Update the stored pixel map and snapshot for this fill
     pixelMaps.current.set(id, closed);
+    const fullSnap = paintFillToSnapshot(closed, fw, fh, r, g, b, fill.opacity / 100);
+    fillSnapshots.current.set(id, fullSnap);
 
     const { areaPx, perimPx, polygon } = processMask(closed, fw, fh);
     return { areaPx, perimPx, polygon };
-  }, [ensureFillData]);
+  }, [getFreshFillData]);
 
   return {
     get ready() { return readyRef.current; },
@@ -759,5 +861,7 @@ export function useMagicFill(): MagicFillAPI {
     getPixelAt,
     registerFill,
     unregisterFill,
+    restoreFills,
+    repaintFillColor,
   };
 }

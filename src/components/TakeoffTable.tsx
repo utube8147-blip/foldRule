@@ -580,7 +580,7 @@ export function TakeoffTable({
                             {allItemsVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
                           </button>
                           <button
-                            onClick={(e) => { e.stopPropagation(); onAddSegmentToGroup?.(groupId, header.type); }}
+                            onClick={(e) => { e.stopPropagation(); onAddSegmentToGroup?.(groupId, header.groupType || header.type); }}
                             className="text-zinc-600 hover:text-blue-400 transition-colors"
                             title="Add segment to this group"
                           >

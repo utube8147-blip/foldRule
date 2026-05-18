@@ -2,13 +2,22 @@
 
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-//  FIX: mfPxPerM renamed to mfMetersPerPixel throughout, and the prop name
-//  passed to all MagicFillUI components updated from pxPerM → metersPerPixel.
-//  This matches the corrected fmtArea/fmtPerim signatures in MagicFillUI.tsx
-//  which now MULTIPLY by metersPerPixel instead of dividing.
+//  FIXES APPLIED IN THIS VERSION:
 //
-//  scaleFactor = real / ptLen  (meters per pixel), so we store and pass it
-//  as-is — no inversion needed here.
+//  FIX A — Eye icon stacking paint bug:
+//    Before re-flooding visible fills in the unified sync effect, we now call
+//    magicFill.unregisterFill(f.id) on every fill that will be repainted.
+//    This clears the internal pixel registry so fillAt() does a clean flood
+//    instead of stacking a new layer on top of already-claimed pixels.
+//
+//  FIX B — Group eye toggle not hiding/showing all child fills:
+//    Previously the sync effect only checked each fill's OWN row (child row)
+//    visibility. But when you click the eye on a GROUP HEADER row, only the
+//    header's isVisible flips — the child rows keep isVisible=true. So child
+//    fills were never hidden.
+//    Fix: for each surviving fill, also check if its parent header row is
+//    hidden. If the header is hidden → treat the fill as hidden too.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -16,7 +25,7 @@ import React, {
 } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFPageProxy } from 'pdfjs-dist';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
@@ -50,7 +59,6 @@ import {
   MagicFillHoverTooltip,
   MagicFillGroupPanel,
   MagicFillSelectedPanel,
-  MagicFillSidebar,
   fmtArea,
   fmtPerim,
 } from '@/components/Viewer/MagicFillUI';
@@ -62,6 +70,7 @@ export function Viewer({
   measurements,
   onAddMeasurement: onAddMeasurementProp,
   onUpdateMeasurement: onUpdateMeasurementProp,
+  onDeleteMeasurement: onDeleteMeasurementProp,
   scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
   showPresetDrawer, onClosePresetDrawer, onSelectPreset,
   hideToolbar = false,
@@ -87,7 +96,7 @@ export function Viewer({
     [],
   );
 
-  // ── Magic Fill UI state ────────────────────────────────────────────────────
+  // ── Magic Fill committed state (mirrors what is in TakeoffContext) ─────────
   const [magicFills,         setMagicFills]         = useState<MagicFill[]>([]);
   const [mfHiddenIds,        setMfHiddenIds]        = useState<Set<number>>(new Set());
   const [mfSelectedId,       setMfSelectedId]       = useState<number | null>(null);
@@ -99,18 +108,35 @@ export function Viewer({
   const [mfFillMsg,          setMfFillMsg]          = useState('');
   const [mfFillSub,          setMfFillSub]          = useState<string | undefined>(undefined);
   const [mfFillProgress,     setMfFillProgress]     = useState<{ done: number; total: number } | null>(null);
-  // FIX: renamed from mfPxPerM to mfMetersPerPixel — scaleFactor is m/px, not px/m.
   const [mfMetersPerPixel,   setMfMetersPerPixel]   = useState<number | null>(null);
+
+  // ── Magic Fill session state ───────────────────────────────────────────────
+  const mfStagedFills        = useRef<MagicFill[]>([]);
+  const mfSessionColor       = useRef<string | null>(null);
+  const mfSessionHasSnapshot = useRef(false);
+  const [mfStagedCount,      setMfStagedCount]      = useState(0);
+
+  const [mfLastFillPos, setMfLastFillPos] = useState<{ x: number; y: number } | null>(null);
+
   const mfGroupCounter = useRef(0);
   const mfFillCounter  = useRef(0);
 
-  // FIX: store scaleFactor directly as metersPerPixel — no inversion.
+  // Maps magicFill numeric id → TakeoffRow string id, for delete/update sync.
+  const mfIdToRowId = useRef<Record<number, string>>({});
+
+  // Maps magicFill numeric id → origin point for canvas repaint on delete.
+  const mfFillOrigins = useRef<Record<number, { x: number; y: number; color: string; label: string }>>({});
+
   useEffect(() => {
     setMfMetersPerPixel(scaleFactor > 0 ? scaleFactor : null);
   }, [scaleFactor]);
 
   const magicFillsRef = useRef<MagicFill[]>([]);
   useEffect(() => { magicFillsRef.current = magicFills; }, [magicFills]);
+
+  // ── Dialog state for Magic Fill name prompt ────────────────────────────────
+  const [showMfNameDialog,   setShowMfNameDialog]   = useState(false);
+  const mfPendingCommitRef   = useRef<MagicFill[] | null>(null);
 
   // ── Core state ─────────────────────────────────────────────────────────────
   const [pdf, setPdf]               = useState<pdfjsLib.PDFDocumentProxy | null>(null);
@@ -164,7 +190,7 @@ export function Viewer({
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
-  // ── Dialog state ───────────────────────────────────────────────────────────
+  // ── Dialog state (calibration + measurement name) ──────────────────────────
   const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
   const [pendingPtLen,           setPendingPtLen]           = useState(0);
   const [calibrationInput,       setCalibrationInput]       = useState('');
@@ -249,7 +275,7 @@ export function Viewer({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfRenderCount, pdfDimensions]);
 
-  // ── Magic Fill: reset when drawing changes ─────────────────────────────────
+  // ── Magic Fill: full reset when drawing changes ────────────────────────────
   useEffect(() => {
     const fc = fillCanvasRef.current;
     if (!fc) return;
@@ -260,11 +286,350 @@ export function Viewer({
     setMfSelectedGroup(null);
     setMfHoveredId(null);
     setMfHolesClosed(new Set());
-    mfFillCounter.current  = 0;
-    mfGroupCounter.current = 0;
+    mfFillCounter.current      = 0;
+    mfGroupCounter.current     = 0;
+    mfIdToRowId.current        = {};
+    mfFillOrigins.current      = {};
+    mfStagedFills.current      = [];
+    mfSessionColor.current     = null;
+    mfSessionHasSnapshot.current = false;
+    setMfStagedCount(0);
+    setMfLastFillPos(null);
     resetFillColorIdx();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDrawingId]);
+
+  // ── Magic Fill: abort current session (escape / tool-switch) ──────────────
+  const handleMagicAbortSession = useCallback(() => {
+    const fc = fillCanvasRef.current;
+    if (mfStagedFills.current.length === 0) return;
+
+    mfStagedFills.current.forEach(f => magicFill.unregisterFill(f.id));
+
+    if (mfSessionHasSnapshot.current && fc) {
+      magicFill.undo(fc);
+    }
+
+    mfStagedFills.current        = [];
+    mfSessionColor.current       = null;
+    mfSessionHasSnapshot.current = false;
+    setMfStagedCount(0);
+    setMfLastFillPos(null);
+    setMfSelectedId(null);
+    setMfSelectedGroup(null);
+  }, [magicFill]);
+
+  // ── Magic Fill: abort session on tool switch ───────────────────────────────
+  const prevToolRef = useRef(activeTool);
+  useEffect(() => {
+    const prev = prevToolRef.current;
+    prevToolRef.current = activeTool;
+
+    if (prev === 'magic-fill' && activeTool !== 'magic-fill') {
+      handleMagicAbortSession();
+    }
+  }, [activeTool, handleMagicAbortSession]);
+
+  // ── Magic Fill: convert a fill to a locked TakeoffRow ─────────────────────
+  const magicFillToRow = useCallback((
+    fill: MagicFill,
+    opts: { drawingId: string; parentId?: string; groupId?: string; id?: string },
+  ): TakeoffRow => {
+    const qty = mfMetersPerPixel
+      ? +(fill.areaPx * mfMetersPerPixel * mfMetersPerPixel).toFixed(4)
+      : fill.areaPx;
+    const unit = mfMetersPerPixel ? 'm²' : 'px²';
+    const perimStr = mfMetersPerPixel
+      ? `${(fill.perimPx * mfMetersPerPixel).toFixed(2)}m perimeter`
+      : `${fill.perimPx.toLocaleString()}px perimeter`;
+
+    return {
+      id:           opts.id ?? `mf-${fill.id}-${Date.now()}`,
+      drawingId:    opts.drawingId,
+      label:        fill.label,
+      description:  fill.label,
+      type:         'Area',
+      quantity:     qty,
+      unit,
+      unitRate:     0,
+      notes:        `Magic Fill · ${fill.polygon.length} boundary pts · ${perimStr} · ${fill.areaPx.toLocaleString()}px²`,
+      points:       [],
+      isOverridden: true,
+      childIds:     [],
+      color:        fill.color,
+      isVisible:    true,
+      icon:         '⊕',
+      parentId:     opts.parentId,
+      groupId:      opts.groupId,
+    } as TakeoffRow;
+  }, [mfMetersPerPixel]);
+
+  // ── Magic Fill: sync quantities when scale changes ─────────────────────────
+  useEffect(() => {
+    if (!mfMetersPerPixel || magicFillsRef.current.length === 0) return;
+    magicFillsRef.current.forEach(f => {
+      const rowId = mfIdToRowId.current[f.id];
+      if (!rowId) return;
+      const qty = +(f.areaPx * mfMetersPerPixel * mfMetersPerPixel).toFixed(4);
+      const perimStr = `${(f.perimPx * mfMetersPerPixel).toFixed(2)}m perimeter`;
+      onUpdateMeasurementProp?.(rowId, {
+        quantity: qty,
+        unit:     'm²',
+        notes:    `Magic Fill · ${f.polygon.length} boundary pts · ${perimStr} · ${f.areaPx.toLocaleString()}px²`,
+      });
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mfMetersPerPixel]);
+
+  // ── Magic Fill: ref that always holds the current hidden-id set ───────────
+  //
+  //  We need a ref — not just the mfHiddenIds state — because the sync effect
+  //  below only depends on `measurements`. If we compare newHidden against the
+  //  mfHiddenIds *state* inside that effect, we read a potentially-stale
+  //  closure value and the visibilityChanged diff silently returns false,
+  //  skipping the repaint entirely for single-child eye toggles.
+  //
+  const mfHiddenIdsRef = useRef<Set<number>>(new Set());
+
+  // Keep the ref in sync whenever state changes (state drives UI, ref drives effect)
+  useEffect(() => { mfHiddenIdsRef.current = mfHiddenIds; }, [mfHiddenIds]);
+
+  // ── Magic Fill: unified sync — deletion + visibility + color ──────────────
+  //
+  //  Single effect that handles every case requiring a canvas repaint:
+  //
+  //   1. ROW DELETED        → unregister fill, remove from state, repaint
+  //   2. CHILD EYE TOGGLED  → hide/show that one fill's flood paint + outline
+  //   3. GROUP EYE TOGGLED  → hide/show all child fills in the group
+  //   4. COLOR CHANGED      → repaint fill with new color
+  //
+  //  KEY INVARIANT — registry must always match canvas pixels:
+  //    clearRect() wipes all canvas pixels, so EVERY fill's registry entry
+  //    must also be cleared before any fillAt() call, whether the fill is
+  //    currently hidden or visible. If a hidden fill keeps its registry entry,
+  //    fillAt() treats those pixel positions as already-claimed when the fill
+  //    becomes visible again, causing it to flood on top of stale data and
+  //    appear thicker on each show/hide cycle.
+  //
+  //  WHY ref NOT state for the old-hidden comparison:
+  //    This effect only lists `measurements` as its dependency. Reading
+  //    mfHiddenIds *state* inside the effect gives a stale closure value —
+  //    the diff (visibilityChanged) returns false and the repaint is skipped
+  //    for single-child eye-toggles. mfHiddenIdsRef.current is always fresh.
+  //
+  useEffect(() => {
+    if (magicFillsRef.current.length === 0) return;
+
+    const currentRowIds = new Set(measurements.map(m => m.id));
+    const rowById       = new Map(measurements.map(m => [m.id, m]));
+
+    // ── Build set of groupIds whose header is hidden ───────────────────────
+    //  Clicking eye on a group header only flips the header's isVisible.
+    //  Child rows stay isVisible:true, so we must propagate header-hidden
+    //  status down to each child fill ourselves.
+    const hiddenGroupIds = new Set<string>();
+    measurements.forEach(m => {
+      if (m.isGroupHeader && m.isVisible === false && m.groupId) {
+        hiddenGroupIds.add(m.groupId);
+      }
+    });
+
+    // ── 1. Detect deleted fills ────────────────────────────────────────────
+    const deletedFillIds: number[] = [];
+    Object.entries(mfIdToRowId.current).forEach(([fillIdStr, rowId]) => {
+      if (!currentRowIds.has(rowId)) {
+        deletedFillIds.push(Number(fillIdStr));
+      }
+    });
+
+    deletedFillIds.forEach(fillId => {
+      magicFill.unregisterFill(fillId);
+      delete mfIdToRowId.current[fillId];
+      delete mfFillOrigins.current[fillId];
+    });
+
+    // Fills that still exist after deletion
+    const survivingFills = magicFillsRef.current.filter(
+      f => !deletedFillIds.includes(f.id),
+    );
+
+    // ── 2. Compute new hidden set + detect color changes ───────────────────
+    const newHidden = new Set<number>();
+    let needsColorUpdate = false;
+
+    survivingFills.forEach(f => {
+      const rowId = mfIdToRowId.current[f.id];
+      if (!rowId) return;
+      const row = rowById.get(rowId);
+      if (!row) return;
+
+      // Hidden if own row hidden OR parent group header hidden
+      if (
+        row.isVisible === false ||
+        (row.groupId != null && hiddenGroupIds.has(row.groupId))
+      ) {
+        newHidden.add(f.id);
+      }
+
+      // Color change detection — update stored origin if changed
+      const origin = mfFillOrigins.current[f.id];
+      if (origin && row.color && row.color !== origin.color) {
+        mfFillOrigins.current[f.id] = { ...origin, color: row.color };
+        needsColorUpdate = true;
+      }
+    });
+
+    // ── 3. Decide whether a canvas repaint is needed ───────────────────────
+    //  Compare against mfHiddenIdsRef (always current) NOT mfHiddenIds state
+    //  (potentially stale inside this closure).
+    const prevHidden = mfHiddenIdsRef.current;
+    const visibilityChanged =
+      newHidden.size !== prevHidden.size ||
+      [...newHidden].some(id => !prevHidden.has(id)) ||
+      [...prevHidden].some(id => !newHidden.has(id));
+
+    if (deletedFillIds.length > 0 || visibilityChanged || needsColorUpdate) {
+      const fc = fillCanvasRef.current;
+      if (fc) {
+        const ctx = fc.getContext('2d');
+        if (ctx) {
+          // Wipe the canvas completely
+          ctx.clearRect(0, 0, fc.width, fc.height);
+
+          // Unregister EVERY surviving fill — hidden and visible alike —
+          // so the pixel registry matches the now-empty canvas. Hidden fills
+          // must be cleared too; otherwise their stale registry entries block
+          // fillAt() from flooding cleanly when they become visible again.
+          survivingFills.forEach(f => magicFill.unregisterFill(f.id));
+
+          // Re-flood only the visible fills into the clean registry
+          survivingFills.forEach(f => {
+            if (newHidden.has(f.id)) return; // hidden — do not paint
+
+            const origin = mfFillOrigins.current[f.id];
+            if (!origin) return;
+
+            magicFill.fillAt(origin.x, origin.y, fc, origin.color, 40, origin.label);
+          });
+        }
+      }
+
+      // Commit new hidden set to both ref (immediate) and state (triggers
+      // MagicFillCanvas to hide/show polygon outlines on next render)
+      mfHiddenIdsRef.current = newHidden;
+      setMfHiddenIds(newHidden);
+
+      // Remove deleted fills and apply color updates to local state
+      if (deletedFillIds.length > 0 || needsColorUpdate) {
+        setMagicFills(
+          survivingFills.map(f => {
+            const origin = mfFillOrigins.current[f.id];
+            if (origin && origin.color !== f.color) {
+              return { ...f, color: origin.color };
+            }
+            return f;
+          }),
+        );
+      }
+    }
+  }, [measurements]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Magic Fill: commit staged fills to TakeoffContext ─────────────────────
+  const handleMagicCommitSession = useCallback((name: string) => {
+    const staged = mfPendingCommitRef.current;
+    if (!staged || staged.length === 0 || !activeDrawingId) return;
+
+    const sessionColor = mfSessionColor.current ?? staged[0].color;
+
+    mfGroupCounter.current += 1;
+    const groupId = mfGroupCounter.current;
+    const headerId = `mf-group-${groupId}-${Date.now()}`;
+
+    const childRows = staged.map(f => {
+      const row = magicFillToRow(f, {
+        drawingId: activeDrawingId,
+        parentId:  headerId,
+        groupId:   String(groupId),
+        id:        `mf-${f.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      });
+      mfIdToRowId.current[f.id] = row.id;
+      return row;
+    });
+
+    const totalQty = childRows.reduce((s, r) => s + r.quantity, 0);
+
+    const headerRow: TakeoffRow = {
+      id:            headerId,
+      drawingId:     activeDrawingId,
+      label:         name,
+      description:   name,
+      groupName:     name,
+      type:          'Area',
+      groupType:     'magic-fill',
+      quantity:      +totalQty.toFixed(4),
+      unit:          mfMetersPerPixel ? 'm²' : 'px²',
+      unitRate:      0,
+      notes:         `${staged.length} region${staged.length !== 1 ? 's' : ''} from Magic Fill`,
+      points:        [],
+      isOverridden:  true,
+      isGroupHeader: true,
+      isExpanded:    true,
+      childIds:      childRows.map(r => r.id),
+      groupId:       String(groupId),
+      color:         sessionColor,
+      isVisible:     true,
+      icon:          '⊕',
+    } as TakeoffRow;
+
+    batchCommitMeasurements([headerRow, ...childRows]);
+
+    setMagicFills(prev => [...prev, ...staged]);
+    setMfSelectedId(null);
+    setMfSelectedGroup(groupId);
+
+    mfStagedFills.current        = [];
+    mfSessionColor.current       = null;
+    mfSessionHasSnapshot.current = false;
+    mfPendingCommitRef.current   = null;
+    setMfStagedCount(0);
+    setMfLastFillPos(null);
+  }, [activeDrawingId, magicFillToRow, mfMetersPerPixel, batchCommitMeasurements]);
+
+  // ── Magic Fill: open name dialog (Finish button) ───────────────────────────
+  const handleMagicFinish = useCallback(() => {
+    if (mfStagedFills.current.length === 0) return;
+    mfPendingCommitRef.current = [...mfStagedFills.current];
+    setPendingMeasurementData({
+      id:          'mf-session',
+      type:        'Area',
+      description: `Magic Fill Group ${mfGroupCounter.current + 1}`,
+    });
+    setShowMfNameDialog(true);
+  }, []);
+
+  const handleMfNameConfirm = useCallback((name: string) => {
+    setShowMfNameDialog(false);
+    handleMagicCommitSession(
+      name.trim() || `Magic Fill Group ${mfGroupCounter.current + 1}`,
+    );
+  }, [handleMagicCommitSession]);
+
+  const handleMfNameSkip = useCallback(() => {
+    setShowMfNameDialog(false);
+    handleMagicCommitSession(`Magic Fill Group ${mfGroupCounter.current + 1}`);
+  }, [handleMagicCommitSession]);
+
+  // ── Magic Fill: core session start helper ──────────────────────────────────
+  const mfEnsureSessionStart = useCallback((fc: HTMLCanvasElement): string => {
+    if (!mfSessionHasSnapshot.current) {
+      magicFill.pushSnapshot(fc);
+      mfSessionHasSnapshot.current = true;
+    }
+    if (!mfSessionColor.current) {
+      mfSessionColor.current = getNextFillColor();
+    }
+    return mfSessionColor.current;
+  }, [magicFill]);
 
   // ── Magic Fill: single click ───────────────────────────────────────────────
   const handleMagicSingleClick = useCallback(async (canvasX: number, canvasY: number) => {
@@ -277,13 +642,22 @@ export function Viewer({
     setMfFillProgress(null);
     await yieldFrame();
 
-    magicFill.pushSnapshot(fc);
+    if (propAppendToGroupId && !mfSessionColor.current) {
+      const existingHeader = measurements.find(
+        m => m.isGroupHeader && (m.id === propAppendToGroupId || m.groupId === propAppendToGroupId),
+      );
+      if (existingHeader?.color) {
+        mfSessionColor.current = existingHeader.color;
+      }
+    }
+
+    const color = mfEnsureSessionStart(fc);
+
     setMfFillMsg('Flood filling region');
     await yieldFrame();
 
     mfFillCounter.current += 1;
     const label = `Fill ${mfFillCounter.current}`;
-    const color = getNextFillColor();
 
     setMfFillMsg('Growing fill');
     await yieldFrame();
@@ -291,8 +665,12 @@ export function Viewer({
     const result = magicFill.fillAt(canvasX, canvasY, fc, color, 40, label);
 
     if (!result) {
-      magicFill.undo(fc);
       mfFillCounter.current -= 1;
+      if (mfStagedFills.current.length === 0 && mfSessionHasSnapshot.current) {
+        magicFill.undo(fc);
+        mfSessionHasSnapshot.current = false;
+        mfSessionColor.current = null;
+      }
       setMfIsFilling(false);
       setMfFillMsg('');
       return;
@@ -301,12 +679,63 @@ export function Viewer({
     setMfFillMsg('Measuring');
     await yieldFrame();
 
-    setMagicFills(prev => [...prev, result]);
+    // ── Append mode: auto-commit immediately ─────────────────────────────────
+    if (propAppendToGroupId && activeDrawingId) {
+      const existingHeader = measurements.find(
+        m => m.isGroupHeader && (m.id === propAppendToGroupId || m.groupId === propAppendToGroupId),
+      );
+      const existingGroupId = existingHeader?.groupId ?? propAppendToGroupId;
+      const existingColor   = existingHeader?.color   ?? color;
+
+      const namedResult = { ...result, color: existingColor };
+      const row = magicFillToRow(namedResult, {
+        drawingId: activeDrawingId,
+        parentId:  propAppendToGroupId,
+        groupId:   existingGroupId,
+      });
+      mfIdToRowId.current[result.id] = row.id;
+      mfFillOrigins.current[result.id] = { x: canvasX, y: canvasY, color: existingColor, label: namedResult.label };
+      onAddMeasurementProp?.(row);
+
+      if (existingHeader) {
+        const newQty = +(existingHeader.quantity + row.quantity).toFixed(4);
+        onUpdateMeasurementProp?.(existingHeader.id, {
+          quantity: newQty,
+          childIds: [...(existingHeader.childIds ?? []), row.id],
+        });
+      }
+
+      setMagicFills(prev => [...prev, namedResult]);
+      setMfSelectedId(result.id);
+      onAppendComplete?.();
+
+      setMfIsFilling(false);
+      setMfFillMsg('');
+      return;
+    }
+
+    // ── Normal mode: add to staging buffer ───────────────────────────────────
+    mfStagedFills.current = [...mfStagedFills.current, result];
+    setMfStagedCount(mfStagedFills.current.length);
     setMfSelectedId(result.id);
     setMfSelectedGroup(null);
+
+    // Store origin for canvas repaint on delete
+    mfFillOrigins.current[result.id] = { x: canvasX, y: canvasY, color, label: result.label };
+
+    if (result.polygon.length > 0 && mfStagedFills.current.length === 1) {
+      const cx = result.polygon.reduce((s, p) => s + p[0], 0) / result.polygon.length;
+      const cy = result.polygon.reduce((s, p) => s + p[1], 0) / result.polygon.length;
+      setMfLastFillPos({ x: cx, y: cy });
+    }
+
     setMfIsFilling(false);
     setMfFillMsg('');
-  }, [mfIsFilling, magicFill, yieldFrame]);
+  }, [
+    mfIsFilling, magicFill, yieldFrame, mfEnsureSessionStart,
+    propAppendToGroupId, activeDrawingId, measurements,
+    magicFillToRow, onAddMeasurementProp, onUpdateMeasurementProp, onAppendComplete,
+  ]);
 
   // ── Magic Fill: batch rect ─────────────────────────────────────────────────
   const handleMagicBatchRect = useCallback(async (
@@ -322,14 +751,19 @@ export function Viewer({
     setMfFillProgress(null);
     await yieldFrame();
 
-    magicFill.pushSnapshot(fc);
+    if (propAppendToGroupId && !mfSessionColor.current) {
+      const existingHeader = measurements.find(
+        m => m.isGroupHeader && (m.id === propAppendToGroupId || m.groupId === propAppendToGroupId),
+      );
+      if (existingHeader?.color) {
+        mfSessionColor.current = existingHeader.color;
+      }
+    }
 
-    mfGroupCounter.current += 1;
-    const groupId = mfGroupCounter.current;
-    const color   = getNextFillColor();
+    const color = mfEnsureSessionStart(fc);
 
     const results = await magicFill.fillRect(
-      x1, y1, x2, y2, fc, color, 40, `Fill`, groupId,
+      x1, y1, x2, y2, fc, color, 40, 'Fill', 0,
       (done, total) => {
         setMfFillProgress({ done, total });
         setMfFillMsg(`Filling region ${done + 1} / ${total}`);
@@ -338,8 +772,11 @@ export function Viewer({
     );
 
     if (results.length === 0) {
-      magicFill.undo(fc);
-      mfGroupCounter.current -= 1;
+      if (mfStagedFills.current.length === 0 && mfSessionHasSnapshot.current) {
+        magicFill.undo(fc);
+        mfSessionHasSnapshot.current = false;
+        mfSessionColor.current = null;
+      }
       setMfIsFilling(false);
       setMfFillMsg('');
       setMfFillProgress(null);
@@ -350,19 +787,88 @@ export function Viewer({
     setMfFillSub(undefined);
     await yieldFrame();
 
+    const startIdx = mfFillCounter.current;
     const numbered = results.map((r, i) => ({
       ...r,
-      label: `Fill ${mfFillCounter.current + i + 1}`,
+      label: `Fill ${startIdx + i + 1}`,
     }));
     mfFillCounter.current += results.length;
 
-    setMagicFills(prev => [...prev, ...numbered]);
+    // ── Append mode: auto-commit batch immediately ────────────────────────────
+    if (propAppendToGroupId && activeDrawingId) {
+      const existingHeader = measurements.find(
+        m => m.isGroupHeader && (m.id === propAppendToGroupId || m.groupId === propAppendToGroupId),
+      );
+      const existingGroupId = existingHeader?.groupId ?? propAppendToGroupId;
+      const existingColor   = existingHeader?.color   ?? color;
+
+      const coloredResults = numbered.map(r => ({ ...r, color: existingColor }));
+      const childRows = coloredResults.map(f => {
+        const row = magicFillToRow(f, {
+          drawingId: activeDrawingId,
+          parentId:  propAppendToGroupId,
+          groupId:   existingGroupId,
+          id:        `mf-${f.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        });
+        mfIdToRowId.current[f.id] = row.id;
+        if (f.polygon.length > 0) {
+          const cx = f.polygon.reduce((s, p) => s + p[0], 0) / f.polygon.length;
+          const cy = f.polygon.reduce((s, p) => s + p[1], 0) / f.polygon.length;
+          mfFillOrigins.current[f.id] = { x: cx, y: cy, color: existingColor, label: f.label };
+        }
+        return row;
+      });
+
+      const addedQty = childRows.reduce((s, r) => s + r.quantity, 0);
+      batchCommitMeasurements(childRows);
+
+      if (existingHeader) {
+        const newQty = +(existingHeader.quantity + addedQty).toFixed(4);
+        onUpdateMeasurementProp?.(existingHeader.id, {
+          quantity: newQty,
+          childIds: [...(existingHeader.childIds ?? []), ...childRows.map(r => r.id)],
+        });
+      }
+
+      setMagicFills(prev => [...prev, ...coloredResults]);
+      setMfSelectedId(null);
+      onAppendComplete?.();
+
+      setMfIsFilling(false);
+      setMfFillMsg('');
+      setMfFillProgress(null);
+      return;
+    }
+
+    // ── Normal mode: add batch to staging buffer ──────────────────────────────
+    mfStagedFills.current = [...mfStagedFills.current, ...numbered];
+    setMfStagedCount(mfStagedFills.current.length);
     setMfSelectedId(null);
-    setMfSelectedGroup(groupId);
+    setMfSelectedGroup(null);
+
+    numbered.forEach(f => {
+      if (f.polygon.length > 0) {
+        const cx = f.polygon.reduce((s, p) => s + p[0], 0) / f.polygon.length;
+        const cy = f.polygon.reduce((s, p) => s + p[1], 0) / f.polygon.length;
+        mfFillOrigins.current[f.id] = { x: cx, y: cy, color, label: f.label };
+      }
+    });
+
+    if (mfStagedFills.current.length === numbered.length) {
+      setMfLastFillPos({
+        x: (x1 + x2) / 2,
+        y: (y1 + y2) / 2,
+      });
+    }
+
     setMfIsFilling(false);
     setMfFillMsg('');
     setMfFillProgress(null);
-  }, [mfIsFilling, magicFill, yieldFrame]);
+  }, [
+    mfIsFilling, magicFill, yieldFrame, mfEnsureSessionStart,
+    propAppendToGroupId, activeDrawingId, measurements,
+    magicFillToRow, batchCommitMeasurements, onUpdateMeasurementProp, onAppendComplete,
+  ]);
 
   // ── Magic Fill: hover ─────────────────────────────────────────────────────
   const handleMagicHover = useCallback((canvasX: number, canvasY: number) => {
@@ -372,7 +878,6 @@ export function Viewer({
     setMfHoveredId(id > 0 ? id : null);
     setMfHoverPos({ x: canvasX, y: canvasY });
   }, [magicFill]);
- 
 
   const handleMagicHoverLeave = useCallback(() => setMfHoveredId(null), []);
 
@@ -380,7 +885,9 @@ export function Viewer({
   const handleMagicFillHoles = useCallback(async (id: number) => {
     const fc = fillCanvasRef.current;
     if (!fc) return;
-    const fill = magicFillsRef.current.find(f => f.id === id);
+    const fill =
+      magicFillsRef.current.find(f => f.id === id) ??
+      mfStagedFills.current.find(f => f.id === id);
     if (!fill) return;
 
     setMfIsFilling(true);
@@ -389,13 +896,11 @@ export function Viewer({
     setMfFillProgress(null);
     await yieldFrame();
 
-    magicFill.pushSnapshot(fc);
     setMfFillMsg('Patching interior gaps');
     await yieldFrame();
 
     const result = magicFill.fillHoles(id, fill, fc);
     if (!result) {
-      magicFill.undo(fc);
       setMfIsFilling(false);
       setMfFillMsg('');
       return;
@@ -404,16 +909,66 @@ export function Viewer({
     setMfFillMsg('Measuring');
     await yieldFrame();
 
-    setMagicFills(prev => prev.map(f => f.id === id ? { ...f, ...result } : f));
+    const isStaged = mfStagedFills.current.some(f => f.id === id);
+    if (isStaged) {
+      mfStagedFills.current = mfStagedFills.current.map(
+        f => f.id === id ? { ...f, ...result } : f,
+      );
+    } else {
+      setMagicFills(prev => prev.map(f => f.id === id ? { ...f, ...result } : f));
+
+      const rowId = mfIdToRowId.current[id];
+      if (rowId && activeDrawingId) {
+        const qty = mfMetersPerPixel
+          ? +(result.areaPx * mfMetersPerPixel * mfMetersPerPixel).toFixed(4)
+          : result.areaPx;
+        const unit = mfMetersPerPixel ? 'm²' : 'px²';
+        const perimStr = mfMetersPerPixel
+          ? `${(result.perimPx * mfMetersPerPixel).toFixed(2)}m perimeter`
+          : `${result.perimPx.toLocaleString()}px perimeter`;
+        onUpdateMeasurementProp?.(rowId, {
+          quantity: qty, unit,
+          notes: `Magic Fill (holes closed) · ${result.polygon.length} boundary pts · ${perimStr} · ${result.areaPx.toLocaleString()}px²`,
+        });
+      }
+    }
+
     setMfHolesClosed(prev => new Set(prev).add(id));
     setMfIsFilling(false);
     setMfFillMsg('');
-  }, [magicFill, yieldFrame]);
+  }, [magicFill, yieldFrame, activeDrawingId, mfMetersPerPixel, onUpdateMeasurementProp]);
 
   // ── Magic Fill: undo ──────────────────────────────────────────────────────
   const handleMagicUndo = useCallback(() => {
     const fc = fillCanvasRef.current;
     if (!fc) return;
+
+    if (mfStagedFills.current.length > 0) {
+      const last = mfStagedFills.current[mfStagedFills.current.length - 1];
+
+      mfStagedFills.current = mfStagedFills.current.slice(0, -1);
+      magicFill.unregisterFill(last.id);
+      setMfStagedCount(mfStagedFills.current.length);
+
+      if (mfStagedFills.current.length === 0 && mfSessionHasSnapshot.current) {
+        magicFill.undo(fc);
+        mfSessionHasSnapshot.current = false;
+        mfSessionColor.current = null;
+      } else if (mfSessionHasSnapshot.current && mfStagedFills.current.length > 0) {
+        mfStagedFills.current.forEach(f => magicFill.unregisterFill(f.id));
+        magicFill.undo(fc);
+        mfSessionHasSnapshot.current = false;
+        mfSessionColor.current = null;
+        mfStagedFills.current = [];
+        setMfStagedCount(0);
+        mfFillCounter.current = Math.max(0, mfFillCounter.current - 1);
+      }
+
+      setMfSelectedId(null);
+      setMfSelectedGroup(null);
+      return;
+    }
+
     const ok = magicFill.undo(fc);
     if (!ok) return;
 
@@ -422,21 +977,37 @@ export function Viewer({
       const last = prev[prev.length - 1];
       if (last.groupId != null) {
         const gid = last.groupId;
-        prev.filter(f => f.groupId === gid).forEach(f => magicFill.unregisterFill(f.id));
+        prev.filter(f => f.groupId === gid).forEach(f => {
+          magicFill.unregisterFill(f.id);
+          const rowId = mfIdToRowId.current[f.id];
+          if (rowId) { onDeleteMeasurementProp?.(rowId); delete mfIdToRowId.current[f.id]; }
+        });
         return prev.filter(f => f.groupId !== gid);
       }
       magicFill.unregisterFill(last.id);
+      const rowId = mfIdToRowId.current[last.id];
+      if (rowId) { onDeleteMeasurementProp?.(rowId); delete mfIdToRowId.current[last.id]; }
       return prev.slice(0, -1);
     });
     setMfSelectedId(null);
     setMfSelectedGroup(null);
-  }, [magicFill]);
+  }, [magicFill, onDeleteMeasurementProp]);
 
   // ── Magic Fill: clear all ─────────────────────────────────────────────────
   const handleMagicClear = useCallback(() => {
     const fc = fillCanvasRef.current;
     if (!fc) return;
+
+    handleMagicAbortSession();
+
     magicFill.clearAll(fc);
+
+    Object.values(mfIdToRowId.current).forEach(rowId => {
+      onDeleteMeasurementProp?.(rowId);
+    });
+    mfIdToRowId.current   = {};
+    mfFillOrigins.current = {};
+
     setMagicFills([]);
     setMfHiddenIds(new Set());
     setMfSelectedId(null);
@@ -446,15 +1017,22 @@ export function Viewer({
     mfFillCounter.current  = 0;
     mfGroupCounter.current = 0;
     resetFillColorIdx();
-  }, [magicFill]);
+  }, [magicFill, handleMagicAbortSession, onDeleteMeasurementProp]);
 
-  // ── Magic Fill: delete single fill ────────────────────────────────────────
+  // ── Magic Fill: delete single committed fill ──────────────────────────────
   const handleMagicDelete = useCallback((id: number) => {
     magicFill.unregisterFill(id);
     setMagicFills(prev => prev.filter(f => f.id !== id));
     if (mfSelectedId === id) setMfSelectedId(null);
     if (mfHoveredId  === id) setMfHoveredId(null);
-  }, [magicFill, mfSelectedId, mfHoveredId]);
+
+    const rowId = mfIdToRowId.current[id];
+    if (rowId) {
+      onDeleteMeasurementProp?.(rowId);
+      delete mfIdToRowId.current[id];
+      delete mfFillOrigins.current[id];
+    }
+  }, [magicFill, mfSelectedId, mfHoveredId, onDeleteMeasurementProp]);
 
   // ── Magic Fill: toggle visibility ─────────────────────────────────────────
   const handleMagicToggleHide = useCallback((id: number) => {
@@ -502,7 +1080,7 @@ export function Viewer({
     }
   }, []);
 
-  // ── Finish + dialog flow ───────────────────────────────────────────────────
+  // ── Finish + dialog flow (polygon/rectangle/linear) ───────────────────────
   const handleFinishMeasurement = useCallback(() => {
     const minPts = activeTool === 'count' || activeTool === 'point' ? 1 : 2;
     if (tempPoints.length < minPts) { finishMeasurement(); return; }
@@ -692,6 +1270,14 @@ export function Viewer({
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement).tagName;
+
+      if (e.key === 'Escape') {
+        if (activeTool === 'magic-fill' && mfStagedFills.current.length > 0) {
+          handleMagicAbortSession();
+          return;
+        }
+      }
+
       if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
         const map: Record<string, ToolType> = {
           v: 'select', l: 'linear', r: 'rectangle',
@@ -708,7 +1294,7 @@ export function Viewer({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [fitToScreen, handleUndo, handleRedo, setActiveTool]);
+  }, [activeTool, fitToScreen, handleUndo, handleRedo, setActiveTool, handleMagicAbortSession]);
 
   // ── Wheel zoom ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -808,8 +1394,15 @@ export function Viewer({
 
   // ── Derived magic-fill state ───────────────────────────────────────────────
   const isMagicFillTool = activeTool === 'magic-fill';
-  const mfHoveredFill   = magicFills.find(f => f.id === mfHoveredId)  ?? null;
-  const mfSelectedFill  = magicFills.find(f => f.id === mfSelectedId) ?? null;
+
+  const allVisibleFills = useMemo(
+    () => [...magicFills, ...mfStagedFills.current],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [magicFills, mfStagedCount],
+  );
+
+  const mfHoveredFill   = allVisibleFills.find(f => f.id === mfHoveredId)  ?? null;
+  const mfSelectedFill  = allVisibleFills.find(f => f.id === mfSelectedId) ?? null;
   const mfGroupFills    = mfSelectedGroup != null
     ? magicFills.filter(f => f.groupId === mfSelectedGroup)
     : [];
@@ -859,10 +1452,22 @@ export function Viewer({
           onKeyDown={e => {
             if (e.code === 'Space') e.preventDefault();
             if (e.key === 'Escape') {
-              if (tempPoints.length > 0) handleFinishMeasurement();
-              else setActiveTool('select');
+              if (activeTool === 'magic-fill' && mfStagedFills.current.length > 0) {
+                handleMagicAbortSession();
+              } else if (tempPoints.length > 0) {
+                handleFinishMeasurement();
+              } else {
+                setActiveTool('select');
+              }
             }
-            if (e.key === 'Enter') { e.preventDefault(); if (tempPoints.length > 0) handleFinishMeasurement(); }
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (activeTool === 'magic-fill' && mfStagedFills.current.length > 0) {
+                handleMagicFinish();
+              } else if (tempPoints.length > 0) {
+                handleFinishMeasurement();
+              }
+            }
           }}
           onPointerDown={handlePointerDown}
           onPointerMove={handleContainerPointerMove}
@@ -900,7 +1505,7 @@ export function Viewer({
                 pdfDimensions={pdfDimensions}
                 active={isMagicFillTool}
                 isFilling={mfIsFilling}
-                fills={magicFills}
+                fills={allVisibleFills}
                 hiddenIds={mfHiddenIds}
                 selectedId={mfSelectedId}
                 selectedGroup={mfSelectedGroup}
@@ -909,6 +1514,26 @@ export function Viewer({
                 onHover={handleMagicHover}
                 onHoverLeave={handleMagicHoverLeave}
               />
+
+              {/* ── Floating Finish button ── */}
+              {isMagicFillTool &&
+                mfStagedCount > 0 &&
+                !mfIsFilling &&
+                !propAppendToGroupId &&
+                mfLastFillPos && (
+                  <button
+                    className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                    style={{
+                      left: mfLastFillPos.x + 15,
+                      top:  mfLastFillPos.y + 15,
+                    }}
+                    onClick={e => { e.stopPropagation(); handleMagicFinish(); }}
+                    onPointerDown={e => e.stopPropagation()}
+                  >
+                    <Check className="w-3 h-3" />
+                    Finish ({mfStagedCount} fill{mfStagedCount !== 1 ? 's' : ''})
+                  </button>
+                )}
 
               {isMagicFillTool && mfHoveredFill && !mfIsFilling && (
                 <MagicFillHoverTooltip
@@ -944,24 +1569,6 @@ export function Viewer({
             measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
           />
         </div>
-
-        {isMagicFillTool && (
-          <MagicFillSidebar
-            fills={magicFills}
-            hiddenIds={mfHiddenIds}
-            selectedId={mfSelectedId}
-            selectedGroup={mfSelectedGroup}
-            metersPerPixel={mfMetersPerPixel}
-            holesClosed={mfHolesClosed}
-            canUndo={true}
-            onSelect={(id) => { setMfSelectedId(id); setMfSelectedGroup(null); }}
-            onToggleHide={handleMagicToggleHide}
-            onDelete={handleMagicDelete}
-            onFillHoles={handleMagicFillHoles}
-            onUndo={handleMagicUndo}
-            onClear={handleMagicClear}
-          />
-        )}
       </div>
 
       {pdf && pdfDimensions && (
@@ -1000,10 +1607,15 @@ export function Viewer({
           <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
             {isMagicFillTool ? (
               <>
-                <span className="text-amber-400">
-                  ⊕ Magic Fill — {magicFills.length} fill{magicFills.length !== 1 ? 's' : ''}
+                <span className={mfStagedCount > 0 ? 'text-amber-400' : ''}>
+                  ⊕ Magic Fill
+                  {mfStagedCount > 0
+                    ? ` — ${mfStagedCount} staged`
+                    : magicFills.length > 0
+                    ? ` — ${magicFills.length} committed`
+                    : ''}
                 </span>
-                {magicFills.length > 0 && (
+                {magicFills.length > 0 && mfStagedCount === 0 && (
                   <>
                     <div className="w-px h-3 bg-industrial-border" />
                     <span>
@@ -1012,7 +1624,11 @@ export function Viewer({
                   </>
                 )}
                 <div className="w-px h-3 bg-industrial-border" />
-                <span>Click: fill · Drag: batch fill</span>
+                {mfStagedCount > 0 ? (
+                  <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
+                ) : (
+                  <span>Click: fill · Drag: batch fill</span>
+                )}
               </>
             ) : (
               <span>
@@ -1029,10 +1645,20 @@ export function Viewer({
         setCalibrationInput={setCalibrationInput}
         onConfirm={handleCalibrationConfirm} onCancel={() => setShowCalibrationDialog(false)}
       />
+
+      {/* Name dialog for normal measurements */}
       <MeasurementDetailsWired
         show={showMeasurementDialog} pendingMeasurementData={pendingMeasurementData}
         onConfirm={handleDialogConfirm} onSkip={handleDialogSkip}
       />
+
+      {/* Name dialog for Magic Fill finish */}
+      <MeasurementDetailsWired
+        show={showMfNameDialog} pendingMeasurementData={pendingMeasurementData}
+        onConfirm={(name, desc, icon) => handleMfNameConfirm(name)}
+        onSkip={handleMfNameSkip}
+      />
+
       <PresetDrawerWired
         showPresetDrawer={showPresetDrawer ?? false}
         onClosePresetDrawer={onClosePresetDrawer ?? (() => {})}

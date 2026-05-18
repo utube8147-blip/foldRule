@@ -3,10 +3,9 @@
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
 //
 // CHANGES:
-//   • externalShowRooms / onExternalShowRoomsChange props REMOVED from Viewer
-//   • showRooms / setShowRooms / detectingRooms props REMOVED from ViewerToolbar
-//   • showWalls / showVectors / showSvgOverlay / showSvgSnapDebug removed
-//   • Magic Fill tool works automatically — no workspace plumbing needed
+//   • onDeleteMeasurement={deleteMeasurement} passed to Viewer so magic fill
+//     delete/clear/undo can sync removals back to TakeoffContext.
+//   • No other changes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -305,6 +304,8 @@ export default function Workspace() {
       'Rectangle': 'rectangle',
       'Count':     'count',
       'Point':     'point',
+      'Area':      'magic-fill',
+      'magic-fill': 'magic-fill',
     };
     const newTool = toolMap[groupType] || 'linear';
     setActiveTool(newTool);
@@ -500,6 +501,7 @@ export default function Workspace() {
                 measurements={activeMeasurements}
                 onAddMeasurement={handleAddMeasurement}
                 onUpdateMeasurement={updateMeasurement}
+                onDeleteMeasurement={deleteMeasurement}
                 scaleFactor={currentScaleFactor}
                 onScaleSet={handleScaleSet}
                 activeDrawing={activeDrawing}
