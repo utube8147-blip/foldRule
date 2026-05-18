@@ -34,7 +34,11 @@ export const MAX_ZOOM = 8;
 export const pdfWorkerUrl =
   `/pdf.worker.min.js`;
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+export function initPdfWorker() {
+  if (typeof window === "undefined") return;
+  const lib = require("pdfjs-dist/legacy/build/pdf");
+  lib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+}
 
 // ─── Viewer tools ────────────────────────────────────────────────────────────
 

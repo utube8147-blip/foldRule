@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import pdfjsLib from "@/lib/pdfClient";
+import type * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
 import { Lock, Unlock, Crosshair } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { PdfDimensions } from '@/types/viewerTypes';

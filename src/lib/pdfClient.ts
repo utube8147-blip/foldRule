@@ -1,9 +1,9 @@
 // pdfClient.ts
-"use client";
+let pdfjsLib: typeof import("pdfjs-dist/legacy/build/pdf") | null = null;
 
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
-import { GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf";
-
-GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+if (typeof window !== "undefined") {
+  pdfjsLib = require("pdfjs-dist/legacy/build/pdf");
+  pdfjsLib!.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+}
 
 export default pdfjsLib;

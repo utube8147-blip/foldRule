@@ -1,24 +1,11 @@
 'use client';
 
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
-//
-//  Orchestration layer only. Heavy logic lives in:
-//    • useViewerPdf        — PDF load, render, zoom, pan, wrapStyle
-//    • useMagicFillSession — staged/session/commit fill orchestration
-//
-//  This file owns:
-//    • Canvas refs
-//    • Snap engine wiring
-//    • Measurements engine wiring
-//    • Toolbar API assembly
-//    • Dialog state (calibration, measurement name, magic-fill name)
-//    • Keyboard shortcuts
-//    • JSX render
 
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
-import pdfjsLib from "@/lib/pdfClient";
+import type * as pdfjsLibTypes from "pdfjs-dist/legacy/build/pdf";
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
@@ -54,6 +41,11 @@ import {
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
+function getPdfLib(): typeof pdfjsLibTypes {
+  if (typeof window === "undefined") throw new Error("pdfjs not available on server");
+  return require("pdfjs-dist/legacy/build/pdf");
+}
+
 interface PendingMeasurementData {
   id: string;
   type: string;
@@ -62,12 +54,6 @@ interface PendingMeasurementData {
 
 interface UndoRedoRefValue {
   setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
-}
-
-interface MagicFillHit {
-  id: number;
-  groupId: number | null;
-  areaPx: number;
 }
 
 export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
@@ -84,7 +70,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onToolbarReady,
   } = props as any;
 
-  // backward-compat: ViewerProps may not declare onDeleteMeasurement, read if present
   const onDeleteMeasurementProp = (props as any).onDeleteMeasurement as
     | ((...args: any[]) => any)
     | undefined;
@@ -97,8 +82,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const fillCanvasRef    = useRef<HTMLCanvasElement>(null!);
   const containerRef     = useRef<HTMLDivElement>(null!);
 
-  const activeDrawingId      = activeDrawing?.id     ?? null;
-  const activeDrawingUrl     = activeDrawing?.fileUrl ?? null;
+  const activeDrawingId  = activeDrawing?.id     ?? null;
+  const activeDrawingUrl = activeDrawing?.fileUrl ?? null;
 
   // ── Settings ───────────────────────────────────────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(true);
@@ -152,7 +137,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onScaleSet,
   });
 
-  // Normalize appendToGroupId: ensure it's string | undefined (not null)
   const appendToGroupId = propAppendToGroupId ?? undefined;
 
   // ── Snap engine ────────────────────────────────────────────────────────────
@@ -206,7 +190,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     activeTool, setActiveTool: setActiveToolString,
     measurements, tempPoints, pushPoint,
     commitMeasurement, batchCommitMeasurements,
-    appendToGroupId: appendToGroupId, onAppendComplete,
+    appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
     isPanning, snapToCorner: snapToCorner as any, getScaledCorners,
@@ -287,7 +271,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   // ── Toolbar API ────────────────────────────────────────────────────────────
   const toolbarAPI = useMemo(() => ({
-    // preserve tuple type of VIEWER_TOOLS to satisfy ViewerToolbarAPI
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
@@ -340,7 +323,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   }, [activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo, setActiveTool, handleMagicAbortSession, setScale]);
 
   // ── Pan: activeTool-aware container pointer down ───────────────────────────
-  // useViewerPdf exposes a generic handler; we add the 'select' tool condition here.
   const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
     if (
       e.button === 1 ||
@@ -447,7 +429,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               activeTool={activeTool} showPins={showPins} isPanning={isPanning} spaceHeld={spaceHeld}
               tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
               snapFlashes={snapFlashes.map(f => ({ ...f, id: String(f.id) }))} toCanvas={toCanvas}
-              readyToDraw={true /* controlled inside ViewerCanvas via its own guard */}
+              readyToDraw={true}
               handleCanvasClick={handleCanvasClick}
               handleContextMenu={handleContextMenu}
               handleCanvasPointerMove={handleCanvasPointerMove}
@@ -474,7 +456,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 onHoverLeave={handleMagicHoverLeave}
               />
 
-              {/* Floating Finish button */}
               {isMagicFillTool &&
                 mfStagedCount > 0 &&
                 !mfIsFilling &&
@@ -592,7 +573,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 Double-click or right-click to finish · ESC to cancel · Enter to finish
               </span>
             )}
-            <span>RENDER_ENGINE: PDF.JS V{pdfjsLib.version}</span>
+            <span>RENDER_ENGINE: PDF.JS V{getPdfLib().version}</span>
           </div>
         </div>
       )}
@@ -603,13 +584,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         onConfirm={handleCalibrationConfirm} onCancel={() => setShowCalibrationDialog(false)}
       />
 
-      {/* Regular measurement name dialog */}
       <MeasurementDetailsWired
         show={showMeasurementDialog} pendingMeasurementData={pendingMeasurementData}
         onConfirm={handleDialogConfirm} onSkip={handleDialogSkip}
       />
 
-      {/* Magic fill group name dialog — reuses same component, different state */}
       <MeasurementDetailsWired
         show={showMfNameDialog} pendingMeasurementData={pendingMfData}
         onConfirm={(name) => handleMfNameConfirm(name)}
