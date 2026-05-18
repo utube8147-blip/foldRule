@@ -31,10 +31,7 @@ export const MAX_ZOOM = 8;
 
 // ─── PDF worker ───────────────────────────────────────────────────────────────
 
-export const pdfWorkerUrl =
-  `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+import workerUrl from "pdfjs-dist/build/pdf.worker.min.js?url";
 
 // ─── Viewer tools ────────────────────────────────────────────────────────────
 
