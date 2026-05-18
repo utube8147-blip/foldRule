@@ -92,6 +92,9 @@ export function Viewer({
   const [mfFillProgress,     setMfFillProgress]     = useState<{ done: number; total: number } | null>(null);
   const [mfMetersPerPixel,   setMfMetersPerPixel]   = useState<number | null>(null);
 
+  // ── NEW: separate flag for background repaint (visibility / color changes) ─
+  const [mfIsRepainting,     setMfIsRepainting]     = useState(false);
+
   // ── Magic Fill session state ───────────────────────────────────────────────
   const mfStagedFills        = useRef<MagicFill[]>([]);
   const mfSessionColor       = useRef<string | null>(null);
@@ -365,9 +368,8 @@ export function Viewer({
 
   // ── Magic Fill: unified sync — deletion + visibility + color ──────────────
   //
-  //  FIX: fillAt now returns Promise<MagicFill | null>.
-  //  The re-flood loop uses an async IIFE with for...of + await so each call
-  //  resolves before the next begins (preserves paint order).
+  //  Shows the loading overlay immediately so the browser paint isn't blocked,
+  //  then re-floods visible fills one per animation frame to stay responsive.
   //
   useEffect(() => {
     if (magicFillsRef.current.length === 0) return;
@@ -400,7 +402,7 @@ export function Viewer({
 
     // 2. New hidden set + color changes
     const newHidden = new Set<number>();
-    let needsColorUpdate = false;
+    const colorChanges: Array<{ fill: MagicFill; newColor: string }> = [];
 
     survivingFills.forEach(f => {
       const rowId = mfIdToRowId.current[f.id];
@@ -417,53 +419,110 @@ export function Viewer({
 
       const origin = mfFillOrigins.current[f.id];
       if (origin && row.color && row.color !== origin.color) {
-        mfFillOrigins.current[f.id] = { ...origin, color: row.color };
-        needsColorUpdate = true;
+        colorChanges.push({ fill: f, newColor: row.color });
       }
     });
 
-    // 3. Repaint if anything changed
+    // 3. Decide what work is needed
     const prevHidden = mfHiddenIdsRef.current;
     const visibilityChanged =
       newHidden.size !== prevHidden.size ||
       [...newHidden].some(id => !prevHidden.has(id)) ||
       [...prevHidden].some(id => !newHidden.has(id));
 
-    if (deletedFillIds.length > 0 || visibilityChanged || needsColorUpdate) {
-      const fc = fillCanvasRef.current;
-      if (fc) {
-        const ctx = fc.getContext('2d');
-        if (ctx) {
-          ctx.clearRect(0, 0, fc.width, fc.height);
+    const needsFullRepaint  = deletedFillIds.length > 0 || visibilityChanged;
+    const needsColorRepaint = colorChanges.length > 0;
 
-          // Unregister every surviving fill so the registry matches the blank canvas
-          survivingFills.forEach(f => magicFill.unregisterFill(f.id));
+    if (!needsFullRepaint && !needsColorRepaint) return;
 
-          // Re-flood visible fills — async IIFE so we can await fillAt
-          // FIX: fillAt returns Promise; forEach cannot await, so use for...of
-          (async () => {
-            for (const f of survivingFills) {
-              if (newHidden.has(f.id)) continue;
-              const origin = mfFillOrigins.current[f.id];
-              if (!origin) continue;
-              await magicFill.fillAt(origin.x, origin.y, fc, origin.color, 40, origin.label);
-            }
-          })();
+    // Apply color changes to origin map immediately (before any async work)
+    colorChanges.forEach(({ fill, newColor }) => {
+      const origin = mfFillOrigins.current[fill.id];
+      if (origin) mfFillOrigins.current[fill.id] = { ...origin, color: newColor };
+    });
+
+    // Update hidden ref synchronously so the overlay knows the new state
+    mfHiddenIdsRef.current = newHidden;
+    setMfHiddenIds(newHidden);
+
+    const fc = fillCanvasRef.current;
+    if (!fc) return;
+
+    if (needsFullRepaint) {
+      // ── Full repaint path (visibility toggle / deletion) ─────────────────
+      //
+      //  1. Show the overlay immediately — setMfIsRepainting(true) is batched
+      //     with setMfHiddenIds above so React flushes them together.
+      //  2. Double-rAF ensures the overlay is actually painted to screen before
+      //     the heavy canvas loop begins.
+      //  3. Yield one frame between each fillAt so the browser can process
+      //     input events and the overlay progress remains visible.
+      //
+      setMfIsRepainting(true);
+
+      // Unregister every surviving fill — registry must match the blank canvas
+      survivingFills.forEach(f => magicFill.unregisterFill(f.id));
+
+      // Clear canvas synchronously
+      const ctx = fc.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, fc.width, fc.height);
+
+      (async () => {
+        // Double rAF: first frame commits the React state (overlay visible),
+        // second frame lets the browser actually paint it before heavy work.
+        await new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+        for (const f of survivingFills) {
+          if (newHidden.has(f.id)) continue;
+          const origin = mfFillOrigins.current[f.id];
+          if (!origin) continue;
+          await magicFill.fillAt(origin.x, origin.y, fc, origin.color, 40, origin.label);
+          // Yield one frame between fills so the browser stays interactive
+          await new Promise<void>(r => requestAnimationFrame(() => r()));
         }
-      }
 
-      mfHiddenIdsRef.current = newHidden;
-      setMfHiddenIds(newHidden);
+        setMfIsRepainting(false);
 
-      if (deletedFillIds.length > 0 || needsColorUpdate) {
-        setMagicFills(
-          survivingFills.map(f => {
-            const origin = mfFillOrigins.current[f.id];
-            if (origin && origin.color !== f.color) return { ...f, color: origin.color };
-            return f;
-          }),
-        );
-      }
+        if (deletedFillIds.length > 0 || needsColorRepaint) {
+          setMagicFills(
+            survivingFills.map(f => {
+              const origin = mfFillOrigins.current[f.id];
+              if (origin && origin.color !== f.color) return { ...f, color: origin.color };
+              return f;
+            }),
+          );
+        }
+      })();
+
+    } else if (needsColorRepaint) {
+      // ── Color-only repaint path ───────────────────────────────────────────
+      //
+      //  repaintFillColor is synchronous but cheap (pixel-map walk, no CCL/flood).
+      //  We still show the overlay briefly and defer via double-rAF so the
+      //  color picker interaction frame isn't blocked.
+      //
+      setMfIsRepainting(true);
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const visibleIds = new Set(
+            survivingFills.filter(f => !newHidden.has(f.id)).map(f => f.id),
+          );
+
+          colorChanges.forEach(({ fill, newColor }) => {
+            magicFill.repaintFillColor(fill.id, newColor, visibleIds, fc);
+          });
+
+          setMagicFills(prev =>
+            prev.map(f => {
+              const change = colorChanges.find(c => c.fill.id === f.id);
+              return change ? { ...f, color: change.newColor } : f;
+            }),
+          );
+
+          setMfIsRepainting(false);
+        });
+      });
     }
   }, [measurements]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -565,11 +624,6 @@ export function Viewer({
   }, [magicFill]);
 
   // ── Magic Fill: single click ───────────────────────────────────────────────
-  //
-  //  FIX: fillAt returns Promise<MagicFill | null> — must be awaited.
-  //  Without await, `result` was the Promise object itself, causing
-  //  `result.polygon` → undefined → `.length` crash.
-  //
   const handleMagicSingleClick = useCallback(async (canvasX: number, canvasY: number) => {
     const fc = fillCanvasRef.current;
     if (!fc || mfIsFilling) return;
@@ -600,7 +654,6 @@ export function Viewer({
     setMfFillMsg('Growing fill');
     await yieldFrame();
 
-    // ✅ FIX: await the Promise
     const result = await magicFill.fillAt(canvasX, canvasY, fc, color, 40, label);
 
     if (!result) {
@@ -1356,12 +1409,13 @@ export function Viewer({
 
       <div className="flex flex-1 overflow-hidden min-h-0 relative">
 
+        {/* Overlay shown for both active filling AND background repaint */}
         {isMagicFillTool && (
           <MagicFillProgressOverlay
-            active={mfIsFilling}
-            message={mfFillMsg}
-            sub={mfFillSub}
-            progress={mfFillProgress}
+            active={mfIsFilling || mfIsRepainting}
+            message={mfIsRepainting ? 'Updating fills…' : mfFillMsg}
+            sub={mfIsRepainting ? undefined : mfFillSub}
+            progress={mfIsRepainting ? null : mfFillProgress}
           />
         )}
 
@@ -1423,7 +1477,7 @@ export function Viewer({
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
                 active={isMagicFillTool}
-                isFilling={mfIsFilling}
+                isFilling={mfIsFilling || mfIsRepainting}
                 fills={allVisibleFills}
                 hiddenIds={mfHiddenIds}
                 selectedId={mfSelectedId}
@@ -1438,6 +1492,7 @@ export function Viewer({
               {isMagicFillTool &&
                 mfStagedCount > 0 &&
                 !mfIsFilling &&
+                !mfIsRepainting &&
                 !propAppendToGroupId &&
                 mfLastFillPos && (
                   <button
@@ -1451,7 +1506,7 @@ export function Viewer({
                   </button>
                 )}
 
-              {isMagicFillTool && mfHoveredFill && !mfIsFilling && (
+              {isMagicFillTool && mfHoveredFill && !mfIsFilling && !mfIsRepainting && (
                 <MagicFillHoverTooltip
                   fill={mfHoveredFill}
                   metersPerPixel={mfMetersPerPixel}
@@ -1460,7 +1515,7 @@ export function Viewer({
                 />
               )}
 
-              {isMagicFillTool && mfSelectedGroup != null && mfGroupFills.length > 0 && !mfHoveredFill && (
+              {isMagicFillTool && mfSelectedGroup != null && mfGroupFills.length > 0 && !mfHoveredFill && !mfIsRepainting && (
                 <MagicFillGroupPanel
                   groupFills={mfGroupFills}
                   groupId={mfSelectedGroup}
@@ -1469,7 +1524,7 @@ export function Viewer({
                 />
               )}
 
-              {isMagicFillTool && mfSelectedFill && mfSelectedGroup == null && !mfHoveredFill && (
+              {isMagicFillTool && mfSelectedFill && mfSelectedGroup == null && !mfHoveredFill && !mfIsRepainting && (
                 <MagicFillSelectedPanel
                   fill={mfSelectedFill}
                   metersPerPixel={mfMetersPerPixel}

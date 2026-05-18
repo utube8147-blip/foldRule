@@ -388,7 +388,10 @@ export function TakeoffTable({
         />
         <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: row.color || '#EF9F27' }} />
       </label>
-      <button onClick={(e) => { e.stopPropagation(); onToggleVisibility(row.id); }} className={cn('transition-colors', row.isVisible !== false ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}>
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleVisibility(row.id); }}
+        className={cn('transition-colors', row.isVisible !== false ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
+      >
         {row.isVisible !== false ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
       </button>
       <button onClick={(e) => { e.stopPropagation(); onDelete(row.id); }} className="text-zinc-700 hover:text-red-500 transition-colors">
@@ -484,7 +487,14 @@ export function TakeoffTable({
               const isGroupExpanded = expandedGroups.has(groupId);
               const groupTotalQuantity = calculateGroupTotal(items, 'quantity');
               const isEditingGroup = editingGroupId === groupId;
-              const allItemsVisible = items.every(item => item.isVisible !== false);
+
+              // ── FIX: group is "all visible" only when BOTH the header AND
+              //         all children have isVisible !== false.
+              //         This keeps the eye icon in sync with the actual canvas state.
+              const allItemsVisible =
+                header.isVisible !== false &&
+                items.every(item => item.isVisible !== false);
+
               const groupCopyText = `${groupTotalQuantity.toFixed(3)} ${items[0]?.unit ?? ''}`.trim();
               const isGroupCopied = copiedId === `group-${groupId}`;
 
@@ -568,17 +578,30 @@ export function TakeoffTable({
                             <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: header.color || '#EF9F27' }} />
                           </label>
 
+                          {/* ── FIX: single source of truth for the toggle.
+                                    Always batch-update header + all children together
+                                    so isVisible stays in sync across the whole group. */}
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               const newVisibility = !allItemsVisible;
-                              onToggleVisibility(header.id);
+                              // Update header and all children in one atomic batch
+                              onUpdate(header.id, { isVisible: newVisibility });
                               batchUpdateGroup(groupId, items, { isVisible: newVisibility });
                             }}
-                            className={cn('transition-colors', allItemsVisible ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
+                            className={cn(
+                              'transition-colors',
+                              allItemsVisible
+                                ? 'text-zinc-500 hover:text-amber-accent'
+                                : 'text-zinc-700 hover:text-amber-accent',
+                            )}
+                            title={allItemsVisible ? 'Hide group' : 'Show group'}
                           >
-                            {allItemsVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
+                            {allItemsVisible
+                              ? <Eye className="w-3 h-3" />
+                              : <EyeOff className="w-3 h-3" />}
                           </button>
+
                           <button
                             onClick={(e) => { e.stopPropagation(); onAddSegmentToGroup?.(groupId, header.groupType || header.type); }}
                             className="text-zinc-600 hover:text-blue-400 transition-colors"
