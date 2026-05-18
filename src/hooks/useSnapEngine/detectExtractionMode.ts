@@ -1,5 +1,5 @@
 // hooks/useSnapEngine/detectExtractionMode.ts
-import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from "@/lib/pdfClient";
 
 export type ExtractionMode = 'vector' | 'raster';
 

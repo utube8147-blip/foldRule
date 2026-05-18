@@ -1,8 +1,9 @@
+// pdfClient.ts
 "use client";
 
-import { GlobalWorkerOptions } from "pdfjs-dist";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
+import { GlobalWorkerOptions } from "pdfjs-dist/legacy/build/pdf";
 
-GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.js",
-  import.meta.url
-).toString();
+GlobalWorkerOptions.workerSrc = "/pdf.worker.min.js";
+
+export default pdfjsLib;

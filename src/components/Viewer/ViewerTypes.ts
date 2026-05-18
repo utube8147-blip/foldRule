@@ -3,7 +3,7 @@
 // ──────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from "@/lib/pdfClient";
 import {
   ZoomIn, ZoomOut, Maximize, Hash, Square, Minus,
   Activity, MousePointer, Ruler, MapPin,

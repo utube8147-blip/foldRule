@@ -16,7 +16,7 @@
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from "@/lib/pdfClient";
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { PdfDimensions } from '@/types/viewerTypes';
 

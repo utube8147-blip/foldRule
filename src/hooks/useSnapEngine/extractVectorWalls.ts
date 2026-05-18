@@ -1,5 +1,5 @@
 // hooks/useSnapEngine/extractVectorWalls.ts
-import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from "@/lib/pdfClient";
 
 export interface VectorWall {
   // Normalised coords [0,1] — same convention as raster path

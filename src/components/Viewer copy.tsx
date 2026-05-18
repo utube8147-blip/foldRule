@@ -5,7 +5,7 @@
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
+import pdfjsLib from "@/lib/pdfClient";
 import type { PDFPageProxy } from 'pdfjs-dist';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
