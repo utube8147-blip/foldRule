@@ -17,7 +17,7 @@ import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react';
 import pdfjsLib from "@/lib/pdfClient";
-import type { PDFPageProxy } from 'pdfjs-dist';
+import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
 import {
@@ -37,14 +37,14 @@ export interface UseViewerPdfOptions {
   activeDrawingUrl: string | null;
   activeDrawingFile?: File;
   /** Called after a new PDF is loaded so snap extraction can begin. */
-  onPdfLoaded?: (doc: pdfjsLib.PDFDocumentProxy, file?: File) => void;
+  onPdfLoaded?: (doc: PDFDocumentProxy, file?: File) => void;
   /** Called after each successful page render. */
   onPageRendered?: () => void;
   onScaleSet:      (metersPerPixel: number) => void;
 }
 
 export interface UseViewerPdfReturn {
-  pdf:              pdfjsLib.PDFDocumentProxy | null;
+  pdf:              PDFDocumentProxy | null;
   pageNumber:       number;
   setPageNumber:    (n: number) => void;
   loading:          boolean;
@@ -58,7 +58,7 @@ export interface UseViewerPdfReturn {
   spaceHeld:        boolean;
   spaceHeldRef:     React.RefObject<boolean>;
   wrapStyle:        React.CSSProperties | undefined;
-  fitToScreen:      (doc?: pdfjsLib.PDFDocumentProxy, pageNum?: number) => Promise<void>;
+  fitToScreen:      (doc?: PDFDocumentProxy, pageNum?: number) => Promise<void>;
   centerDocumentInViewport: () => void;
   handleManualScale: () => void;
   /** Attach to the scroll container's onPointerDown. */
@@ -71,7 +71,7 @@ export interface UseViewerPdfReturn {
   handleDrawingCanvasPointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => void;
   currentPdfPageRef: React.RefObject<PDFPageProxy | null>;
   /** Stable ref always pointing at current pdf — useful for imperative callers. */
-  pdfRef:            React.RefObject<pdfjsLib.PDFDocumentProxy | null>;
+  pdfRef:            React.RefObject<PDFDocumentProxy | null>;
   pageNumberRef:     React.RefObject<number>;
   scaleRef:          React.RefObject<number>;
   pdfDimensionsRef:  React.RefObject<PdfDimensions | null>;
@@ -96,7 +96,7 @@ export function useViewerPdf({
 }: UseViewerPdfOptions): UseViewerPdfReturn {
 
   // ── Core state ─────────────────────────────────────────────────────────────
-  const [pdf,            setPdf]            = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const [pdf,            setPdf]            = useState<PDFDocumentProxy | null>(null);
   const [pageNumber,     setPageNumber]     = useState(1);
   const [loading,        setLoading]        = useState(false);
   const [isPanning,      setIsPanning]      = useState(false);
@@ -108,7 +108,7 @@ export function useViewerPdf({
   const [pdfRenderCount, setPdfRenderCount] = useState(0);
 
   // ── Stable refs ────────────────────────────────────────────────────────────
-  const pdfRef            = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
+  const pdfRef            = useRef<PDFDocumentProxy | null>(null);
   const pageNumberRef     = useRef(pageNumber);
   const scaleRef          = useRef(scale);
   const pdfDimensionsRef  = useRef<PdfDimensions | null>(null);
@@ -140,7 +140,7 @@ export function useViewerPdf({
   }, [containerRef]);
 
   const fitToScreen = useCallback(async (
-    pdfDoc?: pdfjsLib.PDFDocumentProxy,
+    pdfDoc?: PDFDocumentProxy,
     pageNum?: number,
   ) => {
     const doc  = pdfDoc  ?? pdfRef.current;
@@ -184,7 +184,13 @@ export function useViewerPdf({
     }
     setLoading(true);
 
-    const onLoad = async (doc: pdfjsLib.PDFDocumentProxy) => {
+    if (!pdfjsLib) {
+      console.error('pdfjsLib is null');
+      setLoading(false);
+      return;
+    }
+
+    const onLoad = async (doc: PDFDocumentProxy) => {
       if (!mounted) return;
       const page = await doc.getPage(1);
       const vp   = page.getViewport({ scale: 1 });
@@ -222,14 +228,14 @@ export function useViewerPdf({
       const r = new FileReader();
       r.onload = () => {
         if (!mounted) return;
-        pdfjsLib
+        pdfjsLib!
           .getDocument({ data: new Uint8Array(r.result as ArrayBuffer) })
           .promise.then(onLoad)
           .catch(onErr);
       };
       r.readAsArrayBuffer(file);
     } else {
-      pdfjsLib.getDocument(activeDrawingUrl!).promise.then(onLoad).catch(onErr);
+      pdfjsLib!.getDocument(activeDrawingUrl!).promise.then(onLoad).catch(onErr);
     }
 
     return () => { mounted = false; };

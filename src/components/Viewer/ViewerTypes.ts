@@ -41,6 +41,7 @@ export interface ViewerProps {
   measurements:         TakeoffRow[];
   onAddMeasurement:     (m: Omit<TakeoffRow, 'color' | 'isVisible' | 'drawingId'>) => void;
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
+  onDeleteMeasurement: (id: string) => void; // 👈 add this
   scaleFactor:          number;
   onScaleSet:           (factor: number) => void;
   activeDrawing:        Drawing | null;
