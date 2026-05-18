@@ -54,6 +54,22 @@ import {
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
+interface PendingMeasurementData {
+  id: string;
+  type: string;
+  description: string;
+}
+
+interface UndoRedoRefValue {
+  setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
+}
+
+interface MagicFillHit {
+  id: number;
+  groupId: number | null;
+  areaPx: number;
+}
+
 export function Viewer({
   activeTool, setActiveTool,
   measurements,
@@ -69,12 +85,12 @@ export function Viewer({
 }: import('./Viewer/ViewerConstants').ViewerProps) {
 
   // ── Canvas refs ────────────────────────────────────────────────────────────
-  const pdfCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const drawingCanvasRef = useRef<HTMLCanvasElement>(null);
-  const pinCanvasRef     = useRef<HTMLCanvasElement>(null);
-  const vectorCanvasRef  = useRef<HTMLCanvasElement>(null);
-  const fillCanvasRef    = useRef<HTMLCanvasElement>(null);
-  const containerRef     = useRef<HTMLDivElement>(null);
+  const pdfCanvasRef     = useRef<HTMLCanvasElement>(null!);
+  const drawingCanvasRef = useRef<HTMLCanvasElement>(null!);
+  const pinCanvasRef     = useRef<HTMLCanvasElement>(null!);
+  const vectorCanvasRef  = useRef<HTMLCanvasElement>(null!);
+  const fillCanvasRef    = useRef<HTMLCanvasElement>(null!);
+  const containerRef     = useRef<HTMLDivElement>(null!);
 
   const activeDrawingId      = activeDrawing?.id     ?? null;
   const activeDrawingUrl     = activeDrawing?.fileUrl ?? null;
@@ -91,8 +107,7 @@ export function Viewer({
   const [pendingPtLen,           setPendingPtLen]           = useState(0);
   const [calibrationInput,       setCalibrationInput]       = useState('');
   const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
-  const [pendingMeasurementData, setPendingMeasurementData] = useState<
-    { id: string; type: string; description: string } | null>(null);
+  const [pendingMeasurementData, setPendingMeasurementData] = useState<PendingMeasurementData | null>(null);
 
   // ── Context ────────────────────────────────────────────────────────────────
   const {
@@ -100,12 +115,12 @@ export function Viewer({
     clearTempPoints, undo, redo, canUndo, canRedo,
   } = useTakeoffContext();
 
-  const undoRedoRef = useRef<{ setCursorPoint: (p: any) => void }>({ setCursorPoint: () => {} });
+  const undoRedoRef = useRef<UndoRedoRefValue>({ setCursorPoint: () => {} });
   const handleUndo  = useCallback(() => { undo();  undoRedoRef.current.setCursorPoint(null); }, [undo]);
   const handleRedo  = useCallback(() => { redo();  undoRedoRef.current.setCursorPoint(null); }, [redo]);
 
   // ── PDF hook ───────────────────────────────────────────────────────────────
-  const startExtractionRef = useRef<((...args: any[]) => void) | null>(null);
+  const startExtractionRef = useRef<((pdf: any, file?: File) => void) | null>(null);
 
   const {
     pdf, pageNumber, setPageNumber, loading,
@@ -131,6 +146,9 @@ export function Viewer({
     onPdfLoaded: (doc, file) => startExtractionRef.current?.(doc, file),
     onScaleSet,
   });
+
+  // Normalize appendToGroupId: ensure it's string | undefined (not null)
+  const appendToGroupId = propAppendToGroupId ?? undefined;
 
   // ── Snap engine ────────────────────────────────────────────────────────────
   const {
@@ -183,7 +201,7 @@ export function Viewer({
     activeTool, setActiveTool: setActiveToolString,
     measurements, tempPoints, pushPoint,
     commitMeasurement, batchCommitMeasurements,
-    appendToGroupId: propAppendToGroupId, onAppendComplete,
+    appendToGroupId: appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
     isPanning, snapToCorner, getScaledCorners,
@@ -218,7 +236,7 @@ export function Viewer({
     scaleFactor,
     activeDrawingId,
     measurements,
-    propAppendToGroupId,
+    propAppendToGroupId: appendToGroupId,
     onAddMeasurementProp,
     onUpdateMeasurementProp,
     onDeleteMeasurementProp,
@@ -264,7 +282,8 @@ export function Viewer({
 
   // ── Toolbar API ────────────────────────────────────────────────────────────
   const toolbarAPI = useMemo(() => ({
-    tools: [...VIEWER_TOOLS] as any,
+    // preserve tuple type of VIEWER_TOOLS to satisfy ViewerToolbarAPI
+    tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
     showPins, setShowPins, snapThreshold, setSnapThreshold,
@@ -519,7 +538,7 @@ export function Viewer({
         <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => setPageNumber(p => Math.max(1, p - 1))}
+              onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
               disabled={pageNumber <= 1}
               className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
             >
@@ -529,7 +548,7 @@ export function Viewer({
               PAGE {pageNumber} OF {pdf.numPages}
             </span>
             <button
-              onClick={() => setPageNumber(p => Math.min(pdf.numPages, p + 1))}
+              onClick={() => setPageNumber(Math.min(pdf.numPages, pageNumber + 1))}
               disabled={pageNumber >= pdf.numPages}
               className="p-1 text-zinc-500 hover:text-zinc-200 disabled:opacity-50"
             >

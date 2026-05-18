@@ -64,6 +64,8 @@ export interface ViewerProps {
     updates: Partial<TakeoffRow>
   ) => void;
 
+  onDeleteMeasurement?: (id: string) => void;
+
   scaleFactor: number;
   onScaleSet: (factor: number) => void;
 
