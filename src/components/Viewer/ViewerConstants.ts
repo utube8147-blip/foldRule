@@ -1,12 +1,10 @@
 // ─── ViewerConstants.ts ───────────────────────────────────────────────────────
 //
-// CHANGES:
-// - Added 'magic-fill' tool with Wand2 icon + shortcut M
-// - Removed SVG / room / wall / vector / cluster props from ViewerToolbarAPI
+// PURE FILE (SAFE FOR SERVER + CLIENT)
+// NO pdfjs, NO side effects
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
-import * as pdfjsLib from 'pdfjs-dist';
 
 import {
   MousePointer2,
@@ -28,12 +26,6 @@ export const CANVAS_PADDING = 400;
 export const ZOOM_SENSITIVITY = 0.15;
 export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 8;
-
-// ─── PDF worker ───────────────────────────────────────────────────────────────
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-  'pdfjs-dist/build/pdf.worker.min.mjs',
-  import.meta.url
-).toString();
 
 // ─── Viewer tools ────────────────────────────────────────────────────────────
 
