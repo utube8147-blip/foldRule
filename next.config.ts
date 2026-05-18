@@ -2,8 +2,15 @@
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  turbopack: {},
-  serverExternalPackages: ["canvas", "node-canvas"],
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        canvas: false,
+      };
+    }
+    return config;
+  },
 };
 
 export default nextConfig;
