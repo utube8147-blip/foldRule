@@ -2,16 +2,31 @@
 
 // ─── hooks/useViewerPdf.ts ────────────────────────────────────────────────────
 //
-//  Owns everything related to PDF loading and viewport management:
-//    • PDF document load (file or URL)
-//    • PDF page render (with DPR-aware physical canvas sizing)
-//    • CSS-only scale during live zoom (before committedScale catches up)
-//    • Wheel zoom (Ctrl/Cmd + scroll)
-//    • Spacebar pan (space-hold + drag)
-//    • fitToScreen / centerDocumentInViewport
-//    • wrapStyle (canvas wrap dimensions)
+//  FIX: Stale green paint appearing on canvas after scale calibration.
 //
-//  Returns everything Viewer needs to wire up scrolling, zooming, and panning.
+//  ROOT CAUSE:
+//  The PDF render effect resizes all overlay canvases whenever committedScale
+//  changes (e.g. after calibration). For fillCanvasRef it had a special
+//  "preserve" branch that copied existing canvas contents into a temp canvas
+//  and drew them back at the new size:
+//
+//    if (ref === fillCanvasRef && c.width > 0 && c.height > 0) {
+//      // copy → resize → draw back
+//    }
+//
+//  This was written so magic-fill region paint survives PDF re-renders.
+//  However it fires unconditionally — so ANY content on fillCanvasRef
+//  (grid-count preview paint, leftover magic-fill from a prior session,
+//  etc.) gets stretched and re-stamped back onto the canvas after every
+//  calibration or zoom commit, producing the green cross artifact.
+//
+//  FIX:
+//  Added `shouldPreserveFillCanvas: React.RefObject<boolean>` to the hook
+//  options. The caller (Viewer.tsx) passes `isMagicFillActiveRef` — a ref
+//  that is true only while activeTool === 'magic-fill'. The preserve branch
+//  now checks this ref before copying, so fillCanvasRef is only preserved
+//  during an active magic-fill session. At all other times the canvas is
+//  simply resized (cleared), which is the correct behaviour.
 
 import {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -41,6 +56,15 @@ export interface UseViewerPdfOptions {
   /** Called after each successful page render. */
   onPageRendered?: () => void;
   onScaleSet:      (metersPerPixel: number) => void;
+  /**
+   * Ref that is `true` only while the magic-fill tool is active.
+   * When true, fillCanvasRef contents are preserved across PDF re-renders
+   * (so committed fills survive zoom/calibration). When false the canvas
+   * is simply cleared on resize, preventing stale paint from bleeding through.
+   *
+   * Pass `isMagicFillActiveRef` from Viewer.tsx.
+   */
+  shouldPreserveFillCanvas: React.RefObject<boolean>;
 }
 
 export interface UseViewerPdfReturn {
@@ -93,6 +117,7 @@ export function useViewerPdf({
   onPdfLoaded,
   onPageRendered,
   onScaleSet,
+  shouldPreserveFillCanvas,
 }: UseViewerPdfOptions): UseViewerPdfReturn {
 
   // ── Core state ─────────────────────────────────────────────────────────────
@@ -275,9 +300,19 @@ export function useViewerPdf({
         for (const ref of [drawingCanvasRef, pinCanvasRef, vectorCanvasRef, fillCanvasRef]) {
           const c = ref.current;
           if (!c) continue;
+
           if (c.width !== logVP.width || c.height !== logVP.height) {
-            if (ref === fillCanvasRef && c.width > 0 && c.height > 0) {
-              // Preserve fill canvas contents across resize
+            if (
+              ref === fillCanvasRef &&
+              c.width > 0 &&
+              c.height > 0 &&
+              // FIX: only preserve fill canvas paint when magic-fill is the
+              // active tool. At all other times (calibration, grid-count, etc.)
+              // simply clear and resize so stale paint cannot bleed through.
+              shouldPreserveFillCanvas.current
+            ) {
+              // Preserve magic-fill region paint across PDF re-renders
+              // (e.g. zoom commits, page changes) so committed fills survive.
               const tmp = document.createElement('canvas');
               tmp.width  = c.width;
               tmp.height = c.height;
@@ -286,10 +321,12 @@ export function useViewerPdf({
               c.height = logVP.height;
               c.getContext('2d')!.drawImage(tmp, 0, 0, logVP.width, logVP.height);
             } else {
+              // Default: resize (which implicitly clears the canvas).
               c.width  = logVP.width;
               c.height = logVP.height;
             }
           }
+
           c.style.width  = `${logVP.width}px`;
           c.style.height = `${logVP.height}px`;
         }

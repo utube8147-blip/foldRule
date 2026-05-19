@@ -17,6 +17,7 @@ import {
   MapPin,
   Ruler,
   Wand2,
+  CircleDot
 } from 'lucide-react';
 
 import type { ToolType, TakeoffRow } from '@/types';
@@ -45,11 +46,10 @@ export function initPdfWorker() {
 export const VIEWER_TOOLS = [
   { id: 'select',     label: 'Select',     shortcut: 'V', icon: MousePointer2 },
   { id: 'linear',     label: 'Linear',     shortcut: 'L', icon: Pencil },
+  { id: 'arc',        label: 'Arc',        shortcut: 'B', icon: CircleDot    }, // ← new
   { id: 'rectangle',  label: 'Rectangle',  shortcut: 'R', icon: Square },
   { id: 'polygon',    label: 'Polygon',    shortcut: 'P', icon: Pentagon },
   { id: 'count',      label: 'Count',      shortcut: 'N', icon: Hash },
-  { id: 'point',      label: 'Point',      shortcut: 'T', icon: MapPin },
-  { id: 'scale',      label: 'Calibrate',  shortcut: 'C', icon: Ruler },
   { id: 'magic-fill', label: 'Magic Fill', shortcut: 'M', icon: Wand2 },
 ] as const;
 

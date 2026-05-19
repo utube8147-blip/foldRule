@@ -21,6 +21,7 @@ import { PresetDrawer } from '../presets/PresetDrawer';
 import { MeasurementDetailsDialog } from '../MeasurementDetailsDialog';
 import { SnapCandidateDialog } from './SnapCandidateDialog';
 
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. Calibration Dialog
 // ─────────────────────────────────────────────────────────────────────────────

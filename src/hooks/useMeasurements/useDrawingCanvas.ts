@@ -1,240 +1,106 @@
 // ─── hooks/useMeasurements/useDrawingCanvas.ts ────────────────────────────────
-//
-//  CHANGES FROM PREVIOUS VERSION:
-//    • REMOVED: always-on drawMeasurementLabels() — labels were rendering on
-//      every committed measurement at all times, causing clutter.
-//    • ADDED: drawHoverLabel() — renders a label ONLY when the cursor is
-//      hovering over a specific measurement. Uses:
-//        - Ray-casting hit test for Polygon / Rectangle
-//        - Segment-proximity (≤14px) hit test for Length / linear
-//        - Radial proximity (≤16px) hit test for Count / Point pins
-//      Label shows: description (small, dimmed) + quantity + unit (large, colored)
-//      at the polygon centroid / line midpoint / pin position.
-//    • All existing drawing logic is UNCHANGED.
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import React from 'react';
-import { TakeoffRow } from '@/types';
-import { PdfDimensions, CanvasPoint, canvasPt } from '@/types/viewerTypes';
-import { DragState } from './types';
-import { toCanvas as toCanvasUtil, toNorm as toNormUtil } from './utils';
+import { ToolType, TakeoffRow } from '@/types';
+import type { PdfDimensions } from '@/types/viewerTypes';
+import type { DragState } from './types';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 
+import {
+  splitArcPoints, isArcSentinel,
+  splitRadiusPoints, isRadiusSentinel,
+} from './useMeasurementCommit';
+
 interface UseDrawingCanvasParams {
-  drawingCanvasRef:  React.RefObject<HTMLCanvasElement>;
-  pdfDimensionsRef:  React.MutableRefObject<PdfDimensions | null>;
-  scaleRef:          React.MutableRefObject<number>;
-  measurements:      TakeoffRow[];
-  tempPoints:        InProgressPoint[];
-  activeTool:        string;
-  scaleFactor:       number;
-  isPanning:         boolean;
-  pendingBreak:      boolean;
-  dragStateRef:      React.MutableRefObject<DragState | null>;
-  cursorPointRef:    React.MutableRefObject<{ x: number; y: number } | null>;
-  snapToCorner:      (x: number, y: number) => { point: { x: number; y: number }; snapped: boolean };
-  redrawPinCanvas:   () => void;
-  snapEnabledRef:    React.MutableRefObject<boolean>;
+  drawingCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  pdfDimensionsRef: React.RefObject<PdfDimensions | null>;
+  scaleRef:         React.RefObject<number>;
+  measurements:     TakeoffRow[];
+  tempPoints:       InProgressPoint[];
+  activeTool:       ToolType;
+  scaleFactor:      number;
+  isPanning:        boolean;
+  pendingBreak:     boolean;
+  dragStateRef:     React.RefObject<DragState | null>;
+  cursorPointRef:   React.RefObject<{ x: number; y: number } | null>;
+  snapToCorner:     ((...args: any[]) => any) | null;
+  redrawPinCanvas:  () => void;
+  snapEnabledRef:   React.RefObject<boolean>;
 }
 
-// ─── Centroid helpers ─────────────────────────────────────────────────────────
-
-function pointCloudCentroid(pts: { x: number; y: number }[]): { x: number; y: number } {
-  const n = pts.length;
-  return {
-    x: pts.reduce((s, p) => s + p.x, 0) / n,
-    y: pts.reduce((s, p) => s + p.y, 0) / n,
-  };
+interface UseDrawingCanvasReturn {
+  cursorPoint:    { x: number; y: number } | null;
+  setCursorPoint: React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
+  redrawDrawingCanvas: (pt?: { x: number; y: number }) => void;
+  handleCanvasPointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => void;
 }
 
-function polygonCentroid(pts: { x: number; y: number }[]): { x: number; y: number } {
-  let area = 0, cx = 0, cy = 0;
-  const n = pts.length;
-  for (let i = 0; i < n; i++) {
-    const j     = (i + 1) % n;
-    const cross = pts[i].x * pts[j].y - pts[j].x * pts[i].y;
-    area += cross;
-    cx   += (pts[i].x + pts[j].x) * cross;
-    cy   += (pts[i].y + pts[j].y) * cross;
-  }
-  area /= 2;
-  if (Math.abs(area) < 1e-6) return pointCloudCentroid(pts);
-  return { x: cx / (6 * area), y: cy / (6 * area) };
+function isAngleBetweenCCW(start: number, mid: number, end: number): boolean {
+  const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const s = norm(start), m = norm(mid), e = norm(end);
+  if (s <= e) return m >= s && m <= e;
+  return m >= s || m <= e;
 }
 
-// ─── Hit tests ────────────────────────────────────────────────────────────────
-
-/** Ray-casting point-in-polygon test */
-function pointInPolygon(
-  pt: { x: number; y: number },
-  poly: { x: number; y: number }[],
-): boolean {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i].x, yi = poly[i].y;
-    const xj = poly[j].x, yj = poly[j].y;
-    if (((yi > pt.y) !== (yj > pt.y)) &&
-        (pt.x < (xj - xi) * (pt.y - yi) / (yj - yi) + xi)) {
-      inside = !inside;
-    }
-  }
-  return inside;
+function circumscribedCircleCanvas(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+): { cx: number; cy: number; r: number } | null {
+  const ax = p1.x, ay = p1.y;
+  const bx = p2.x, by = p2.y;
+  const cx = p3.x, cy = p3.y;
+  const D = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  if (Math.abs(D) < 1e-6) return null;
+  const ux = (
+    (ax * ax + ay * ay) * (by - cy) +
+    (bx * bx + by * by) * (cy - ay) +
+    (cx * cx + cy * cy) * (ay - by)
+  ) / D;
+  const uy = (
+    (ax * ax + ay * ay) * (cx - bx) +
+    (bx * bx + by * by) * (ax - cx) +
+    (cx * cx + cy * cy) * (bx - ax)
+  ) / D;
+  const r = Math.hypot(ax - ux, ay - uy);
+  return { cx: ux, cy: uy, r };
 }
 
-/** Minimum distance from point to a polyline segment */
-function distToSegment(
-  pt: { x: number; y: number },
-  a:  { x: number; y: number },
-  b:  { x: number; y: number },
-): number {
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq === 0) return Math.hypot(pt.x - a.x, pt.y - a.y);
-  const t = Math.max(0, Math.min(1, ((pt.x - a.x) * dx + (pt.y - a.y) * dy) / lenSq));
-  return Math.hypot(pt.x - (a.x + t * dx), pt.y - (a.y + t * dy));
-}
+const COLOUR_ACTIVE     = '#EF9F27';
+const COLOUR_ARC        = '#2DD4BF';
+const COLOUR_ARC_STAGED = '#14B8A6';
+const COLOUR_RADIUS     = '#A78BFA';
+const COLOUR_RADIUS_STAGED = '#7C3AED';
+const COLOUR_SNAP       = '#4ADE80';
+const COLOUR_UNSNAPPED  = '#EF9F27';
+const DOT_RADIUS        = 3.5;
+const SNAP_DOT_RADIUS   = 4.5;
+const LINE_WIDTH        = 1.5;
+const DASH_ACTIVE       = [6, 4] as number[];
+const DASH_PREVIEW      = [4, 4] as number[];
 
-/** Returns true if cursor is "over" the given committed measurement */
-function isCursorOverMeasurement(
-  cursor:  { x: number; y: number },
-  m:       TakeoffRow,
-  canvasPts: { x: number; y: number }[],
-): boolean {
-  if (canvasPts.length === 0) return false;
-
-  switch (m.type) {
-    case 'Polygon':
-    case 'Rectangle':
-      return pointInPolygon(cursor, canvasPts);
-
-    case 'Length':
-      for (let i = 1; i < canvasPts.length; i++) {
-        if (distToSegment(cursor, canvasPts[i - 1], canvasPts[i]) <= 14) return true;
-      }
-      return false;
-
-    case 'Count':
-    case 'Point':
-      return canvasPts.some(p => Math.hypot(cursor.x - p.x, cursor.y - p.y) <= 16);
-
-    default:
-      return false;
-  }
-}
-
-// ─── Hover label renderer ─────────────────────────────────────────────────────
-
-function drawHoverLabel(
-  ctx:       CanvasRenderingContext2D,
-  m:         TakeoffRow,
-  canvasPts: { x: number; y: number }[],
+function drawArcFromPoints(
+  ctx: CanvasRenderingContext2D,
+  pts: { x: number; y: number }[],
 ): void {
-  // Determine label anchor
-  let anchor: { x: number; y: number };
-  if (m.type === 'Polygon' || m.type === 'Rectangle') {
-    anchor = polygonCentroid(canvasPts);
-  } else if (m.type === 'Length') {
-    anchor = pointCloudCentroid(canvasPts);
-  } else {
-    // Count / Point — label above the first pin
-    anchor = { x: canvasPts[0].x, y: canvasPts[0].y - 20 };
+  if (pts.length !== 3) return;
+  const arc = circumscribedCircleCanvas(pts[0], pts[1], pts[2]);
+  if (!arc) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    ctx.lineTo(pts[2].x, pts[2].y);
+    ctx.stroke();
+    return;
   }
-
-  const qty   = m.quantity ?? 0;
-  const unit  = m.unit     ?? '';
-  const desc  = (m.label || m.description || '').toUpperCase();
-  const color = m.color || '#EF9F27';
-
-  const valueText = qty > 0 ? `${qty.toFixed(2)} ${unit}`.trim() : '';
-  if (!valueText && !desc) return;
-
-  // Measure both lines
-  ctx.save();
-
-  const VALUE_FONT = 'bold 12px ui-monospace, monospace';
-  const DESC_FONT  = '9px ui-monospace, monospace';
-  const hasDesc    = desc.length > 0;
-  const hasValue   = valueText.length > 0;
-
-  ctx.font = VALUE_FONT;
-  const valueTw = hasValue ? ctx.measureText(valueText).width : 0;
-  ctx.font = DESC_FONT;
-  const descTw  = hasDesc  ? ctx.measureText(desc).width      : 0;
-
-  const PAD_X = 10;
-  const PAD_Y = 6;
-  const LINE_GAP = 4;
-  const VALUE_H = 14;
-  const DESC_H  = 11;
-
-  const innerW = Math.max(valueTw, descTw);
-  const innerH = (hasDesc && hasValue)
-    ? DESC_H + LINE_GAP + VALUE_H
-    : hasValue ? VALUE_H : DESC_H;
-
-  const boxW = innerW + PAD_X * 2;
-  const boxH = innerH + PAD_Y * 2;
-  const bx   = anchor.x - boxW / 2;
-  const by   = anchor.y - boxH / 2;
-
-  // Background
-  ctx.fillStyle = 'rgba(8,8,8,0.90)';
+  const a0  = Math.atan2(pts[0].y - arc.cy, pts[0].x - arc.cx);
+  const a1  = Math.atan2(pts[1].y - arc.cy, pts[1].x - arc.cx);
+  const a2  = Math.atan2(pts[2].y - arc.cy, pts[2].x - arc.cx);
+  const ccw = !isAngleBetweenCCW(a0, a1, a2);
   ctx.beginPath();
-  if (ctx.roundRect) {
-    ctx.roundRect(bx, by, boxW, boxH, 5);
-  } else {
-    ctx.rect(bx, by, boxW, boxH);
-  }
-  ctx.fill();
-
-  // Colored border
-  ctx.strokeStyle = color;
-  ctx.lineWidth   = 1.2;
+  ctx.arc(arc.cx, arc.cy, arc.r, a0, a2, ccw);
   ctx.stroke();
-
-  // Left accent bar
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  if (ctx.roundRect) {
-    ctx.roundRect(bx, by + 4, 3, boxH - 8, 2);
-  } else {
-    ctx.rect(bx, by + 4, 3, boxH - 8);
-  }
-  ctx.fill();
-
-  // Text
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'middle';
-
-  if (hasDesc && hasValue) {
-    // Two-line layout: desc top, value bottom
-    const descY  = by + PAD_Y + DESC_H / 2;
-    const valueY = by + PAD_Y + DESC_H + LINE_GAP + VALUE_H / 2;
-
-    ctx.font      = DESC_FONT;
-    ctx.fillStyle = 'rgba(180,180,180,0.70)';
-    ctx.fillText(desc, anchor.x, descY);
-
-    ctx.font      = VALUE_FONT;
-    ctx.fillStyle = color;
-    ctx.fillText(valueText, anchor.x, valueY);
-
-  } else if (hasValue) {
-    ctx.font      = VALUE_FONT;
-    ctx.fillStyle = color;
-    ctx.fillText(valueText, anchor.x, anchor.y);
-  } else {
-    ctx.font      = DESC_FONT;
-    ctx.fillStyle = 'rgba(180,180,180,0.85)';
-    ctx.fillText(desc, anchor.x, anchor.y);
-  }
-
-  ctx.restore();
 }
-
-// ─── Main hook ────────────────────────────────────────────────────────────────
 
 export function useDrawingCanvas({
   drawingCanvasRef,
@@ -251,495 +117,489 @@ export function useDrawingCanvas({
   snapToCorner,
   redrawPinCanvas,
   snapEnabledRef,
-}: UseDrawingCanvasParams) {
-
+}: UseDrawingCanvasParams): UseDrawingCanvasReturn {
   const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
 
-  const pointerRafRef = useRef<number | null>(null);
-  const rafIdRef      = useRef<number | null>(null);
+  const toCanvas = useCallback(
+    (nx: number, ny: number): { x: number; y: number } => {
+      const dim = pdfDimensionsRef.current;
+      if (!dim) return { x: 0, y: 0 };
+      return { x: nx * dim.w, y: ny * dim.h };
+    },
+    [pdfDimensionsRef],
+  );
 
-  const toCanvas = useCallback((normX: number, normY: number) => {
-    return toCanvasUtil(normX, normY, pdfDimensionsRef.current);
-  }, [pdfDimensionsRef]);
-
-  const toNorm = useCallback((canvasX: number, canvasY: number) => {
-    return toNormUtil(canvasX, canvasY, pdfDimensionsRef.current);
-  }, [pdfDimensionsRef]);
-
-  // ── drawCommittedMeasurements — unchanged ─────────────────────────────────
-  const drawCommittedMeasurements = useCallback((
-    ctx: CanvasRenderingContext2D,
-    overridePoint?: { measurementId: string; pointIndex: number; point: { x: number; y: number } },
-  ) => {
-    measurements.forEach(m => {
-      if (m.isGroupHeader && m.childIds && m.childIds.length > 0) return;
-      if (!m.isVisible || m.points.length === 0) return;
-
-      let pts = m.points.map(p => toCanvas(p.x, p.y));
-      if (overridePoint && overridePoint.measurementId === m.id) {
-        pts = pts.map((p, i) =>
-          i === overridePoint.pointIndex ? overridePoint.point : p
-        );
-      }
-
-      if (m.type === 'Count' || m.type === 'Point') {
-        pts.forEach(p => {
-          ctx.save();
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
-          ctx.fillStyle = m.color + '18';
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = m.color;
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
-          ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-          ctx.lineWidth = 1.2;
-          ctx.stroke();
-          ctx.restore();
-        });
-      } else {
-        ctx.strokeStyle = m.color;
-        ctx.fillStyle   = m.color + '55';
-        ctx.lineWidth   = 2.5;
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-
-        const measurementType = m.type as string;
-        if (measurementType === 'Polygon' || measurementType === 'Rectangle') {
-          ctx.closePath();
-          ctx.fill();
-        }
-        ctx.stroke();
-
-        pts.forEach((p, idx) => {
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, activeTool === 'select' ? 6 : 4, 0, Math.PI * 2);
-          ctx.fillStyle = m.color + (activeTool === 'select' ? 'CC' : '88');
-          ctx.fill();
-          ctx.strokeStyle = m.color;
-          ctx.lineWidth = activeTool === 'select' ? 1.5 : 1;
-          ctx.stroke();
-
-          const activeOverride = overridePoint ?? (dragStateRef.current ?? null);
-          const isActivePoint  = activeOverride
-            && 'measurementId' in activeOverride
-            && activeOverride.measurementId === m.id
-            && ('pointIndex' in activeOverride ? activeOverride.pointIndex === idx : false);
-
-          if (isActivePoint) {
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
-            ctx.strokeStyle = '#F59E0B';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([4, 4]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-          }
-        });
-      }
-    });
-  }, [measurements, toCanvas, activeTool, dragStateRef]);
-
-  // ── drawHoverLabels — called after committed measurements ─────────────────
-  // Only renders a label for the ONE measurement the cursor is currently over.
-  // If cursor is over multiple (overlapping shapes), the topmost (last in array)
-  // wins, matching visual z-order.
-  const drawHoverLabels = useCallback((
-    ctx:    CanvasRenderingContext2D,
-    cursor: { x: number; y: number } | null,
-  ) => {
-    if (!cursor) return;
-
-    // Find last (topmost) measurement cursor is over
-    let target: { m: TakeoffRow; pts: { x: number; y: number }[] } | null = null;
-
-    for (const m of measurements) {
-      if (m.isGroupHeader)      continue;
-      if (!m.isVisible)         continue;
-      if (!m.points?.length)    continue;
-
-      const pts = m.points.map(p => toCanvas(p.x, p.y));
-      if (isCursorOverMeasurement(cursor, m, pts)) {
-        target = { m, pts };   // keep updating — last hit wins (topmost)
-      }
-    }
-
-    if (target) {
-      drawHoverLabel(ctx, target.m, target.pts);
-    }
-  }, [measurements, toCanvas]);
-
-  // ── Imperative redraw — used by drag system ───────────────────────────────
-  const redrawDrawingCanvas = useCallback((draggedPointCanvas?: { x: number; y: number }) => {
-    const canvas = drawingCanvasRef.current;
-    const dims   = pdfDimensionsRef.current;
-    if (!canvas || !dims) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    const override = draggedPointCanvas && dragStateRef.current ? {
-      measurementId: dragStateRef.current.measurementId,
-      pointIndex:    dragStateRef.current.pointIndex,
-      point:         draggedPointCanvas,
-    } : undefined;
-
-    drawCommittedMeasurements(ctx, override);
-
-    // Hover label — use live cursorPointRef (not React state) since this
-    // is called imperatively during drag, outside the RAF render cycle
-    drawHoverLabels(ctx, cursorPointRef.current);
-
-    if (draggedPointCanvas) {
-      ctx.save();
-      ctx.beginPath();
-      ctx.arc(draggedPointCanvas.x, draggedPointCanvas.y, 8, 0, Math.PI * 2);
-      ctx.fillStyle = '#F59E0B44';
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(draggedPointCanvas.x, draggedPointCanvas.y, 5, 0, Math.PI * 2);
-      ctx.fillStyle = '#F59E0B';
-      ctx.fill();
-      ctx.restore();
-    }
-  }, [drawingCanvasRef, pdfDimensionsRef, drawCommittedMeasurements, dragStateRef, drawHoverLabels, cursorPointRef]);
-
-  // ── RAF-throttled pointer move ────────────────────────────────────────────
-  const handleCanvasPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (dragStateRef.current?.isDragging) return;
-    if (activeTool === 'select' || isPanning) return;
-
-    const canvas = drawingCanvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-
-    const rawX = (e.clientX - rect.left) * (canvas.width  / rect.width);
-    const rawY = (e.clientY - rect.top)  * (canvas.height / rect.height);
-
-    if (pointerRafRef.current !== null) cancelAnimationFrame(pointerRafRef.current);
-
-    pointerRafRef.current = requestAnimationFrame(() => {
-      pointerRafRef.current  = null;
-      cursorPointRef.current = { x: rawX, y: rawY };
-      redrawPinCanvas();
-      const snap = snapToCorner(rawX, rawY);
-      setCursorPoint(snap.point);
-      cursorPointRef.current = snap.point;
-    });
-  }, [activeTool, isPanning, snapToCorner, redrawPinCanvas, cursorPointRef, drawingCanvasRef, dragStateRef]);
-
-  // ── Main RAF draw effect ──────────────────────────────────────────────────
-  useEffect(() => {
-    if (rafIdRef.current !== null) cancelAnimationFrame(rafIdRef.current);
-
-    rafIdRef.current = requestAnimationFrame(() => {
-      rafIdRef.current = null;
-
+  const redrawDrawingCanvas = useCallback(
+    (overrideCursor?: { x: number; y: number }) => {
       const canvas = drawingCanvasRef.current;
-      const dims   = pdfDimensionsRef.current;
-      if (!canvas || !dims) return;
+      const dim    = pdfDimensionsRef.current;
+      if (!canvas || !dim) return;
+
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const override = dragStateRef.current && cursorPoint ? {
-        measurementId: dragStateRef.current.measurementId,
-        pointIndex:    dragStateRef.current.pointIndex,
-        point:         cursorPoint,
-      } : undefined;
+      const cursor = overrideCursor ?? cursorPointRef.current;
 
-      drawCommittedMeasurements(ctx, override);
+      // ── Draw committed measurements ──────────────────────────────────────
+      for (const m of measurements) {
+        if (!m.isVisible || !m.points?.length) continue;
+        const pts = m.points.map(p => toCanvas(p.x, p.y));
+        const col = m.color ?? COLOUR_ACTIVE;
 
-      // ── Hover label — uses React cursorPoint state (RAF-synced) ──────────
-      drawHoverLabels(ctx, cursorPoint);
-
-      // Amber drag handle dot
-      if (dragStateRef.current && cursorPoint) {
         ctx.save();
-        ctx.beginPath();
-        ctx.arc(cursorPoint.x, cursorPoint.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle = '#F59E0B44';
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(cursorPoint.x, cursorPoint.y, 5, 0, Math.PI * 2);
-        ctx.fillStyle = '#F59E0B';
-        ctx.fill();
+        ctx.strokeStyle = col;
+        ctx.fillStyle   = col;
+        ctx.lineWidth   = 1;
+        ctx.globalAlpha = 0.7;
+
+        const isArcRow    = m.arcRadius != null && Math.abs((m.sweepAngle ?? 0) - 2 * Math.PI) > 0.01;
+        const isRadiusRow = m.arcRadius != null && Math.abs((m.sweepAngle ?? 0) - 2 * Math.PI) < 0.01;
+
+        if (isArcRow && pts.length === 3) {
+          drawArcFromPoints(ctx, pts);
+        } else if (isRadiusRow && pts.length === 2) {
+          const r = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+          ctx.beginPath();
+          ctx.arc(pts[0].x, pts[0].y, r, 0, 2 * Math.PI);
+          ctx.stroke();
+          ctx.globalAlpha = 0.4;
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x - 5, pts[0].y); ctx.lineTo(pts[0].x + 5, pts[0].y);
+          ctx.moveTo(pts[0].x, pts[0].y - 5); ctx.lineTo(pts[0].x, pts[0].y + 5);
+          ctx.stroke();
+        } else if (m.type === 'Length') {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+        } else if (m.type === 'Polygon' || m.type === 'Area') {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.closePath();
+          ctx.globalAlpha = 0.15;
+          ctx.fill();
+          ctx.globalAlpha = 0.7;
+          ctx.stroke();
+        }
+
         ctx.restore();
       }
 
-      // ── In-progress drawing ───────────────────────────────────────────────
-      if (!dragStateRef.current) {
-        const tempPx = tempPoints.map(p => ({
-          ...toCanvas(p.x, p.y),
-          snapped:   p.snapped,
-          segmentId: p.segmentId,
-        }));
+      if (tempPoints.length === 0 && !cursor) return;
 
-        const hasTemp   = tempPx.length > 0;
-        const hasCursor = !!cursorPoint && activeTool !== 'select';
-        if (!hasTemp && !hasCursor) return;
+      const nonSentinelPoints = tempPoints.filter(
+        p => !isArcSentinel(p) && !isRadiusSentinel(p)
+      );
+      const tPts = nonSentinelPoints.map(p => toCanvas(p.x, p.y));
 
-        const strokeColor = '#F59E0B';
+      // ── ARC TOOL ────────────────────────────────────────────────────────
+      if (activeTool === 'arc') {
+        ctx.save();
+        const arcGroups      = splitArcPoints(tempPoints);
+        const inProgressGroup = arcGroups[arcGroups.length - 1];
+        const stagedGroups   = arcGroups.slice(0, -1).filter(g => g.length === 3);
 
-        if (activeTool === 'count') {
-          const DOT_R = 5;
-          tempPx.forEach((p, idx) => {
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, DOT_R * 1.8, 0, Math.PI * 2);
-            ctx.fillStyle = (p.snapped ? '#22C55E' : strokeColor) + '22';
-            ctx.fill();
-            if (!p.snapped) {
+        if (stagedGroups.length > 0) {
+          ctx.strokeStyle = COLOUR_ARC_STAGED;
+          ctx.lineWidth   = LINE_WIDTH + 0.5;
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.85;
+          for (const group of stagedGroups) {
+            const cPts = group.map(p => toCanvas(p.x, p.y));
+            drawArcFromPoints(ctx, cPts);
+          }
+          for (const group of stagedGroups) {
+            const cPts = group.map(p => toCanvas(p.x, p.y));
+            cPts.forEach((pt, i) => {
+              ctx.fillStyle   = i === 0 || i === 2 ? COLOUR_ARC_STAGED : COLOUR_SNAP;
+              ctx.globalAlpha = 0.6;
               ctx.beginPath();
-              ctx.arc(p.x, p.y, DOT_R + 4, 0, Math.PI * 2);
-              ctx.strokeStyle = strokeColor + '60';
-              ctx.lineWidth = 1;
-              ctx.setLineDash([3, 3]);
-              ctx.stroke();
-              ctx.setLineDash([]);
-            }
+              ctx.arc(pt.x, pt.y, DOT_RADIUS, 0, 2 * Math.PI);
+              ctx.fill();
+            });
+          }
+          ctx.globalAlpha = 1;
+        }
+
+        const ipPts = inProgressGroup.map(p => toCanvas(p.x, p.y));
+        ctx.strokeStyle = COLOUR_ARC;
+        ctx.lineWidth   = LINE_WIDTH;
+        ctx.setLineDash(DASH_PREVIEW);
+
+        if (ipPts.length === 1 && cursor) {
+          ctx.beginPath();
+          ctx.moveTo(ipPts[0].x, ipPts[0].y);
+          ctx.lineTo(cursor.x, cursor.y);
+          ctx.stroke();
+        } else if (ipPts.length === 2 && cursor) {
+          const arc = circumscribedCircleCanvas(ipPts[0], ipPts[1], cursor);
+          if (arc && arc.r < dim.w * 10) {
+            const a0  = Math.atan2(ipPts[0].y - arc.cy, ipPts[0].x - arc.cx);
+            const a1  = Math.atan2(ipPts[1].y  - arc.cy, ipPts[1].x  - arc.cx);
+            const a2  = Math.atan2(cursor.y     - arc.cy, cursor.x    - arc.cx);
+            const ccw = !isAngleBetweenCCW(a0, a1, a2);
             ctx.beginPath();
-            ctx.arc(p.x, p.y, DOT_R, 0, Math.PI * 2);
-            ctx.fillStyle = p.snapped ? '#22C55E' : strokeColor;
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-            ctx.lineWidth = 1.2;
-            ctx.stroke();
-            const bx = p.x + DOT_R + 2;
-            const by = p.y - DOT_R - 2;
-            ctx.beginPath();
-            ctx.arc(bx, by, 6, 0, Math.PI * 2);
-            ctx.fillStyle = p.snapped ? '#22C55E' : strokeColor;
-            ctx.fill();
-            ctx.fillStyle    = 'black';
-            ctx.font         = 'bold 8px monospace';
-            ctx.textAlign    = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText((idx + 1).toString(), bx, by);
-            ctx.restore();
-          });
-          if (cursorPoint) {
-            ctx.save();
-            ctx.beginPath();
-            ctx.arc(cursorPoint.x, cursorPoint.y, DOT_R, 0, Math.PI * 2);
-            ctx.strokeStyle = strokeColor + '70';
-            ctx.lineWidth   = 1.5;
-            ctx.setLineDash([3, 4]);
+            ctx.arc(arc.cx, arc.cy, arc.r, a0, a2, ccw);
             ctx.stroke();
             ctx.setLineDash([]);
-            ctx.restore();
-          }
-          if (cursorPoint && tempPx.length > 0) {
-            const text = `${tempPx.length} placed — click Finish to commit`;
-            ctx.save();
-            ctx.font         = 'bold 11px monospace';
-            ctx.textAlign    = 'left';
-            ctx.textBaseline = 'alphabetic';
-            const tw = ctx.measureText(text).width;
-            ctx.fillStyle = strokeColor;
-            ctx.fillRect(cursorPoint.x + DOT_R + 8, cursorPoint.y - 20, tw + 10, 19);
-            ctx.fillStyle = 'black';
-            ctx.fillText(text, cursorPoint.x + DOT_R + 13, cursorPoint.y - 5);
-            ctx.restore();
-          }
-          return;
-        }
-
-        ctx.strokeStyle = strokeColor;
-        ctx.setLineDash([5, 5]);
-        ctx.lineWidth   = 2;
-
-        const segGroups: { id: string | undefined; pts: typeof tempPx }[] = [];
-        for (const p of tempPx) {
-          const last = segGroups[segGroups.length - 1];
-          if (!last || last.id !== p.segmentId) {
-            segGroups.push({ id: p.segmentId, pts: [p] });
-          } else {
-            last.pts.push(p);
-          }
-        }
-
-        if (activeTool === 'linear' || activeTool === 'polygon' || activeTool === 'rectangle') {
-          for (const seg of segGroups) {
-            if (seg.pts.length === 0) continue;
-            const isLastSeg     = seg === segGroups[segGroups.length - 1];
-            const showRubberBand = isLastSeg && !!cursorPoint && !pendingBreak;
-
-            if (activeTool === 'rectangle') {
-              if (seg.pts.length === 2) {
-                const [p1, p2] = seg.pts;
-                ctx.strokeStyle = strokeColor;
-                ctx.setLineDash([5, 5]);
-                ctx.lineWidth = 2;
-                ctx.beginPath();
-                ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p1.y);
-                ctx.lineTo(p2.x, p2.y); ctx.lineTo(p1.x, p2.y);
-                ctx.closePath();
-                ctx.fillStyle = strokeColor + '30';
-                ctx.fill();
-                ctx.stroke();
-              } else if (seg.pts.length === 1 && showRubberBand) {
-                const p1 = seg.pts[0];
-                const p2 = cursorPoint!;
-                ctx.strokeStyle = strokeColor + '80';
-                ctx.setLineDash([3, 3]);
-                ctx.lineWidth   = 2;
-                ctx.beginPath();
-                ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p1.y);
-                ctx.lineTo(p2.x, p2.y); ctx.lineTo(p1.x, p2.y);
-                ctx.closePath();
-                ctx.fillStyle = strokeColor + '15';
-                ctx.fill();
-                ctx.stroke();
-                ctx.strokeStyle = strokeColor;
-                ctx.setLineDash([5, 5]);
-                ctx.lineWidth   = 2;
-              }
-            } else if (activeTool === 'polygon') {
-              ctx.beginPath();
-              ctx.moveTo(seg.pts[0].x, seg.pts[0].y);
-              for (let i = 1; i < seg.pts.length; i++) ctx.lineTo(seg.pts[i].x, seg.pts[i].y);
-              if (showRubberBand) ctx.lineTo(cursorPoint!.x, cursorPoint!.y);
-              if (seg.pts.length >= 2) {
-                ctx.lineTo(seg.pts[0].x, seg.pts[0].y);
-                ctx.fillStyle = strokeColor + '30';
-                ctx.fill();
-              }
-              ctx.stroke();
-            } else {
-              ctx.beginPath();
-              ctx.moveTo(seg.pts[0].x, seg.pts[0].y);
-              for (let i = 1; i < seg.pts.length; i++) ctx.lineTo(seg.pts[i].x, seg.pts[i].y);
-              if (showRubberBand) ctx.lineTo(cursorPoint!.x, cursorPoint!.y);
-              ctx.stroke();
-            }
-          }
-          ctx.setLineDash([]);
-        } else {
-          const allPts = [...tempPx.map(p => ({ x: p.x, y: p.y }))];
-          if (cursorPoint && hasTemp) allPts.push(cursorPoint);
-          if (allPts.length > 1) {
+            ctx.globalAlpha = 0.2;
+            ctx.fillStyle = COLOUR_ARC;
             ctx.beginPath();
-            ctx.moveTo(allPts[0].x, allPts[0].y);
-            allPts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+            ctx.arc(arc.cx, arc.cy, 3, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          } else {
+            ctx.beginPath();
+            ctx.moveTo(ipPts[0].x, ipPts[0].y);
+            ctx.lineTo(cursor.x, cursor.y);
             ctx.stroke();
           }
-          ctx.setLineDash([]);
         }
 
-        tempPx.forEach(p => {
+        ctx.setLineDash([]);
+        ipPts.forEach((pt, i) => {
+          const srcPt  = inProgressGroup[i];
+          const isSnap = srcPt?.snapped ?? false;
+          ctx.fillStyle   = isSnap ? COLOUR_SNAP : COLOUR_ARC;
+          ctx.globalAlpha = 1;
           ctx.beginPath();
-          ctx.arc(p.x, p.y, p.snapped ? 6 : 4, 0, Math.PI * 2);
-          ctx.fillStyle = p.snapped ? '#22C55E' : strokeColor;
+          ctx.arc(pt.x, pt.y, isSnap ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
           ctx.fill();
-          if (p.snapped) {
-            ctx.strokeStyle = '#22C55E';
-            ctx.lineWidth = 1.5;
-            ctx.stroke();
-          }
+          ctx.fillStyle = COLOUR_ARC;
+          ctx.font = 'bold 9px monospace';
+          ctx.fillText(['①', '②', '③'][i] ?? `${i + 1}`, pt.x + 6, pt.y - 4);
         });
 
-        if (cursorPoint) {
+        if (stagedGroups.length > 0) {
+          const firstPt = toCanvas(stagedGroups[0][0].x, stagedGroups[0][0].y);
+          ctx.fillStyle   = COLOUR_ARC_STAGED;
+          ctx.font        = 'bold 9px monospace';
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(`${stagedGroups.length} arc${stagedGroups.length > 1 ? 's' : ''} staged`, firstPt.x, firstPt.y - 10);
+          ctx.globalAlpha = 1;
+        }
+
+        if (cursor) {
+          ctx.strokeStyle = COLOUR_ARC;
+          ctx.lineWidth   = 1;
           ctx.beginPath();
-          ctx.arc(cursorPoint.x, cursorPoint.y, 4, 0, Math.PI * 2);
-          ctx.fillStyle = pendingBreak ? '#60A5FA' : strokeColor;
+          ctx.arc(cursor.x, cursor.y, DOT_RADIUS, 0, 2 * Math.PI);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        return;
+      }
+
+      // ── RADIUS TOOL ──────────────────────────────────────────────────────
+      if (activeTool === 'radius') {
+        ctx.save();
+
+        const radiusGroups   = splitRadiusPoints(tempPoints);
+        const stagedCircles  = radiusGroups.slice(0, -1).filter(g => g.length === 2);
+        const inProgressGroup = radiusGroups[radiusGroups.length - 1];
+        const ipPts          = inProgressGroup.map(p => toCanvas(p.x, p.y));
+
+        // Draw staged circles (solid purple)
+        if (stagedCircles.length > 0) {
+          ctx.strokeStyle = COLOUR_RADIUS_STAGED;
+          ctx.lineWidth   = LINE_WIDTH + 0.5;
+          ctx.setLineDash([]);
+          ctx.globalAlpha = 0.85;
+
+          for (const circle of stagedCircles) {
+            const [centre, edge] = circle.map(p => toCanvas(p.x, p.y));
+            const r = Math.hypot(edge.x - centre.x, edge.y - centre.y);
+            ctx.beginPath();
+            ctx.arc(centre.x, centre.y, r, 0, 2 * Math.PI);
+            ctx.stroke();
+            // Centre crosshair
+            ctx.globalAlpha = 0.5;
+            ctx.beginPath();
+            ctx.moveTo(centre.x - 6, centre.y); ctx.lineTo(centre.x + 6, centre.y);
+            ctx.moveTo(centre.x, centre.y - 6); ctx.lineTo(centre.x, centre.y + 6);
+            ctx.stroke();
+            ctx.globalAlpha = 0.85;
+            // Centre dot
+            ctx.fillStyle = COLOUR_RADIUS_STAGED;
+            ctx.beginPath();
+            ctx.arc(centre.x, centre.y, DOT_RADIUS, 0, 2 * Math.PI);
+            ctx.fill();
+          }
+
+          // Staged count badge
+          const firstCentre = toCanvas(stagedCircles[0][0].x, stagedCircles[0][0].y);
+          ctx.fillStyle   = COLOUR_RADIUS_STAGED;
+          ctx.font        = 'bold 9px monospace';
+          ctx.globalAlpha = 0.9;
+          ctx.fillText(
+            `${stagedCircles.length} circle${stagedCircles.length > 1 ? 's' : ''} staged`,
+            firstCentre.x, firstCentre.y - 10,
+          );
+          ctx.globalAlpha = 1;
+        }
+
+        // Draw in-progress circle preview (dashed)
+        ctx.strokeStyle = COLOUR_RADIUS;
+        ctx.lineWidth   = LINE_WIDTH;
+
+        if (ipPts.length === 0 && cursor) {
+          // No points yet — ghost circle at cursor
+          ctx.setLineDash(DASH_PREVIEW);
+          ctx.beginPath();
+          ctx.arc(cursor.x, cursor.y, 16, 0, 2 * Math.PI);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(cursor.x - 8, cursor.y); ctx.lineTo(cursor.x + 8, cursor.y);
+          ctx.moveTo(cursor.x, cursor.y - 8); ctx.lineTo(cursor.x, cursor.y + 8);
+          ctx.stroke();
+        } else if (ipPts.length === 1 && cursor) {
+          const centre = ipPts[0];
+          const r = Math.hypot(cursor.x - centre.x, cursor.y - centre.y);
+
+          ctx.setLineDash(DASH_PREVIEW);
+          ctx.beginPath();
+          ctx.moveTo(centre.x, centre.y);
+          ctx.lineTo(cursor.x, cursor.y);
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(centre.x, centre.y, r, 0, 2 * Math.PI);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Radius label
+          const realR = (r / dim.w) * scaleFactor;
+          ctx.fillStyle = COLOUR_RADIUS;
+          ctx.font = 'bold 9px monospace';
+          const midX = (centre.x + cursor.x) / 2;
+          const midY = (centre.y + cursor.y) / 2;
+          ctx.fillText(`r=${realR.toFixed(3)}m`, midX + 4, midY - 4);
+
+          // Centre crosshair + dot
+          ctx.globalAlpha = 0.6;
+          ctx.beginPath();
+          ctx.moveTo(centre.x - 6, centre.y); ctx.lineTo(centre.x + 6, centre.y);
+          ctx.moveTo(centre.x, centre.y - 6); ctx.lineTo(centre.x, centre.y + 6);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = COLOUR_RADIUS;
+          ctx.beginPath();
+          ctx.arc(centre.x, centre.y, DOT_RADIUS, 0, 2 * Math.PI);
           ctx.fill();
         }
 
-        const allPtsForLabel = [...tempPx.map(p => ({ x: p.x, y: p.y }))];
-        if (cursorPoint && hasTemp && !pendingBreak) allPtsForLabel.push(cursorPoint);
+        ctx.setLineDash([]);
+        ctx.restore();
+        return;
+      }
 
-        if (allPtsForLabel.length > 1 && cursorPoint) {
-          const zoom = scaleRef.current;
-          let text = '';
+      // ── GRID-COUNT TOOL ──────────────────────────────────────────────────
+      if (activeTool === 'grid-count') return;
 
-          if (activeTool === 'rectangle') {
-            const lastSeg = segGroups[segGroups.length - 1];
-            if (lastSeg?.pts.length === 1 && !pendingBreak) {
-              const w = Math.abs(cursorPoint.x - lastSeg.pts[0].x);
-              const h = Math.abs(cursorPoint.y - lastSeg.pts[0].y);
-              text = `${(w * h / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(3)} sq m`;
-            }
-          } else if (activeTool === 'polygon' && allPtsForLabel.length > 2) {
-            let a = 0;
-            for (let i = 0; i < allPtsForLabel.length; i++) {
-              const j = (i + 1) % allPtsForLabel.length;
-              a += allPtsForLabel[i].x * allPtsForLabel[j].y - allPtsForLabel[j].x * allPtsForLabel[i].y;
-            }
-            text = `${(Math.abs(a) / 2 / (zoom * zoom) * scaleFactor * scaleFactor).toFixed(3)} sq m`;
-          } else if (activeTool === 'linear' || activeTool === 'scale') {
-            let len = 0;
-            if (activeTool === 'linear' && tempPx.length > 0) {
-              for (const seg of segGroups) {
-                for (let i = 1; i < seg.pts.length; i++) {
-                  len += Math.hypot(seg.pts[i].x - seg.pts[i-1].x, seg.pts[i].y - seg.pts[i-1].y);
-                }
-              }
-              if (!pendingBreak) {
-                const lastSeg = segGroups[segGroups.length - 1];
-                if (lastSeg && lastSeg.pts.length > 0) {
-                  const last = lastSeg.pts[lastSeg.pts.length - 1];
-                  len += Math.hypot(cursorPoint.x - last.x, cursorPoint.y - last.y);
-                }
-              }
-            } else {
-              for (let i = 1; i < allPtsForLabel.length; i++) {
-                len += Math.hypot(
-                  allPtsForLabel[i].x - allPtsForLabel[i-1].x,
-                  allPtsForLabel[i].y - allPtsForLabel[i-1].y,
-                );
-              }
-            }
-            text = activeTool === 'scale'
-              ? `${(len / zoom).toFixed(3)} pts`
-              : `${(len / zoom * scaleFactor).toFixed(3)} m`;
-          }
+      // ── LINEAR TOOL ──────────────────────────────────────────────────────
+      if (activeTool === 'linear') {
+        if (tPts.length === 0) return;
+        ctx.save();
+        ctx.strokeStyle = COLOUR_ACTIVE;
+        ctx.lineWidth   = LINE_WIDTH;
 
-          if (text) {
-            ctx.font         = 'bold 12px monospace';
-            ctx.textAlign    = 'left';
-            ctx.textBaseline = 'alphabetic';
-            const tw = ctx.measureText(text).width;
-            ctx.fillStyle = strokeColor;
-            ctx.fillRect(cursorPoint.x + 10, cursorPoint.y - 22, tw + 10, 20);
-            ctx.fillStyle = 'black';
-            ctx.fillText(text, cursorPoint.x + 15, cursorPoint.y - 7);
-          }
+        ctx.beginPath();
+        ctx.moveTo(tPts[0].x, tPts[0].y);
+        for (let i = 1; i < tPts.length; i++) ctx.lineTo(tPts[i].x, tPts[i].y);
+        ctx.stroke();
+
+        if (cursor) {
+          ctx.setLineDash(DASH_ACTIVE);
+          const last = tPts[tPts.length - 1];
+          ctx.beginPath();
+          ctx.moveTo(last.x, last.y);
+          ctx.lineTo(cursor.x, cursor.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
-      }
-    });
 
-    return () => {
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = null;
+        tPts.forEach((pt, i) => {
+          const isSnapped = nonSentinelPoints[i]?.snapped ?? false;
+          ctx.fillStyle = isSnapped ? COLOUR_SNAP : COLOUR_UNSNAPPED;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, isSnapped ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+
+        if (pendingBreak && tPts.length > 0) {
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = '#F87171';
+          ctx.lineWidth   = 1;
+          const last = tPts[tPts.length - 1];
+          ctx.beginPath();
+          ctx.moveTo(last.x - 8, last.y); ctx.lineTo(last.x + 8, last.y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        ctx.restore();
+        return;
       }
-    };
-  }, [
-    measurements, tempPoints, cursorPoint, activeTool, scaleFactor,
-    toCanvas, pdfDimensionsRef, scaleRef, drawingCanvasRef, pendingBreak,
-    drawCommittedMeasurements, dragStateRef, drawHoverLabels,
-  ]);
+
+      // ── POLYGON / RECTANGLE TOOL ─────────────────────────────────────────
+      if (activeTool === 'polygon' || activeTool === 'rectangle') {
+        if (tPts.length === 0) return;
+        ctx.save();
+        ctx.strokeStyle = COLOUR_ACTIVE;
+        ctx.lineWidth   = LINE_WIDTH;
+
+        ctx.beginPath();
+        ctx.moveTo(tPts[0].x, tPts[0].y);
+        for (let i = 1; i < tPts.length; i++) ctx.lineTo(tPts[i].x, tPts[i].y);
+
+        if (cursor && tPts.length > 1) {
+          ctx.setLineDash(DASH_ACTIVE);
+          ctx.lineTo(cursor.x, cursor.y);
+          ctx.lineTo(tPts[0].x, tPts[0].y);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (tPts.length > 2) {
+          ctx.globalAlpha = 0.08;
+          ctx.fillStyle   = COLOUR_ACTIVE;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+        }
+
+        tPts.forEach((pt, i) => {
+          const isSnapped = nonSentinelPoints[i]?.snapped ?? false;
+          ctx.fillStyle = isSnapped ? COLOUR_SNAP : COLOUR_UNSNAPPED;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, isSnapped ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+
+        if (cursor) {
+          ctx.strokeStyle = COLOUR_ACTIVE;
+          ctx.lineWidth   = 1;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(cursor.x, cursor.y, DOT_RADIUS, 0, 2 * Math.PI);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        return;
+      }
+
+      // ── COUNT TOOL ───────────────────────────────────────────────────────
+      if (activeTool === 'count') {
+        ctx.save();
+        tPts.forEach((pt, idx) => {
+          ctx.fillStyle   = COLOUR_ACTIVE;
+          ctx.strokeStyle = '#000';
+          ctx.lineWidth   = 0.5;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 6, 0, 2 * Math.PI);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle    = '#000';
+          ctx.font         = 'bold 7px monospace';
+          ctx.textAlign    = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(String(idx + 1), pt.x, pt.y);
+        });
+        ctx.restore();
+        return;
+      }
+
+      // ── POINT TOOL ───────────────────────────────────────────────────────
+      if (activeTool === 'point') {
+        ctx.save();
+        tPts.forEach(pt => {
+          ctx.fillStyle = COLOUR_ACTIVE;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+        ctx.restore();
+        return;
+      }
+
+      // ── SCALE TOOL ───────────────────────────────────────────────────────
+      if (activeTool === 'scale') {
+        if (tPts.length === 0) return;
+        ctx.save();
+        ctx.strokeStyle = '#FBBF24';
+        ctx.lineWidth   = 2;
+        ctx.setLineDash([8, 4]);
+
+        if (tPts.length === 1 && cursor) {
+          ctx.beginPath();
+          ctx.moveTo(tPts[0].x, tPts[0].y);
+          ctx.lineTo(cursor.x, cursor.y);
+          ctx.stroke();
+        } else if (tPts.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(tPts[0].x, tPts[0].y);
+          ctx.lineTo(tPts[1].x, tPts[1].y);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        tPts.slice(0, 2).forEach(pt => {
+          ctx.fillStyle = '#FBBF24';
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 5, 0, 2 * Math.PI);
+          ctx.fill();
+        });
+
+        ctx.restore();
+        return;
+      }
+    },
+    [
+      drawingCanvasRef, pdfDimensionsRef, measurements, tempPoints,
+      activeTool, scaleFactor, pendingBreak, toCanvas, cursorPointRef,
+    ],
+  );
+
+  const handleCanvasPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const canvas = drawingCanvasRef.current;
+      const dim    = pdfDimensionsRef.current;
+      if (!canvas || !dim) return;
+
+      const rect    = canvas.getBoundingClientRect();
+      const canvasX = (e.clientX - rect.left) * (canvas.width  / rect.width);
+      const canvasY = (e.clientY - rect.top)  * (canvas.height / rect.height);
+
+      let snappedCanvas = { x: canvasX, y: canvasY };
+
+      if (snapEnabledRef.current && snapToCorner) {
+        const s = snapToCorner(canvasX, canvasY);
+        if (s) snappedCanvas = { x: s.x, y: s.y };
+      }
+
+      cursorPointRef.current = snappedCanvas;
+      setCursorPoint(snappedCanvas);
+      redrawDrawingCanvas(snappedCanvas);
+      redrawPinCanvas();
+    },
+    [
+      drawingCanvasRef, pdfDimensionsRef, snapEnabledRef,
+      snapToCorner, cursorPointRef, redrawDrawingCanvas, redrawPinCanvas,
+    ],
+  );
 
   useEffect(() => {
-    return () => {
-      if (pointerRafRef.current !== null) cancelAnimationFrame(pointerRafRef.current);
-    };
-  }, []);
+    redrawDrawingCanvas(cursorPointRef.current ?? undefined);
+  }, [tempPoints, activeTool, measurements, redrawDrawingCanvas, cursorPointRef]);
 
   return {
     cursorPoint,
     setCursorPoint,
-    toCanvas,
-    toNorm,
     redrawDrawingCanvas,
     handleCanvasPointerMove,
-    drawCommittedMeasurements,
   };
 }

@@ -78,3 +78,4 @@ export function formatQuantity(
   const v = convertLength(quantity, displayUnit);
   return `${v.toFixed(2)} ${displayUnit}`;
 }
+

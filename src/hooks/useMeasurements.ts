@@ -15,6 +15,8 @@ import { useDrawingCanvas } from './useMeasurements/useDrawingCanvas';
 import { usePointDrag } from './useMeasurements/usePointDrag';
 import { useMeasurementCommit } from './useMeasurements/useMeasurementCommit';
 import type { PendingSnapCandidate } from '@/types/viewerTypes'; // FIX B
+import type { ToolType } from '@/types';
+import type { DragState } from '@/hooks/useMeasurements/types'; // FIX C
 
 export { getNextMeasurementColor, resetColorIndex };
 export type { UseMeasurementsParams, UseMeasurementsReturn };
@@ -48,6 +50,8 @@ export function useMeasurements({
   onAppendComplete,
 }: UseMeasurementsParams): UseMeasurementsReturn {
 
+  const typedActiveTool = activeTool as ToolType;
+
   const snapEnabledRef   = useRef(snapEnabled);
   const snapThresholdRef = useRef(snapThreshold);
   useEffect(() => { snapEnabledRef.current   = snapEnabled;   }, [snapEnabled]);
@@ -68,7 +72,7 @@ export function useMeasurements({
     clearTempPoints();
     if (cursorPointRef) cursorPointRef.current = null;
     resetBreakState();
-  }, [activeTool, clearTempPoints, cursorPointRef, resetBreakState]);
+  }, [typedActiveTool, clearTempPoints, cursorPointRef, resetBreakState]);
 
   // ── FIX C: stable ref initialized to a no-op; populated before any drag ────
   // Using a ref-of-ref pattern means usePointDrag always calls the latest
@@ -81,7 +85,7 @@ export function useMeasurements({
     pdfDimensionsRef,
     scaleRef,
     measurements,
-    activeTool,
+    activeTool: typedActiveTool,
     activeDrawingId,
     scaleFactor,
     snapEnabledRef,
@@ -103,11 +107,11 @@ export function useMeasurements({
     scaleRef,
     measurements,
     tempPoints,
-    activeTool,
+    activeTool: typedActiveTool,
     scaleFactor,
     isPanning,
     pendingBreak,
-    dragStateRef: drag.dragStateRef,
+    dragStateRef: drag.dragStateRef as React.RefObject<DragState | null>,
     cursorPointRef,
     snapToCorner,
     redrawPinCanvas,

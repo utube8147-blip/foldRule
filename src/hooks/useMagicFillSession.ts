@@ -2,15 +2,33 @@
 
 // ─── hooks/useMagicFillSession.ts ─────────────────────────────────────────────
 //
-//  Owns everything above the raw useMagicFill primitive:
-//    • staged / session state (color, snapshot, counter)
-//    • handleMagicSingleClick / handleMagicBatchRect
-//    • handleMagicFillHoles / handleMagicUndo / handleMagicClear / handleMagicDelete
-//    • handleMagicToggleHide / handleMagicAbortSession / handleMagicFinish
-//    • measurements sync effect (deletion + visibility + color repaint)
-//    • scale-change sync effect
+//  FIX: Committed magic-fill regions were being repainted onto fillCanvasRef
+//  whenever `measurements` changed — including after scale calibration, tool
+//  switches, and any other state update that touched the measurements array.
+//  This caused the green cross artifact to appear on the canvas even when the
+//  magic-fill tool was not active.
 //
-//  Returns everything the Viewer needs to render Magic Fill UI and wire events.
+//  ROOT CAUSE:
+//  The "measurements sync" effect watched `measurements` and called
+//  magicFill.fillAt() / magicFill.repaintFillColor() unconditionally. It had
+//  no awareness of whether the magic-fill tool was actually active.
+//
+//  FIX:
+//  Added `isMagicFillActiveRef: React.RefObject<boolean>` to the hook options.
+//  Every code path that writes to fillCanvasRef now checks this ref first and
+//  bails out if the tool is not active. Specifically:
+//    1. measurements sync effect — skips the full repaint and color repaint
+//       branches when not active.
+//    2. scale-change sync effect (quantity update) — already only calls
+//       onUpdateMeasurementProp (no canvas write), so no guard needed there.
+//    3. pdfRenderCount effect (mask rebuild) — reads pdfCanvasRef only, no
+//       fillCanvasRef write, so no guard needed there.
+//    4. handleMagicSingleClick / handleMagicBatchRect / handleMagicFillHoles —
+//       these are only reachable while the tool is active (MagicFillCanvas
+//       passes events only when active=true), so no guard needed there.
+//
+//  The ref is updated synchronously on every render of Viewer.tsx so it is
+//  always current by the time any async effect callback reads it.
 
 import {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -40,15 +58,21 @@ export interface UseMagicFillSessionOptions {
   onDeleteMeasurementProp?: (id: string) => void;
   onAppendComplete?:      () => void;
   batchCommitMeasurements: (rows: TakeoffRow[]) => void;
+  /**
+   * Ref that is `true` only while activeTool === 'magic-fill'.
+   * All canvas-write paths check this before painting so committed fills
+   * are never repainted when the tool is inactive (e.g. after calibration,
+   * while using grid-count, etc.).
+   *
+   * Pass `isMagicFillActiveRef` from Viewer.tsx.
+   */
+  isMagicFillActiveRef:   React.RefObject<boolean>;
 }
 
 export interface UseMagicFillSessionReturn {
-  // committed + staged fills (merged for rendering)
   allVisibleFills:    MagicFill[];
   magicFills:         MagicFill[];
   mfStagedCount:      number;
-
-  // selection / hover
   mfSelectedId:       number | null;
   setMfSelectedId:    (id: number | null) => void;
   mfSelectedGroup:    number | null;
@@ -57,25 +81,15 @@ export interface UseMagicFillSessionReturn {
   mfHoverPos:         { x: number; y: number };
   mfHolesClosed:      Set<number>;
   mfHiddenIds:        Set<number>;
-
-  // loading state
   mfIsFilling:        boolean;
   mfIsRepainting:     boolean;
   mfFillMsg:          string;
   mfFillSub:          string | undefined;
   mfFillProgress:     { done: number; total: number } | null;
-
-  // scale
   mfMetersPerPixel:   number | null;
-
-  // last fill position (for the floating Finish button)
   mfLastFillPos:      { x: number; y: number } | null;
-
-  // name-dialog state
   showMfNameDialog:   boolean;
   pendingMfData:      { id: string; type: string; description: string } | null;
-
-  // handlers
   handleMagicSingleClick:  (canvasX: number, canvasY: number) => Promise<void>;
   handleMagicBatchRect:    (x1: number, y1: number, x2: number, y2: number) => Promise<void>;
   handleMagicHover:        (canvasX: number, canvasY: number) => void;
@@ -107,6 +121,7 @@ export function useMagicFillSession({
   onDeleteMeasurementProp,
   onAppendComplete,
   batchCommitMeasurements,
+  isMagicFillActiveRef,
 }: UseMagicFillSessionOptions): UseMagicFillSessionReturn {
 
   const magicFill = useMagicFill();
@@ -162,6 +177,7 @@ export function useMagicFillSession({
   }, [scaleFactor]);
 
   // ── Rebuild mask when PDF renders ──────────────────────────────────────────
+  // No fillCanvasRef write here — safe to run regardless of active tool.
   useEffect(() => {
     const canvas = pdfCanvasRef.current;
     if (!canvas || !pdfDimensions) return;
@@ -194,6 +210,7 @@ export function useMagicFillSession({
   }, [activeDrawingId]);
 
   // ── Quantity sync when scale changes ──────────────────────────────────────
+  // Only calls onUpdateMeasurementProp — no canvas writes. No guard needed.
   useEffect(() => {
     if (!mfMetersPerPixel || magicFillsRef.current.length === 0) return;
     magicFillsRef.current.forEach(f => {
@@ -211,6 +228,15 @@ export function useMagicFillSession({
   }, [mfMetersPerPixel]);
 
   // ── Measurements sync (deletion + visibility + color) ─────────────────────
+  //
+  //  FIX: This effect fires whenever `measurements` changes — including after
+  //  calibration, undo/redo, and any tool switch that adds a measurement.
+  //  Previously it unconditionally painted onto fillCanvasRef, causing the
+  //  green cross to appear even when magic-fill was not the active tool.
+  //
+  //  Guard: bail out of any fillCanvasRef write when isMagicFillActiveRef is
+  //  false. State-only updates (setMfHiddenIds, setMagicFills) are still
+  //  applied so the data stays consistent for when the tool is re-activated.
   useEffect(() => {
     if (magicFillsRef.current.length === 0) return;
 
@@ -275,6 +301,8 @@ export function useMagicFillSession({
 
     if (!needsFullRepaint && !needsColorRepaint) return;
 
+    // Always update color origin map and hidden state — these are pure data,
+    // no canvas involvement. Safe to do regardless of active tool.
     colorChanges.forEach(({ fill, newColor }) => {
       const origin = mfFillOrigins.current[fill.id];
       if (origin) mfFillOrigins.current[fill.id] = { ...origin, color: newColor };
@@ -283,6 +311,29 @@ export function useMagicFillSession({
     mfHiddenIdsRef.current = newHidden;
     setMfHiddenIds(newHidden);
 
+    // FIX: guard all canvas-write paths. If magic-fill is not the active tool,
+    // skip the repaint entirely. The state updates above keep the data correct
+    // so when the user returns to magic-fill the repaint will trigger again
+    // via the measurements effect (measurements will still be the same, but
+    // the component re-mounts or the user can re-enter the tool which calls
+    // a fresh render cycle). If fills were deleted we still update magicFills
+    // state so the data model stays accurate without touching the canvas.
+    if (!isMagicFillActiveRef.current) {
+      if (deletedFillIds.length > 0) {
+        setMagicFills(survivingFills);
+      }
+      if (needsColorRepaint) {
+        setMagicFills(prev =>
+          prev.map(f => {
+            const change = colorChanges.find(c => c.fill.id === f.id);
+            return change ? { ...f, color: change.newColor } : f;
+          }),
+        );
+      }
+      return;
+    }
+
+    // ── Tool is active — proceed with canvas repaints ─────────────────────
     const fc = fillCanvasRef.current;
     if (!fc) return;
 
@@ -296,10 +347,18 @@ export function useMagicFillSession({
         await new Promise<void>(r =>
           requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
+        // Re-check: user may have switched tool while the rAF was pending.
+        if (!isMagicFillActiveRef.current) {
+          setMfIsRepainting(false);
+          return;
+        }
+
         for (const f of survivingFills) {
           if (newHidden.has(f.id)) continue;
           const origin = mfFillOrigins.current[f.id];
           if (!origin) continue;
+          // Check again inside the loop — each fillAt is async.
+          if (!isMagicFillActiveRef.current) break;
           await magicFill.fillAt(origin.x, origin.y, fc, origin.color, 40, origin.label);
           await new Promise<void>(r => requestAnimationFrame(() => r()));
         }
@@ -321,6 +380,19 @@ export function useMagicFillSession({
       setMfIsRepainting(true);
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
+          // Re-check after the double-rAF.
+          if (!isMagicFillActiveRef.current) {
+            setMfIsRepainting(false);
+            // Still update state so color is correct when tool re-activates.
+            setMagicFills(prev =>
+              prev.map(f => {
+                const change = colorChanges.find(c => c.fill.id === f.id);
+                return change ? { ...f, color: change.newColor } : f;
+              }),
+            );
+            return;
+          }
+
           const visibleIds = new Set(
             survivingFills.filter(f => !newHidden.has(f.id)).map(f => f.id),
           );

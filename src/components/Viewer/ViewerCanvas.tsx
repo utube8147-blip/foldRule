@@ -1,6 +1,22 @@
 'use client';
 
 // ─── components/Viewer/ViewerCanvas.tsx ───────────────────────────────────────
+//
+//  FIX: Finish buttons were never visible because they used toCanvas() which
+//  returns coords relative to the scrollable viewport, but the buttons are
+//  children of the canvas wrap div (positioned absolutely inside that
+//  container). Button positions must be in PDF-canvas space, i.e. simply the
+//  tempPoint x/y values already scaled by the current zoom (which is what the
+//  drawing canvas itself uses). We now compute button positions directly from
+//  tempPoint coords without going through toCanvas().
+//
+//  ARC TOOL CHANGES (unchanged from before):
+//   • Finish button shows when stagedArcCount > 0.
+//   • stagedArcCount prop added — computed in Viewer.tsx from tempPoints.
+//   • The "click end point" hint is shown only while the in-progress arc has
+//     exactly 2 points and no arcs are staged yet.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
 import { FolderOpen, Check } from 'lucide-react';
@@ -9,6 +25,12 @@ import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 import { CountPinOverlay } from '../CountPinOverlay';
+import { GridCountOverlay } from './GridCountOverlay';
+
+import {
+  splitArcPoints, isArcSentinel,
+  splitRadiusPoints,
+} from '@/hooks/useMeasurements/useMeasurementCommit';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +41,6 @@ interface ViewerCanvasProps {
   drawingCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   pinCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
   vectorCanvasRef:  React.RefObject<HTMLCanvasElement | null>;
-  /** Canvas that receives magic-fill paint output */
   fillCanvasRef:    React.RefObject<HTMLCanvasElement | null>;
 
   pdf:             any;
@@ -35,6 +56,9 @@ interface ViewerCanvasProps {
   snapFlashes:     SnapFlash[];
 
   readyToDraw?: boolean;
+
+  /** Number of completed (3-point) arcs staged in tempPoints awaiting Finish. */
+  stagedArcCount: number;
 
   toCanvas: (x: number, y: number) => { x: number; y: number };
 
@@ -54,8 +78,32 @@ interface ViewerCanvasProps {
   containerRef:   React.RefObject<HTMLDivElement | null>;
   CANVAS_PADDING: number;
 
-  /** Children inserted into the canvas stack (e.g. MagicFillCanvas layers) */
+  isGridCountActive: boolean;
+  scaleFactor:       number;
+  onGridCountCommit: (count: number, spacingMm: number, cols: number, rows: number) => void;
+
   children?: React.ReactNode;
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Convert a point from PDF-space (the coordinate system tempPoints are stored
+ * in) to canvas-wrap-relative pixels.
+ *
+ * tempPoints use the same coordinate space as the PDF canvas — i.e. PDF units
+ * multiplied by the current devicePixelRatio-aware render scale.  The canvas
+ * wrap div has width = pdfDimensions.w and height = pdfDimensions.h (already
+ * in those scaled pixels), so the point coords are already in the right space.
+ * We just return them as-is so that `style={{ left: x, top: y }}` on an
+ * absolutely-positioned child of the wrap div lands in the correct spot.
+ *
+ * DO NOT use the `toCanvas()` hook here — that function converts to *viewport*
+ * pixels (accounting for scroll position and container offsets) which is the
+ * wrong reference frame for children of the canvas wrap div.
+ */
+function pdfPtToWrapPx(pt: InProgressPoint): { x: number; y: number } {
+  return { x: pt.x, y: pt.y };
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -68,12 +116,16 @@ export function ViewerCanvas({
   tempPoints, measurements, activeDrawingId,
   snapFlashes, toCanvas,
   readyToDraw = true,
+  stagedArcCount,
   handleCanvasClick, handleContextMenu,
   handleCanvasPointerMove, handleCanvasPointerDown,
   handleCanvasPointerUp, handleDrawingCanvasPointerDown,
   setCursorPoint, cursorPointRef, redrawPinCanvas,
   handleFinishMeasurement, handleFileUpload,
   containerRef, CANVAS_PADDING,
+  isGridCountActive,
+  scaleFactor,
+  onGridCountCommit,
   children,
 }: ViewerCanvasProps) {
 
@@ -87,8 +139,8 @@ export function ViewerCanvas({
   // ── Canvas wrap positioning ───────────────────────────────────────────────
   const canvasWrapStyle: React.CSSProperties | undefined = pdfDimensions
     ? (() => {
-        const vw   = containerRef.current?.clientWidth  ?? 0;
-        const vh   = containerRef.current?.clientHeight ?? 0;
+        const vw    = containerRef.current?.clientWidth  ?? 0;
+        const vh    = containerRef.current?.clientHeight ?? 0;
         const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw  * 3);
         const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
         return {
@@ -100,6 +152,33 @@ export function ViewerCanvas({
         };
       })()
     : undefined;
+
+  // ── Arc/radius point helpers ──────────────────────────────────────────────
+  // Last non-sentinel point — used to anchor the arc finish button.
+  const lastNonSentinelPoint = [...tempPoints]
+    .reverse()
+    .find(p => p.segmentId !== '__arc_break__' && p.segmentId !== '__radius_break__');
+
+  // Points after the last arc sentinel — the "in-progress" arc being drawn.
+  const inProgressArcPts = (() => {
+    const pts: InProgressPoint[] = [];
+    for (let i = tempPoints.length - 1; i >= 0; i--) {
+      if (tempPoints[i].segmentId === '__arc_break__') break;
+      pts.unshift(tempPoints[i]);
+    }
+    return pts;
+  })();
+
+  // ── Finish button position helpers ────────────────────────────────────────
+  // All buttons are absolutely positioned children of the canvas wrap div,
+  // so we convert using pdfPtToWrapPx (PDF space == wrap-div space).
+  const lastPt = tempPoints.length > 0
+    ? pdfPtToWrapPx(tempPoints[tempPoints.length - 1])
+    : null;
+
+  const arcBtnPos = lastNonSentinelPoint
+    ? pdfPtToWrapPx(lastNonSentinelPoint)
+    : lastPt;
 
   return (
     <>
@@ -155,10 +234,7 @@ export function ViewerCanvas({
           <canvas
             ref={fillCanvasRef}
             className="absolute inset-0 z-[39] pointer-events-none"
-            style={{
-              width:  pdfDimensions?.w,
-              height: pdfDimensions?.h,
-            }}
+            style={{ width: pdfDimensions?.w, height: pdfDimensions?.h }}
           />
 
           {/* Layer 40: Drawing canvas */}
@@ -182,8 +258,9 @@ export function ViewerCanvas({
               drawingCanvasCursor,
             )}
             style={{
-              opacity:    readyToDraw ? 1 : 0,
-              transition: readyToDraw ? 'opacity 0.15s' : 'none',
+              opacity:       readyToDraw ? 1 : 0,
+              transition:    readyToDraw ? 'opacity 0.15s' : 'none',
+              pointerEvents: isGridCountActive ? 'none' : undefined,
             }}
           />
 
@@ -192,17 +269,23 @@ export function ViewerCanvas({
             ref={pinCanvasRef}
             className="absolute inset-0 z-50 w-full h-full pointer-events-none"
             style={{
-              opacity: showPins && activeTool !== 'select' && readyToDraw ? 1 : 0,
+              opacity:    showPins && activeTool !== 'select' && readyToDraw ? 1 : 0,
               transition: 'opacity 0.2s',
             }}
           />
 
-          {/* Layer 6: Count pin overlay */}
+          {/* Layer 55: Grid-count overlay */}
+          <GridCountOverlay
+            active={isGridCountActive}
+            pdfDimensions={pdfDimensions}
+            scaleFactor={scaleFactor}
+            onCommit={onGridCountCommit}
+          />
+
+          {/* Layer 60: Count pin overlay */}
           <div
-            style={{
-              opacity:    readyToDraw ? 1 : 0,
-              transition: readyToDraw ? 'opacity 0.15s' : 'none',
-            }}
+            className="absolute inset-0 z-[60] pointer-events-none"
+            style={{ opacity: readyToDraw ? 1 : 0, transition: readyToDraw ? 'opacity 0.15s' : 'none' }}
           >
             <CountPinOverlay
               measurements={measurements}
@@ -213,11 +296,11 @@ export function ViewerCanvas({
             />
           </div>
 
-          {/* Layer 7: Snap flashes */}
+          {/* Layer 65: Snap flashes */}
           {readyToDraw && snapFlashes.map(flash => (
             <div
               key={flash.id}
-              className="absolute pointer-events-none z-[60]"
+              className="absolute pointer-events-none z-[65]"
               style={{ left: flash.x, top: flash.y, transform: 'translate(-50%,-50%)' }}
             >
               <div
@@ -227,48 +310,94 @@ export function ViewerCanvas({
             </div>
           ))}
 
-          {/* Layer 8: Finish button — Count */}
-          {readyToDraw && tempPoints.length > 0 && activeTool === 'count' && (() => {
-            const last = toCanvas(
-              tempPoints[tempPoints.length - 1].x,
-              tempPoints[tempPoints.length - 1].y,
-            );
-            return (
+          {/* Layer 70: Finish button — Count */}
+          {readyToDraw &&
+            activeTool === 'count' &&
+            tempPoints.length > 0 &&
+            lastPt && (
               <button
                 className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
-                style={{ left: last.x + 15, top: last.y + 15 }}
+                style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
                 onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                 onPointerDown={e => e.stopPropagation()}
               >
                 <Check className="w-3 h-3" />
                 Finish ({tempPoints.length} counts)
               </button>
-            );
-          })()}
+            )}
 
-          {/* Layer 8: Finish button — Polygon / Rectangle / Linear */}
+          {/* Layer 70: Finish button — Polygon / Rectangle / Linear */}
           {readyToDraw &&
-            tempPoints.length > 1 &&
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
-            (() => {
-              const last = toCanvas(
-                tempPoints[tempPoints.length - 1].x,
-                tempPoints[tempPoints.length - 1].y,
-              );
+            tempPoints.length > 1 &&
+            lastPt && (
+              <button
+                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
+                onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
+                onPointerDown={e => e.stopPropagation()}
+              >
+                <Check className="w-3 h-3" />
+                Finish ({tempPoints.filter(p => p.snapped).length}/{tempPoints.length} snapped)
+              </button>
+            )}
+
+          {/* Layer 70: Arc tool UI — Finish button or hint label */}
+          {readyToDraw && activeTool === 'arc' && (() => {
+            // Show Finish button when at least one arc is fully staged
+            if (stagedArcCount > 0 && arcBtnPos) {
               return (
                 <button
-                  className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
-                  style={{ left: last.x + 15, top: last.y + 15 }}
+                  className="absolute z-[70] flex items-center justify-center gap-1.5 bg-teal-500 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-teal-400 active:scale-95 transition-transform"
+                  style={{ left: arcBtnPos.x + 15, top: arcBtnPos.y + 15 }}
                   onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                   onPointerDown={e => e.stopPropagation()}
                 >
                   <Check className="w-3 h-3" />
-                  Finish ({tempPoints.filter(p => p.snapped).length}/{tempPoints.length} snapped)
+                  Finish ({stagedArcCount} arc{stagedArcCount !== 1 ? 's' : ''})
+                  {inProgressArcPts.length > 0 && (
+                    <span className="ml-1 opacity-70">
+                      +{inProgressArcPts.length}pt
+                    </span>
+                  )}
                 </button>
               );
-            })()}
+            }
 
-          {/* Slot for MagicFillCanvas layers (42 + 45) and overlays */}
+            // Show hint label when the in-progress arc has exactly 2 points
+            if (inProgressArcPts.length === 2 && arcBtnPos) {
+              return (
+                <div
+                  className="absolute z-[70] bg-teal-900/80 border border-teal-500/50 px-3 py-1.5 font-mono text-[9px] text-teal-300 uppercase tracking-widest pointer-events-none whitespace-nowrap"
+                  style={{ left: arcBtnPos.x + 15, top: arcBtnPos.y + 15 }}
+                >
+                  Click end point · right-click to cancel arc
+                </div>
+              );
+            }
+
+            return null;
+          })()}
+
+          {/* Layer 70: Finish button — Radius */}
+          {readyToDraw && activeTool === 'radius' && (() => {
+            const staged = splitRadiusPoints(tempPoints).filter(g => g.length === 2);
+            if (staged.length === 0 || !lastNonSentinelPoint) return null;
+            const lastEdge = pdfPtToWrapPx(staged[staged.length - 1][1]);
+            return (
+              <button
+                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-purple-500 text-white font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-purple-400 active:scale-95 transition-transform"
+                style={{ left: lastEdge.x + 15, top: lastEdge.y + 15 }}
+                onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
+                onPointerDown={e => e.stopPropagation()}
+              >
+                <Check className="w-3 h-3" />
+                Finish ({staged.length} circle{staged.length !== 1 ? 's' : ''})
+              </button>
+            );
+          })()}
+
+          {/* Slot for MagicFillCanvas layers and overlays */}
           {children}
         </div>
       )}

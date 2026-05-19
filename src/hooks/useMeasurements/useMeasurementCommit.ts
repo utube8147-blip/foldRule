@@ -13,6 +13,67 @@ export interface MeasurementLabelOptions {
   toCanvas: (nx: number, ny: number) => { x: number; y: number };
 }
 
+// ─── Arc sentinel ─────────────────────────────────────────────────────────────
+export const ARC_SENTINEL: InProgressPoint = {
+  x: -1, y: -1, snapped: false, segmentId: '__arc_break__',
+};
+
+export function isArcSentinel(p: InProgressPoint): boolean {
+  return p.segmentId === '__arc_break__';
+}
+
+export function splitArcPoints(pts: InProgressPoint[]): InProgressPoint[][] {
+  const groups: InProgressPoint[][] = [];
+  let cur: InProgressPoint[] = [];
+  for (const p of pts) {
+    if (isArcSentinel(p)) {
+      groups.push(cur);
+      cur = [];
+    } else {
+      cur.push(p);
+    }
+  }
+  groups.push(cur);
+  return groups;
+}
+
+export function stagedArcCount(pts: InProgressPoint[]): number {
+  return splitArcPoints(pts).filter(g => g.length === 3).length;
+}
+
+export function inProgressArcPoints(pts: InProgressPoint[]): InProgressPoint[] {
+  const groups = splitArcPoints(pts);
+  return groups[groups.length - 1] ?? [];
+}
+
+// ─── Radius sentinel ──────────────────────────────────────────────────────────
+export const RADIUS_SENTINEL: InProgressPoint = {
+  x: -1, y: -1, snapped: false, segmentId: '__radius_break__',
+};
+
+export function isRadiusSentinel(p: InProgressPoint): boolean {
+  return p.segmentId === '__radius_break__';
+}
+
+export function splitRadiusPoints(pts: InProgressPoint[]): InProgressPoint[][] {
+  const groups: InProgressPoint[][] = [];
+  let cur: InProgressPoint[] = [];
+  for (const p of pts) {
+    if (isRadiusSentinel(p)) {
+      groups.push(cur);
+      cur = [];
+    } else {
+      cur.push(p);
+    }
+  }
+  groups.push(cur);
+  return groups;
+}
+
+export function stagedRadiusCount(pts: InProgressPoint[]): number {
+  return splitRadiusPoints(pts).filter(g => g.length === 2).length;
+}
+
 interface UseMeasurementCommitParams {
   pdfDimensionsRef:        React.MutableRefObject<PdfDimensions | null>;
   pageNumberRef:           React.MutableRefObject<number>;
@@ -46,6 +107,8 @@ interface UseMeasurementCommitParams {
   resetBreakState:         () => void;
 }
 
+// ─── Group points by segment ID ───────────────────────────────────────────────
+
 export function groupPointsBySegment(points: InProgressPoint[]) {
   const segs: { segmentId: string; points: InProgressPoint[] }[] = [];
   let cur: InProgressPoint[] = [];
@@ -64,26 +127,13 @@ export function groupPointsBySegment(points: InProgressPoint[]) {
 }
 
 // ─── Geometry helpers ─────────────────────────────────────────────────────────
-//
-// scaleFactor = real-world meters per scale-1 pixel
-//   set by calibration: scaleFactor = realWorldMeters / pixelsAtScale1
-//
-// To get area in m²:
-//   1. Convert norm coords → scale-1 pixels  (norm * pdfDims / displayZoom)
-//   2. Run shoelace → area in scale-1 px²
-//   3. Multiply by scaleFactor²  →  m²
-//
-// To get length in m:
-//   1. Convert norm coords → scale-1 pixels
-//   2. Sum segment lengths in scale-1 px
-//   3. Multiply by scaleFactor  →  m
 
 export function shoelaceArea(
   normPts: { x: number; y: number }[],
-  pdfW: number,         // canvas width at current display scale
-  pdfH: number,         // canvas height at current display scale
-  displayScale: number, // current zoom level
-  scaleFactor: number,  // meters per scale-1 pixel
+  pdfW: number,
+  pdfH: number,
+  displayScale: number,
+  scaleFactor: number,
 ): number {
   if (normPts.length < 3) return 0;
   const scale1W = pdfW / displayScale;
@@ -97,7 +147,6 @@ export function shoelaceArea(
     const yj = normPts[j].y * scale1H;
     a += xi * yj - xj * yi;
   }
-  // px² → m²: multiply by scaleFactor²
   return (Math.abs(a) / 2) * (scaleFactor * scaleFactor);
 }
 
@@ -117,13 +166,50 @@ export function linearLength(
     const dy = (normPts[i].y - normPts[i - 1].y) * scale1H;
     len += Math.hypot(dx, dy);
   }
-  // px → m: multiply by scaleFactor
   return len * scaleFactor;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// drawMeasurementLabel
-// ─────────────────────────────────────────────────────────────────────────────
+function circumscribedCircleNorm(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+): { r: number; sweepAngle: number; arcLength: number } | null {
+  const ax = p1.x, ay = p1.y;
+  const bx = p2.x, by = p2.y;
+  const cx = p3.x, cy = p3.y;
+
+  const D = 2 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by));
+  if (Math.abs(D) < 1e-9) return null;
+
+  const ux = (
+    (ax * ax + ay * ay) * (by - cy) +
+    (bx * bx + by * by) * (cy - ay) +
+    (cx * cx + cy * cy) * (ay - by)
+  ) / D;
+  const uy = (
+    (ax * ax + ay * ay) * (cx - bx) +
+    (bx * bx + by * by) * (ax - cx) +
+    (cx * cx + cy * cy) * (bx - ax)
+  ) / D;
+
+  const r  = Math.hypot(ax - ux, ay - uy);
+  const a0 = Math.atan2(ay - uy, ax - ux);
+  const a1 = Math.atan2(by - uy, bx - ux);
+  const a2 = Math.atan2(cy - uy, cx - ux);
+
+  const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+  const s = norm(a0), m = norm(a1), e = norm(a2);
+
+  let sweep: number;
+  if (s <= e) {
+    sweep = (m >= s && m <= e) ? (e - s) : (2 * Math.PI - (e - s));
+  } else {
+    sweep = (m >= s || m <= e) ? (2 * Math.PI - (s - e)) : (s - e);
+  }
+
+  return { r, sweepAngle: sweep, arcLength: r * sweep };
+}
+
 export function drawMeasurementLabel(
   ctx: CanvasRenderingContext2D,
   measurement: TakeoffRow,
@@ -169,11 +255,11 @@ export function drawMeasurementLabel(
   const cx = canvasPts.reduce((s, p) => s + p.x, 0) / canvasPts.length;
   const cy = canvasPts.reduce((s, p) => s + p.y, 0) / canvasPts.length;
 
-  const qty      = measurement.quantity ?? 0;
-  const isArea   = measurement.type !== 'Length';
+  const qty        = measurement.quantity ?? 0;
+  const isArea     = measurement.type !== 'Length';
   const valueLabel = isArea ? `${qty.toFixed(2)} m²` : `${qty.toFixed(2)} m`;
-  const desc     = (measurement.label || measurement.description || '').toUpperCase();
-  const color    = measurement.color || '#EF9F27';
+  const desc       = (measurement.label || measurement.description || '').toUpperCase();
+  const color      = measurement.color || '#EF9F27';
 
   ctx.save();
   ctx.font = 'bold 12px ui-monospace, monospace';
@@ -215,7 +301,7 @@ export function drawMeasurementLabel(
   ctx.restore();
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useMeasurementCommit({
   pdfDimensionsRef,
@@ -282,6 +368,40 @@ export function useMeasurementCommit({
     ];
   }, []);
 
+  const calcArcLength = useCallback((
+    p1: { x: number; y: number },
+    p2: { x: number; y: number },
+    p3: { x: number; y: number },
+  ): { arcLengthM: number; radiusM: number; sweepAngle: number } | null => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return null;
+    const scale1W = dims.w / scaleRef.current;
+    const scale1H = dims.h / scaleRef.current;
+    const s1 = { x: p1.x * scale1W, y: p1.y * scale1H };
+    const s2 = { x: p2.x * scale1W, y: p2.y * scale1H };
+    const s3 = { x: p3.x * scale1W, y: p3.y * scale1H };
+    const result = circumscribedCircleNorm(s1, s2, s3);
+    if (!result) return null;
+    return {
+      arcLengthM: result.arcLength * scaleFactor,
+      radiusM:    result.r         * scaleFactor,
+      sweepAngle: result.sweepAngle,
+    };
+  }, [pdfDimensionsRef, scaleRef, scaleFactor]);
+
+  const calcRadiusM = useCallback((
+    centre: { x: number; y: number },
+    edge:   { x: number; y: number },
+  ): number => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) return 0;
+    const scale1W = dims.w / scaleRef.current;
+    const scale1H = dims.h / scaleRef.current;
+    const dx = (edge.x - centre.x) * scale1W;
+    const dy = (edge.y - centre.y) * scale1H;
+    return Math.hypot(dx, dy) * scaleFactor;
+  }, [pdfDimensionsRef, scaleRef, scaleFactor]);
+
   const checkSnapCandidates = useCallback((pts: InProgressPoint[], measurementId: string) => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current) return;
     const free = pts.map((p, i) => ({ ...p, index: i })).filter(p => !p.snapped);
@@ -300,6 +420,45 @@ export function useMeasurementCommit({
     }
     if (cands.length) setPendingSnapCandidates(cands);
   }, [getScaledCorners, toCanvas, toNorm, pdfDimensionsRef, pageNumberRef, snapEnabledRef, snapThresholdRef, setPendingSnapCandidates]);
+
+  const buildArcRow = useCallback((
+    pts3: InProgressPoint[],
+    groupColor: string,
+    groupId?: string,
+    label?: string,
+    idx?: number,
+  ): TakeoffRow => {
+    const [p1, p2, p3] = pts3;
+    const arcResult = calcArcLength(p1, p2, p3);
+    const rowLabel  = label ?? (idx !== undefined ? `Arc ${idx + 1}` : 'Arc');
+    if (!arcResult) {
+      const len = calcLength([p1, p2, p3]);
+      return {
+        id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+        description: rowLabel, label: rowLabel,
+        type: 'Length', quantity: +len.toFixed(4),
+        unit: 'm', unitRate: 0, notes: 'Arc (collinear fallback)',
+        points: [p1, p2, p3], isOverridden: false,
+        color: groupColor, isVisible: true, childIds: [],
+        ...(groupId ? { parentId: groupId } : {}),
+      };
+    }
+    return {
+      id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+      description: rowLabel, label: rowLabel,
+      type: 'Length',
+      quantity: +arcResult.arcLengthM.toFixed(4),
+      unit: 'm', unitRate: 0,
+      notes: `Arc: r=${arcResult.radiusM.toFixed(3)}m θ=${(arcResult.sweepAngle * 180 / Math.PI).toFixed(1)}°`,
+      points: [p1, p2, p3], isOverridden: false,
+      color: groupColor, isVisible: true, childIds: [],
+      arcRadius:  +arcResult.radiusM.toFixed(4),
+      sweepAngle: +arcResult.sweepAngle.toFixed(4),
+      ...(groupId ? { parentId: groupId } : {}),
+    };
+  }, [calcArcLength, calcLength, activeDrawingId]);
+
+  // ─── finishMeasurement ────────────────────────────────────────────────────
 
   const finishMeasurement = useCallback((
     currentTempPoints?: InProgressPoint[],
@@ -432,7 +591,7 @@ export function useMeasurementCommit({
       }
     }
 
-    // ── REGULAR FINISH (NO APPEND) ────────────────────────────────────────────
+    // ── REGULAR FINISH ────────────────────────────────────────────────────────
 
     if (activeTool === 'point') {
       if (pts.length < 1) { clearTempPoints(); setCursorPoint(null); return; }
@@ -496,6 +655,102 @@ export function useMeasurementCommit({
       return;
     }
 
+    // ── Arc tool: flush all staged arcs ──────────────────────────────────────
+    if (activeTool === 'arc') {
+      const groups    = splitArcPoints(pts);
+      const validArcs = groups.filter(g => g.length === 3);
+      if (validArcs.length === 0) {
+        clearTempPoints(); setCursorPoint(null); return;
+      }
+      const groupColor = getNextMeasurementColor();
+      const groupLabel = meta?.label || 'Arc Group';
+      if (validArcs.length === 1) {
+        const row = buildArcRow(validArcs[0], groupColor, undefined, meta?.label ?? 'Arc');
+        commitMeasurement(row);
+      } else {
+        const groupId  = crypto.randomUUID();
+        const childIds: string[] = [];
+        const children: TakeoffRow[] = [];
+        for (let i = 0; i < validArcs.length; i++) {
+          const child = buildArcRow(validArcs[i], groupColor, groupId, `Arc ${i + 1}`, i);
+          childIds.push(child.id);
+          children.push(child);
+        }
+        const totalLength = children.reduce((s, c) => s + (c.quantity ?? 0), 0);
+        batchCommitMeasurements([{
+          id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+          description: groupLabel, label: groupLabel,
+          type: 'Length', quantity: +totalLength.toFixed(4),
+          unit: 'm', unitRate: 0, notes: `${validArcs.length} arcs`,
+          points: [], isOverridden: false, color: groupColor,
+          isVisible: true, isGroupHeader: true, childIds,
+        }, ...children]);
+      }
+      clearTempPoints(); setCursorPoint(null); return;
+    }
+
+    // ── Radius tool: flush all staged circles ─────────────────────────────────
+    if (activeTool === 'radius') {
+      const groups       = splitRadiusPoints(pts);
+      const validCircles = groups.filter(g => g.length === 2);
+      if (validCircles.length === 0) {
+        clearTempPoints(); setCursorPoint(null); return;
+      }
+      const groupColor = getNextMeasurementColor();
+      const groupLabel = meta?.label || 'Circle Group';
+
+      if (validCircles.length === 1) {
+        const [centre, edge] = validCircles[0];
+        const rMetres = calcRadiusM(centre, edge);
+        const circ    = +(2 * Math.PI * rMetres).toFixed(4);
+        commitMeasurement({
+          id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+          description: meta?.label || 'Circle', label: meta?.label || 'Circle',
+          type: 'Length', quantity: circ,
+          unit: 'm', unitRate: 0,
+          notes: `Circle: r=${rMetres.toFixed(3)}m  circ=${circ}m`,
+          points: [centre, edge], isOverridden: false,
+          color: groupColor, isVisible: true, childIds: [],
+          arcRadius:  +rMetres.toFixed(4),
+          sweepAngle: +(2 * Math.PI).toFixed(4),
+        });
+      } else {
+        const groupId  = crypto.randomUUID();
+        const childIds: string[] = [];
+        const children: TakeoffRow[] = [];
+        for (let i = 0; i < validCircles.length; i++) {
+          const [centre, edge] = validCircles[i];
+          const rMetres = calcRadiusM(centre, edge);
+          const circ    = +(2 * Math.PI * rMetres).toFixed(4);
+          const cid     = crypto.randomUUID();
+          childIds.push(cid);
+          children.push({
+            id: cid, drawingId: activeDrawingId || '',
+            description: `Circle ${i + 1}`, label: `Circle ${i + 1}`,
+            type: 'Length', quantity: circ,
+            unit: 'm', unitRate: 0,
+            notes: `Circle: r=${rMetres.toFixed(3)}m  circ=${circ}m`,
+            points: [centre, edge], isOverridden: false,
+            color: groupColor, isVisible: true, childIds: [],
+            parentId: groupId,
+            arcRadius:  +rMetres.toFixed(4),
+            sweepAngle: +(2 * Math.PI).toFixed(4),
+          });
+        }
+        const totalCirc = children.reduce((s, c) => s + (c.quantity ?? 0), 0);
+        batchCommitMeasurements([{
+          id: groupId, drawingId: activeDrawingId || '',
+          description: groupLabel, label: groupLabel,
+          type: 'Length', quantity: +totalCirc.toFixed(4),
+          unit: 'm', unitRate: 0,
+          notes: `${validCircles.length} circles`,
+          points: [], isOverridden: false, color: groupColor,
+          isVisible: true, isGroupHeader: true, childIds,
+        }, ...children]);
+      }
+      clearTempPoints(); setCursorPoint(null); return;
+    }
+
     if (pts.length < 2) { clearTempPoints(); setCursorPoint(null); return; }
 
     const newId      = crypto.randomUUID();
@@ -507,12 +762,9 @@ export function useMeasurementCommit({
       const validSegs = allSegs.filter(s => s.points.length >= 2);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
       const groupLabel = meta?.label || 'New Length';
-
-      const segLength = (seg: typeof validSegs[0]) =>
+      const segLength  = (seg: typeof validSegs[0]) =>
         calcLength(seg.points.map(p => ({ x: p.x, y: p.y })));
-
       const totalQty = validSegs.reduce((sum, seg) => sum + segLength(seg), 0);
-
       if (validSegs.length === 1) {
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
@@ -552,12 +804,9 @@ export function useMeasurementCommit({
       const validSegs = allSegs.filter(s => s.points.length >= 3);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
       const groupLabel = meta?.label || 'New Polygon';
-
-      const segArea = (seg: typeof validSegs[0]) =>
+      const segArea    = (seg: typeof validSegs[0]) =>
         calcArea(seg.points.map(p => ({ x: p.x, y: p.y })));
-
       const totalArea = validSegs.reduce((sum, seg) => sum + segArea(seg), 0);
-
       if (validSegs.length === 1) {
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
@@ -596,15 +845,12 @@ export function useMeasurementCommit({
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length === 2);
       if (validSegs.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
-      const groupLabel = meta?.label || 'New Rectangle';
-
-      const segAreaRect = (seg: typeof validSegs[0]) => {
+      const groupLabel    = meta?.label || 'New Rectangle';
+      const segAreaRect   = (seg: typeof validSegs[0]) => {
         const normPts = rectNormPoints(seg.points[0], seg.points[1]);
         return { normPts, area: calcArea(normPts) };
       };
-
       const totalArea = validSegs.reduce((s, seg) => s + segAreaRect(seg).area, 0);
-
       if (validSegs.length === 1) {
         const { normPts, area } = segAreaRect(validSegs[0]);
         commitMeasurement({
@@ -643,8 +889,10 @@ export function useMeasurementCommit({
     clearTempPoints, setActiveTool, checkSnapCandidates, toCanvas, toNorm,
     activeDrawingId, scaleRef, resetBreakState, onUpdateMeasurement, measurements,
     onScalePrompt, cursorPointRef, onAppendComplete, appendToGroupId, setCursorPoint,
-    calcArea, calcLength, rectNormPoints,
+    calcArea, calcLength, calcArcLength, calcRadiusM, rectNormPoints, buildArcRow,
   ]);
+
+  // ─── handleCanvasClick ────────────────────────────────────────────────────
 
   const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool === 'select') return;
@@ -661,7 +909,7 @@ export function useMeasurementCommit({
     const canvas = drawingCanvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const rawX = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const rawX = (e.clientX - rect.left) * (canvas.width  / rect.width);
     const rawY = (e.clientY - rect.top)  * (canvas.height / rect.height);
 
     const snap = snapToCorner(rawX, rawY);
@@ -733,6 +981,34 @@ export function useMeasurementCommit({
       return;
     }
 
+    if (activeTool === 'arc') {
+      const inProgress = inProgressArcPoints(tempPoints);
+      if (inProgress.length < 2) {
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+        return;
+      }
+      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+      setTimeout(() => { pushPoint({ ...ARC_SENTINEL }); }, 0);
+      return;
+    }
+
+    // ── Radius tool: stage circles until Finish ───────────────────────────────
+    if (activeTool === 'radius') {
+      const groups     = splitRadiusPoints(tempPoints);
+      const inProgress = groups[groups.length - 1];
+
+      if (inProgress.length < 1) {
+        // Click 1: push centre
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+        return;
+      }
+
+      // Click 2: push edge then sentinel to stage this circle
+      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
+      setTimeout(() => { pushPoint({ ...RADIUS_SENTINEL }); }, 0);
+      return;
+    }
+
     if (activeTool === 'scale') {
       if (tempPoints.length === 0) {
         pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped });
@@ -756,8 +1032,10 @@ export function useMeasurementCommit({
     commitMeasurement, pushPoint, clearTempPoints, drawingCanvasRef, activeDrawingId,
     tempPoints, pendingBreak, scaleRef, resetBreakState,
     setActiveTool, cursorPointRef, onScalePrompt, nextSegmentIdRef, setPendingBreak,
-    setCursorPoint, finishMeasurement,
+    setCursorPoint, finishMeasurement, calcArcLength, calcRadiusM, calcLength,
   ]);
+
+  // ─── handleContextMenu ────────────────────────────────────────────────────
 
   const handleContextMenu = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -789,7 +1067,60 @@ export function useMeasurementCommit({
       setPendingBreak(true);
       return;
     }
-  }, [activeTool, tempPoints, finishMeasurement, appendToGroupId, nextSegmentIdRef, setPendingBreak]);
+
+    if (activeTool === 'arc') {
+      const groups = splitArcPoints(tempPoints);
+      const staged = groups.filter(g => g.length === 3);
+      if (staged.length === 0) {
+        clearTempPoints();
+        setCursorPoint(null);
+        setActiveTool('select');
+      } else {
+        clearTempPoints();
+        const rebuilt: InProgressPoint[] = [];
+        staged.forEach((arc, i) => {
+          rebuilt.push(...arc);
+          if (i < staged.length - 1) rebuilt.push({ ...ARC_SENTINEL });
+        });
+        rebuilt.push({ ...ARC_SENTINEL });
+        const toRepush = [...rebuilt];
+        const repush = (i: number) => {
+          if (i >= toRepush.length) return;
+          pushPoint(toRepush[i]);
+          setTimeout(() => repush(i + 1), 0);
+        };
+        setTimeout(() => repush(0), 0);
+      }
+      return;
+    }
+
+    if (activeTool === 'radius') {
+      const groups = splitRadiusPoints(tempPoints);
+      const staged = groups.filter(g => g.length === 2);
+      if (staged.length === 0) {
+        clearTempPoints();
+        setCursorPoint(null);
+        setActiveTool('select');
+      } else {
+        clearTempPoints();
+        const rebuilt: InProgressPoint[] = [];
+        staged.forEach((circle, i) => {
+          rebuilt.push(...circle);
+          if (i < staged.length - 1) rebuilt.push({ ...RADIUS_SENTINEL });
+        });
+        rebuilt.push({ ...RADIUS_SENTINEL });
+        const toRepush = [...rebuilt];
+        const repush = (i: number) => {
+          if (i >= toRepush.length) return;
+          pushPoint(toRepush[i]);
+          setTimeout(() => repush(i + 1), 0);
+        };
+        setTimeout(() => repush(0), 0);
+      }
+      return;
+    }
+  }, [activeTool, tempPoints, finishMeasurement, appendToGroupId, nextSegmentIdRef,
+      setPendingBreak, clearTempPoints, setCursorPoint, setActiveTool, pushPoint]);
 
   return {
     finishMeasurement,
