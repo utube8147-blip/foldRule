@@ -42,7 +42,7 @@ const ADVANCED_TOOLS: Array<{
     label:    'Grid count',
     sub:      'Draw polygon area, grid auto-counts tiles',
     icon:     Grid3x3,
-    shortcut: 'G',
+    shortcut: 'Soon',
   },
   {
     id:       'volume',

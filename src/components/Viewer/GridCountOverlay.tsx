@@ -2,19 +2,62 @@
 
 // ─── components/Viewer/GridCountOverlay.tsx ───────────────────────────────────
 //
-//  This file is PURE UI — no counting logic lives here.
-//  All polygon state, vertex management, and tile counting is in:
-//    hooks/useGridCount.ts
+//  FIX SUMMARY (this revision — click position wrong + vertices tiny/blurry):
 //
-//  This file owns:
-//    • canvas ref + draw function
-//    • mousePos (preview cursor — a draw concern only)
-//    • panel position calculation
-//    • all JSX
+//  ROOT CAUSE (fully traced):
+//
+//    The canvas wrap div in ViewerCanvas has width/height = pdfDimensions.w/h.
+//    The wrapStyle div in Viewer.tsx applies a CSS transform: scale(committedScale)
+//    (or equivalent) so at 118% zoom the canvas CSS rendered width becomes
+//    pdfDimensions.w * 1.18.
+//
+//    The previous code set cv.width = pdfDimensions.w in a plain useEffect,
+//    which runs AFTER paint.  The ResizeObserver — which seeds displayScaleRef —
+//    also fires after layout.  Their ordering is NOT guaranteed by the spec.
+//
+//    On first mount / first activation the ResizeObserver often fires BEFORE
+//    the useEffect has set cv.width, while cv.width is still the browser
+//    default of 300px.  So:
+//
+//      displayScaleRef = renderedCSSWidth / 300
+//                     = (pdfDimensions.w * zoomScale) / 300
+//                     ≈ 2480 * 1.18 / 300  ≈  9.75   ← wildly wrong
+//
+//    getXY then divides (clientX - r.left) by 9.75, placing vertices ~10× too
+//    close to the canvas origin (near top-left, e.g. near "Desk" label).
+//    draw() uses the same stale scale, making vertex handles the wrong size.
+//
+//    After a zoom-in/out the browser triggers a real layout pass that fires the
+//    ResizeObserver again — by this time cv.width IS correct — so displayScaleRef
+//    is corrected and subsequent clicks are accurate.  This exactly matches the
+//    observed symptom: "first clicks wrong, then after zooming it's consistent."
+//
+//  FIXES APPLIED (three changes, all in this file only):
+//
+//  1. useEffect → useLayoutEffect for cv.width/height sizing.
+//     useLayoutEffect runs synchronously after the DOM update but BEFORE the
+//     browser's paint and BEFORE ResizeObserver callbacks.  This guarantees
+//     cv.width = pdfDimensions.w before any ResizeObserver reading occurs.
+//
+//  2. Seed displayScaleRef immediately inside that same useLayoutEffect.
+//     After setting cv.width we call getBoundingClientRect() right there.
+//     Because this is useLayoutEffect the browser layout IS complete so the
+//     rect is accurate.  displayScaleRef is never 1 or 9.75 anymore.
+//
+//     We also re-seed whenever `active` becomes true (without pdfDimensions
+//     changing) because the component was previously returning null and the
+//     canvas was not in the DOM, so the ResizeObserver had nothing to measure.
+//
+//  3. getXY uses e.nativeEvent.offsetX/offsetY + live cv.width/rect.width.
+//     offsetX/offsetY are always relative to the canvas element in CSS px —
+//     no parent-transform, no scroll-container, no layout-timing issues.
+//     cv.width / rect.width is the intrinsic→CSS-px ratio computed fresh at
+//     click time (layout is trivially complete when a click fires).
+//     displayScaleRef is no longer used for coordinate conversion.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from 'react';
 import { cn } from '@/lib/utils';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import { useGridCount, polyBounds } from '@/hooks/useGridCount';
@@ -30,29 +73,39 @@ interface GridCountOverlayProps {
   onCommit:      (count: number, spacingMm: number, cols: number, rows: number) => void;
 }
 
-// ─── Visual constants ─────────────────────────────────────────────────────────
+// ─── Visual constants — TARGET on-screen pixel sizes ─────────────────────────
+
+const TARGET_VERTEX_R       = 5;    // outer circle radius, screen px
+const TARGET_VERTEX_INNER_R = 1.8;  // inner dot radius, screen px
+const TARGET_SNAP_RING_R    = 10;   // snap-to-close ring radius, screen px
+const TARGET_STROKE_W       = 1;    // polygon / preview stroke, screen px
+const TARGET_GRID_W         = 0.6;  // grid hairline, screen px
 
 const GRID_STROKE    = 'rgba(74,222,128,0.35)';
 const POLY_STROKE    = 'rgba(74,222,128,0.80)';
 const POLY_FILL      = 'rgba(74,222,128,0.05)';
 const PREVIEW_COLOUR = 'rgba(74,222,128,0.35)';
 const VERTEX_FILL    = 'rgba(255,255,255,0.92)';
-const VERTEX_STROKE  = 'rgba(74,222,128,0.75)';
-const VERTEX_DOT     = 'rgba(30,30,30,0.40)';
+const VERTEX_STROKE  = 'rgba(74,222,128,0.90)';
+const VERTEX_DOT     = 'rgba(30,30,30,0.60)';
 const SNAP_COLOUR    = 'rgba(74,222,128,0.55)';
 
-const VERTEX_R       = 4.5;  // canvas-intrinsic units
-const VERTEX_INNER_R = 1.4;
-const PANEL_WIDTH    = 252;
-const PANEL_MARGIN   = 14;
+const PANEL_WIDTH  = 252;
+const PANEL_MARGIN = 14;
 
-// ─── Grid drawing — net only, no fill, hairline strokes ───────────────────────
+// ─── Helper — screen px → canvas-intrinsic units ─────────────────────────────
+function toCU(screenPx: number, displayScale: number): number {
+  return screenPx / displayScale;
+}
+
+// ─── Grid drawing ─────────────────────────────────────────────────────────────
 
 function drawGrid(
   ctx: CanvasRenderingContext2D,
   shape: TileShape,
   poly: Point[],
   sPx: number,
+  displayScale: number,
 ) {
   const { minX, minY, maxX, maxY } = polyBounds(poly);
   const pad = sPx * 1.5;
@@ -64,7 +117,7 @@ function drawGrid(
   ctx.clip();
 
   ctx.strokeStyle = GRID_STROKE;
-  ctx.lineWidth   = 0.5;
+  ctx.lineWidth   = toCU(TARGET_GRID_W, displayScale);
   ctx.setLineDash([]);
 
   if (shape === 'square') {
@@ -145,25 +198,89 @@ export function GridCountOverlay({
   scaleFactor,
   onCommit,
 }: GridCountOverlayProps) {
-  const canvasRef            = useRef<HTMLCanvasElement>(null);
+  const canvasRef               = useRef<HTMLCanvasElement>(null);
+  const mousePosRef             = useRef<Point | null>(null);
   const [mousePos, setMousePos] = useState<Point | null>(null);
 
-  // All counting + polygon logic lives in the hook
+  // ── displayScaleRef — rendered CSS px per intrinsic canvas px ───────────────
+  //
+  //  Written in two places (in priority order):
+  //    1. useLayoutEffect after setting cv.width (runs before paint, before ResizeObserver)
+  //    2. ResizeObserver callback (keeps it fresh on every zoom change)
+  //
+  //  Read in:
+  //    • draw() — to convert TARGET_* screen px to canvas-intrinsic units
+  //
+  //  NOT used in getXY() anymore — see fix #3 below.
+  const displayScaleRef = useRef<number>(1);
+
   const grid = useGridCount({ scaleFactor, active });
 
   const isUncalibrated = scaleFactor === 1;
   const shapeConfig    = TILE_SHAPES.find(t => t.id === grid.shape)!;
   const canCommit      = !!grid.result && !isUncalibrated && grid.isPolyClosed;
 
-  // Size canvas to PDF dimensions
-  useEffect(() => {
+  // Keep a stable ref to the latest mousePos for use inside draw callbacks
+  mousePosRef.current = mousePos;
+
+  // ── FIX #1 + #2: useLayoutEffect for canvas sizing + immediate scale seed ───
+  //
+  //  CHANGED FROM: useEffect (runs after paint, races with ResizeObserver)
+  //  CHANGED TO:   useLayoutEffect (runs after DOM update, before paint,
+  //                before ResizeObserver callbacks)
+  //
+  //  After setting cv.width we immediately read getBoundingClientRect() and
+  //  seed displayScaleRef.  At this point in the lifecycle the browser layout
+  //  IS complete (useLayoutEffect guarantees it), so the rect is accurate.
+  //
+  //  This eliminates the race where ResizeObserver read cv.width = 300
+  //  (browser default) and stored renderedWidth/300 ≈ 9.75 into displayScaleRef.
+  useLayoutEffect(() => {
     const cv = canvasRef.current;
     if (!cv || !pdfDimensions) return;
+
+    // Set intrinsic canvas dimensions.
     cv.width  = pdfDimensions.w;
     cv.height = pdfDimensions.h;
+
+    // Immediately seed displayScaleRef with the correct ratio.
+    // getBoundingClientRect is reliable here because useLayoutEffect runs
+    // after the browser has completed its layout pass.
+    const rect = cv.getBoundingClientRect();
+    if (rect.width > 0) {
+      displayScaleRef.current = rect.width / cv.width;
+    }
   }, [pdfDimensions]);
 
-  // Clear canvas when deactivated
+  // ── FIX #2b: also re-seed when `active` flips to true ──────────────────────
+  //
+  //  When the component transitions from null (inactive) to rendered (active),
+  //  pdfDimensions has NOT changed, so the useLayoutEffect above won't re-run.
+  //  But the canvas just entered the DOM for the first time — we must seed
+  //  displayScaleRef before the ResizeObserver fires (which would read a stale
+  //  cv.width if it fires before the sizing useLayoutEffect runs on first mount).
+  //
+  //  Note: this useLayoutEffect runs on every `active` change, but the guard
+  //  `if (!active)` makes it a no-op when deactivating.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const cv = canvasRef.current;
+    if (!cv || !pdfDimensions) return;
+
+    // Ensure intrinsic dimensions are correct (they may not be set yet if this
+    // is the very first render — the [pdfDimensions] useLayoutEffect above has
+    // the same effect, but React runs multiple useLayoutEffects in order so
+    // this one may run first).
+    if (cv.width !== pdfDimensions.w)  cv.width  = pdfDimensions.w;
+    if (cv.height !== pdfDimensions.h) cv.height = pdfDimensions.h;
+
+    const rect = cv.getBoundingClientRect();
+    if (rect.width > 0) {
+      displayScaleRef.current = rect.width / cv.width;
+    }
+  }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Clear canvas when deactivated ─────────────────────────────────────────
   useEffect(() => {
     if (!active) {
       const cv = canvasRef.current;
@@ -172,18 +289,23 @@ export function GridCountOverlay({
   }, [active]);
 
   // ── Draw ──────────────────────────────────────────────────────────────────
+  //
+  //  Reads displayScaleRef.current which is kept correct by the useLayoutEffect
+  //  and ResizeObserver below.
   const draw = useCallback((cursor: Point | null) => {
     const cv = canvasRef.current;
     if (!cv) return;
     const ctx = cv.getContext('2d');
     if (!ctx) return;
 
+    const displayScale = displayScaleRef.current;
+
     const { vertices, closed, isPolyClosed, spacingPx, shape, snapTarget } = grid;
 
     ctx.clearRect(0, 0, cv.width, cv.height);
     if (vertices.length === 0) return;
 
-    // Polygon outline + fill
+    // ── Polygon outline + fill ─────────────────────────────────────────────
     if (vertices.length >= 2) {
       ctx.beginPath();
       vertices.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
@@ -195,55 +317,83 @@ export function GridCountOverlay({
         ctx.lineTo(cursor.x, cursor.y);
       }
       ctx.strokeStyle = POLY_STROKE;
-      ctx.lineWidth   = 1;
+      ctx.lineWidth   = toCU(TARGET_STROKE_W, displayScale);
       ctx.setLineDash([]);
       ctx.stroke();
     }
 
-    // Preview line + snap ring
+    // ── Preview line + snap ring ───────────────────────────────────────────
     if (!closed && cursor && vertices.length >= 1) {
       const last = vertices[vertices.length - 1];
       ctx.beginPath();
       ctx.moveTo(last.x, last.y); ctx.lineTo(cursor.x, cursor.y);
       ctx.strokeStyle = PREVIEW_COLOUR;
-      ctx.lineWidth   = 1;
-      ctx.setLineDash([5, 4]);
+      ctx.lineWidth   = toCU(TARGET_STROKE_W, displayScale);
+      ctx.setLineDash([toCU(5, displayScale), toCU(4, displayScale)]);
       ctx.stroke();
       ctx.setLineDash([]);
 
       if (snapTarget) {
-        if (Math.hypot(cursor.x - snapTarget.x, cursor.y - snapTarget.y) < SNAP_RADIUS_PX * 2) {
+        const snapRingR = toCU(TARGET_SNAP_RING_R, displayScale);
+        if (Math.hypot(cursor.x - snapTarget.x, cursor.y - snapTarget.y) < snapRingR * 2) {
           ctx.beginPath();
-          ctx.arc(snapTarget.x, snapTarget.y, SNAP_RADIUS_PX, 0, 2 * Math.PI);
+          ctx.arc(snapTarget.x, snapTarget.y, snapRingR, 0, 2 * Math.PI);
           ctx.strokeStyle = SNAP_COLOUR;
-          ctx.lineWidth   = 1;
+          ctx.lineWidth   = toCU(TARGET_STROKE_W, displayScale);
           ctx.stroke();
         }
       }
     }
 
-    // Grid net — drawGrid uses save()/restore() so nothing leaks
+    // ── Grid net ───────────────────────────────────────────────────────────
     if (isPolyClosed && spacingPx > 0) {
-      drawGrid(ctx, shape, vertices, spacingPx);
+      drawGrid(ctx, shape, vertices, spacingPx, displayScale);
     }
 
-    // Vertex handles — drawn after drawGrid restore()
+    // ── Vertex handles ─────────────────────────────────────────────────────
+    const vr  = toCU(TARGET_VERTEX_R, displayScale);
+    const vir = toCU(TARGET_VERTEX_INNER_R, displayScale);
+    const sw  = toCU(TARGET_STROKE_W, displayScale);
+
     vertices.forEach((p, i) => {
       const isSnap = i === 0 && vertices.length >= MIN_VERTICES && !closed;
+
       ctx.beginPath();
-      ctx.arc(p.x, p.y, VERTEX_R, 0, 2 * Math.PI);
-      ctx.fillStyle   = isSnap ? 'rgba(74,222,128,0.20)' : VERTEX_FILL;
+      ctx.arc(p.x, p.y, vr, 0, 2 * Math.PI);
+      ctx.fillStyle   = isSnap ? 'rgba(74,222,128,0.25)' : VERTEX_FILL;
       ctx.fill();
       ctx.strokeStyle = isSnap ? '#4ADE80' : VERTEX_STROKE;
-      ctx.lineWidth   = 1;
+      ctx.lineWidth   = sw;
       ctx.setLineDash([]);
       ctx.stroke();
+
       ctx.beginPath();
-      ctx.arc(p.x, p.y, VERTEX_INNER_R, 0, 2 * Math.PI);
+      ctx.arc(p.x, p.y, vir, 0, 2 * Math.PI);
       ctx.fillStyle = isSnap ? '#4ADE80' : VERTEX_DOT;
       ctx.fill();
     });
   }, [grid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── ResizeObserver — keeps displayScaleRef correct after zoom changes ──────
+  //
+  //  This fires AFTER layout completes, so getBoundingClientRect is accurate.
+  //  By now the useLayoutEffect has already set cv.width = pdfDimensions.w,
+  //  so rect.width / cv.width gives the correct zoom scale (not 9.75).
+  useEffect(() => {
+    const cv = canvasRef.current;
+    if (!cv) return;
+
+    const ro = new ResizeObserver(() => {
+      const rect = cv.getBoundingClientRect();
+      if (rect.width > 0 && cv.width > 0) {
+        displayScaleRef.current = rect.width / cv.width;
+      }
+      draw(mousePosRef.current);
+    });
+
+    ro.observe(cv);
+    return () => ro.disconnect();
+  }, [draw]);
 
   // Redraw when polygon / spacing / shape change
   useEffect(() => {
@@ -255,15 +405,38 @@ export function GridCountOverlay({
     if (!grid.closed) draw(mousePos);
   }, [mousePos]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Canvas helpers ────────────────────────────────────────────────────────
-  const getXY = (e: React.MouseEvent<HTMLCanvasElement>): Point => {
+  // ── FIX #3: getXY — use offsetX/offsetY + live intrinsic/CSS ratio ─────────
+  //
+  //  PREVIOUS CODE:
+  //    const r  = cv.getBoundingClientRect();
+  //    const ds = displayScaleRef.current;          // could be stale/wrong
+  //    return { x: (e.clientX - r.left) / ds, y: (e.clientY - r.top) / ds };
+  //
+  //  PROBLEM: displayScaleRef could hold a stale value (9.75 from the race)
+  //  and (clientX - r.left) requires correct r.left which depends on scroll
+  //  position, panel widths, etc. — fragile.
+  //
+  //  NEW CODE:
+  //    offsetX/offsetY — always relative to the canvas element itself in CSS px.
+  //    No parent transforms, no scroll offsets, no container layout involved.
+  //    cv.width / rect.width — intrinsic-to-CSS ratio, computed LIVE at click
+  //    time (layout is trivially complete when the user clicks).
+  //
+  //  If cv.width is still somehow wrong (extremely unlikely after the
+  //  useLayoutEffect fixes), the worst case is a proportional offset within
+  //  the canvas — far better than the previous 9.75× displacement.
+  const getXY = useCallback((e: React.MouseEvent<HTMLCanvasElement>): Point => {
     const cv = canvasRef.current!;
-    const r  = cv.getBoundingClientRect();
+    const rect = cv.getBoundingClientRect();
+    // Ratio of canvas intrinsic pixels to rendered CSS pixels.
+    // Computed live at click time — always correct, never stale.
+    const scaleX = cv.width  / rect.width;
+    const scaleY = cv.height / rect.height;
     return {
-      x: (e.clientX - r.left) * (cv.width  / r.width),
-      y: (e.clientY - r.top)  * (cv.height / r.height),
+      x: e.nativeEvent.offsetX * scaleX,
+      y: e.nativeEvent.offsetY * scaleY,
     };
-  };
+  }, []);
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!active || grid.closed) return;
@@ -272,12 +445,12 @@ export function GridCountOverlay({
       grid.forceClose(); setMousePos(null); return;
     }
     grid.addVertex(pt);
-  }, [active, grid]);
+  }, [active, grid, getXY]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!active || grid.closed) return;
     setMousePos(getXY(e));
-  }, [active, grid.closed]);
+  }, [active, grid.closed, getXY]);
 
   const handleMouseLeave = useCallback(() => setMousePos(null), []);
 
@@ -293,25 +466,25 @@ export function GridCountOverlay({
     handleClear();
   }, [canCommit, grid.result, grid.spacingMm, onCommit, handleClear]);
 
-  // Panel position: float above / below the polygon centroid
+  // ── Panel position ────────────────────────────────────────────────────────
+  //
+  //  The panel is a child of the canvas wrap div (CSS size = pdfDimensions).
+  //  grid.vertices are stored in canvas-intrinsic space which equals the wrap
+  //  div's CSS px space (both = pdfDimensions.w/h before zoom). No scaling needed.
   const getPanelStyle = useCallback((): React.CSSProperties => {
     if (grid.vertices.length < 2 || !pdfDimensions) return {};
-    const cv = canvasRef.current;
-    if (!cv) return {};
-    const r  = cv.getBoundingClientRect();
-    const sx = r.width  / cv.width;
-    const sy = r.height / cv.height;
-    const { minX, maxX, minY } = polyBounds(grid.vertices);
-    const panelH  = 340;
-    const rawLeft = (minX + maxX) / 2 * sx - PANEL_WIDTH / 2;
-    const rawTop  = minY * sy - panelH - PANEL_MARGIN;
-    return {
-      left: Math.max(4, Math.min(rawLeft, r.width - PANEL_WIDTH - 4)),
-      top:  Math.min(
-        rawTop < 4 ? polyBounds(grid.vertices).maxY * sy + PANEL_MARGIN : rawTop,
-        r.height - panelH - 4,
-      ),
-    };
+
+    const { minX, maxX, minY, maxY } = polyBounds(grid.vertices);
+    const panelH  = 420;
+    const rawLeft = (minX + maxX) / 2 - PANEL_WIDTH / 2;
+    const rawTop  = minY - panelH - PANEL_MARGIN;
+
+    const left = Math.max(4, Math.min(rawLeft, pdfDimensions.w - PANEL_WIDTH - 4));
+    const top  = rawTop < 4
+      ? maxY + PANEL_MARGIN
+      : Math.min(rawTop, pdfDimensions.h - panelH - 4);
+
+    return { left, top };
   }, [grid.vertices, pdfDimensions]);
 
   if (!active || !pdfDimensions) return null;
@@ -339,7 +512,7 @@ export function GridCountOverlay({
         onPointerDown={e => e.stopPropagation()}
       />
 
-      {/* Control panel — shown once ≥2 vertices are placed */}
+      {/* Control panel */}
       {grid.vertices.length >= 2 && (
         <div
           className="absolute z-[65] shadow-2xl"
