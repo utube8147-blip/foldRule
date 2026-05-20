@@ -184,6 +184,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     pinCanvasRef:     pinCanvasRef     as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
     pageNumberRef:    pageNumberRef    as React.RefObject<number>,
+    viewportRef:      containerRef     as React.RefObject<HTMLDivElement>,
+    zoom:             scale,
+    pan:              { x: 0, y: 0 },
     snapEnabled, showPins, snapThreshold, confidenceFilter,
   });
 
