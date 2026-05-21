@@ -6,17 +6,6 @@
  *  1. RUBBER-BAND  — while the user drags to define the sample box
  *  2. CANDIDATE HIGHLIGHT — paths inside the box; click to toggle in/out
  *  3. MATCH RENDERER — bounding boxes + snap points for every match result
- *
- * Coordinate space:
- *   All SVG/canvas coords → viewport coords via:
- *     vx = svgX * zoom + pan.x
- *     vy = svgY * zoom + pan.y
- *
- * v2.0 changes:
- *   - useRubberBand now accepts svgDims + zoom so it can guard against
- *     boxes that are >12% of the SVG (which produce useless signatures)
- *   - Candidate highlight shows path index for easier deselection
- *   - Match renderer shows a crosshair at centroid snap point
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -25,7 +14,7 @@ import type { MatchResult, SnapPointResult, TemplatePath } from '@/hooks/useTemp
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface DrawBox {
-  x: number; y: number;   // viewport coords (px)
+  x: number; y: number;
   w: number; h: number;
 }
 
@@ -84,7 +73,6 @@ function RubberBand({ box }: { box: DrawBox }) {
         strokeWidth={1.5}
         strokeDasharray="5 3"
       />
-      {/* Corner ticks */}
       {[
         [box.x, box.y], [box.x + box.w, box.y],
         [box.x, box.y + box.h], [box.x + box.w, box.y + box.h],
@@ -94,30 +82,9 @@ function RubberBand({ box }: { box: DrawBox }) {
           <line x1={cx} y1={cy - 5} x2={cx} y2={cy + 5} stroke={C.rubberBand} strokeWidth={1.5} />
         </g>
       ))}
-      {/* Dimension label */}
       <text x={box.x + box.w / 2} y={box.y - 6} textAnchor="middle"
         fill={C.rubberBand} fontSize={9} fontFamily="'Courier New', monospace">
         {box.w.toFixed(0)} × {box.h.toFixed(0)}
-      </text>
-    </svg>
-  );
-}
-
-// ─── "Box too large" warning overlay ─────────────────────────────────────────
-
-function BoxTooLargeWarning({ box }: { box: DrawBox }) {
-  const cx = box.x + box.w / 2;
-  const cy = box.y + box.h / 2;
-  return (
-    <svg
-      style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 36, overflow: 'visible' }}
-      width="100%" height="100%"
-    >
-      <rect x={box.x} y={box.y} width={box.w} height={box.h}
-        fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
-      <rect x={cx - 90} y={cy - 14} width={180} height={26} fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
-      <text x={cx} y={cy + 4} textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
-        Zoom in — box too large for a single symbol
       </text>
     </svg>
   );
@@ -158,13 +125,11 @@ function CandidateHighlights({
               strokeDasharray={c.toggled ? 'none' : '4 3'}
               rx={2}
             />
-            {/* Toggle icon */}
             <circle cx={midX} cy={midY} r={9} fill="#0d0d0d" stroke={col} strokeWidth={1} />
             <text x={midX} y={midY + 4} textAnchor="middle" fontSize={9}
               fill={col} fontFamily="'Courier New', monospace" fontWeight={700}>
               {c.toggled ? '✓' : '×'}
             </text>
-            {/* Path index badge */}
             <rect x={tl.x + 2} y={tl.y + 2} width={14} height={11} fill="#0d0d0d" rx={1} />
             <text x={tl.x + 9} y={tl.y + 11} textAnchor="middle" fontSize={7}
               fill={col} fontFamily="'Courier New', monospace">
@@ -206,7 +171,6 @@ function MatchRenderer({
 
         return (
           <g key={match.id}>
-            {/* Bounding box */}
             <rect
               x={tl.x} y={tl.y} width={vw} height={vh}
               fill={`${C.matchBox}08`}
@@ -215,14 +179,12 @@ function MatchRenderer({
               rx={2}
               filter="url(#match-glow)"
             />
-            {/* Score chip */}
             <rect x={tl.x} y={tl.y - 17} width={48} height={15} fill={C.matchBox} rx={2} />
             <text x={tl.x + 24} y={tl.y - 6} textAnchor="middle" fontSize={8}
               fill="#fff" fontFamily="'Courier New', monospace" fontWeight={700}>
               {Math.round(match.score * 100)}% #{mIdx + 1}
             </text>
 
-            {/* Snap points */}
             {match.snapPoints.map((sp, j) => {
               const vp  = toVP(sp.x, sp.y, zoom, pan);
               const col = C.matchSnap[sp.type];
@@ -299,15 +261,7 @@ export function TemplateSamplerOverlay({
 
 // ─── Rubber-band draw hook ────────────────────────────────────────────────────
 
-/**
- * v2.0 — now accepts svgDims and zoom so it can detect boxes that are
- * too large to represent a single symbol and fire onBoxTooLarge instead.
- *
- * A box is "too large" when either dimension exceeds MAX_BOX_FRACTION (12%)
- * of the SVG canvas size at current zoom. The caller should show a warning
- * and NOT proceed to candidate selection in that case.
- */
-const MAX_BOX_FRACTION = 0.12;   // 12% of SVG dimension at current zoom
+const MAX_BOX_FRACTION = 0.12;
 
 export function useRubberBand(
   viewportRef:   React.RefObject<HTMLDivElement | null>,
@@ -379,7 +333,6 @@ export function useRubberBand(
       if (box.w > 5 && box.h > 5 && !isTooLarge(box)) {
         onBoxCommit(box);
       }
-      // If too large, we simply do nothing — the warning was shown during drag
     };
 
     vp.addEventListener('pointermove', onMove);

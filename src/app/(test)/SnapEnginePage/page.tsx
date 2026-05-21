@@ -37,8 +37,18 @@ const LOAD_LINES = [
 ];
 
 const DRAG_THRESHOLD  = 5;
-// Lower threshold — Hu moments are more precise so we can accept 0.72+
 const MATCH_THRESHOLD = 0.72;
+
+/**
+ * Auto-deselection constants for handleBoxCommit.
+ * OVERSIZED_RATIO: a candidate path whose bbox area exceeds this multiple of
+ *   the median candidate area is assumed to be a wall/room outline and starts
+ *   toggled:false.
+ * BOX_EXCEED_FRAC: a candidate wider or taller than this fraction of the drawn
+ *   selection box is also assumed to be a background shape.
+ */
+const OVERSIZED_RATIO = 8;
+const BOX_EXCEED_FRAC = 0.9;
 
 const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
 
@@ -364,7 +374,16 @@ function ShapesSidebar({ regions, isScanning, onRescan, onJump, pdfDims, zoom, p
   );
 }
 
-// ── Sampler sidebar tab ───────────────────────────────────────────────────────
+// ── Sampler sidebar ───────────────────────────────────────────────────────────
+
+/** Returns true if this candidate is likely a background shape (wall/room outline). */
+function isSuspectedBackground(candidate: TemplatePath, allCandidates: TemplatePath[]): boolean {
+  if (allCandidates.length === 0) return false;
+  const areas  = allCandidates.map(c => c.svgBBox.width * c.svgBBox.height);
+  const sorted = [...areas].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 1;
+  return (candidate.svgBBox.width * candidate.svgBBox.height) > OVERSIZED_RATIO * median;
+}
 
 function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, onConfirm, onClear, signature, matches, isSearching, pdfDims }: {
   samplerMode:  'idle'|'drawing'|'selecting'|'matched';
@@ -378,7 +397,8 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
   isSearching:  boolean;
   pdfDims:      PdfDimensions | null;
 }) {
-  const selectedCount = candidates.filter(c=>c.toggled).length;
+  const selectedCount  = candidates.filter(c=>c.toggled).length;
+  const autoDeselCount = candidates.filter(c=>!c.toggled && isSuspectedBackground(c, candidates)).length;
   const MATCH_COL = '#38bdf8';
   const SNAP_C = { endpoint:'#f59e0b', midpoint:'#10b981', centroid:'#8b5cf6' };
   return (
@@ -386,12 +406,11 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
       <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
         <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:8 }}>Template sampler</div>
 
-        {/* How-to hint */}
         {samplerMode==='idle'&&(
           <div style={{ fontSize:7,color:'#333',lineHeight:1.8,marginBottom:8,textTransform:'uppercase',letterSpacing:'.06em' }}>
             1 · Zoom in until one symbol fills the view<br/>
             2 · Draw a tight box around just that symbol<br/>
-            3 · Deselect any stray paths in the box<br/>
+            3 · Walls auto-deselected — check sidebar<br/>
             4 · Hit Find — works at any rotation
           </div>
         )}
@@ -409,6 +428,7 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
             </div>
           );
         })}
+
         <div style={{ display:'flex',gap:4,marginTop:10,flexWrap:'wrap' as const }}>
           {samplerMode==='idle'&&<button onClick={onEnterDraw} style={{ ...tbBtn(true,MATCH_COL),flex:1 }}>⊡ Draw Sample</button>}
           {samplerMode==='drawing'&&(
@@ -420,6 +440,7 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
           {samplerMode==='matched'&&<><button onClick={onEnterDraw} style={{ ...tbBtn(false,MATCH_COL),flex:1 }}>⊡ New Sample</button><button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button></>}
         </div>
       </div>
+
       {signature&&(
         <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
           <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:4 }}>Template signature</div>
@@ -431,23 +452,42 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
           <TRow label="Method"    value="Hu + Hist + Radial" />
         </div>
       )}
+
       {samplerMode==='selecting'&&candidates.length>0&&(
         <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>
-            {candidates.length} paths — click to toggle · keep only symbol paths
-          </div>
-          {candidates.map((c,i)=>(
-            <div key={i} onClick={()=>onTogglePath(c.el)}
-              style={{ display:'flex',alignItems:'center',gap:6,padding:'3px 4px',cursor:'pointer',marginBottom:2,border:`1px solid ${c.toggled?MATCH_COL:'#1a1a1a'}`,background:c.toggled?`${MATCH_COL}10`:'transparent' }}>
-              <div style={{ width:7,height:7,borderRadius:1,background:c.toggled?MATCH_COL:'#333',flexShrink:0 }} />
-              <span style={{ fontSize:7,color:c.toggled?'#aaa':'#444',textTransform:'uppercase',flex:1 }}>
-                #{i+1} · {c.svgBBox.width.toFixed(0)}×{c.svgBBox.height.toFixed(0)}
-              </span>
-              <span style={{ fontSize:8,color:c.toggled?MATCH_COL:'#333' }}>{c.toggled?'✓':'○'}</span>
+          {/* Auto-deselect warning */}
+          {autoDeselCount>0&&(
+            <div style={{ fontSize:7,color:'#c2410c',border:'1px solid #7c3a1a',background:'rgba(124,58,26,0.08)',padding:'3px 6px',marginBottom:6,textTransform:'uppercase',letterSpacing:'.06em',lineHeight:1.7 }}>
+              ⚠ {autoDeselCount} large path{autoDeselCount>1?'s':''} auto-deselected<br/>
+              (wall/outline — toggle on if needed)
             </div>
-          ))}
+          )}
+          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>
+            {candidates.length} paths · click to toggle · keep only symbol paths
+          </div>
+          {candidates.map((c,i)=>{
+            const isLarge = isSuspectedBackground(c, candidates);
+            const rowBorder = c.toggled ? MATCH_COL : isLarge ? '#7c3a1a' : '#1a1a1a';
+            const rowBg     = c.toggled ? `${MATCH_COL}10` : isLarge ? 'rgba(124,58,26,0.06)' : 'transparent';
+            return (
+              <div key={i} onClick={()=>onTogglePath(c.el)}
+                style={{ display:'flex',alignItems:'center',gap:6,padding:'3px 4px',cursor:'pointer',marginBottom:2,border:`1px solid ${rowBorder}`,background:rowBg }}>
+                <div style={{ width:7,height:7,borderRadius:1,background:c.toggled?MATCH_COL:isLarge?'#c2410c':'#333',flexShrink:0 }} />
+                <span style={{ fontSize:7,color:c.toggled?'#aaa':'#444',textTransform:'uppercase',flex:1 }}>
+                  #{i+1} · {c.svgBBox.width.toFixed(0)}×{c.svgBBox.height.toFixed(0)}
+                </span>
+                {isLarge&&!c.toggled&&(
+                  <span style={{ fontSize:6,color:'#c2410c',border:'1px solid #7c3a1a',padding:'1px 3px',letterSpacing:'.06em',textTransform:'uppercase' }}>
+                    wall?
+                  </span>
+                )}
+                <span style={{ fontSize:8,color:c.toggled?MATCH_COL:'#333' }}>{c.toggled?'✓':'○'}</span>
+              </div>
+            );
+          })}
         </div>
       )}
+
       <div style={{ flex:1,overflowY:'auto',padding:6 }}>
         {isSearching&&<p style={{ fontSize:8,color:'#555',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 0' }}>Searching…</p>}
         {!isSearching&&samplerMode==='matched'&&matches.length===0&&(
@@ -508,7 +548,7 @@ export default function SnapEnginePage() {
   const [zoom,        setZoom]        = useState(1);
   const [pan,         setPan]         = useState({ x:0, y:0 });
 
-  // ── Snap toggles ─────────────────────────────────────────────────────────────
+  // ── Snap toggles ──────────────────────────────────────────────────────────────
   const [snapEnabled,     setSnapEnabled]     = useState(true);
   const [showPins,        setShowPins]        = useState(true);
   const [snapThresh,      setSnapThresh]      = useState(22);
@@ -589,6 +629,7 @@ export default function SnapEnginePage() {
   // ── Rubber-band draw mode ─────────────────────────────────────────────────────
   const isDrawMode = samplerMode === 'drawing';
 
+  // ── handleBoxCommit — with wall/background auto-deselection ──────────────────
   const handleBoxCommit = useCallback((box: DrawBox) => {
     const svg = hiddenSvgRef.current;
     if (!svg || !pdfDimsRef.current) return;
@@ -599,36 +640,61 @@ export default function SnapEnginePage() {
     const svgY0 = (box.y - p.y) / z;
     const svgX1 = (box.x + box.w - p.x) / z;
     const svgY1 = (box.y + box.h - p.y) / z;
+    const boxSvgW = svgX1 - svgX0;
+    const boxSvgH = svgY1 - svgY0;
 
     const els = Array.from(
       svg.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon')
     ) as SVGElement[];
 
-    const inside: TemplatePath[] = [];
+    // Step 1: collect paths whose centroid is inside the box
+    interface RawCandidate { el: SVGElement; svgBBox: DOMRect; area: number }
+    const raw: RawCandidate[] = [];
     for (const el of els) {
       try {
         const b = (el as SVGGraphicsElement).getBBox();
         if (b.width < 0.5 || b.height < 0.5) continue;
-        // Path centroid must be inside the box (stricter than bbox overlap)
-        const pcx = b.x + b.width / 2;
+        const pcx = b.x + b.width  / 2;
         const pcy = b.y + b.height / 2;
         if (pcx >= svgX0 && pcx <= svgX1 && pcy >= svgY0 && pcy <= svgY1) {
-          inside.push({ el, svgBBox: b, toggled: true });
+          raw.push({ el, svgBBox: b, area: b.width * b.height });
         }
       } catch {}
     }
 
-    if (inside.length === 0) {
+    if (raw.length === 0) {
       setStatus('No paths found in selection — try a tighter box');
       setSamplerMode('idle');
       return;
     }
 
+    // Step 2: compute median path area for relative-size gating
+    const sortedAreas = [...raw.map(r => r.area)].sort((a, b) => a - b);
+    const medianArea  = sortedAreas[Math.floor(sortedAreas.length / 2)];
+
+    // Step 3: decide toggled state — auto-deselect oversized background paths
+    const inside: TemplatePath[] = raw.map(({ el, svgBBox, area }) => {
+      const isOversizedByArea = medianArea > 0 && area > OVERSIZED_RATIO * medianArea;
+      const isOversizedByDim  =
+        svgBBox.width  > boxSvgW * BOX_EXCEED_FRAC ||
+        svgBBox.height > boxSvgH * BOX_EXCEED_FRAC;
+      const toggled = !(isOversizedByArea || isOversizedByDim);
+      return { el, svgBBox, toggled };
+    });
+
+    // Step 4: if everything was auto-deselected, fall back to all selected
+    const selectedCount = inside.filter(c => c.toggled).length;
+    if (selectedCount === 0) inside.forEach(c => { c.toggled = true; });
+
     setCandidates(inside);
     setSamplerMode('selecting');
+
+    const deselCount = inside.filter(c => !c.toggled).length;
+    if (deselCount > 0) {
+      setStatus(`${inside.length} paths found · ${deselCount} large background path${deselCount > 1 ? 's' : ''} auto-deselected`);
+    }
   }, []);
 
-  // Pass svgDims and a zoom getter to useRubberBand for the size guard
   const { drawBox, isDrawing, tooLarge, startDraw } = useRubberBand(
     viewportRef as React.RefObject<HTMLDivElement>,
     isDrawMode,
@@ -890,7 +956,7 @@ export default function SnapEnginePage() {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* Hidden SVG */}
+      {/* Hidden SVG for template matching */}
       <svg ref={hiddenSvgRef} style={{ position:'absolute',width:0,height:0,overflow:'hidden',pointerEvents:'none',opacity:0 }} aria-hidden="true" />
 
       {/* ── Toolbar ── */}
@@ -995,7 +1061,7 @@ export default function SnapEnginePage() {
             isSearching={matcher.isSearching} hasSignature={matcher.signature!==null}
           />
 
-          {/* Too-large warning shown separately */}
+          {/* Too-large warning */}
           {isDrawing && tooLarge && drawBox && (
             <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
               <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h}
@@ -1105,7 +1171,18 @@ export default function SnapEnginePage() {
             <ShapesSidebar regions={regions} isScanning={isScanning} onRescan={rescan} onJump={jumpToRegion} pdfDims={pdfDims} zoom={zoom} pan={pan} />
           )}
           {sidebarTab==='sampler'&&(
-            <SamplerSidebar samplerMode={samplerMode} onEnterDraw={handleEnterDraw} candidates={candidates} onTogglePath={handleTogglePath} onConfirm={handleConfirmSample} onClear={handleClearSampler} signature={matcher.signature} matches={matcher.matches} isSearching={matcher.isSearching} pdfDims={pdfDims} />
+            <SamplerSidebar
+              samplerMode={samplerMode}
+              onEnterDraw={handleEnterDraw}
+              candidates={candidates}
+              onTogglePath={handleTogglePath}
+              onConfirm={handleConfirmSample}
+              onClear={handleClearSampler}
+              signature={matcher.signature}
+              matches={matcher.matches}
+              isSearching={matcher.isSearching}
+              pdfDims={pdfDims}
+            />
           )}
         </div>
       </div>

@@ -1,17 +1,15 @@
 /**
- * useTemplateMatcher.ts  v2.0
+ * useTemplateMatcher.ts  v2.1
  * ────────────────────────────
  * Rotation-invariant, scale-aware template matching against SVG path clusters.
  *
- * KEY IMPROVEMENTS over v1.0:
- *  - True rotation invariance via Hu moments (7 invariants, rotation+scale+reflection)
- *  - Scale normalised matching: compare bbox DIAGONAL RATIO and path-area ratio, not raw px
- *  - Robust angle histogram: parses both absolute AND relative SVG path commands
- *  - Rotation-invariant centroid layout via radial distance distribution (not sorted x/y)
- *  - Cluster distance capped at 200px so it never swallows the whole drawing
- *  - handleBoxCommit guard: rejects boxes >12% of SVG dimensions
- *  - Per-path perimeter approximation via polyline sampling for compactness
- *  - Weighted scoring tuned for ≥90% accuracy on floor-plan symbols at any orientation
+ * FIXES over v2.0:
+ *  - SCALE_TOLERANCE relaxed 0.35 → 0.55
+ *  - Path count hard-reject softened: 4.0/0.25 (was 2.5/0.4)
+ *  - huSimilarity decay constant 0.8 → 0.55
+ *  - Multi-scale cluster sweep at 1.0×, 0.8×, 0.5× clusterDist
+ *  - Cluster distance lower bound raised 30 → 20
+ *  - IoU deduplication of overlapping results
  */
 
 import { useState, useCallback, useRef } from 'react';
@@ -38,25 +36,15 @@ export interface MatchResult {
 }
 
 export interface TemplateSignature {
-  /** 7 Hu moments — rotation, scale and reflection invariant */
   huMoments:      number[];
-  /** Rotation-normalised 16-bin angle histogram (sums to 1) */
   angleHist:      number[];
-  /** Fraction of paths with bezier segments */
   curveFraction:  number;
-  /** Fraction of closed paths */
   closedFraction: number;
-  /** Mean aspect ratio of individual paths */
   meanAspect:     number;
-  /** Mean compactness */
   meanCompact:    number;
-  /** Path count */
   pathCount:      number;
-  /** Radial distribution: sorted distances of path centroids from cluster centroid (normalised 0-1) */
   radialDist:     number[];
-  /** Cluster bbox DIAGONAL in SVG units — used for scale-ratio gating (not raw w/h) */
   bboxDiag:       number;
-  /** Area ratio: sum of individual path areas / cluster bbox area */
   areaRatio:      number;
 }
 
@@ -72,16 +60,11 @@ interface PathFP {
   curveCount:  number;
   isClosed:    boolean;
   strokeAngle: number;
-  /** Sampled polyline points in SVG space (for Hu moments) */
   points:      Array<{ x: number; y: number }>;
 }
 
 // ─── SVG path sampler ─────────────────────────────────────────────────────────
 
-/**
- * Sample ~60 evenly-spaced points from an SVG path element using getTotalLength
- * and getPointAtLength. Falls back to bbox corners if those methods are absent.
- */
 function samplePathPoints(el: SVGElement): Array<{ x: number; y: number }> {
   try {
     const pathEl = el as SVGPathElement;
@@ -96,7 +79,6 @@ function samplePathPoints(el: SVGElement): Array<{ x: number; y: number }> {
     }
     return pts;
   } catch {
-    // Fallback: bbox corners + midpoints
     try {
       const b = (el as SVGGraphicsElement).getBBox();
       return [
@@ -122,16 +104,11 @@ function mean(arr: number[]) {
   return arr.length === 0 ? 0 : arr.reduce((a, b) => a + b, 0) / arr.length;
 }
 
-/**
- * Parse SVG path `d` — handles BOTH absolute (L,C,Q,M) and relative (l,c,q,m)
- * commands to extract a polyline for angle analysis.
- */
 function dominantAngle(d: string): number {
   const angles: number[] = [];
-  // Full command parser: absolute and relative L, C, Q, M
   const re = /([MLCQmlcq])\s*([-\d. ,eE]+)/g;
   let m: RegExpExecArray | null;
-  let ax = 0, ay = 0;  // absolute cursor
+  let ax = 0, ay = 0;
 
   while ((m = re.exec(d)) !== null) {
     const cmd  = m[1];
@@ -167,7 +144,6 @@ function dominantAngle(d: string): number {
   }
 
   if (angles.length === 0) return 0;
-  // Map to undirected [0, 180) half-circle
   const half = angles.map(a => {
     let deg = (a * 180) / Math.PI;
     while (deg < 0)    deg += 180;
@@ -207,21 +183,15 @@ function fingerprintPath(el: SVGElement): PathFP | null {
 }
 
 // ─── Hu moments ──────────────────────────────────────────────────────────────
-/**
- * Compute 7 Hu moments from a set of 2D points.
- * Hu moments are invariant to rotation, scale, and reflection.
- * We log-transform them so all 7 are similar magnitude for comparison.
- */
+
 function computeHuMoments(allPoints: Array<{ x: number; y: number }>): number[] {
   if (allPoints.length < 3) return new Array(7).fill(0);
 
-  // Raw moments
   const N = allPoints.length;
-  let m00 = N, m10 = 0, m01 = 0;
+  let m10 = 0, m01 = 0;
   for (const p of allPoints) { m10 += p.x; m01 += p.y; }
-  const cx = m10 / m00, cy = m01 / m00;
+  const cx = m10 / N, cy = m01 / N;
 
-  // Central moments up to order 3
   let mu20=0,mu02=0,mu11=0,mu30=0,mu03=0,mu21=0,mu12=0;
   for (const p of allPoints) {
     const dx = p.x - cx, dy = p.y - cy;
@@ -230,8 +200,7 @@ function computeHuMoments(allPoints: Array<{ x: number; y: number }>): number[] 
     mu21 += dx*dx*dy; mu12 += dx*dy*dy;
   }
 
-  // Normalise by m00^((p+q)/2+1)
-  const n = (p: number, q: number, mu: number) => mu / Math.pow(m00, (p + q) / 2 + 1);
+  const n = (p: number, q: number, mu: number) => mu / Math.pow(N, (p + q) / 2 + 1);
   const n20 = n(2,0,mu20), n02 = n(0,2,mu02), n11 = n(1,1,mu11);
   const n30 = n(3,0,mu30), n03 = n(0,3,mu03), n21 = n(2,1,mu21), n12 = n(1,2,mu12);
 
@@ -247,7 +216,6 @@ function computeHuMoments(allPoints: Array<{ x: number; y: number }>): number[] 
       (n30-3*n12)*(n21+n03)*(3*(n30+n12)**2 - (n21+n03)**2),
   ];
 
-  // Log-scale transform: sign(h) * log10(1 + |h| * 1e6)
   return hu.map(h => h === 0 ? 0 : Math.sign(h) * Math.log10(1 + Math.abs(h) * 1e6));
 }
 
@@ -258,8 +226,7 @@ function huSimilarity(a: number[], b: number[]): number {
     const maxAbs = Math.max(Math.abs(a[i]), Math.abs(b[i]), 0.001);
     dist += Math.abs(a[i] - b[i]) / maxAbs;
   }
-  // Convert mean relative distance → similarity
-  return Math.exp(-(dist / a.length) * 0.8);
+  return Math.exp(-(dist / a.length) * 0.55);
 }
 
 // ─── Angle histogram ──────────────────────────────────────────────────────────
@@ -276,14 +243,12 @@ function buildAngleHist(fps: PathFP[]): number[] {
   return hist.map(v => v / total);
 }
 
-/** Circularly shift so dominant bin is at index 0 */
 function normaliseHist(hist: number[]): number[] {
   let maxIdx = 0;
   for (let i = 1; i < hist.length; i++) if (hist[i] > hist[maxIdx]) maxIdx = i;
   return [...hist.slice(maxIdx), ...hist.slice(0, maxIdx)];
 }
 
-/** Chi-squared distance → similarity */
 function histSimilarity(a: number[], b: number[]): number {
   let dist = 0;
   for (let i = 0; i < a.length; i++) {
@@ -293,13 +258,8 @@ function histSimilarity(a: number[], b: number[]): number {
   return Math.exp(-dist * 3);
 }
 
-// ─── Radial distribution (rotation invariant centroid layout) ─────────────────
+// ─── Radial distribution ──────────────────────────────────────────────────────
 
-/**
- * Instead of sorted (rx,ry) positions — which break under rotation —
- * use the sorted list of distances from the cluster centroid, normalised
- * by the max distance. This is fully rotation invariant.
- */
 function buildRadialDist(fps: PathFP[], clusterCx: number, clusterCy: number): number[] {
   const dists = fps.map(fp => Math.hypot(fp.cx - clusterCx, fp.cy - clusterCy));
   const maxD  = Math.max(...dists, 1);
@@ -387,16 +347,13 @@ export function extractSignature(
   const bboxDiag = Math.hypot(bbox.w, bbox.h);
   const hist     = normaliseHist(buildAngleHist(fps));
 
-  // Hu moments from all sampled points combined
   const allPoints = fps.flatMap(fp => fp.points);
   const huMoments = computeHuMoments(allPoints);
 
-  // Cluster centroid
   const clusterCx = bbox.x + bbox.w / 2;
   const clusterCy = bbox.y + bbox.h / 2;
   const radialDist = buildRadialDist(fps, clusterCx, clusterCy);
 
-  // Area ratio: sum individual path bboxAreas / cluster bbox area
   const sumPathArea = fps.reduce((s, f) => s + f.bbox.width * f.bbox.height, 0);
   const clusterArea = Math.max(bbox.w * bbox.h, 1);
   const areaRatio   = clamp01(sumPathArea / clusterArea);
@@ -417,12 +374,7 @@ export function extractSignature(
 
 // ─── Scorer ───────────────────────────────────────────────────────────────────
 
-/**
- * Scale gate: candidate bbox diagonal must be within SCALE_TOLERANCE of template.
- * Using diagonal instead of separate w/h means a rotated symbol (which swaps w↔h)
- * still passes the gate.
- */
-const SCALE_TOLERANCE = 0.35;
+const SCALE_TOLERANCE = 0.55;
 
 function scoreCluster(fps: PathFP[], sig: TemplateSignature): number {
   if (fps.length === 0) return 0;
@@ -430,53 +382,41 @@ function scoreCluster(fps: PathFP[], sig: TemplateSignature): number {
   const bbox     = clusterBBox(fps);
   const bboxDiag = Math.hypot(bbox.w, bbox.h);
 
-  // ── Scale gate (diagonal ratio) ────────────────────────────────────────────
   const diagRatio = Math.abs(bboxDiag - sig.bboxDiag) / Math.max(sig.bboxDiag, 1);
   if (diagRatio > SCALE_TOLERANCE) return 0;
 
-  // ── Path count ─────────────────────────────────────────────────────────────
+  const countRatio = fps.length / Math.max(sig.pathCount, 1);
+  if (countRatio > 4.0 || countRatio < 0.25) return 0;
+
   const countScore = clamp01(
     1 - Math.abs(fps.length - sig.pathCount) / Math.max(sig.pathCount, 1)
   );
-  // Hard reject if count is wildly different (>2x or <0.5x)
-  const countRatio = fps.length / Math.max(sig.pathCount, 1);
-  if (countRatio > 2.5 || countRatio < 0.4) return 0;
 
-  // ── Hu moments (primary shape descriptor) ─────────────────────────────────
   const allPoints = fps.flatMap(fp => fp.points);
   const candHu    = computeHuMoments(allPoints);
   const huScore   = huSimilarity(candHu, sig.huMoments);
 
-  // ── Angle histogram ────────────────────────────────────────────────────────
   const candHist  = normaliseHist(buildAngleHist(fps));
   const histScore = histSimilarity(candHist, sig.angleHist);
 
-  // ── Curve / closed fractions ───────────────────────────────────────────────
   const curveFrac   = fps.filter(f => f.curveCount > 0).length / fps.length;
   const closedFrac  = fps.filter(f => f.isClosed).length / fps.length;
   const curveScore  = 1 - Math.abs(curveFrac  - sig.curveFraction);
   const closedScore = 1 - Math.abs(closedFrac - sig.closedFraction);
 
-  // ── Radial distribution (rotation-invariant layout) ────────────────────────
   const clusterCx  = bbox.x + bbox.w / 2;
   const clusterCy  = bbox.y + bbox.h / 2;
   const candRadial = buildRadialDist(fps, clusterCx, clusterCy);
   const radScore   = radialSimilarity(candRadial, sig.radialDist);
 
-  // ── Area ratio ─────────────────────────────────────────────────────────────
   const sumPathArea = fps.reduce((s, f) => s + f.bbox.width * f.bbox.height, 0);
   const clusterArea = Math.max(bbox.w * bbox.h, 1);
   const candArea    = clamp01(sumPathArea / clusterArea);
   const areaScore   = clamp01(1 - Math.abs(candArea - sig.areaRatio));
 
-  // ── Individual path aspect ─────────────────────────────────────────────────
-  // For rotated symbols, aspect ratios of individual paths change.
-  // Use min(a/b, b/a) — ratio closest to 1 — instead of raw difference.
   const candAspect = mean(fps.map(f => f.aspect));
   const aspectSim  = Math.min(candAspect, sig.meanAspect) / Math.max(candAspect, sig.meanAspect, 0.01);
 
-  // ── Weighted composite ─────────────────────────────────────────────────────
-  // Hu moments carry the most weight as the primary rotation-invariant descriptor.
   return (
     huScore     * 0.35 +
     histScore   * 0.18 +
@@ -487,6 +427,31 @@ function scoreCluster(fps: PathFP[], sig: TemplateSignature): number {
     areaScore   * 0.04 +
     aspectSim   * 0.02
   );
+}
+
+// ─── IoU deduplication ────────────────────────────────────────────────────────
+
+const IOU_THRESHOLD = 0.4;
+
+function bboxIoU(
+  a: { x: number; y: number; w: number; h: number },
+  b: { x: number; y: number; w: number; h: number },
+): number {
+  const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  const inter = ix * iy;
+  if (inter === 0) return 0;
+  return inter / (a.w * a.h + b.w * b.h - inter);
+}
+
+function deduplicateResults(results: MatchResult[]): MatchResult[] {
+  const kept: MatchResult[] = [];
+  for (const r of results) {
+    if (!kept.some(k => bboxIoU(k.bbox, r.bbox) > IOU_THRESHOLD)) {
+      kept.push(r);
+    }
+  }
+  return kept;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -526,30 +491,36 @@ export function useTemplateMatcher(): UseTemplateMatcherReturn {
 
     const fps = els.map(fingerprintPath).filter(Boolean) as PathFP[];
 
-    // Cluster distance: based on template diagonal, capped at 200px to prevent
-    // massive clusters swallowing the whole drawing.
-    const clusterDist = Math.min(sig.bboxDiag * 0.65, 200);
-    const clusters    = clusterByProximity(fps, Math.max(clusterDist, 30));
+    const primaryDist = Math.min(sig.bboxDiag * 0.65, 200);
+    const distScales  = [1.0, 0.8, 0.5];
 
-    const results: MatchResult[] = [];
-    for (let i = 0; i < clusters.length; i++) {
-      const cluster = clusters[i];
-      const score   = scoreCluster(cluster, sig);
-      if (score < threshold) continue;
+    const allResults: MatchResult[] = [];
+    let matchIdx = 0;
 
-      const bbox    = clusterBBox(cluster);
-      const snapPts = extractSnapPoints(cluster, bbox);
-      results.push({
-        id:         `match-${i}`,
-        score,
-        bbox,
-        snapPoints: snapPts,
-        pathCount:  cluster.length,
-      });
+    for (const scale of distScales) {
+      const clusterDist = Math.max(primaryDist * scale, 20);
+      const clusters    = clusterByProximity(fps, clusterDist);
+
+      for (const cluster of clusters) {
+        const score = scoreCluster(cluster, sig);
+        if (score < threshold) continue;
+
+        const bbox    = clusterBBox(cluster);
+        const snapPts = extractSnapPoints(cluster, bbox);
+        allResults.push({
+          id:         `match-${matchIdx++}`,
+          score,
+          bbox,
+          snapPoints: snapPts,
+          pathCount:  cluster.length,
+        });
+      }
     }
 
-    results.sort((a, b) => b.score - a.score);
-    setMatches(results);
+    allResults.sort((a, b) => b.score - a.score);
+    const deduped = deduplicateResults(allResults);
+
+    setMatches(deduped);
     setIsSearching(false);
   }, []);
 
