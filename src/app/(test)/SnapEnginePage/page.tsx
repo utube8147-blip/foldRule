@@ -13,10 +13,14 @@ import { useShapeDetector }                                from '@/hooks/useShap
 import { ShapeOverlayAdapted, LABEL_CONFIG }               from '@/components/ShapeOverlay';
 import type { ShapeLabel, DetectedRegion }                 from '@/hooks/useShapeDetector';
 
-import { useTemplateMatcher }                              from '@/hooks/useTemplateMatcher';
-import type { TemplatePath }                               from '@/hooks/useTemplateMatcher';
-import { TemplateSamplerOverlay, useRubberBand }           from '@/components/TemplateSamplerOverlay';
-import type { DrawBox }                                    from '@/components/TemplateSamplerOverlay';
+// ── NEW: OpenCV matcher (replaces useTemplateMatcher) ─────────────────────────
+import { useOpenCVMatcher }                                from '@/hooks/useOpenCVMatcher';
+import {
+  CVMatchOverlay,
+  CVRubberBand,
+  CVSamplerSidebar,
+  useCVRubberBand,
+} from '@/components/CVMatchOverlay';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -36,19 +40,7 @@ const LOAD_LINES = [
   'Deduplicating intersection points',
 ];
 
-const DRAG_THRESHOLD  = 5;
-const MATCH_THRESHOLD = 0.72;
-
-/**
- * Auto-deselection constants for handleBoxCommit.
- * OVERSIZED_RATIO: a candidate path whose bbox area exceeds this multiple of
- *   the median candidate area is assumed to be a wall/room outline and starts
- *   toggled:false.
- * BOX_EXCEED_FRAC: a candidate wider or taller than this fraction of the drawn
- *   selection box is also assumed to be a background shape.
- */
-const OVERSIZED_RATIO = 8;
-const BOX_EXCEED_FRAC = 0.9;
+const DRAG_THRESHOLD = 5;
 
 const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
 
@@ -374,167 +366,10 @@ function ShapesSidebar({ regions, isScanning, onRescan, onJump, pdfDims, zoom, p
   );
 }
 
-// ── Sampler sidebar ───────────────────────────────────────────────────────────
-
-/** Returns true if this candidate is likely a background shape (wall/room outline). */
-function isSuspectedBackground(candidate: TemplatePath, allCandidates: TemplatePath[]): boolean {
-  if (allCandidates.length === 0) return false;
-  const areas  = allCandidates.map(c => c.svgBBox.width * c.svgBBox.height);
-  const sorted = [...areas].sort((a, b) => a - b);
-  const median = sorted[Math.floor(sorted.length / 2)] || 1;
-  return (candidate.svgBBox.width * candidate.svgBBox.height) > OVERSIZED_RATIO * median;
-}
-
-function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, onConfirm, onClear, signature, matches, isSearching, pdfDims }: {
-  samplerMode:  'idle'|'drawing'|'selecting'|'matched';
-  onEnterDraw:  () => void;
-  candidates:   TemplatePath[];
-  onTogglePath: (el: SVGElement) => void;
-  onConfirm:    () => void;
-  onClear:      () => void;
-  signature:    ReturnType<typeof useTemplateMatcher>['signature'];
-  matches:      ReturnType<typeof useTemplateMatcher>['matches'];
-  isSearching:  boolean;
-  pdfDims:      PdfDimensions | null;
-}) {
-  const selectedCount  = candidates.filter(c=>c.toggled).length;
-  const autoDeselCount = candidates.filter(c=>!c.toggled && isSuspectedBackground(c, candidates)).length;
-  const MATCH_COL = '#38bdf8';
-  const SNAP_C = { endpoint:'#f59e0b', midpoint:'#10b981', centroid:'#8b5cf6' };
-  return (
-    <>
-      <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-        <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:8 }}>Template sampler</div>
-
-        {samplerMode==='idle'&&(
-          <div style={{ fontSize:7,color:'#333',lineHeight:1.8,marginBottom:8,textTransform:'uppercase',letterSpacing:'.06em' }}>
-            1 · Zoom in until one symbol fills the view<br/>
-            2 · Draw a tight box around just that symbol<br/>
-            3 · Walls auto-deselected — check sidebar<br/>
-            4 · Hit Find — works at any rotation
-          </div>
-        )}
-
-        {(['Draw','Select','Match'] as const).map((step,i)=>{
-          const stepMode=['drawing','selecting','matched'][i];
-          const done=(i===0&&(samplerMode==='selecting'||samplerMode==='matched'))||(i===1&&samplerMode==='matched');
-          const active=samplerMode===stepMode;
-          return (
-            <div key={step} style={{ display:'flex',alignItems:'center',gap:6,marginBottom:4 }}>
-              <div style={{ width:16,height:16,borderRadius:'50%',flexShrink:0,background:done?'#1a3a1a':active?'#1a2a3a':'#111',border:`1px solid ${done?'#22c55e':active?MATCH_COL:'#2a2a2a'}`,display:'flex',alignItems:'center',justifyContent:'center',fontSize:8,color:done?'#22c55e':active?MATCH_COL:'#333' }}>
-                {done?'✓':i+1}
-              </div>
-              <span style={{ fontSize:8,color:active?'#ccc':done?'#555':'#2a2a2a',textTransform:'uppercase',letterSpacing:'.07em' }}>{step}</span>
-            </div>
-          );
-        })}
-
-        <div style={{ display:'flex',gap:4,marginTop:10,flexWrap:'wrap' as const }}>
-          {samplerMode==='idle'&&<button onClick={onEnterDraw} style={{ ...tbBtn(true,MATCH_COL),flex:1 }}>⊡ Draw Sample</button>}
-          {samplerMode==='drawing'&&(
-            <div style={{ fontSize:7,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em',padding:'3px 0',lineHeight:1.8 }}>
-              Zoom in first, then drag a tight<br/>box around ONE symbol only
-            </div>
-          )}
-          {samplerMode==='selecting'&&<><button onClick={onConfirm} disabled={selectedCount===0} style={{ ...tbBtn(selectedCount>0,MATCH_COL),flex:1 }}>⊛ Find ({selectedCount})</button><button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button></>}
-          {samplerMode==='matched'&&<><button onClick={onEnterDraw} style={{ ...tbBtn(false,MATCH_COL),flex:1 }}>⊡ New Sample</button><button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button></>}
-        </div>
-      </div>
-
-      {signature&&(
-        <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:4 }}>Template signature</div>
-          <TRow label="Paths"     value={`${signature.pathCount}`} />
-          <TRow label="Diag"      value={`${signature.bboxDiag.toFixed(0)} px`} />
-          <TRow label="Curves"    value={`${Math.round(signature.curveFraction*100)}%`} />
-          <TRow label="Closed"    value={`${Math.round(signature.closedFraction*100)}%`} />
-          <TRow label="Threshold" value={`${Math.round(MATCH_THRESHOLD*100)}%`} />
-          <TRow label="Method"    value="Hu + Hist + Radial" />
-        </div>
-      )}
-
-      {samplerMode==='selecting'&&candidates.length>0&&(
-        <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-          {/* Auto-deselect warning */}
-          {autoDeselCount>0&&(
-            <div style={{ fontSize:7,color:'#c2410c',border:'1px solid #7c3a1a',background:'rgba(124,58,26,0.08)',padding:'3px 6px',marginBottom:6,textTransform:'uppercase',letterSpacing:'.06em',lineHeight:1.7 }}>
-              ⚠ {autoDeselCount} large path{autoDeselCount>1?'s':''} auto-deselected<br/>
-              (wall/outline — toggle on if needed)
-            </div>
-          )}
-          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>
-            {candidates.length} paths · click to toggle · keep only symbol paths
-          </div>
-          {candidates.map((c,i)=>{
-            const isLarge = isSuspectedBackground(c, candidates);
-            const rowBorder = c.toggled ? MATCH_COL : isLarge ? '#7c3a1a' : '#1a1a1a';
-            const rowBg     = c.toggled ? `${MATCH_COL}10` : isLarge ? 'rgba(124,58,26,0.06)' : 'transparent';
-            return (
-              <div key={i} onClick={()=>onTogglePath(c.el)}
-                style={{ display:'flex',alignItems:'center',gap:6,padding:'3px 4px',cursor:'pointer',marginBottom:2,border:`1px solid ${rowBorder}`,background:rowBg }}>
-                <div style={{ width:7,height:7,borderRadius:1,background:c.toggled?MATCH_COL:isLarge?'#c2410c':'#333',flexShrink:0 }} />
-                <span style={{ fontSize:7,color:c.toggled?'#aaa':'#444',textTransform:'uppercase',flex:1 }}>
-                  #{i+1} · {c.svgBBox.width.toFixed(0)}×{c.svgBBox.height.toFixed(0)}
-                </span>
-                {isLarge&&!c.toggled&&(
-                  <span style={{ fontSize:6,color:'#c2410c',border:'1px solid #7c3a1a',padding:'1px 3px',letterSpacing:'.06em',textTransform:'uppercase' }}>
-                    wall?
-                  </span>
-                )}
-                <span style={{ fontSize:8,color:c.toggled?MATCH_COL:'#333' }}>{c.toggled?'✓':'○'}</span>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      <div style={{ flex:1,overflowY:'auto',padding:6 }}>
-        {isSearching&&<p style={{ fontSize:8,color:'#555',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 0' }}>Searching…</p>}
-        {!isSearching&&samplerMode==='matched'&&matches.length===0&&(
-          <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>
-            No matches at {Math.round(MATCH_THRESHOLD*100)}% threshold.<br />
-            Try drawing a tighter sample or<br />
-            deselect stray paths.
-          </p>
-        )}
-        {!isSearching&&matches.length>0&&(
-          <>
-            <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6,padding:'2px 4px' }}>
-              {matches.length} match{matches.length!==1?'es':''} · rotation-invariant
-            </div>
-            {matches.map((match,i)=>(
-              <div key={match.id} style={{ border:'1px solid #1a1a1a',padding:'6px 8px',marginBottom:4,background:'#0a0a0a' }}>
-                <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:4 }}>
-                  <div style={{ width:8,height:8,borderRadius:1,background:'#f43f5e',flexShrink:0 }} />
-                  <span style={{ fontSize:8,color:'#888',textTransform:'uppercase',letterSpacing:'.05em',flex:1 }}>Match {i+1}</span>
-                  <span style={{ fontSize:8,color:'#f43f5e',fontWeight:700 }}>{Math.round(match.score*100)}%</span>
-                </div>
-                <div style={{ paddingLeft:14 }}>
-                  <TRow label="Position" value={`${match.bbox.x.toFixed(0)}, ${match.bbox.y.toFixed(0)}`} />
-                  <TRow label="Size"     value={`${match.bbox.w.toFixed(0)} × ${match.bbox.h.toFixed(0)}`} />
-                  <TRow label="Paths"    value={`${match.pathCount}`} />
-                  <div style={{ display:'flex',gap:6,marginTop:4 }}>
-                    {(['endpoint','midpoint','centroid'] as const).map(type=>{
-                      const count=match.snapPoints.filter((s: any)=>s.type===type).length;
-                      if(count===0)return null;
-                      return <div key={type} style={{ display:'flex',alignItems:'center',gap:3 }}><div style={{ width:6,height:6,borderRadius:'50%',background:SNAP_C[type] }} /><span style={{ fontSize:7,color:'#444' }}>{count}</span></div>;
-                    })}
-                  </div>
-                </div>
-              </div>
-            ))}
-          </>
-        )}
-        {samplerMode==='idle'&&<p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'28px 8px',lineHeight:2.2 }}>Draw a sample region<br />to find matching elements</p>}
-      </div>
-    </>
-  );
-}
-
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 type SidebarTab  = 'chain'|'points'|'shapes'|'sampler';
-type SamplerMode = 'idle'|'drawing'|'selecting'|'matched';
+type SamplerMode = 'idle'|'drawing'|'matched';   // 'selecting' removed — not needed with CV
 
 export default function SnapEnginePage() {
   // ── Core state ──────────────────────────────────────────────────────────────
@@ -548,7 +383,7 @@ export default function SnapEnginePage() {
   const [zoom,        setZoom]        = useState(1);
   const [pan,         setPan]         = useState({ x:0, y:0 });
 
-  // ── Snap toggles ──────────────────────────────────────────────────────────────
+  // ── Snap toggles ─────────────────────────────────────────────────────────────
   const [snapEnabled,     setSnapEnabled]     = useState(true);
   const [showPins,        setShowPins]        = useState(true);
   const [snapThresh,      setSnapThresh]      = useState(22);
@@ -556,20 +391,23 @@ export default function SnapEnginePage() {
   const [proximityRadius, setProximityRadius] = useState(40);
   const [linearMode,      setLinearMode]      = useState(true);
 
-  // ── Shape detection ───────────────────────────────────────────────────────────
+  // ── Shape detection ──────────────────────────────────────────────────────────
   const [detectEnabled,    setDetectEnabled]    = useState(false);
   const [shapeThreshold,   setShapeThreshold]   = useState(72);
   const [showShapeOverlay, setShowShapeOverlay] = useState(true);
 
-  // ── Sampler state ─────────────────────────────────────────────────────────────
-  const [samplerMode, setSamplerMode] = useState<SamplerMode>('idle');
-  const [candidates,  setCandidates]  = useState<TemplatePath[]>([]);
+  // ── CV Sampler state ─────────────────────────────────────────────────────────
+  const [samplerMode,  setSamplerMode]  = useState<SamplerMode>('idle');
+  const [cvThreshold,  setCVThreshold]  = useState(0.60);
+  const [cvRotations,  setCVRotations]  = useState<number[]>([0, 90, 180, 270]);
+  const [cvFlips, setCVFlips] = useState<boolean[]>([false, true]);  // both normal + mirrored
+ 
 
-  // ── UI state ──────────────────────────────────────────────────────────────────
+  // ── UI state ─────────────────────────────────────────────────────────────────
   const [sidebarTab,   setSidebarTab]   = useState<SidebarTab>('chain');
   const [highlightIdx, setHighlightIdx] = useState<number|null>(null);
 
-  // ── Refs ───────────────────────────────────────────────────────────────────────
+  // ── Refs ──────────────────────────────────────────────────────────────────────
   const viewportRef   = useRef<HTMLDivElement>(null);
   const wrapRef       = useRef<HTMLDivElement>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -617,115 +455,44 @@ export default function SnapEnginePage() {
     pan,
   });
 
-  // ── Shape detection ───────────────────────────────────────────────────────────
+  // ── Shape detection ──────────────────────────────────────────────────────────
   const { regions, isScanning, rescan } = useShapeDetector(hiddenSvgRef, {
     enabled:   detectEnabled,
     threshold: shapeThreshold/100,
   });
 
-  // ── Template matcher ──────────────────────────────────────────────────────────
-  const matcher = useTemplateMatcher();
+  // ── OpenCV matcher ───────────────────────────────────────────────────────────
+  const cvMatcher = useOpenCVMatcher();
 
-  // ── Rubber-band draw mode ─────────────────────────────────────────────────────
+  // ── Rubber-band (CV version) ─────────────────────────────────────────────────
   const isDrawMode = samplerMode === 'drawing';
 
-  // ── handleBoxCommit — with wall/background auto-deselection ──────────────────
-  const handleBoxCommit = useCallback((box: DrawBox) => {
-    const svg = hiddenSvgRef.current;
-    if (!svg || !pdfDimsRef.current) return;
-    const z = zoomRef.current, p = panRef.current;
+const handleBoxCommit = useCallback(async (box) => {
+  const canvas = baseCanvasRef.current;
+  if (!canvas) return;
+  cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
+  setSamplerMode('matched');
+  await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips);  // ← add cvFlips
+}, [cvMatcher, cvThreshold, cvRotations, cvFlips]);
+ 
 
-    // Convert viewport box → SVG coords
-    const svgX0 = (box.x - p.x) / z;
-    const svgY0 = (box.y - p.y) / z;
-    const svgX1 = (box.x + box.w - p.x) / z;
-    const svgY1 = (box.y + box.h - p.y) / z;
-    const boxSvgW = svgX1 - svgX0;
-    const boxSvgH = svgY1 - svgY0;
-
-    const els = Array.from(
-      svg.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon')
-    ) as SVGElement[];
-
-    // Step 1: collect paths whose centroid is inside the box
-    interface RawCandidate { el: SVGElement; svgBBox: DOMRect; area: number }
-    const raw: RawCandidate[] = [];
-    for (const el of els) {
-      try {
-        const b = (el as SVGGraphicsElement).getBBox();
-        if (b.width < 0.5 || b.height < 0.5) continue;
-        const pcx = b.x + b.width  / 2;
-        const pcy = b.y + b.height / 2;
-        if (pcx >= svgX0 && pcx <= svgX1 && pcy >= svgY0 && pcy <= svgY1) {
-          raw.push({ el, svgBBox: b, area: b.width * b.height });
-        }
-      } catch {}
-    }
-
-    if (raw.length === 0) {
-      setStatus('No paths found in selection — try a tighter box');
-      setSamplerMode('idle');
-      return;
-    }
-
-    // Step 2: compute median path area for relative-size gating
-    const sortedAreas = [...raw.map(r => r.area)].sort((a, b) => a - b);
-    const medianArea  = sortedAreas[Math.floor(sortedAreas.length / 2)];
-
-    // Step 3: decide toggled state — auto-deselect oversized background paths
-    const inside: TemplatePath[] = raw.map(({ el, svgBBox, area }) => {
-      const isOversizedByArea = medianArea > 0 && area > OVERSIZED_RATIO * medianArea;
-      const isOversizedByDim  =
-        svgBBox.width  > boxSvgW * BOX_EXCEED_FRAC ||
-        svgBBox.height > boxSvgH * BOX_EXCEED_FRAC;
-      const toggled = !(isOversizedByArea || isOversizedByDim);
-      return { el, svgBBox, toggled };
-    });
-
-    // Step 4: if everything was auto-deselected, fall back to all selected
-    const selectedCount = inside.filter(c => c.toggled).length;
-    if (selectedCount === 0) inside.forEach(c => { c.toggled = true; });
-
-    setCandidates(inside);
-    setSamplerMode('selecting');
-
-    const deselCount = inside.filter(c => !c.toggled).length;
-    if (deselCount > 0) {
-      setStatus(`${inside.length} paths found · ${deselCount} large background path${deselCount > 1 ? 's' : ''} auto-deselected`);
-    }
-  }, []);
-
-  const { drawBox, isDrawing, tooLarge, startDraw } = useRubberBand(
+  const { drawBox, isDrawing, tooLarge, startDraw } = useCVRubberBand(
     viewportRef as React.RefObject<HTMLDivElement>,
     isDrawMode,
     handleBoxCommit,
-    pdfDims,
-    useCallback(() => zoomRef.current, []),
   );
 
-  const handleTogglePath = useCallback((el: SVGElement) => {
-    setCandidates(prev=>prev.map(c=>c.el===el?{...c,toggled:!c.toggled}:c));
-  },[]);
+  const handleClearSampler = useCallback(() => {
+    cvMatcher.clearAll();
+    setSamplerMode('idle');
+  }, [cvMatcher]);
 
-  const handleConfirmSample = useCallback(async () => {
-    const svg = hiddenSvgRef.current;
-    if (!svg) return;
-    const selectedEls = candidates.filter(c=>c.toggled).map(c=>c.el);
-    if (selectedEls.length===0) return;
-    matcher.buildSignature(selectedEls, svg);
-    setSamplerMode('matched');
-    await matcher.findMatches(svg, MATCH_THRESHOLD);
-  },[candidates, matcher]);
+  const handleEnterDraw = useCallback(() => {
+    cvMatcher.clearAll();
+    setSamplerMode('drawing');
+  }, [cvMatcher]);
 
-  const handleClearSampler = useCallback(()=>{
-    matcher.clearAll(); setCandidates([]); setSamplerMode('idle');
-  },[matcher]);
-
-  const handleEnterDraw = useCallback(()=>{
-    matcher.clearAll(); setCandidates([]); setSamplerMode('drawing');
-  },[matcher]);
-
-  // ── Canvas transform ──────────────────────────────────────────────────────────
+  // ── Canvas transform ─────────────────────────────────────────────────────────
   useEffect(()=>{
     if(wrapRef.current)
       wrapRef.current.style.transform=`translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
@@ -792,9 +559,9 @@ export default function SnapEnginePage() {
     const counts=snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]??0)+1;return acc;},{} as Record<string,number>);
     const summary=(Object.entries(counts) as [string,number][]).map(([k,v])=>`${k}:${v}`).join(' · ');
     const shapePart=detectEnabled?` · ${regions.length} shapes`:'';
-    const matcherPart=matcher.matches.length>0?` · ${matcher.matches.length} matches`:'';
+    const matcherPart=cvMatcher.matches.length>0?` · ${cvMatcher.matches.length} CV matches`:'';
     setStatus(`${snapPoints.length} snap pts · ${svgLines.length} line segs · ${svgCurves.length} curves${shapePart}${matcherPart} — ${summary}`);
-  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,regions.length,detectEnabled,matcher.matches.length]);
+  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,regions.length,detectEnabled,cvMatcher.matches.length]);
 
   // ── File upload ───────────────────────────────────────────────────────────────
   const handleUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>)=>{
@@ -950,13 +717,13 @@ export default function SnapEnginePage() {
     { key:'chain',   label:`Chain (${engine.linearChain.length})`,  color:'#a78bfa' },
     { key:'points',  label:`Snaps (${snapPoints.length})`,           color:'#f59e0b' },
     { key:'shapes',  label:`Shapes (${regions.length})`,             color:'#f43f5e' },
-    { key:'sampler', label:`Sampler${matcher.matches.length>0?` (${matcher.matches.length})`:''}`, color:'#38bdf8' },
+    { key:'sampler', label:`CV${cvMatcher.matches.length>0?` (${cvMatcher.matches.length})`:''}`, color:'#38bdf8' },
   ];
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* Hidden SVG for template matching */}
+      {/* Hidden SVG for shape detector */}
       <svg ref={hiddenSvgRef} style={{ position:'absolute',width:0,height:0,overflow:'hidden',pointerEvents:'none',opacity:0 }} aria-hidden="true" />
 
       {/* ── Toolbar ── */}
@@ -999,11 +766,17 @@ export default function SnapEnginePage() {
           </>
         )}
         <div style={S.sep} />
-        <button onClick={()=>{setSidebarTab('sampler');if(samplerMode==='idle')handleEnterDraw();}} style={tbBtn(samplerMode!=='idle','#38bdf8')}>
-          ⊡ Sample {samplerMode!=='idle'?'●':'○'}
+        {/* CV Sampler toolbar button */}
+        <button
+          onClick={()=>{setSidebarTab('sampler');if(samplerMode==='idle')handleEnterDraw();}}
+          style={tbBtn(samplerMode!=='idle','#38bdf8')}
+        >
+          ⊡ CV Match {samplerMode!=='idle'?'●':'○'}
         </button>
-        {matcher.matches.length>0&&(
-          <span style={{ fontSize:8,border:'1px solid #38bdf844',padding:'2px 6px',color:'#38bdf8',letterSpacing:'.07em',flexShrink:0 }}>{matcher.matches.length} matches</span>
+        {cvMatcher.matches.length>0&&(
+          <span style={{ fontSize:8,border:'1px solid #38bdf844',padding:'2px 6px',color:'#38bdf8',letterSpacing:'.07em',flexShrink:0 }}>
+            {cvMatcher.matches.length} CV matches
+          </span>
         )}
         <div style={S.sep} />
         <span style={S.lblStyle}>Threshold</span>
@@ -1052,25 +825,29 @@ export default function SnapEnginePage() {
             <ShapeOverlayAdapted regions={regions} pdfDims={pdfDims} zoom={zoom} pan={pan} isScanning={isScanning} onRescan={rescan} visible={showShapeOverlay} />
           )}
 
-          {/* Template sampler overlay */}
-          <TemplateSamplerOverlay
-            isDrawing={isDrawing} drawBox={tooLarge ? null : drawBox}
-            candidates={candidates}
-            onTogglePath={handleTogglePath} matches={matcher.matches}
-            pdfDims={pdfDims} zoom={zoom} pan={pan}
-            isSearching={matcher.isSearching} hasSignature={matcher.signature!==null}
+          {/* ── CV rubber-band + match overlay ── */}
+          <CVRubberBand
+            isDrawing={isDrawing}
+            drawBox={tooLarge ? null : drawBox}
+            tooLarge={tooLarge}
+            isSearching={cvMatcher.isSearching}
+          />
+          <CVMatchOverlay
+            matches={cvMatcher.matches}
+            zoom={zoom}
+            pan={pan}
           />
 
-          {/* Too-large warning */}
+          {/* Too-large warning when tooLarge but no drawBox suppressed */}
           {isDrawing && tooLarge && drawBox && (
             <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
               <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h}
                 fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
-              <rect x={drawBox.x+drawBox.w/2-100} y={drawBox.y+drawBox.h/2-13} width={200} height={24}
+              <rect x={drawBox.x+drawBox.w/2-110} y={drawBox.y+drawBox.h/2-13} width={220} height={24}
                 fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
               <text x={drawBox.x+drawBox.w/2} y={drawBox.y+drawBox.h/2+4}
                 textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
-                Zoom in — box too large for one symbol
+                Zoom in — box covers too much of viewport
               </text>
             </svg>
           )}
@@ -1095,17 +872,12 @@ export default function SnapEnginePage() {
           )}
           {samplerMode==='drawing'&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {tooLarge ? '⚠ Zoom in more — box too large' : 'Sampler · drag tight box around ONE symbol'}
+              {tooLarge ? '⚠ Zoom in more — box too large' : 'CV Sampler · drag tight box around ONE symbol'}
             </div>
           )}
-          {samplerMode==='selecting'&&(
-            <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              Sampler · click canvas paths to toggle · confirm in sidebar
-            </div>
-          )}
-          {samplerMode==='matched'&&matcher.matches.length>0&&(
+          {samplerMode==='matched'&&cvMatcher.matches.length>0&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(244,63,94,.12)',border:'1px solid rgba(244,63,94,.3)',padding:'3px 8px',fontSize:8,color:'#f43f5e',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {matcher.matches.length} match{matcher.matches.length!==1?'es':''} found · rotation-invariant
+              {cvMatcher.matches.length} CV match{cvMatcher.matches.length!==1?'es':''} · pixel-accurate
             </div>
           )}
         </div>
@@ -1124,6 +896,7 @@ export default function SnapEnginePage() {
           {sidebarTab==='chain'&&(
             <ChainSidebar chain={engine.linearChain} pdfDims={pdfDims} onRemove={removeChainPoint} onJump={jumpToChainPoint} />
           )}
+
           {sidebarTab==='points'&&(
             <>
               <div style={{ padding:10,borderBottom:'1px solid #1a1a1a' }}>
@@ -1167,22 +940,24 @@ export default function SnapEnginePage() {
               </div>
             </>
           )}
+
           {sidebarTab==='shapes'&&(
             <ShapesSidebar regions={regions} isScanning={isScanning} onRescan={rescan} onJump={jumpToRegion} pdfDims={pdfDims} zoom={zoom} pan={pan} />
           )}
+
           {sidebarTab==='sampler'&&(
-            <SamplerSidebar
-              samplerMode={samplerMode}
-              onEnterDraw={handleEnterDraw}
-              candidates={candidates}
-              onTogglePath={handleTogglePath}
-              onConfirm={handleConfirmSample}
-              onClear={handleClearSampler}
-              signature={matcher.signature}
-              matches={matcher.matches}
-              isSearching={matcher.isSearching}
-              pdfDims={pdfDims}
-            />
+<CVSamplerSidebar
+  matcher={cvMatcher}
+  samplerMode={samplerMode}
+  onEnterDraw={handleEnterDraw}
+  onClear={handleClearSampler}
+  threshold={cvThreshold}
+  onThreshold={setCVThreshold}
+  rotations={cvRotations}
+  onRotations={setCVRotations}
+  flips={cvFlips}          // ← add
+  onFlips={setCVFlips}     // ← add
+/>
           )}
         </div>
       </div>
@@ -1190,21 +965,19 @@ export default function SnapEnginePage() {
       {/* ── Status bar ── */}
       <div style={S.statusbar}>
         {(samplerMode==='drawing'
-          ? [tooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol only']
-          : samplerMode==='selecting'
-          ? ['Click paths on canvas to toggle','Confirm in Sampler sidebar']
+          ? [tooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol']
           : linearMode
           ? ['Hover: nearest snap','Click: add chain point','Ctrl+scroll: zoom','Drag: pan']
           : ['Hover: nearest snap','Click: snap indicator','Ctrl+scroll: zoom','Drag: pan']
         ).map((h,i)=>(
           <React.Fragment key={h}>
             {i>0&&<div style={S.barSep} />}
-            <span style={{ fontSize:8,color:samplerMode!=='idle'?(tooLarge?'#f43f5e':'#38bdf8'):'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+            <span style={{ fontSize:8,color:samplerMode==='drawing'?(tooLarge?'#f43f5e':'#38bdf8'):'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
           </React.Fragment>
         ))}
         <div style={{ flex:1 }} />
-        {matcher.matches.length>0&&(
-          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{matcher.matches.length} template matches · rotation-invariant</span><div style={S.barSep} /></>
+        {cvMatcher.matches.length>0&&(
+          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{cvMatcher.matches.length} CV matches · pixel-accurate</span><div style={S.barSep} /></>
         )}
         {detectEnabled&&(
           <><span style={{ fontSize:8,color:isScanning?'#f43f5e':'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{isScanning?'⟳ scanning':`${regions.length} shapes`}</span><div style={S.barSep} /></>
