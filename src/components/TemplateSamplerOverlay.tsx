@@ -1,5 +1,5 @@
 /**
- * TemplateSamplerOverlay.tsx  v1.0
+ * TemplateSamplerOverlay.tsx  v2.0
  * ─────────────────────────────────
  * Three visual layers rendered inside the snap engine viewport:
  *
@@ -11,6 +11,12 @@
  *   All SVG/canvas coords → viewport coords via:
  *     vx = svgX * zoom + pan.x
  *     vy = svgY * zoom + pan.y
+ *
+ * v2.0 changes:
+ *   - useRubberBand now accepts svgDims + zoom so it can guard against
+ *     boxes that are >12% of the SVG (which produce useless signatures)
+ *   - Candidate highlight shows path index for easier deselection
+ *   - Match renderer shows a crosshair at centroid snap point
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -26,23 +32,14 @@ export interface DrawBox {
 interface PdfDimensions { w: number; h: number }
 
 interface Props {
-  // Mode control
-  isDrawing:     boolean;   // rubber-band drag in progress
+  isDrawing:     boolean;
   drawBox:       DrawBox | null;
-
-  // Candidate paths (paths inside the drawn box)
   candidates:    TemplatePath[];
   onTogglePath:  (el: SVGElement) => void;
-
-  // Match results
   matches:       MatchResult[];
-
-  // Coordinate helpers
   pdfDims:       PdfDimensions | null;
   zoom:          number;
   pan:           { x: number; y: number };
-
-  // State
   isSearching:   boolean;
   hasSignature:  boolean;
 }
@@ -97,10 +94,30 @@ function RubberBand({ box }: { box: DrawBox }) {
           <line x1={cx} y1={cy - 5} x2={cx} y2={cy + 5} stroke={C.rubberBand} strokeWidth={1.5} />
         </g>
       ))}
-      {/* Dimension labels */}
+      {/* Dimension label */}
       <text x={box.x + box.w / 2} y={box.y - 6} textAnchor="middle"
         fill={C.rubberBand} fontSize={9} fontFamily="'Courier New', monospace">
         {box.w.toFixed(0)} × {box.h.toFixed(0)}
+      </text>
+    </svg>
+  );
+}
+
+// ─── "Box too large" warning overlay ─────────────────────────────────────────
+
+function BoxTooLargeWarning({ box }: { box: DrawBox }) {
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return (
+    <svg
+      style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 36, overflow: 'visible' }}
+      width="100%" height="100%"
+    >
+      <rect x={box.x} y={box.y} width={box.w} height={box.h}
+        fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
+      <rect x={cx - 90} y={cy - 14} width={180} height={26} fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
+      <text x={cx} y={cy + 4} textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
+        Zoom in — box too large for a single symbol
       </text>
     </svg>
   );
@@ -128,6 +145,8 @@ function CandidateHighlights({
         const br = toVP(b.x + b.width, b.y + b.height, zoom, pan);
         const vw = br.x - tl.x, vh = br.y - tl.y;
         const col = c.toggled ? C.candidateOn : C.candidateOff;
+        const midX = tl.x + vw / 2;
+        const midY = tl.y + vh / 2;
         return (
           <g key={i} style={{ pointerEvents: 'auto', cursor: 'pointer' }}
             onClick={() => onTogglePath(c.el)}>
@@ -140,16 +159,16 @@ function CandidateHighlights({
               rx={2}
             />
             {/* Toggle icon */}
-            <circle
-              cx={tl.x + vw / 2} cy={tl.y + vh / 2} r={8}
-              fill="#0d0d0d" stroke={col} strokeWidth={1}
-            />
-            <text
-              x={tl.x + vw / 2} y={tl.y + vh / 2 + 3.5}
-              textAnchor="middle" fontSize={9}
-              fill={col} fontFamily="'Courier New', monospace" fontWeight={700}
-            >
+            <circle cx={midX} cy={midY} r={9} fill="#0d0d0d" stroke={col} strokeWidth={1} />
+            <text x={midX} y={midY + 4} textAnchor="middle" fontSize={9}
+              fill={col} fontFamily="'Courier New', monospace" fontWeight={700}>
               {c.toggled ? '✓' : '×'}
+            </text>
+            {/* Path index badge */}
+            <rect x={tl.x + 2} y={tl.y + 2} width={14} height={11} fill="#0d0d0d" rx={1} />
+            <text x={tl.x + 9} y={tl.y + 11} textAnchor="middle" fontSize={7}
+              fill={col} fontFamily="'Courier New', monospace">
+              {i + 1}
             </text>
           </g>
         );
@@ -179,7 +198,7 @@ function MatchRenderer({
           <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
         </filter>
       </defs>
-      {matches.map(match => {
+      {matches.map((match, mIdx) => {
         const { bbox } = match;
         const tl = toVP(bbox.x,          bbox.y,          zoom, pan);
         const br = toVP(bbox.x + bbox.w,  bbox.y + bbox.h, zoom, pan);
@@ -197,27 +216,27 @@ function MatchRenderer({
               filter="url(#match-glow)"
             />
             {/* Score chip */}
-            <rect
-              x={tl.x} y={tl.y - 16} width={44} height={14}
-              fill={C.matchBox} rx={2}
-            />
-            <text
-              x={tl.x + 22} y={tl.y - 5}
-              textAnchor="middle" fontSize={8}
-              fill="#fff" fontFamily="'Courier New', monospace" fontWeight={700}
-            >
-              {Math.round(match.score * 100)}%
+            <rect x={tl.x} y={tl.y - 17} width={48} height={15} fill={C.matchBox} rx={2} />
+            <text x={tl.x + 24} y={tl.y - 6} textAnchor="middle" fontSize={8}
+              fill="#fff" fontFamily="'Courier New', monospace" fontWeight={700}>
+              {Math.round(match.score * 100)}% #{mIdx + 1}
             </text>
 
             {/* Snap points */}
             {match.snapPoints.map((sp, j) => {
               const vp  = toVP(sp.x, sp.y, zoom, pan);
               const col = C.matchSnap[sp.type];
-              const size = sp.type === 'centroid' ? 5 : sp.type === 'endpoint' ? 4 : 3;
+              const r   = sp.type === 'centroid' ? 5 : sp.type === 'endpoint' ? 4 : 3;
               return (
                 <g key={j}>
-                  <circle cx={vp.x} cy={vp.y} r={size + 2} fill="none" stroke={col} strokeWidth={0.8} strokeOpacity={0.4} />
-                  <circle cx={vp.x} cy={vp.y} r={size} fill={col} fillOpacity={0.9} />
+                  {sp.type === 'centroid' && (
+                    <>
+                      <line x1={vp.x - 8} y1={vp.y} x2={vp.x + 8} y2={vp.y} stroke={col} strokeWidth={1} strokeOpacity={0.6} />
+                      <line x1={vp.x} y1={vp.y - 8} x2={vp.x} y2={vp.y + 8} stroke={col} strokeWidth={1} strokeOpacity={0.6} />
+                    </>
+                  )}
+                  <circle cx={vp.x} cy={vp.y} r={r + 2} fill="none" stroke={col} strokeWidth={0.8} strokeOpacity={0.4} />
+                  <circle cx={vp.x} cy={vp.y} r={r} fill={col} fillOpacity={0.9} />
                 </g>
               );
             })}
@@ -278,26 +297,38 @@ export function TemplateSamplerOverlay({
   );
 }
 
-// ─── Rubber-band draw hook (used in SnapEnginePage) ───────────────────────────
+// ─── Rubber-band draw hook ────────────────────────────────────────────────────
 
 /**
- * Attaches pointer-event listeners to a viewport div and tracks a rubber-band
- * box while the user holds the mouse button in "sampler draw mode".
+ * v2.0 — now accepts svgDims and zoom so it can detect boxes that are
+ * too large to represent a single symbol and fire onBoxTooLarge instead.
  *
- * Returns:
- *   drawBox     — current box in viewport px (null when not drawing)
- *   isDrawing   — true during the drag
- *   startDraw   — call on pointerdown to begin a draw
+ * A box is "too large" when either dimension exceeds MAX_BOX_FRACTION (12%)
+ * of the SVG canvas size at current zoom. The caller should show a warning
+ * and NOT proceed to candidate selection in that case.
  */
+const MAX_BOX_FRACTION = 0.12;   // 12% of SVG dimension at current zoom
+
 export function useRubberBand(
-  viewportRef: React.RefObject<HTMLDivElement | null>,
-  enabled:     boolean,
-  onBoxCommit: (box: DrawBox) => void,
+  viewportRef:   React.RefObject<HTMLDivElement | null>,
+  enabled:       boolean,
+  onBoxCommit:   (box: DrawBox) => void,
+  svgDims?:      { w: number; h: number } | null,
+  getZoom?:      () => number,
 ) {
   const [drawBox,   setDrawBox]   = useState<DrawBox | null>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const startRef = useRef<{ x: number; y: number } | null>(null);
+  const [tooLarge,  setTooLarge]  = useState(false);
+  const startRef  = useRef<{ x: number; y: number } | null>(null);
   const activeRef = useRef(false);
+
+  const isTooLarge = useCallback((box: DrawBox): boolean => {
+    if (!svgDims || !getZoom) return false;
+    const z = getZoom();
+    const maxW = svgDims.w * z * MAX_BOX_FRACTION;
+    const maxH = svgDims.h * z * MAX_BOX_FRACTION;
+    return box.w > maxW || box.h > maxH;
+  }, [svgDims, getZoom]);
 
   const startDraw = useCallback((e: React.PointerEvent) => {
     if (!enabled) return;
@@ -305,6 +336,7 @@ export function useRubberBand(
     startRef.current  = { x: e.clientX - vr.left, y: e.clientY - vr.top };
     activeRef.current = true;
     setIsDrawing(true);
+    setTooLarge(false);
     setDrawBox({ x: startRef.current.x, y: startRef.current.y, w: 0, h: 0 });
   }, [enabled, viewportRef]);
 
@@ -318,12 +350,14 @@ export function useRubberBand(
       const vr = vp.getBoundingClientRect();
       const cx = e.clientX - vr.left;
       const cy = e.clientY - vr.top;
-      setDrawBox({
+      const box: DrawBox = {
         x: Math.min(startRef.current.x, cx),
         y: Math.min(startRef.current.y, cy),
         w: Math.abs(cx - startRef.current.x),
         h: Math.abs(cy - startRef.current.y),
-      });
+      };
+      setDrawBox(box);
+      setTooLarge(isTooLarge(box));
     };
 
     const onUp = (e: PointerEvent) => {
@@ -340,8 +374,12 @@ export function useRubberBand(
       activeRef.current = false;
       setIsDrawing(false);
       setDrawBox(null);
+      setTooLarge(false);
       startRef.current = null;
-      if (box.w > 5 && box.h > 5) onBoxCommit(box);
+      if (box.w > 5 && box.h > 5 && !isTooLarge(box)) {
+        onBoxCommit(box);
+      }
+      // If too large, we simply do nothing — the warning was shown during drag
     };
 
     vp.addEventListener('pointermove', onMove);
@@ -350,7 +388,7 @@ export function useRubberBand(
       vp.removeEventListener('pointermove', onMove);
       vp.removeEventListener('pointerup',   onUp);
     };
-  }, [enabled, viewportRef, onBoxCommit]);
+  }, [enabled, viewportRef, onBoxCommit, isTooLarge]);
 
-  return { drawBox, isDrawing, startDraw };
+  return { drawBox, isDrawing, tooLarge, startDraw };
 }

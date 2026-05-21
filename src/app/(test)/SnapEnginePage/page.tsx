@@ -37,7 +37,8 @@ const LOAD_LINES = [
 ];
 
 const DRAG_THRESHOLD  = 5;
-const MATCH_THRESHOLD = 0.95;
+// Lower threshold — Hu moments are more precise so we can accept 0.72+
+const MATCH_THRESHOLD = 0.72;
 
 const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
 
@@ -384,6 +385,17 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
     <>
       <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
         <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:8 }}>Template sampler</div>
+
+        {/* How-to hint */}
+        {samplerMode==='idle'&&(
+          <div style={{ fontSize:7,color:'#333',lineHeight:1.8,marginBottom:8,textTransform:'uppercase',letterSpacing:'.06em' }}>
+            1 · Zoom in until one symbol fills the view<br/>
+            2 · Draw a tight box around just that symbol<br/>
+            3 · Deselect any stray paths in the box<br/>
+            4 · Hit Find — works at any rotation
+          </div>
+        )}
+
         {(['Draw','Select','Match'] as const).map((step,i)=>{
           const stepMode=['drawing','selecting','matched'][i];
           const done=(i===0&&(samplerMode==='selecting'||samplerMode==='matched'))||(i===1&&samplerMode==='matched');
@@ -399,7 +411,11 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
         })}
         <div style={{ display:'flex',gap:4,marginTop:10,flexWrap:'wrap' as const }}>
           {samplerMode==='idle'&&<button onClick={onEnterDraw} style={{ ...tbBtn(true,MATCH_COL),flex:1 }}>⊡ Draw Sample</button>}
-          {samplerMode==='drawing'&&<div style={{ fontSize:8,color:'#555',textTransform:'uppercase',letterSpacing:'.07em',padding:'3px 0' }}>Drag a box on the canvas…</div>}
+          {samplerMode==='drawing'&&(
+            <div style={{ fontSize:7,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em',padding:'3px 0',lineHeight:1.8 }}>
+              Zoom in first, then drag a tight<br/>box around ONE symbol only
+            </div>
+          )}
           {samplerMode==='selecting'&&<><button onClick={onConfirm} disabled={selectedCount===0} style={{ ...tbBtn(selectedCount>0,MATCH_COL),flex:1 }}>⊛ Find ({selectedCount})</button><button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button></>}
           {samplerMode==='matched'&&<><button onClick={onEnterDraw} style={{ ...tbBtn(false,MATCH_COL),flex:1 }}>⊡ New Sample</button><button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button></>}
         </div>
@@ -408,20 +424,25 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
         <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
           <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:4 }}>Template signature</div>
           <TRow label="Paths"     value={`${signature.pathCount}`} />
-          <TRow label="Size"      value={`${signature.bboxW.toFixed(0)} × ${signature.bboxH.toFixed(0)}`} />
-          <TRow label="Aspect"    value={`${signature.clusterAspect.toFixed(2)}`} />
+          <TRow label="Diag"      value={`${signature.bboxDiag.toFixed(0)} px`} />
           <TRow label="Curves"    value={`${Math.round(signature.curveFraction*100)}%`} />
+          <TRow label="Closed"    value={`${Math.round(signature.closedFraction*100)}%`} />
           <TRow label="Threshold" value={`${Math.round(MATCH_THRESHOLD*100)}%`} />
+          <TRow label="Method"    value="Hu + Hist + Radial" />
         </div>
       )}
       {samplerMode==='selecting'&&candidates.length>0&&(
         <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>{candidates.length} paths found — click canvas to toggle</div>
+          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>
+            {candidates.length} paths — click to toggle · keep only symbol paths
+          </div>
           {candidates.map((c,i)=>(
             <div key={i} onClick={()=>onTogglePath(c.el)}
               style={{ display:'flex',alignItems:'center',gap:6,padding:'3px 4px',cursor:'pointer',marginBottom:2,border:`1px solid ${c.toggled?MATCH_COL:'#1a1a1a'}`,background:c.toggled?`${MATCH_COL}10`:'transparent' }}>
               <div style={{ width:7,height:7,borderRadius:1,background:c.toggled?MATCH_COL:'#333',flexShrink:0 }} />
-              <span style={{ fontSize:7,color:c.toggled?'#aaa':'#444',textTransform:'uppercase',flex:1 }}>Path {i+1} · {c.svgBBox.width.toFixed(0)}×{c.svgBBox.height.toFixed(0)}</span>
+              <span style={{ fontSize:7,color:c.toggled?'#aaa':'#444',textTransform:'uppercase',flex:1 }}>
+                #{i+1} · {c.svgBBox.width.toFixed(0)}×{c.svgBBox.height.toFixed(0)}
+              </span>
               <span style={{ fontSize:8,color:c.toggled?MATCH_COL:'#333' }}>{c.toggled?'✓':'○'}</span>
             </div>
           ))}
@@ -429,10 +450,18 @@ function SamplerSidebar({ samplerMode, onEnterDraw, candidates, onTogglePath, on
       )}
       <div style={{ flex:1,overflowY:'auto',padding:6 }}>
         {isSearching&&<p style={{ fontSize:8,color:'#555',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 0' }}>Searching…</p>}
-        {!isSearching&&samplerMode==='matched'&&matches.length===0&&<p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>No matches found at 95% threshold.<br />Try redrawing the sample.</p>}
+        {!isSearching&&samplerMode==='matched'&&matches.length===0&&(
+          <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>
+            No matches at {Math.round(MATCH_THRESHOLD*100)}% threshold.<br />
+            Try drawing a tighter sample or<br />
+            deselect stray paths.
+          </p>
+        )}
         {!isSearching&&matches.length>0&&(
           <>
-            <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6,padding:'2px 4px' }}>{matches.length} match{matches.length!==1?'es':''} found</div>
+            <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6,padding:'2px 4px' }}>
+              {matches.length} match{matches.length!==1?'es':''} · rotation-invariant
+            </div>
             {matches.map((match,i)=>(
               <div key={match.id} style={{ border:'1px solid #1a1a1a',padding:'6px 8px',marginBottom:4,background:'#0a0a0a' }}>
                 <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:4 }}>
@@ -564,24 +593,48 @@ export default function SnapEnginePage() {
     const svg = hiddenSvgRef.current;
     if (!svg || !pdfDimsRef.current) return;
     const z = zoomRef.current, p = panRef.current;
-    const svgX0=(box.x-p.x)/z, svgY0=(box.y-p.y)/z;
-    const svgX1=(box.x+box.w-p.x)/z, svgY1=(box.y+box.h-p.y)/z;
-    const els = Array.from(svg.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon')) as SVGElement[];
+
+    // Convert viewport box → SVG coords
+    const svgX0 = (box.x - p.x) / z;
+    const svgY0 = (box.y - p.y) / z;
+    const svgX1 = (box.x + box.w - p.x) / z;
+    const svgY1 = (box.y + box.h - p.y) / z;
+
+    const els = Array.from(
+      svg.querySelectorAll('path,rect,circle,ellipse,line,polyline,polygon')
+    ) as SVGElement[];
+
     const inside: TemplatePath[] = [];
     for (const el of els) {
       try {
-        const b=(el as SVGGraphicsElement).getBBox();
-        if(b.width<0.5||b.height<0.5)continue;
-        if(b.x+b.width>=svgX0&&b.x<=svgX1&&b.y+b.height>=svgY0&&b.y<=svgY1)
-          inside.push({el,svgBBox:b,toggled:true});
-      } catch{}
+        const b = (el as SVGGraphicsElement).getBBox();
+        if (b.width < 0.5 || b.height < 0.5) continue;
+        // Path centroid must be inside the box (stricter than bbox overlap)
+        const pcx = b.x + b.width / 2;
+        const pcy = b.y + b.height / 2;
+        if (pcx >= svgX0 && pcx <= svgX1 && pcy >= svgY0 && pcy <= svgY1) {
+          inside.push({ el, svgBBox: b, toggled: true });
+        }
+      } catch {}
     }
-    setCandidates(inside);
-    setSamplerMode(inside.length>0?'selecting':'idle');
-  },[]);
 
-  const { drawBox, isDrawing, startDraw } = useRubberBand(
-    viewportRef as React.RefObject<HTMLDivElement>, isDrawMode, handleBoxCommit,
+    if (inside.length === 0) {
+      setStatus('No paths found in selection — try a tighter box');
+      setSamplerMode('idle');
+      return;
+    }
+
+    setCandidates(inside);
+    setSamplerMode('selecting');
+  }, []);
+
+  // Pass svgDims and a zoom getter to useRubberBand for the size guard
+  const { drawBox, isDrawing, tooLarge, startDraw } = useRubberBand(
+    viewportRef as React.RefObject<HTMLDivElement>,
+    isDrawMode,
+    handleBoxCommit,
+    pdfDims,
+    useCallback(() => zoomRef.current, []),
   );
 
   const handleTogglePath = useCallback((el: SVGElement) => {
@@ -824,9 +877,7 @@ export default function SnapEnginePage() {
   },[engine]);
 
   // ── Derived ───────────────────────────────────────────────────────────────────
-  // Always crosshair — never grab/grabbing
   const cursor = pdfDims || samplerMode !== 'idle' ? 'crosshair' : 'default';
-
   const typeCounts = snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]??0)+1;return acc;},{} as Record<string,number>);
 
   const tabConfig: { key: SidebarTab; label: string; color: string }[] = [
@@ -937,11 +988,26 @@ export default function SnapEnginePage() {
 
           {/* Template sampler overlay */}
           <TemplateSamplerOverlay
-            isDrawing={isDrawing} drawBox={drawBox} candidates={candidates}
+            isDrawing={isDrawing} drawBox={tooLarge ? null : drawBox}
+            candidates={candidates}
             onTogglePath={handleTogglePath} matches={matcher.matches}
             pdfDims={pdfDims} zoom={zoom} pan={pan}
             isSearching={matcher.isSearching} hasSignature={matcher.signature!==null}
           />
+
+          {/* Too-large warning shown separately */}
+          {isDrawing && tooLarge && drawBox && (
+            <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
+              <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h}
+                fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
+              <rect x={drawBox.x+drawBox.w/2-100} y={drawBox.y+drawBox.h/2-13} width={200} height={24}
+                fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
+              <text x={drawBox.x+drawBox.w/2} y={drawBox.y+drawBox.h/2+4}
+                textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
+                Zoom in — box too large for one symbol
+              </text>
+            </svg>
+          )}
 
           {/* Flash effects */}
           <div style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:40 }}>
@@ -963,23 +1029,19 @@ export default function SnapEnginePage() {
           )}
           {samplerMode==='drawing'&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              Sampler · drag to select region
+              {tooLarge ? '⚠ Zoom in more — box too large' : 'Sampler · drag tight box around ONE symbol'}
             </div>
           )}
           {samplerMode==='selecting'&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              Sampler · click paths to toggle · confirm in sidebar
+              Sampler · click canvas paths to toggle · confirm in sidebar
             </div>
           )}
           {samplerMode==='matched'&&matcher.matches.length>0&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(244,63,94,.12)',border:'1px solid rgba(244,63,94,.3)',padding:'3px 8px',fontSize:8,color:'#f43f5e',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {matcher.matches.length} match{matcher.matches.length!==1?'es':''} found
+              {matcher.matches.length} match{matcher.matches.length!==1?'es':''} found · rotation-invariant
             </div>
           )}
-
-          {/* ── Minimal snap info in bottom-right — just type + coords, no card ── */}
-          {/* Removed the SnapTooltip card entirely. Snap info shows in status bar only. */}
-
         </div>
 
         {/* ── Sidebar ── */}
@@ -1051,7 +1113,7 @@ export default function SnapEnginePage() {
       {/* ── Status bar ── */}
       <div style={S.statusbar}>
         {(samplerMode==='drawing'
-          ? ['Drag to draw sample region']
+          ? [tooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol only']
           : samplerMode==='selecting'
           ? ['Click paths on canvas to toggle','Confirm in Sampler sidebar']
           : linearMode
@@ -1060,12 +1122,12 @@ export default function SnapEnginePage() {
         ).map((h,i)=>(
           <React.Fragment key={h}>
             {i>0&&<div style={S.barSep} />}
-            <span style={{ fontSize:8,color:samplerMode!=='idle'?'#38bdf8':'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+            <span style={{ fontSize:8,color:samplerMode!=='idle'?(tooLarge?'#f43f5e':'#38bdf8'):'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
           </React.Fragment>
         ))}
         <div style={{ flex:1 }} />
         {matcher.matches.length>0&&(
-          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{matcher.matches.length} template matches</span><div style={S.barSep} /></>
+          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{matcher.matches.length} template matches · rotation-invariant</span><div style={S.barSep} /></>
         )}
         {detectEnabled&&(
           <><span style={{ fontSize:8,color:isScanning?'#f43f5e':'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{isScanning?'⟳ scanning':`${regions.length} shapes`}</span><div style={S.barSep} /></>
