@@ -1,5 +1,17 @@
+/**
+ * useSnapEngine.ts
+ *
+ * UX IMPROVEMENTS in this version:
+ * 1. Only the SINGLE nearest snap point is shown in the proximity radius.
+ *    No more cluster of dots — one clean indicator at a time.
+ * 2. No labels on snap points (endpoint / midpoint / intersection text removed).
+ * 3. Intersection points obey proximity gate like all other types.
+ * 4. Cursor is always crosshair when document is loaded.
+ */
+
 import { useRef, useState, useCallback, useEffect } from 'react';
 import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
+import type { SvgCurve } from '@/hooks/useSvgSnapPoints';
 import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
 
 type PdfDimensions       = { w: number; h: number };
@@ -26,15 +38,24 @@ const SVG_SNAP_COLOURS: Record<SvgSnapPoint['type'], { dot: string; ring: string
   intersection: { dot: 'rgba(244,63,94,0.85)',   ring: 'rgba(244,63,94,0.5)',   fill: '#f43f5e' },
 };
 
+// Type priority: lower = preferred when two points are equidistant
+const SNAP_PRIORITY: Record<SvgSnapPoint['type'], number> = {
+  endpoint:     0,
+  intersection: 1,
+  midpoint:     2,
+  centroid:     3,
+};
+
 const SNAP_SIZE: Record<SvgSnapPoint['type'], number> = {
-  intersection: 1.6,
+  intersection: 1.0,
   endpoint:     1.0,
   midpoint:     0.85,
   centroid:     0.85,
 };
 
-const SVG_LINE_COLOUR = { base: 'rgba(56,189,248,{a})', fill: '#38bdf8' };
-const SVG_AREA_COLOUR = { stroke: 'rgba(251,146,60,{a})', fill: '#fb923c' };
+const SVG_LINE_COLOUR  = { base: 'rgba(56,189,248,{a})',  fill: '#38bdf8' };
+const SVG_CURVE_COLOUR = { base: 'rgba(56,189,248,{a})',  fill: '#38bdf8' };
+const SVG_AREA_COLOUR  = { stroke: 'rgba(251,146,60,{a})', fill: '#fb923c' };
 
 function withAlpha(template: string, a: number): string {
   return template.replace('{a}', String(a.toFixed(2)));
@@ -42,25 +63,50 @@ function withAlpha(template: string, a: number): string {
 
 // ── Viewport transform helpers ─────────────────────────────────────────────────
 
-interface ViewTransform {
-  zoom: number;
-  panX: number;
-  panY: number;
-  dpr:  number;
+interface ViewTransform { zoom: number; panX: number; panY: number; dpr: number }
+
+function svgToCanvas(x: number, y: number, vt: ViewTransform) {
+  return { x: (x * vt.zoom + vt.panX) * vt.dpr, y: (y * vt.zoom + vt.panY) * vt.dpr };
 }
 
-// SVG units → canvas pixels
-function svgToCanvas(x: number, y: number, vt: ViewTransform): { x: number; y: number } {
-  return {
-    x: (x * vt.zoom + vt.panX) * vt.dpr,
-    y: (y * vt.zoom + vt.panY) * vt.dpr,
-  };
-}
-
-// Viewport CSS pixels → canvas pixels
-function vpToCanvas(x: number, y: number, dpr: number): { x: number; y: number } {
+function vpToCanvas(x: number, y: number, dpr: number) {
   return { x: x * dpr, y: y * dpr };
 }
+
+// ── Bezier helpers ─────────────────────────────────────────────────────────────
+
+function cubicAt(t: number, p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number) {
+  const u = 1 - t;
+  return { x: u*u*u*p0x+3*u*u*t*p1x+3*u*t*t*p2x+t*t*t*p3x, y: u*u*u*p0y+3*u*u*t*p1y+3*u*t*t*p2y+t*t*t*p3y };
+}
+
+function quadAt(t: number, p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number) {
+  const u = 1 - t;
+  return { x: u*u*p0x+2*u*t*p1x+t*t*p2x, y: u*u*p0y+2*u*t*p1y+t*t*p2y };
+}
+
+function distToBezierCanvas(
+  cursorCpx: number, cursorCpy: number,
+  curve: SvgCurve, dims: PdfDimensions, vt: ViewTransform, steps = 24,
+) {
+  const p0 = svgToCanvas(curve.nx1 * dims.w, curve.ny1 * dims.h, vt);
+  const p1 = svgToCanvas(curve.ncp1x * dims.w, curve.ncp1y * dims.h, vt);
+  const p3 = svgToCanvas(curve.nx2 * dims.w, curve.ny2 * dims.h, vt);
+  const p2 = curve.type === 'cubic' && curve.ncp2x !== undefined
+    ? svgToCanvas(curve.ncp2x * dims.w, curve.ncp2y! * dims.h, vt) : null;
+  let minDist = Infinity, closestCanvasPt = p0;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const pt = curve.type === 'cubic' && p2
+      ? cubicAt(t, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+      : quadAt(t, p0.x, p0.y, p1.x, p1.y, p3.x, p3.y);
+    const d = Math.hypot(cursorCpx - pt.x, cursorCpy - pt.y);
+    if (d < minDist) { minDist = d; closestCanvasPt = pt; }
+  }
+  return { dist: minDist, closestCanvasPt };
+}
+
+// ── Hook params / return ───────────────────────────────────────────────────────
 
 export interface UseSnapEngineParams {
   pinCanvasRef:      React.RefObject<HTMLCanvasElement>;
@@ -75,6 +121,7 @@ export interface UseSnapEngineParams {
   linearMode?:       boolean;
   svgSnapPoints?:    SvgSnapPoint[];
   svgLines?:         SvgLine[];
+  svgCurves?:        SvgCurve[];
   svgAreas?:         SvgArea[];
   zoom:              number;
   pan:               { x: number; y: number };
@@ -100,21 +147,11 @@ export interface UseSnapEngineReturn {
 }
 
 export function useSnapEngine({
-  pinCanvasRef,
-  viewportRef,
-  pdfDimensionsRef,
-  pageNumberRef,
-  snapEnabled,
-  showPins,
-  snapThreshold,
-  confidenceFilter,
-  proximityRadius = 120,
-  linearMode      = false,
-  svgSnapPoints   = [],
-  svgLines        = [],
-  svgAreas        = [],
-  zoom,
-  pan,
+  pinCanvasRef, viewportRef, pdfDimensionsRef, pageNumberRef,
+  snapEnabled, showPins, snapThreshold, confidenceFilter,
+  proximityRadius = 120, linearMode = false,
+  svgSnapPoints = [], svgLines = [], svgCurves = [], svgAreas = [],
+  zoom, pan,
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
   const snapEnabledRef      = useRef(snapEnabled);
@@ -125,6 +162,7 @@ export function useSnapEngine({
   const linearModeRef       = useRef(linearMode);
   const svgSnapPointsRef    = useRef<SvgSnapPoint[]>(svgSnapPoints);
   const svgLinesRef         = useRef<SvgLine[]>(svgLines);
+  const svgCurvesRef        = useRef<SvgCurve[]>(svgCurves);
   const svgAreasRef         = useRef<SvgArea[]>(svgAreas);
   const zoomRef             = useRef(zoom);
   const panRef              = useRef(pan);
@@ -137,6 +175,7 @@ export function useSnapEngine({
   useEffect(() => { linearModeRef.current       = linearMode;       }, [linearMode]);
   useEffect(() => { svgSnapPointsRef.current    = svgSnapPoints;    }, [svgSnapPoints]);
   useEffect(() => { svgLinesRef.current         = svgLines;         }, [svgLines]);
+  useEffect(() => { svgCurvesRef.current        = svgCurves;        }, [svgCurves]);
   useEffect(() => { svgAreasRef.current         = svgAreas;         }, [svgAreas]);
   useEffect(() => { zoomRef.current             = zoom;             }, [zoom]);
   useEffect(() => { panRef.current              = pan;              }, [pan]);
@@ -151,9 +190,6 @@ export function useSnapEngine({
   const linearChainRef = useRef<LinearChainPoint[]>([]);
   const flashIdRef     = useRef(0);
 
-  // FIX: keep a debug-once flag so we don't spam the console
-  const debugLoggedRef = useRef(false);
-
   useEffect(() => { linearChainRef.current = linearChain; }, [linearChain]);
 
   const startExtraction      = useCallback((_pdf: any, _file?: File) => {}, []);
@@ -161,16 +197,12 @@ export function useSnapEngine({
   const getScaledWallCorners = useCallback(() => [], []);
   const getScaledWallLines   = useCallback(() => [], []);
 
-  /** Returns snap point candidates in SVG-unit coordinates. */
   const getSvgPointCandidates = useCallback(() => {
     const dims = pdfDimensionsRef.current;
     if (!dims) return [];
     return svgSnapPointsRef.current.map(p => ({
-      x: p.nx * dims.w,
-      y: p.ny * dims.h,
-      type: p.type,
-      strokeWidth: p.strokeWidth,
-      shapeId: p.shapeId,
+      x: p.nx * dims.w, y: p.ny * dims.h,
+      type: p.type, strokeWidth: p.strokeWidth, shapeId: p.shapeId,
     }));
   }, [pdfDimensionsRef]);
 
@@ -180,23 +212,19 @@ export function useSnapEngine({
   }), []);
 
   const getAreaPixelPoints = useCallback((area: SvgArea, dims: PdfDimensions) =>
-    area.points.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h })),
-  []);
+    area.points.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h })), []);
 
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current)
       return { point: { x: rawX, y: rawY }, snapped: false };
-
     const thresh = snapThresholdRef.current / zoomRef.current;
     let bestPoint: { x: number; y: number } | null = null;
-    let bestDist  = thresh;
-
+    let bestDist = thresh;
     for (const c of getSvgPointCandidates()) {
       const bonus = c.type === 'intersection' ? 1.4 : 1.0;
       const dist  = Math.hypot(rawX - c.x, rawY - c.y);
       if (dist < bestDist * bonus) { bestDist = dist / bonus; bestPoint = { x: c.x, y: c.y }; }
     }
-
     if (!bestPoint) {
       const dims = pdfDimensionsRef.current;
       for (const area of svgAreasRef.current) {
@@ -218,10 +246,7 @@ export function useSnapEngine({
         if (minD < bestDist) { bestDist = minD; bestPoint = closestPt; }
       }
     }
-
-    return bestPoint
-      ? { point: bestPoint, snapped: true }
-      : { point: { x: rawX, y: rawY }, snapped: false };
+    return bestPoint ? { point: bestPoint, snapped: true } : { point: { x: rawX, y: rawY }, snapped: false };
   }, [getSvgPointCandidates, getAreaPixelBounds, getAreaPixelPoints]);
 
   const triggerSnapFlash = useCallback((x: number, y: number) => {
@@ -234,13 +259,8 @@ export function useSnapEngine({
     setLinearChain(prev => [...prev, { x, y, type }]);
   }, []);
 
-  const undoChainPoint = useCallback(() => {
-    setLinearChain(prev => prev.slice(0, -1));
-  }, []);
-
-  const clearChain = useCallback(() => {
-    setLinearChain([]);
-  }, []);
+  const undoChainPoint = useCallback(() => setLinearChain(prev => prev.slice(0, -1)), []);
+  const clearChain     = useCallback(() => setLinearChain([]), []);
 
   // ── redrawPinCanvas ──────────────────────────────────────────────────────────
 
@@ -250,9 +270,9 @@ export function useSnapEngine({
     const dims   = pdfDimensionsRef.current;
     if (!canvas || !vp || !dims) return;
 
-    const dpr  = window.devicePixelRatio || 1;
-    const vpW  = vp.clientWidth;
-    const vpH  = vp.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const vpW = vp.clientWidth;
+    const vpH = vp.clientHeight;
 
     if (canvas.width !== Math.round(vpW * dpr) || canvas.height !== Math.round(vpH * dpr)) {
       canvas.width  = Math.round(vpW * dpr);
@@ -266,7 +286,6 @@ export function useSnapEngine({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showPinsRef.current) return;
 
-    // FIX: read zoom/pan directly from refs (always current)
     const currentZoom = zoomRef.current;
     const currentPan  = panRef.current;
     const vt: ViewTransform = { zoom: currentZoom, panX: currentPan.x, panY: currentPan.y, dpr };
@@ -276,85 +295,35 @@ export function useSnapEngine({
     const thresh = snapThresholdRef.current;
     const prox   = proximityRadiusRef.current;
 
-    // Cursor in viewport CSS pixels
     const cursorVP = cursor
-      ? {
-          x: cursor.x * currentZoom + currentPan.x,
-          y: cursor.y * currentZoom + currentPan.y,
-        }
+      ? { x: cursor.x * currentZoom + currentPan.x, y: cursor.y * currentZoom + currentPan.y }
       : null;
 
-    // FIX: Get candidates ONCE up top, not inside the loop
     const candidates = getSvgPointCandidates();
-
-    // === DIAGNOSTIC: log once when cursor is present and we have points ===
-    if (cursor && candidates.length > 0 && !debugLoggedRef.current) {
-      debugLoggedRef.current = true;
-      const c0 = candidates[0];
-      const cp0x = c0.x * currentZoom + currentPan.x; // viewport px
-      const cp0y = c0.y * currentZoom + currentPan.y;
-      const cvpx = cursor.x * currentZoom + currentPan.x;
-      const cvpy = cursor.y * currentZoom + currentPan.y;
-      console.log('[SNAP ENGINE DEBUG]', {
-        dims,
-        zoom: currentZoom,
-        pan: currentPan,
-        cursor_svgUnits: cursor,
-        cursor_vpPx: { x: cvpx, y: cvpy },
-        firstPt_svgUnits: { x: c0.x.toFixed(1), y: c0.y.toFixed(1) },
-        firstPt_vpPx: { x: cp0x.toFixed(1), y: cp0y.toFixed(1) },
-        dist_firstPt_to_cursor_vpPx: Math.hypot(cvpx - cp0x, cvpy - cp0y).toFixed(1),
-        prox_radius: prox,
-        total_candidates: candidates.length,
-        dpr,
-      });
-      // Log a few more points spread across the range
-      const sample = [0, Math.floor(candidates.length/4), Math.floor(candidates.length/2),
-                      Math.floor(candidates.length*3/4), candidates.length-1]
-        .filter(i=>i<candidates.length)
-        .map(i=>({
-          type: candidates[i].type,
-          svgX: candidates[i].x.toFixed(1),
-          svgY: candidates[i].y.toFixed(1),
-          vpX: (candidates[i].x * currentZoom + currentPan.x).toFixed(1),
-          vpY: (candidates[i].y * currentZoom + currentPan.y).toFixed(1),
-        }));
-      console.log('[SNAP ENGINE DEBUG] Sample points (vpPx):', sample);
-    }
-    // Reset debug log flag when cursor leaves
-    if (!cursor) debugLoggedRef.current = false;
 
     // ── Layer 1: SVG area outlines ───────────────────────────────────────────
     for (const area of svgAreasRef.current) {
       if (area.points.length < 3) continue;
       const pts = area.points.map(p => s2c(p.nx * dims.w, p.ny * dims.h));
-
       let distEdge = Infinity;
-      let snapPt = {
-        x: pts.reduce((s, p) => s + p.x, 0) / pts.length,
-        y: pts.reduce((s, p) => s + p.y, 0) / pts.length,
-      };
-
+      let snapPt = { x: pts.reduce((s,p)=>s+p.x,0)/pts.length, y: pts.reduce((s,p)=>s+p.y,0)/pts.length };
       if (cursorVP) {
-        let minD = Infinity;
         for (let i = 0; i < pts.length; i++) {
           const j = (i + 1) % pts.length;
-          const ax = cursorVP.x * dpr - pts[i].x, ay = cursorVP.y * dpr - pts[i].y;
-          const bx = pts[j].x - pts[i].x,         by = pts[j].y - pts[i].y;
+          const ax = cursorVP.x*dpr - pts[i].x, ay = cursorVP.y*dpr - pts[i].y;
+          const bx = pts[j].x - pts[i].x,       by = pts[j].y - pts[i].y;
           const len2 = bx*bx + by*by;
-          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx + ay*by) / len2));
-          const cx2 = pts[i].x + t * bx, cy2 = pts[i].y + t * by;
-          const d = Math.hypot(cursorVP.x * dpr - cx2, cursorVP.y * dpr - cy2) / dpr;
-          if (d < minD) { minD = d; distEdge = d; snapPt = { x: cx2, y: cy2 }; }
+          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx+ay*by)/len2));
+          const cx2 = pts[i].x+t*bx, cy2 = pts[i].y+t*by;
+          const d = Math.hypot(cursorVP.x*dpr-cx2, cursorVP.y*dpr-cy2) / dpr;
+          if (d < distEdge) { distEdge = d; snapPt = { x: cx2, y: cy2 }; }
         }
       }
-
       if (cursorVP && distEdge > prox) continue;
       const isSnapping = distEdge < thresh;
       const fade       = cursorVP ? Math.max(0, 1 - distEdge / prox) : 0.25;
       const alpha      = isSnapping ? 0.95 : 0.2 + fade * 0.55;
       const lw         = (isSnapping ? 2.5 : 0.5 + fade * 1.5) * dpr;
-
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
@@ -363,203 +332,143 @@ export function useSnapEngine({
       ctx.strokeStyle = withAlpha(SVG_AREA_COLOUR.stroke, alpha);
       ctx.lineWidth   = lw;
       ctx.stroke();
-
       if (isSnapping && cursorVP) {
-        const r = 7 * dpr;
         ctx.beginPath();
-        ctx.arc(snapPt.x, snapPt.y, r, 0, Math.PI * 2);
+        ctx.arc(snapPt.x, snapPt.y, 7*dpr, 0, Math.PI*2);
         ctx.fillStyle   = SVG_AREA_COLOUR.fill;
         ctx.fill();
         ctx.strokeStyle = 'white';
-        ctx.lineWidth   = 1.5 * dpr;
+        ctx.lineWidth   = 1.5*dpr;
         ctx.stroke();
-        ctx.font         = `bold ${9 * dpr}px ui-monospace,monospace`;
-        ctx.textAlign    = 'center';
-        ctx.textBaseline = 'middle';
-        const label = area.label ? area.label.toUpperCase() : 'AREA';
-        const tw    = ctx.measureText(label).width + 8 * dpr;
-        ctx.fillStyle = 'rgba(0,0,0,0.80)';
-        ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23 * dpr, tw, 13 * dpr);
-        ctx.fillStyle = SVG_AREA_COLOUR.fill;
-        ctx.fillText(label, snapPt.x, snapPt.y - 16 * dpr);
       }
       ctx.restore();
     }
 
-    // ── Layer 1b: SVG lines ──────────────────────────────────────────────────
+    // ── Layer 1b: Straight SVG lines ─────────────────────────────────────────
     for (const line of svgLinesRef.current) {
       if (!cursorVP) continue;
-      const p1  = s2c(line.nx1 * dims.w, line.ny1 * dims.h);
-      const p2  = s2c(line.nx2 * dims.w, line.ny2 * dims.h);
-      const ax  = cursorVP.x * dpr - p1.x, ay = cursorVP.y * dpr - p1.y;
-      const bx  = p2.x - p1.x,             by = p2.y - p1.y;
-      const len2 = bx * bx + by * by;
-      const t   = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax * bx + ay * by) / len2));
-      const cpx = p1.x + t * bx, cpy = p1.y + t * by;
-      const dist = Math.hypot(cursorVP.x * dpr - cpx, cursorVP.y * dpr - cpy) / dpr;
+      const p1 = s2c(line.nx1*dims.w, line.ny1*dims.h);
+      const p2 = s2c(line.nx2*dims.w, line.ny2*dims.h);
+      const ax = cursorVP.x*dpr-p1.x, ay = cursorVP.y*dpr-p1.y;
+      const bx = p2.x-p1.x, by = p2.y-p1.y;
+      const len2 = bx*bx + by*by;
+      const t  = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx+ay*by)/len2));
+      const dist = Math.hypot(cursorVP.x*dpr-(p1.x+t*bx), cursorVP.y*dpr-(p1.y+t*by)) / dpr;
       if (dist > prox) continue;
-      const fade  = 1 - dist / prox;
-      const alpha = 0.12 + fade * 0.60;
-      const lw    = (0.5 + fade * 1.5) * dpr;
+      const fade = 1 - dist / prox;
       ctx.save();
       ctx.beginPath();
       ctx.moveTo(p1.x, p1.y);
       ctx.lineTo(p2.x, p2.y);
-      ctx.strokeStyle = withAlpha(SVG_LINE_COLOUR.base, alpha);
-      ctx.lineWidth   = lw;
+      ctx.strokeStyle = withAlpha(SVG_LINE_COLOUR.base, 0.12 + fade * 0.60);
+      ctx.lineWidth   = (0.5 + fade * 1.5) * dpr;
       ctx.stroke();
       ctx.restore();
     }
 
-    // ── Layer 2: SVG snap points ─────────────────────────────────────────────
-    // Sort so intersections render on top
-    const sorted = [...candidates].sort((a, b) => {
-      const order: Record<string, number> = { endpoint:0, midpoint:1, centroid:2, intersection:3 };
-      return (order[a.type]??0) - (order[b.type]??0);
-    });
-
-    for (const c of sorted) {
-      const col = SVG_SNAP_COLOURS[c.type as SvgSnapPoint['type']];
-      if (!col) continue;
-
-      const cp = s2c(c.x, c.y);
-      // FIX: distance in viewport CSS pixels (cp is canvas px, divide by dpr = vp px)
-      const cpVpX = cp.x / dpr;
-      const cpVpY = cp.y / dpr;
-
-      // If no cursor, draw all points faintly (so you can see them without hovering)
-      // FIX: render ALL intersection points always (faint), proximity ones brighter
-      const dist = cursorVP
-        ? Math.hypot(cursorVP.x - cpVpX, cursorVP.y - cpVpY)
-        : Infinity;
-
-      const sizeMul  = SNAP_SIZE[c.type as SvgSnapPoint['type']] ?? 1.0;
-      const isInSnap = cursorVP && dist < thresh * (c.type === 'intersection' ? 1.4 : 1.0);
-      const isInProx = cursorVP && dist <= prox;
-      const isInter  = c.type === 'intersection';
-
-      // FIX: Always render intersection points as small dots even outside proximity
-      // so user can see where corners ARE even before hovering near them
-      if (!isInProx && isInter) {
-        // Tiny always-visible dot for intersection points
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(cp.x, cp.y, 2.5 * dpr * sizeMul, 0, Math.PI * 2);
-        ctx.fillStyle = col.dot.replace(/[\d.]+\)$/, '0.35)');
-        ctx.fill();
-        ctx.restore();
-        continue;
+    // ── Layer 1c: Bezier curves ───────────────────────────────────────────────
+    for (const curve of svgCurvesRef.current) {
+      const p0 = s2c(curve.nx1*dims.w, curve.ny1*dims.h);
+      const p1 = s2c(curve.ncp1x*dims.w, curve.ncp1y*dims.h);
+      const p3 = s2c(curve.nx2*dims.w, curve.ny2*dims.h);
+      const p2 = (curve.type === 'cubic' && curve.ncp2x !== undefined)
+        ? s2c(curve.ncp2x*dims.w, curve.ncp2y!*dims.h) : null;
+      let dist = Infinity;
+      if (cursorVP) {
+        dist = distToBezierCanvas(cursorVP.x*dpr, cursorVP.y*dpr, curve, dims, vt).dist / dpr;
       }
-
-      if (!isInProx) continue; // non-intersection points only show in proximity
-
+      if (cursorVP && dist > prox) continue;
+      const fade = cursorVP ? Math.max(0, 1 - dist / prox) : 0.0;
       ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      if (curve.type === 'cubic' && p2) ctx.bezierCurveTo(p1.x,p1.y,p2.x,p2.y,p3.x,p3.y);
+      else ctx.quadraticCurveTo(p1.x,p1.y,p3.x,p3.y);
+      ctx.strokeStyle = withAlpha(SVG_CURVE_COLOUR.base, 0.12 + fade * 0.60);
+      ctx.lineWidth   = (0.5 + fade * 1.5) * dpr;
+      ctx.stroke();
+      ctx.restore();
+    }
 
-      if (isInSnap) {
-        const r = 8 * dpr * sizeMul;
+    // ── Layer 2: Snap points — ONLY THE SINGLE NEAREST POINT ─────────────────
+    // Find the one closest point within proximity, respecting type priority
+    // when two points are nearly equidistant.
+    if (cursorVP && candidates.length > 0) {
+      let nearestCandidate: typeof candidates[0] | null = null;
+      let nearestDist = Infinity;
 
-        if (isInter) {
-          // Intersection: filled square with corner tick marks
-          const half = r * 0.75;
+      for (const c of candidates) {
+        const cp  = s2c(c.x, c.y);
+        const dist = Math.hypot(cursorVP.x - cp.x/dpr, cursorVP.y - cp.y/dpr);
+        if (dist > prox) continue;
 
-          ctx.beginPath();
-          ctx.arc(cp.x, cp.y, r * 1.5, 0, Math.PI * 2);
-          ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, '0.35)');
-          ctx.lineWidth   = 2 * dpr;
-          ctx.stroke();
+        // Prefer by distance first; break ties by type priority
+        const pri  = SNAP_PRIORITY[c.type as SvgSnapPoint['type']] ?? 99;
+        const nearPri = nearestCandidate
+          ? (SNAP_PRIORITY[nearestCandidate.type as SvgSnapPoint['type']] ?? 99) : 99;
 
-          ctx.fillStyle   = col.fill;
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth   = 2 * dpr;
-          ctx.beginPath();
-          ctx.rect(cp.x - half, cp.y - half, half * 2, half * 2);
-          ctx.fill();
-          ctx.stroke();
-
-          const tk = half + 5 * dpr;
-          ctx.strokeStyle = col.fill;
-          ctx.lineWidth   = 1.5 * dpr;
-          for (const [sx2, sy2] of [[-1,-1],[1,-1],[1,1],[-1,1]] as const) {
-            ctx.beginPath();
-            ctx.moveTo(cp.x + sx2 * half, cp.y + sy2 * tk);
-            ctx.lineTo(cp.x + sx2 * half, cp.y + sy2 * half);
-            ctx.lineTo(cp.x + sx2 * tk,   cp.y + sy2 * half);
-            ctx.stroke();
-          }
-
-          ctx.font         = `bold ${9 * dpr}px ui-monospace,monospace`;
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          const label = 'CORNER';
-          const tw    = ctx.measureText(label).width + 8 * dpr;
-          ctx.fillStyle = 'rgba(0,0,0,0.85)';
-          ctx.fillRect(cp.x - tw / 2, cp.y - 26 * dpr, tw, 13 * dpr);
-          ctx.fillStyle = col.fill;
-          ctx.fillText(label, cp.x, cp.y - 19 * dpr);
-
-        } else {
-          // Other types: circle + crosshair
-          ctx.beginPath();
-          ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
-          ctx.fillStyle   = col.fill;
-          ctx.fill();
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth   = 2 * dpr;
-          ctx.stroke();
-          const ch = 12 * dpr;
-          ctx.beginPath();
-          ctx.moveTo(cp.x - ch, cp.y); ctx.lineTo(cp.x + ch, cp.y);
-          ctx.moveTo(cp.x, cp.y - ch); ctx.lineTo(cp.x, cp.y + ch);
-          ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-          ctx.lineWidth   = 1 * dpr;
-          ctx.stroke();
-          ctx.font         = `bold ${9 * dpr}px ui-monospace,monospace`;
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          const label = c.type.toUpperCase();
-          const tw    = ctx.measureText(label).width + 8 * dpr;
-          ctx.fillStyle = 'rgba(0,0,0,0.80)';
-          ctx.fillRect(cp.x - tw / 2, cp.y - 23 * dpr, tw, 13 * dpr);
-          ctx.fillStyle = col.fill;
-          ctx.fillText(label, cp.x, cp.y - 16 * dpr);
-        }
-
-      } else {
-        // Proximity indicator (not yet snapping)
-        const fade = 1 - dist / prox;
-        const sz = (3 + fade * 5) * dpr * sizeMul;
-        const a  = 0.15 + fade * 0.70;
-
-        if (isInter) {
-          ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
-          ctx.lineWidth   = (1 + fade * 1) * dpr;
-          ctx.beginPath();
-          ctx.moveTo(cp.x,           cp.y - sz * 1.4);
-          ctx.lineTo(cp.x + sz*1.4,  cp.y);
-          ctx.lineTo(cp.x,           cp.y + sz * 1.4);
-          ctx.lineTo(cp.x - sz*1.4,  cp.y);
-          ctx.closePath();
-          ctx.stroke();
-          if (fade > 0.3) {
-            ctx.fillStyle = col.dot.replace(/[\d.]+\)$/, `${(a * 0.2).toFixed(2)})`);
-            ctx.fill();
-          }
-        } else {
-          ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
-          ctx.lineWidth   = (0.7 + fade * 0.8) * dpr;
-          ctx.beginPath();
-          ctx.moveTo(cp.x - sz, cp.y); ctx.lineTo(cp.x + sz, cp.y); ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(cp.x, cp.y - sz); ctx.lineTo(cp.x, cp.y + sz); ctx.stroke();
-          if (fade > 0.45) {
-            ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${(a * 0.45).toFixed(2)})`);
-            ctx.beginPath();
-            ctx.arc(cp.x, cp.y, sz + 5 * dpr, 0, Math.PI * 2);
-            ctx.stroke();
-          }
+        // Within 4px treat as equidistant → prefer by priority
+        const effectively_same = Math.abs(dist - nearestDist) < 4;
+        if (
+          nearestCandidate === null ||
+          (effectively_same && pri < nearPri) ||
+          (!effectively_same && dist < nearestDist)
+        ) {
+          nearestDist = dist;
+          nearestCandidate = c;
         }
       }
-      ctx.restore();
+
+      if (nearestCandidate) {
+        const c   = nearestCandidate;
+        const col = SVG_SNAP_COLOURS[c.type as SvgSnapPoint['type']];
+        if (col) {
+          const cp      = s2c(c.x, c.y);
+          const sizeMul = SNAP_SIZE[c.type as SvgSnapPoint['type']] ?? 1.0;
+          const isSnap  = nearestDist < thresh * (c.type === 'intersection' ? 1.4 : 1.0);
+          const fade    = Math.max(0, 1 - nearestDist / prox);
+
+          ctx.save();
+
+          if (isSnap) {
+            // Filled dot + white ring + crosshair lines
+            const r = 7 * dpr * sizeMul;
+            ctx.beginPath();
+            ctx.arc(cp.x, cp.y, r, 0, Math.PI*2);
+            ctx.fillStyle   = col.fill;
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth   = 2 * dpr;
+            ctx.stroke();
+            const ch = 11 * dpr;
+            ctx.beginPath();
+            ctx.moveTo(cp.x-ch, cp.y); ctx.lineTo(cp.x+ch, cp.y);
+            ctx.moveTo(cp.x, cp.y-ch); ctx.lineTo(cp.x, cp.y+ch);
+            ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+            ctx.lineWidth   = 1 * dpr;
+            ctx.stroke();
+          } else {
+            // Approach indicator: small crosshair that grows as you close in
+            const sz = (2.5 + fade * 4.5) * dpr * sizeMul;
+            const a  = 0.2 + fade * 0.65;
+            ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
+            ctx.lineWidth   = (0.8 + fade * 0.8) * dpr;
+            ctx.beginPath();
+            ctx.moveTo(cp.x-sz, cp.y); ctx.lineTo(cp.x+sz, cp.y); ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(cp.x, cp.y-sz); ctx.lineTo(cp.x, cp.y+sz); ctx.stroke();
+            // Faint ring
+            if (fade > 0.35) {
+              ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${(a*0.35).toFixed(2)})`);
+              ctx.beginPath();
+              ctx.arc(cp.x, cp.y, sz + 4*dpr, 0, Math.PI*2);
+              ctx.stroke();
+            }
+          }
+
+          ctx.restore();
+        }
+      }
     }
 
     // ── Layer 3: Linear chain ────────────────────────────────────────────────
@@ -581,29 +490,29 @@ export function useSnapEngine({
       ctx.restore();
 
       for (let i = 1; i < chain.length; i++) {
-        const ca = s2c(chain[i - 1].x, chain[i - 1].y);
+        const ca = s2c(chain[i-1].x, chain[i-1].y);
         const cb = s2c(chain[i].x, chain[i].y);
-        const mx = (ca.x + cb.x) / 2, my = (ca.y + cb.y) / 2;
-        const distLabel = Math.hypot(chain[i].x - chain[i-1].x, chain[i].y - chain[i-1].y).toFixed(1);
+        const mx = (ca.x+cb.x)/2, my = (ca.y+cb.y)/2;
+        const distLabel = Math.hypot(chain[i].x-chain[i-1].x, chain[i].y-chain[i-1].y).toFixed(1);
         ctx.save();
-        ctx.font         = `bold ${9 * dpr}px ui-monospace,monospace`;
+        ctx.font         = `bold ${9*dpr}px ui-monospace,monospace`;
         ctx.textAlign    = 'center';
         ctx.textBaseline = 'middle';
-        const tw = ctx.measureText(distLabel).width + 6 * dpr;
+        const tw = ctx.measureText(distLabel).width + 6*dpr;
         ctx.fillStyle = 'rgba(0,0,0,0.80)';
-        ctx.fillRect(mx - tw / 2, my - 8 * dpr, tw, 13 * dpr);
+        ctx.fillRect(mx-tw/2, my-8*dpr, tw, 13*dpr);
         ctx.fillStyle = '#f59e0b';
-        ctx.fillText(distLabel, mx, my - 1 * dpr);
+        ctx.fillText(distLabel, mx, my-1*dpr);
         ctx.restore();
       }
 
       if (cursorVP && linearModeRef.current) {
-        const last = s2c(chain[chain.length - 1].x, chain[chain.length - 1].y);
+        const last = s2c(chain[chain.length-1].x, chain[chain.length-1].y);
         const curC = vpToCanvas(cursorVP.x, cursorVP.y, dpr);
         ctx.save();
         ctx.strokeStyle = 'rgba(245,158,11,0.35)';
         ctx.lineWidth   = 1 * dpr;
-        ctx.setLineDash([4 * dpr, 4 * dpr]);
+        ctx.setLineDash([4*dpr, 4*dpr]);
         ctx.beginPath();
         ctx.moveTo(last.x, last.y);
         ctx.lineTo(curC.x, curC.y);
@@ -618,20 +527,19 @@ export function useSnapEngine({
       const col = p.type !== 'free'
         ? SVG_SNAP_COLOURS[p.type as SvgSnapPoint['type']]?.fill ?? '#f59e0b'
         : '#f59e0b';
-      const r = 5 * dpr;
       ctx.save();
       ctx.beginPath();
-      ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
+      ctx.arc(cp.x, cp.y, 5*dpr, 0, Math.PI*2);
       ctx.fillStyle   = col;
       ctx.fill();
       ctx.strokeStyle = 'rgba(255,255,255,0.9)';
-      ctx.lineWidth   = 1.5 * dpr;
+      ctx.lineWidth   = 1.5*dpr;
       ctx.stroke();
-      ctx.font         = `bold ${7 * dpr}px ui-monospace,monospace`;
+      ctx.font         = `bold ${7*dpr}px ui-monospace,monospace`;
       ctx.textAlign    = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillStyle    = '#000';
-      ctx.fillText(String(i + 1), cp.x, cp.y + 0.5 * dpr);
+      ctx.fillText(String(i+1), cp.x, cp.y+0.5*dpr);
       ctx.restore();
     }
 
@@ -640,10 +548,10 @@ export function useSnapEngine({
       const cc = vpToCanvas(cursorVP.x, cursorVP.y, dpr);
       ctx.save();
       ctx.beginPath();
-      ctx.arc(cc.x, cc.y, prox * dpr, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(100,100,100,0.10)';
-      ctx.lineWidth   = 0.8 * dpr;
-      ctx.setLineDash([3 * dpr, 4 * dpr]);
+      ctx.arc(cc.x, cc.y, prox*dpr, 0, Math.PI*2);
+      ctx.strokeStyle = 'rgba(100,100,100,0.08)';
+      ctx.lineWidth   = 0.8*dpr;
+      ctx.setLineDash([3*dpr, 4*dpr]);
       ctx.stroke();
       ctx.restore();
     }
@@ -652,24 +560,12 @@ export function useSnapEngine({
 
   useEffect(() => {
     redrawPinCanvas();
-  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas, linearChain, zoom, pan]);
+  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgCurves, svgAreas, linearChain, zoom, pan]);
 
   return {
-    pageData,
-    analysisStatus,
-    analysisPage,
-    snapFlashes,
-    linearChain,
-    startExtraction,
-    getScaledCorners,
-    getScaledWallCorners,
-    getScaledWallLines,
-    snapToCorner,
-    triggerSnapFlash,
-    addChainPoint,
-    undoChainPoint,
-    clearChain,
-    redrawPinCanvas,
-    cursorPointRef,
+    pageData, analysisStatus, analysisPage, snapFlashes, linearChain,
+    startExtraction, getScaledCorners, getScaledWallCorners, getScaledWallLines,
+    snapToCorner, triggerSnapFlash, addChainPoint, undoChainPoint, clearChain,
+    redrawPinCanvas, cursorPointRef,
   };
 }

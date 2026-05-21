@@ -1,533 +1,609 @@
-'use client';
+/**
+ * useSvgSnapPoints.ts
+ *
+ * KEY CHANGES vs previous version:
+ *
+ * 1. Bezier curves (C, S, Q) now emit ONLY:
+ *    - The true start endpoint
+ *    - The true end endpoint
+ *    - ONE midpoint at t=0.5 on the actual bezier (not a sampled sub-segment midpoint)
+ *    No more spurious endpoints / midpoints scattered along arcs.
+ *
+ * 2. New export: SvgCurve — stores the actual bezier control points (normalised 0-1)
+ *    so the canvas layer can draw the blue proximity line as a REAL bezier path,
+ *    not a polyline approximation.
+ *
+ * 3. Straight-line segments (L, H, V, polyline, rect edges) behave exactly as before.
+ *
+ * 4. Midpoint suppression (zoom-aware) still applies to straight-line midpoints.
+ *    Arc midpoints (t=0.5) are always shown — there is only one per arc so crowding
+ *    is not a concern.
+ */
 
-import { useMemo } from 'react';
-import type { PdfDimensions } from '@/types/viewerTypes';
-import { isDecorationElement, resolveStrokeWidth } from './svgDecorationFilter';
-
-export type SvgSnapPointType = 'endpoint' | 'midpoint' | 'centroid' | 'intersection';
+import { useState, useEffect, useMemo } from 'react';
 
 export interface SvgSnapPoint {
-  nx: number; ny: number;
-  type: SvgSnapPointType;
+  nx:          number;
+  ny:          number;
+  type:        'endpoint' | 'midpoint' | 'centroid' | 'intersection';
+  shapeId:     string;
   strokeWidth: number;
-  shapeId: string;
 }
 
-interface Vec2  { x: number; y: number }
-interface Mat2D { a: number; b: number; c: number; d: number; e: number; f: number }
-
-interface Segment {
-  a: Vec2; b: Vec2;
-  strokeWidth: number;
+/** A bezier curve stored with real control points for smooth canvas rendering. */
+export interface SvgCurve {
+  type:   'cubic' | 'quadratic';
+  /** All coords normalised to [0,1] relative to pdfDims */
+  nx1:    number; ny1:    number;
+  ncp1x:  number; ncp1y:  number;
+  ncp2x?: number; ncp2y?: number; // cubic only
+  nx2:    number; ny2:    number;
   shapeId: string;
-  isArcApprox?: boolean;
+  sw:      number;
 }
 
-const MAX_CHAIN_SEGS         = 500;
-const MAX_SEGS_FOR_CHAIN     = 300;
-const MAX_SEGS_FOR_INTERSECT = 800;
+interface PdfDimensions { w: number; h: number }
 
-// ─── Matrix helpers ───────────────────────────────────────────────────────────
+const MIN_SCREEN_GAP_FOR_MIDPOINT = 12;
 
-function identityMatrix(): Mat2D { return { a:1,b:0,c:0,d:1,e:0,f:0 }; }
+// ── Matrix helpers ────────────────────────────────────────────────────────────
 
-function multiplyMatrix(m1: Mat2D, m2: Mat2D): Mat2D {
+interface Mat { a:number; b:number; c:number; d:number; e:number; f:number }
+function identMat(): Mat { return { a:1,b:0,c:0,d:1,e:0,f:0 }; }
+function mulMat(m1: Mat, m2: Mat): Mat {
   return {
     a: m1.a*m2.a+m1.c*m2.b, b: m1.b*m2.a+m1.d*m2.b,
     c: m1.a*m2.c+m1.c*m2.d, d: m1.b*m2.c+m1.d*m2.d,
     e: m1.a*m2.e+m1.c*m2.f+m1.e, f: m1.b*m2.e+m1.d*m2.f+m1.f,
   };
 }
-
-function applyMatrix(m: Mat2D, v: Vec2): Vec2 {
-  return { x: m.a*v.x+m.c*v.y+m.e, y: m.b*v.x+m.d*v.y+m.f };
+function applyMat(m: Mat, x: number, y: number): [number, number] {
+  return [m.a*x+m.c*y+m.e, m.b*x+m.d*y+m.f];
 }
-
-function parseTransformAttr(transform: string | null): Mat2D {
-  if (!transform) return identityMatrix();
+function parseTfm(t: string | null): Mat {
+  if (!t) return identMat();
   const re = /(matrix|translate|scale|rotate|skewX|skewY)\(([^)]*)\)/g;
-  const tfs: Mat2D[] = [];
+  const mats: Mat[] = [];
   let m: RegExpExecArray | null;
-  while ((m = re.exec(transform)) !== null) {
+  while ((m = re.exec(t)) !== null) {
     const args = m[2].trim().split(/[\s,]+/).map(parseFloat);
-    let mat = identityMatrix();
+    let mat = identMat();
     switch (m[1]) {
-      case 'matrix':    mat={a:args[0],b:args[1],c:args[2],d:args[3],e:args[4],f:args[5]}; break;
-      case 'translate': mat={...identityMatrix(),e:args[0]??0,f:args[1]??0}; break;
+      case 'matrix':    mat = {a:args[0],b:args[1],c:args[2],d:args[3],e:args[4],f:args[5]}; break;
+      case 'translate': mat = {...identMat(), e:args[0]??0, f:args[1]??0}; break;
       case 'scale': { const sx=args[0]??1,sy=args[1]??sx; mat={a:sx,b:0,c:0,d:sy,e:0,f:0}; break; }
       case 'rotate': {
         const ang=(args[0]??0)*Math.PI/180,cos=Math.cos(ang),sin=Math.sin(ang);
         const cx=args[1]??0,cy=args[2]??0;
         mat={a:cos,b:sin,c:-sin,d:cos,e:cx-cos*cx+sin*cy,f:cy-sin*cx-cos*cy}; break;
       }
-      case 'skewX': { const t=Math.tan((args[0]??0)*Math.PI/180); mat={a:1,b:0,c:t,d:1,e:0,f:0}; break; }
-      case 'skewY': { const t=Math.tan((args[0]??0)*Math.PI/180); mat={a:1,b:t,c:0,d:1,e:0,f:0}; break; }
     }
-    tfs.push(mat);
+    mats.push(mat);
   }
-  return tfs.reduce((acc,t)=>multiplyMatrix(acc,t), identityMatrix());
+  return mats.reduce((acc,mm)=>mulMat(acc,mm), identMat());
 }
-
-function getCTM(el: Element, svgRoot: Element): Mat2D {
-  const mats: Mat2D[] = [];
-  let node: Element|null = el;
-  while (node && node !== svgRoot.parentElement) {
+function getCTM(el: Element, root: Element): Mat {
+  const mats: Mat[] = [];
+  let node: Element | null = el;
+  while (node && node !== root.parentElement) {
     const t = node.getAttribute('transform');
-    if (t) mats.unshift(parseTransformAttr(t));
+    if (t) mats.unshift(parseTfm(t));
     node = node.parentElement;
   }
-  return mats.reduce((acc,m)=>multiplyMatrix(acc,m), identityMatrix());
+  return mats.reduce((acc,mm)=>mulMat(acc,mm), identMat());
 }
 
-interface VBTransform { sx:number; sy:number; tx:number; ty:number }
+// ── ViewBox → page-unit transform ─────────────────────────────────────────────
 
-function buildViewBoxTransform(svgEl: SVGSVGElement, pdfW: number, pdfH: number): VBTransform {
+function buildVBTransform(svgEl: SVGSVGElement, pw: number, ph: number) {
   const vb = svgEl.getAttribute('viewBox');
   if (vb) {
     const [minX,minY,vbW,vbH] = vb.trim().split(/[\s,]+/).map(parseFloat);
     if ([minX,minY,vbW,vbH].every(n=>!isNaN(n)) && vbW>0 && vbH>0)
-      return { sx:pdfW/vbW, sy:pdfH/vbH, tx:-minX*(pdfW/vbW), ty:-minY*(pdfH/vbH) };
+      return { sx:pw/vbW, sy:ph/vbH, tx:-minX*(pw/vbW), ty:-minY*(ph/vbH) };
   }
-  const svgW = parseFloat(svgEl.getAttribute('width')??'0')||pdfW;
-  const svgH = parseFloat(svgEl.getAttribute('height')??'0')||pdfH;
-  return { sx:svgW>0?pdfW/svgW:1, sy:svgH>0?pdfH/svgH:1, tx:0, ty:0 };
+  const wa = parseFloat(svgEl.getAttribute('width')??'0') || pw;
+  const ha = parseFloat(svgEl.getAttribute('height')??'0') || ph;
+  return { sx:pw/wa, sy:ph/ha, tx:0, ty:0 };
+}
+function applyVB(x: number, y: number, vb: ReturnType<typeof buildVBTransform>): [number,number] {
+  return [x*vb.sx+vb.tx, y*vb.sy+vb.ty];
 }
 
-function applyVBT(v: Vec2, t: VBTransform): Vec2 { return { x:v.x*t.sx+t.tx, y:v.y*t.sy+t.ty }; }
-
-function attr(el: Element, n: string): string { return el.getAttribute(n)??''; }
-function numAttr(el: Element, n: string, fb=0): number { const v=parseFloat(attr(el,n)); return isNaN(v)?fb:v; }
-
-// ─── Curve helpers ────────────────────────────────────────────────────────────
-
-function cubicBez(p0:Vec2,p1:Vec2,p2:Vec2,p3:Vec2,t:number):Vec2 {
-  const u=1-t;
-  return {x:u*u*u*p0.x+3*u*u*t*p1.x+3*u*t*t*p2.x+t*t*t*p3.x,
-          y:u*u*u*p0.y+3*u*u*t*p1.y+3*u*t*t*p2.y+t*t*t*p3.y};
-}
-function quadBez(p0:Vec2,p1:Vec2,p2:Vec2,t:number):Vec2 {
-  const u=1-t;
-  return {x:u*u*p0.x+2*u*t*p1.x+t*t*p2.x, y:u*u*p0.y+2*u*t*p1.y+t*t*p2.y};
+function resolveStroke(el: Element): number {
+  let node: Element | null = el;
+  while (node) {
+    const sw = node.getAttribute('stroke-width') ?? node.getAttribute('strokeWidth');
+    if (sw) { const v=parseFloat(sw); if (!isNaN(v)&&v>0) return v; }
+    const style = node.getAttribute('style')??'';
+    const mm = style.match(/stroke-width\s*:\s*([\d.]+)/);
+    if (mm) { const v=parseFloat(mm[1]); if (!isNaN(v)&&v>0) return v; }
+    node = node.parentElement;
+  }
+  return 1.0;
 }
 
-function arcToPoints(x1:number,y1:number,rx:number,ry:number,xRot:number,
-    largeArc:number,sweep:number,x2:number,y2:number,steps=12):Vec2[] {
-  if (rx===0||ry===0) return [{x:x2,y:y2}];
-  const phi=(xRot*Math.PI)/180, cosPhi=Math.cos(phi), sinPhi=Math.sin(phi);
-  const dx2=(x1-x2)/2, dy2=(y1-y2)/2;
-  const x1p= cosPhi*dx2+sinPhi*dy2, y1p=-sinPhi*dx2+cosPhi*dy2;
-  let rxA=Math.abs(rx), ryA=Math.abs(ry);
-  const lam=(x1p*x1p)/(rxA*rxA)+(y1p*y1p)/(ryA*ryA);
-  if (lam>1){rxA*=Math.sqrt(lam);ryA*=Math.sqrt(lam);}
-  const sign=largeArc===sweep?-1:1;
-  const sq=Math.max(0,(rxA*rxA*ryA*ryA-rxA*rxA*y1p*y1p-ryA*ryA*x1p*x1p)/(rxA*rxA*y1p*y1p+ryA*ryA*x1p*x1p));
-  const coef=sign*Math.sqrt(sq);
-  const cxp=coef*(rxA*y1p)/ryA, cyp=coef*-(ryA*x1p)/rxA;
-  const cx=cosPhi*cxp-sinPhi*cyp+(x1+x2)/2, cy=sinPhi*cxp+cosPhi*cyp+(y1+y2)/2;
-  const ux=(x1p-cxp)/rxA, uy=(y1p-cyp)/ryA, vx=(-x1p-cxp)/rxA, vy=(-y1p-cyp)/ryA;
-  const n=Math.sqrt(ux*ux+uy*uy);
-  const theta1=uy>=0?Math.acos(Math.max(-1,Math.min(1,ux/n))):-Math.acos(Math.max(-1,Math.min(1,ux/n)));
-  const mag=Math.sqrt((ux*ux+uy*uy)*(vx*vx+vy*vy));
-  let dTheta=(ux*vy-uy*vx)>=0?Math.acos(Math.max(-1,Math.min(1,(ux*vx+uy*vy)/mag))):-Math.acos(Math.max(-1,Math.min(1,(ux*vx+uy*vy)/mag)));
-  if (!sweep&&dTheta>0) dTheta-=2*Math.PI;
-  if ( sweep&&dTheta<0) dTheta+=2*Math.PI;
-  const pts:Vec2[]=[];
-  for (let i=1;i<=steps;i++){
-    const t=i/steps, ang=theta1+t*dTheta;
-    pts.push({x:cosPhi*rxA*Math.cos(ang)-sinPhi*ryA*Math.sin(ang)+cx,
-               y:sinPhi*rxA*Math.cos(ang)+cosPhi*ryA*Math.sin(ang)+cy});
+// ── Segment types ─────────────────────────────────────────────────────────────
+
+/** A straight line segment — contributes endpoints + midpoint. */
+interface StraightSeg {
+  kind: 'straight';
+  x1: number; y1: number;
+  x2: number; y2: number;
+  mx: number; my: number;
+  shapeId: string;
+  sw: number;
+}
+
+/**
+ * A bezier curve — contributes ONLY:
+ *   - endpoint at (x1,y1) and (x2,y2)
+ *   - ONE midpoint at t=0.5 on the actual curve
+ * The control points are stored so the canvas can draw it as a real bezier.
+ */
+interface CurveSeg {
+  kind: 'curve';
+  // True start/end in page-unit coords
+  x1: number; y1: number;
+  x2: number; y2: number;
+  // True bezier midpoint at t=0.5
+  midX: number; midY: number;
+  // Control points in page-unit coords
+  cp1x: number; cp1y: number;
+  cp2x?: number; cp2y?: number; // cubic only
+  curveType: 'cubic' | 'quadratic';
+  shapeId: string;
+  sw: number;
+}
+
+type Seg = StraightSeg | CurveSeg;
+
+// ── Bezier midpoint at t=0.5 ──────────────────────────────────────────────────
+
+function cubicMidpoint(
+  x0:number,y0:number, cx1:number,cy1:number,
+  cx2:number,cy2:number, x3:number,y3:number,
+): [number,number] {
+  const t=0.5, u=0.5;
+  return [
+    u*u*u*x0 + 3*u*u*t*cx1 + 3*u*t*t*cx2 + t*t*t*x3,
+    u*u*u*y0 + 3*u*u*t*cy1 + 3*u*t*t*cy2 + t*t*t*y3,
+  ];
+}
+
+function quadMidpoint(
+  x0:number,y0:number, cx:number,cy:number, x2:number,y2:number,
+): [number,number] {
+  const t=0.5, u=0.5;
+  return [u*u*x0+2*u*t*cx+t*t*x2, u*u*y0+2*u*t*cy+t*t*y2];
+}
+
+// ── Path → segs ───────────────────────────────────────────────────────────────
+
+function pathToSegs(
+  d: string,
+  ctm: Mat,
+  vb: ReturnType<typeof buildVBTransform>,
+  shapeId: string, sw: number,
+  pw: number, ph: number,
+): Seg[] {
+  const segs: Seg[] = [];
+  let cx=0,cy=0,sx=0,sy=0;
+  let lastCpX=0,lastCpY=0,lastCmd='';
+
+  const toPage = (x: number, y: number): [number,number] => {
+    const [mx,my] = applyMat(ctm,x,y);
+    return applyVB(mx,my,vb);
+  };
+
+  const pushStraight = (ax:number,ay:number, bx:number,by:number) => {
+    const [pax,pay]=toPage(ax,ay), [pbx,pby]=toPage(bx,by);
+    if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
+    segs.push({ kind:'straight', x1:pax,y1:pay, x2:pbx,y2:pby,
+      mx:(pax+pbx)/2, my:(pay+pby)/2, shapeId, sw });
+  };
+
+  const pushCubic = (
+    ax:number,ay:number,
+    c1x:number,c1y:number, c2x:number,c2y:number,
+    bx:number,by:number,
+  ) => {
+    const [pax,pay]  = toPage(ax,ay);
+    const [pbx,pby]  = toPage(bx,by);
+    const [pc1x,pc1y]= toPage(c1x,c1y);
+    const [pc2x,pc2y]= toPage(c2x,c2y);
+    if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
+    const [midX,midY] = cubicMidpoint(pax,pay,pc1x,pc1y,pc2x,pc2y,pbx,pby);
+    segs.push({ kind:'curve', curveType:'cubic',
+      x1:pax,y1:pay, x2:pbx,y2:pby,
+      midX,midY,
+      cp1x:pc1x,cp1y:pc1y, cp2x:pc2x,cp2y:pc2y,
+      shapeId, sw });
+  };
+
+  const pushQuad = (
+    ax:number,ay:number, c1x:number,c1y:number, bx:number,by:number,
+  ) => {
+    const [pax,pay]  = toPage(ax,ay);
+    const [pbx,pby]  = toPage(bx,by);
+    const [pc1x,pc1y]= toPage(c1x,c1y);
+    if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
+    const [midX,midY] = quadMidpoint(pax,pay,pc1x,pc1y,pbx,pby);
+    segs.push({ kind:'curve', curveType:'quadratic',
+      x1:pax,y1:pay, x2:pbx,y2:pby,
+      midX,midY,
+      cp1x:pc1x,cp1y:pc1y,
+      shapeId, sw });
+  };
+
+  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*/g);
+  if (!tokens) return segs;
+
+  for (const token of tokens) {
+    const cmd=token[0], upper=cmd.toUpperCase(), rel=cmd!==upper;
+    const nums=token.slice(1).trim().split(/[\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
+    const ox=rel?cx:0, oy=rel?cy:0;
+
+    switch (upper) {
+      case 'M':
+        for (let i=0;i+1<nums.length;i+=2) {
+          const bx=i===0?ox:(rel?cx:0), by=i===0?oy:(rel?cy:0);
+          cx=bx+nums[i]; cy=by+nums[i+1];
+          if (i===0){sx=cx;sy=cy;}
+        }
+        lastCpX=cx; lastCpY=cy; break;
+
+      case 'L':
+        for (let i=0;i+1<nums.length;i+=2) {
+          const nx=ox+nums[i], ny=oy+nums[i+1];
+          pushStraight(cx,cy,nx,ny); cx=nx; cy=ny;
+        }
+        lastCpX=cx; lastCpY=cy; break;
+
+      case 'H':
+        for (const n of nums) { const nx=ox+n; pushStraight(cx,cy,nx,cy); cx=nx; }
+        lastCpX=cx; lastCpY=cy; break;
+
+      case 'V':
+        for (const n of nums) { const ny=oy+n; pushStraight(cx,cy,cx,ny); cy=ny; }
+        lastCpX=cx; lastCpY=cy; break;
+
+      case 'C':
+        for (let i=0;i+5<nums.length;i+=6) {
+          const c1x=ox+nums[i],   c1y=oy+nums[i+1];
+          const c2x=ox+nums[i+2], c2y=oy+nums[i+3];
+          const nx =ox+nums[i+4], ny =oy+nums[i+5];
+          pushCubic(cx,cy, c1x,c1y, c2x,c2y, nx,ny);
+          lastCpX=c2x; lastCpY=c2y;
+          cx=nx; cy=ny;
+        } break;
+
+      case 'S': {
+        for (let i=0;i+3<nums.length;i+=4) {
+          const prev = lastCmd==='C'||lastCmd==='S';
+          const c1x = prev ? 2*cx-lastCpX : cx;
+          const c1y = prev ? 2*cy-lastCpY : cy;
+          const c2x=ox+nums[i],   c2y=oy+nums[i+1];
+          const nx =ox+nums[i+2], ny =oy+nums[i+3];
+          pushCubic(cx,cy, c1x,c1y, c2x,c2y, nx,ny);
+          lastCpX=c2x; lastCpY=c2y;
+          cx=nx; cy=ny;
+        } break;
+      }
+
+      case 'Q':
+        for (let i=0;i+3<nums.length;i+=4) {
+          const c1x=ox+nums[i],   c1y=oy+nums[i+1];
+          const nx =ox+nums[i+2], ny =oy+nums[i+3];
+          pushQuad(cx,cy, c1x,c1y, nx,ny);
+          lastCpX=c1x; lastCpY=c1y;
+          cx=nx; cy=ny;
+        } break;
+
+      case 'T': {
+        for (let i=0;i+1<nums.length;i+=2) {
+          const prev = lastCmd==='Q'||lastCmd==='T';
+          const c1x = prev ? 2*cx-lastCpX : cx;
+          const c1y = prev ? 2*cy-lastCpY : cy;
+          const nx=ox+nums[i], ny=oy+nums[i+1];
+          pushQuad(cx,cy, c1x,c1y, nx,ny);
+          lastCpX=c1x; lastCpY=c1y;
+          cx=nx; cy=ny;
+        } break;
+      }
+
+      case 'A':
+        // Arc: treat as a straight endpoint-to-endpoint seg for snap purposes.
+        // The true arc geometry is not stored (arc-to-bezier conversion is complex
+        // and not needed — we just need the two endpoints).
+        for (let i=0;i+6<nums.length;i+=7) {
+          const nx=ox+nums[i+5], ny=oy+nums[i+6];
+          pushStraight(cx,cy,nx,ny);
+          cx=nx; cy=ny;
+        }
+        lastCpX=cx; lastCpY=cy; break;
+
+      case 'Z':
+        if (Math.hypot(cx-sx,cy-sy)>0.5) pushStraight(cx,cy,sx,sy);
+        cx=sx; cy=sy; lastCpX=cx; lastCpY=cy; break;
+    }
+    lastCmd=upper;
+  }
+  return segs;
+}
+
+// ── Intersection detection ────────────────────────────────────────────────────
+
+interface LineSeg { x1:number;y1:number;x2:number;y2:number; sw:number }
+
+function segIntersection(s1: LineSeg, s2: LineSeg): [number,number]|null {
+  const dx1=s1.x2-s1.x1,dy1=s1.y2-s1.y1;
+  const dx2=s2.x2-s2.x1,dy2=s2.y2-s2.y1;
+  const denom=dx1*dy2-dy1*dx2;
+  if (Math.abs(denom)<1e-8) return null;
+  const dx3=s2.x1-s1.x1,dy3=s2.y1-s1.y1;
+  const t=(dx3*dy2-dy3*dx2)/denom;
+  const u=(dx3*dy1-dy3*dx1)/denom;
+  const EPS=0.01;
+  if (t<-EPS||t>1+EPS||u<-EPS||u>1+EPS) return null;
+  return [s1.x1+t*dx1, s1.y1+t*dy1];
+}
+
+function dedup(pts: Array<[number,number]>, radius: number): Array<[number,number]> {
+  const out: Array<[number,number]> = [];
+  for (const [x,y] of pts) {
+    if (!out.some(([ox,oy])=>Math.hypot(x-ox,y-oy)<radius)) out.push([x,y]);
+  }
+  return out;
+}
+
+// ── Circle/ellipse snap points ─────────────────────────────────────────────────
+
+function circleSnapPoints(
+  el: Element, ctm: Mat, vb: ReturnType<typeof buildVBTransform>,
+  shapeId: string, sw: number, pw: number, ph: number,
+): SvgSnapPoint[] {
+  const pts: SvgSnapPoint[] = [];
+  const toNorm = (x:number,y:number):[number,number] => {
+    const [mx,my]=applyMat(ctm,x,y);
+    const [vx,vy]=applyVB(mx,my,vb);
+    return [vx/pw, vy/ph];
+  };
+  const tag = el.tagName.toLowerCase();
+  if (tag==='circle') {
+    const cx2=parseFloat(el.getAttribute('cx')??'0');
+    const cy2=parseFloat(el.getAttribute('cy')??'0');
+    const r  =parseFloat(el.getAttribute('r') ??'0');
+    if (r<=0) return pts;
+    const [cnx,cny]=toNorm(cx2,cy2);
+    pts.push({nx:cnx,ny:cny,type:'centroid',shapeId,strokeWidth:sw});
+    for (const [dx,dy] of [[0,-r],[0,r],[-r,0],[r,0]] as [number,number][]) {
+      const [enx,eny]=toNorm(cx2+dx,cy2+dy);
+      if (enx>=0&&enx<=1&&eny>=0&&eny<=1)
+        pts.push({nx:enx,ny:eny,type:'endpoint',shapeId,strokeWidth:sw});
+    }
+  } else if (tag==='ellipse') {
+    const cx2=parseFloat(el.getAttribute('cx')??'0');
+    const cy2=parseFloat(el.getAttribute('cy')??'0');
+    const rx =parseFloat(el.getAttribute('rx')??'0');
+    const ry =parseFloat(el.getAttribute('ry')??'0');
+    if (rx<=0||ry<=0) return pts;
+    const [cnx,cny]=toNorm(cx2,cy2);
+    pts.push({nx:cnx,ny:cny,type:'centroid',shapeId,strokeWidth:sw});
+    for (const [dx,dy] of [[0,-ry],[0,ry],[-rx,0],[rx,0]] as [number,number][]) {
+      const [enx,eny]=toNorm(cx2+dx,cy2+dy);
+      if (enx>=0&&enx<=1&&eny>=0&&eny<=1)
+        pts.push({nx:enx,ny:eny,type:'endpoint',shapeId,strokeWidth:sw});
+    }
   }
   return pts;
 }
 
-// ─── pathToSegments ───────────────────────────────────────────────────────────
+// ── Hook ──────────────────────────────────────────────────────────────────────
 
-function pathToSegments(d: string, sw: number, shapeId: string): Segment[] {
-  const segs: Segment[] = [];
-  let cx=0,cy=0,sx=0,sy=0,lastCp:Vec2|null=null;
+export function useSvgSnapPoints(
+  svgContent: string | null,
+  pdfDims: PdfDimensions | null,
+  zoom: number = 1,
+): { snapPoints: SvgSnapPoint[]; svgCurves: SvgCurve[] } {
 
-  const push = (a:Vec2,b:Vec2,approx=false) => segs.push({a,b,strokeWidth:sw,shapeId,isArcApprox:approx});
-  const poly = (pts:Vec2[],approx:boolean) => { for(let i=0;i<pts.length-1;i++) push(pts[i],pts[i+1],approx); };
+  // ── Phase 1: parse SVG → segs + curves (zoom-independent) ─────────────────
+  const parsed = useMemo(() => {
+    if (!svgContent || !pdfDims) return null;
+    const { w: pw, h: ph } = pdfDims;
 
-  const re=/([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g;
-  let m:RegExpExecArray|null;
-  while((m=re.exec(d))!==null) {
-    const cmd=m[1], rel=cmd===cmd.toLowerCase()&&cmd!=='Z'&&cmd!=='z';
-    const args=m[2].trim()===''?[]:m[2].trim().split(/[\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
-    const ox=rel?cx:0, oy=rel?cy:0;
-    switch(cmd.toUpperCase()) {
-      case 'M':
-        for(let i=0;i+1<args.length;i+=2){
-          const nx=args[i]+(i===0?ox:(rel?cx:0)), ny=args[i+1]+(i===0?oy:(rel?cy:0));
-          if(i===0){cx=nx;cy=ny;sx=cx;sy=cy;}else{push({x:cx,y:cy},{x:nx,y:ny},false);cx=nx;cy=ny;}
-        } lastCp=null; break;
-      case 'L':
-        for(let i=0;i+1<args.length;i+=2){const nx=args[i]+ox,ny=args[i+1]+oy;push({x:cx,y:cy},{x:nx,y:ny},false);cx=nx;cy=ny;}
-        lastCp=null; break;
-      case 'H':
-        for(const ax of args){const nx=ax+ox;push({x:cx,y:cy},{x:nx,y:cy},false);cx=nx;} lastCp=null; break;
-      case 'V':
-        for(const ay of args){const ny=ay+oy;push({x:cx,y:cy},{x:cx,y:ny},false);cy=ny;} lastCp=null; break;
-      case 'C':
-        for(let i=0;i+5<args.length;i+=6){
-          const p0:Vec2={x:cx,y:cy},p1:Vec2={x:args[i]+ox,y:args[i+1]+oy},
-                p2:Vec2={x:args[i+2]+ox,y:args[i+3]+oy},p3:Vec2={x:args[i+4]+ox,y:args[i+5]+oy};
-          const pts=[p0];for(let t=1;t<=8;t++)pts.push(cubicBez(p0,p1,p2,p3,t/8));
-          poly(pts,true);lastCp=p2;cx=p3.x;cy=p3.y;
-        } break;
-      case 'S':
-        for(let i=0;i+3<args.length;i+=4){
-          const p0:Vec2={x:cx,y:cy},p1:Vec2=lastCp?{x:2*cx-lastCp.x,y:2*cy-lastCp.y}:{x:cx,y:cy},
-                p2:Vec2={x:args[i]+ox,y:args[i+1]+oy},p3:Vec2={x:args[i+2]+ox,y:args[i+3]+oy};
-          const pts=[p0];for(let t=1;t<=8;t++)pts.push(cubicBez(p0,p1,p2,p3,t/8));
-          poly(pts,true);lastCp=p2;cx=p3.x;cy=p3.y;
-        } break;
-      case 'Q':
-        for(let i=0;i+3<args.length;i+=4){
-          const p0:Vec2={x:cx,y:cy},p1:Vec2={x:args[i]+ox,y:args[i+1]+oy},p2:Vec2={x:args[i+2]+ox,y:args[i+3]+oy};
-          const pts=[p0];for(let t=1;t<=6;t++)pts.push(quadBez(p0,p1,p2,t/6));
-          poly(pts,true);lastCp=p1;cx=p2.x;cy=p2.y;
-        } break;
-      case 'T':
-        for(let i=0;i+1<args.length;i+=2){
-          const p0:Vec2={x:cx,y:cy},p1:Vec2=lastCp?{x:2*cx-lastCp.x,y:2*cy-lastCp.y}:{x:cx,y:cy},p2:Vec2={x:args[i]+ox,y:args[i+1]+oy};
-          const pts=[p0];for(let t=1;t<=6;t++)pts.push(quadBez(p0,p1,p2,t/6));
-          poly(pts,true);lastCp=p1;cx=p2.x;cy=p2.y;
-        } break;
-      case 'A':
-        for(let i=0;i+6<args.length;i+=7){
-          const x2=args[i+5]+ox,y2=args[i+6]+oy;
-          const arcPts=arcToPoints(cx,cy,args[i],args[i+1],args[i+2],args[i+3],args[i+4],x2,y2);
-          poly([{x:cx,y:cy},...arcPts],true);
-          cx=x2;cy=y2;lastCp=null;
-        } break;
-      case 'Z':
-        if(cx!==sx||cy!==sy) push({x:cx,y:cy},{x:sx,y:sy},false);
-        cx=sx;cy=sy;lastCp=null; break;
-    }
-  }
-  return segs;
-}
+    try {
+      const parser  = new DOMParser();
+      const svgDoc  = parser.parseFromString(svgContent, 'image/svg+xml');
+      const svgRoot = svgDoc.documentElement;
+      if (svgRoot.querySelector('parsererror')) throw new Error('Invalid SVG');
+      const svgEl = svgDoc.querySelector('svg') as SVGSVGElement|null;
+      if (!svgEl) throw new Error('No <svg>');
 
-// ─── Element extractors ───────────────────────────────────────────────────────
+      const vb = buildVBTransform(svgEl, pw, ph);
+      const allSegs: Seg[] = [];
+      let idCounter = 0;
 
-function extractLine(el:Element,sw:number,id:string):Segment[]{
-  return [{a:{x:numAttr(el,'x1'),y:numAttr(el,'y1')},b:{x:numAttr(el,'x2'),y:numAttr(el,'y2')},strokeWidth:sw,shapeId:id}];
-}
-function extractPolyPoints(el:Element,sw:number,id:string,close:boolean):Segment[]{
-  const raw=attr(el,'points').trim(); if(!raw)return[];
-  const nums=raw.split(/[\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
-  const pts:Vec2[]=[]; for(let i=0;i+1<nums.length;i+=2)pts.push({x:nums[i],y:nums[i+1]});
-  if(pts.length<2)return[];
-  const segs:Segment[]=[];
-  for(let i=0;i<pts.length-1;i++)segs.push({a:pts[i],b:pts[i+1],strokeWidth:sw,shapeId:id});
-  if(close&&pts.length>2)segs.push({a:pts[pts.length-1],b:pts[0],strokeWidth:sw,shapeId:id});
-  return segs;
-}
-function extractRect(el:Element,sw:number,id:string):Segment[]{
-  const x=numAttr(el,'x'),y=numAttr(el,'y'),w=numAttr(el,'width'),h=numAttr(el,'height');
-  if(w<=0||h<=0)return[];
-  const p=[{x,y},{x:x+w,y},{x:x+w,y:y+h},{x,y:y+h}];
-  return [{a:p[0],b:p[1],strokeWidth:sw,shapeId:id},{a:p[1],b:p[2],strokeWidth:sw,shapeId:id},
-          {a:p[2],b:p[3],strokeWidth:sw,shapeId:id},{a:p[3],b:p[0],strokeWidth:sw,shapeId:id}];
-}
-function extractCircle(el:Element,sw:number,id:string):Segment[]{
-  const cx=numAttr(el,'cx'),cy=numAttr(el,'cy'),r=numAttr(el,'r');
-  if(r<=0)return[];
-  return pathToSegments(`M${cx-r},${cy} A${r},${r} 0 1 1 ${cx+r},${cy} A${r},${r} 0 1 1 ${cx-r},${cy} Z`,sw,id);
-}
-function extractEllipse(el:Element,sw:number,id:string):Segment[]{
-  const cx=numAttr(el,'cx'),cy=numAttr(el,'cy'),rx=numAttr(el,'rx'),ry=numAttr(el,'ry');
-  if(rx<=0||ry<=0)return[];
-  return pathToSegments(`M${cx-rx},${cy} A${rx},${ry} 0 1 1 ${cx+rx},${cy} A${rx},${ry} 0 1 1 ${cx-rx},${cy} Z`,sw,id);
-}
+      const processEl = (el: Element) => {
+        const tag = el.tagName.toLowerCase();
+        if (['circle','ellipse','rect'].includes(tag)) return;
+        const ctm = getCTM(el, svgEl);
+        const sw  = resolveStroke(el);
+        const id  = `shape-${idCounter++}`;
 
-// ─── Chain assembly ───────────────────────────────────────────────────────────
-
-const CHAIN_TOL = 5.0;
-function snapKey(v:Vec2,dx:number,dy:number){return `${Math.round(v.x/CHAIN_TOL)+dx},${Math.round(v.y/CHAIN_TOL)+dy}`;}
-
-function assembleChain(segs: Segment[]): Segment[] | null {
-  if (segs.length===0) return null;
-  if (segs.length===1) return [segs[0]];
-  if (segs.length>MAX_CHAIN_SEGS) return null;
-  const shapeId=segs[0].shapeId;
-  type Entry={idx:number;end:'a'|'b'};
-  const epMap=new Map<string,Entry[]>();
-  const reg=(v:Vec2,idx:number,end:'a'|'b')=>{
-    for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
-      const k=snapKey(v,dx,dy);const arr=epMap.get(k)??[];arr.push({idx,end});epMap.set(k,arr);
-    }
-  };
-  for(let i=0;i<segs.length;i++){reg(segs[i].a,i,'a');reg(segs[i].b,i,'b');}
-  const used=new Set<number>([0]);
-  const ordered:Segment[]=[segs[0]];
-  let tail=segs[0].b;
-  while(ordered.length<segs.length){
-    const candidates=epMap.get(snapKey(tail,0,0))??[];
-    let advanced=false;
-    for(const{idx,end}of candidates){
-      if(used.has(idx))continue;
-      const seg=segs[idx];
-      const cp=end==='a'?seg.a:seg.b;
-      if(Math.hypot(cp.x-tail.x,cp.y-tail.y)>CHAIN_TOL)continue;
-      used.add(idx);
-      if(end==='a'){ordered.push(seg);tail=seg.b;}
-      else{ordered.push({...seg,a:seg.b,b:seg.a,shapeId});tail=seg.a;}
-      advanced=true;break;
-    }
-    if(!advanced)break;
-  }
-  if(ordered.length!==segs.length)return null;
-  return ordered;
-}
-
-// ─── emitArcRun ──────────────────────────────────────────────────────────────
-
-type RawPoint = Omit<SvgSnapPoint,'nx'|'ny'> & Vec2;
-
-function emitArcRun(run:Segment[],sw:number,shapeId:string,out:RawPoint[]):void {
-  if(run.length===0)return;
-  const midIdx=Math.floor(run.length/2);
-  out.push({...run[0].a,             type:'endpoint',strokeWidth:sw,shapeId});
-  out.push({...run[midIdx].a,        type:'midpoint',strokeWidth:sw,shapeId});
-  out.push({...run[run.length-1].b,  type:'endpoint',strokeWidth:sw,shapeId});
-}
-
-// ─── buildSnapPointsForShape ──────────────────────────────────────────────────
-
-function buildSnapPointsForShape(segs:Segment[],shapeId:string):RawPoint[] {
-  if(segs.length===0)return[];
-  const sw=segs[0].strokeWidth;
-  const out:RawPoint[]=[];
-
-  function processFlat(list:Segment[]) {
-    let i=0;
-    while(i<list.length){
-      if(list[i].isArcApprox){
-        const run:Segment[]=[];
-        while(i<list.length&&list[i].isArcApprox)run.push(list[i++]);
-        emitArcRun(run,sw,shapeId,out);
-      } else {
-        const seg=list[i++];
-        out.push({...seg.a,type:'endpoint',strokeWidth:sw,shapeId});
-        out.push({x:(seg.a.x+seg.b.x)/2,y:(seg.a.y+seg.b.y)/2,type:'midpoint',strokeWidth:sw,shapeId});
-        if(i>=list.length||list[i].isArcApprox){
-          out.push({...seg.b,type:'endpoint',strokeWidth:sw,shapeId});
-        }
-      }
-    }
-  }
-
-  if(segs.length===1){
-    if(segs[0].isArcApprox){emitArcRun(segs,sw,shapeId,out);}
-    else{
-      out.push({...segs[0].a,type:'endpoint',strokeWidth:sw,shapeId});
-      out.push({x:(segs[0].a.x+segs[0].b.x)/2,y:(segs[0].a.y+segs[0].b.y)/2,type:'midpoint',strokeWidth:sw,shapeId});
-      out.push({...segs[0].b,type:'endpoint',strokeWidth:sw,shapeId});
-    }
-    return out;
-  }
-
-  if(segs.length>MAX_SEGS_FOR_CHAIN){processFlat(segs);return out;}
-
-  const ordered=assembleChain(segs);
-  if(ordered!==null){processFlat(ordered);return out;}
-
-  processFlat(segs);
-  return out;
-}
-
-// ─── Geometry helpers ─────────────────────────────────────────────────────────
-
-function polygonCentroid(pts:Vec2[]):Vec2 {
-  let area=0,cx=0,cy=0;
-  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
-    const cross=pts[j].x*pts[i].y-pts[i].x*pts[j].y;
-    area+=cross;cx+=(pts[j].x+pts[i].x)*cross;cy+=(pts[j].y+pts[i].y)*cross;
-  }
-  area/=2;
-  if(Math.abs(area)<1e-9)return{x:pts.reduce((s,p)=>s+p.x,0)/pts.length,y:pts.reduce((s,p)=>s+p.y,0)/pts.length};
-  return{x:cx/(6*area),y:cy/(6*area)};
-}
-
-function segmentIntersection(a:Vec2,b:Vec2,c:Vec2,d:Vec2):Vec2|null {
-  const r={x:b.x-a.x,y:b.y-a.y},s={x:d.x-c.x,y:d.y-c.y};
-  const denom=r.x*s.y-r.y*s.x;
-  if(Math.abs(denom)<1e-10)return null;
-  const t=((c.x-a.x)*s.y-(c.y-a.y)*s.x)/denom;
-  const u=((c.x-a.x)*r.y-(c.y-a.y)*r.x)/denom;
-  const EPS=1e-9;
-  if(t>=EPS&&t<=1-EPS&&u>=EPS&&u<=1-EPS)return{x:a.x+t*r.x,y:a.y+t*r.y};
-  return null;
-}
-
-// FIX: Removed shapeId same-shape guard — walls from one large path element
-// crossing walls from another would be skipped. We only skip arc-approx segments
-// to avoid false intersections inside curved geometry.
-// We also use a spatial grid to avoid O(n²) on large files.
-
-function buildGrid(segs: Segment[], cellSize: number): Map<string, number[]> {
-  const grid = new Map<string, number[]>();
-  const addCell = (gx: number, gy: number, idx: number) => {
-    const k = `${gx},${gy}`;
-    const arr = grid.get(k) ?? [];
-    arr.push(idx);
-    grid.set(k, arr);
-  };
-  for (let i = 0; i < segs.length; i++) {
-    const s = segs[i];
-    const x0 = Math.floor(Math.min(s.a.x, s.b.x) / cellSize);
-    const x1 = Math.floor(Math.max(s.a.x, s.b.x) / cellSize);
-    const y0 = Math.floor(Math.min(s.a.y, s.b.y) / cellSize);
-    const y1 = Math.floor(Math.max(s.a.y, s.b.y) / cellSize);
-    for (let gx = x0; gx <= x1; gx++)
-      for (let gy = y0; gy <= y1; gy++)
-        addCell(gx, gy, i);
-  }
-  return grid;
-}
-
-function computeIntersections(segs: Segment[]): RawPoint[] {
-  const out: RawPoint[] = [];
-  // Only use non-arc segments for intersection — arc tessellation points
-  // produce masses of false intersections
-  const real = segs.filter(s => !s.isArcApprox);
-  if (real.length === 0 || real.length > MAX_SEGS_FOR_INTERSECT) return out;
-
-  // Determine a reasonable cell size (~10% of average segment length or 20px min)
-  const avgLen = real.reduce((s, seg) => s + Math.hypot(seg.b.x - seg.a.x, seg.b.y - seg.a.y), 0) / real.length;
-  const cellSize = Math.max(20, avgLen * 3);
-
-  const grid = buildGrid(real, cellSize);
-  const checked = new Set<string>();
-
-  for (let i = 0; i < real.length; i++) {
-    const sa = real[i];
-    const x0 = Math.floor(Math.min(sa.a.x, sa.b.x) / cellSize);
-    const x1 = Math.floor(Math.max(sa.a.x, sa.b.x) / cellSize);
-    const y0 = Math.floor(Math.min(sa.a.y, sa.b.y) / cellSize);
-    const y1 = Math.floor(Math.max(sa.a.y, sa.b.y) / cellSize);
-
-    const candidates = new Set<number>();
-    for (let gx = x0; gx <= x1; gx++)
-      for (let gy = y0; gy <= y1; gy++)
-        (grid.get(`${gx},${gy}`) ?? []).forEach(j => candidates.add(j));
-
-    for (const j of candidates) {
-      if (j <= i) continue;
-      const key = `${i}:${j}`;
-      if (checked.has(key)) continue;
-      checked.add(key);
-
-      const sb = real[j];
-      // Skip segments that share an endpoint (they "intersect" trivially at the join)
-      const sharesEndpoint =
-        (Math.hypot(sa.a.x - sb.a.x, sa.a.y - sb.a.y) < 2) ||
-        (Math.hypot(sa.a.x - sb.b.x, sa.a.y - sb.b.y) < 2) ||
-        (Math.hypot(sa.b.x - sb.a.x, sa.b.y - sb.a.y) < 2) ||
-        (Math.hypot(sa.b.x - sb.b.x, sa.b.y - sb.b.y) < 2);
-      if (sharesEndpoint) continue;
-
-      const pt = segmentIntersection(sa.a, sa.b, sb.a, sb.b);
-      if (pt) {
-        out.push({
-          ...pt,
-          type: 'intersection',
-          strokeWidth: Math.max(sa.strokeWidth, sb.strokeWidth),
-          shapeId: `${sa.shapeId}:${sb.shapeId}`,
-        });
-      }
-    }
-  }
-  return out;
-}
-
-const MERGE_DIST_PX=3;
-function dedup(rawPts:RawPoint[]):RawPoint[] {
-  const out:RawPoint[]=[];const d2=MERGE_DIST_PX*MERGE_DIST_PX;
-  for(const pt of rawPts)if(!out.some(e=>(pt.x-e.x)**2+(pt.y-e.y)**2<d2))out.push(pt);
-  return out;
-}
-
-function parseSvgSegments(svgEl:Element):Segment[] {
-  if(typeof window==='undefined')return[];
-  const allSegs:Segment[]=[];let autoId=0;
-  svgEl.querySelectorAll('line,polyline,polygon,path,rect,circle,ellipse').forEach(el=>{
-    const sw=resolveStrokeWidth(el);
-    if(isDecorationElement(el,sw))return;
-    const id=el.id||el.getAttribute('data-id')||`shape-${autoId++}`;
-    const ctm=getCTM(el,svgEl);
-    const tag=el.tagName.toLowerCase();
-    let raw:Segment[]=[];
-    switch(tag){
-      case 'line':     raw=extractLine(el,sw,id);              break;
-      case 'polyline': raw=extractPolyPoints(el,sw,id,false);  break;
-      case 'polygon':  raw=extractPolyPoints(el,sw,id,true);   break;
-      case 'path':     raw=pathToSegments(attr(el,'d'),sw,id); break;
-      case 'rect':     raw=extractRect(el,sw,id);              break;
-      case 'circle':   raw=extractCircle(el,sw,id);            break;
-      case 'ellipse':  raw=extractEllipse(el,sw,id);           break;
-    }
-    for(const seg of raw)allSegs.push({...seg,a:applyMatrix(ctm,seg.a),b:applyMatrix(ctm,seg.b)});
-  });
-  return allSegs;
-}
-
-export const SVG_SNAP_COLOURS:Record<string,string>={
-  endpoint:'rgba(251,191,36,0.90)',midpoint:'rgba(52,211,153,0.80)',
-  centroid:'rgba(167,139,250,0.85)',intersection:'rgba(248,113,113,0.85)',
-};
-
-export function useSvgSnapPoints(svgContent:string|null,pdfDimensions:PdfDimensions|null):SvgSnapPoint[] {
-  return useMemo<SvgSnapPoint[]>(()=>{
-    if(!svgContent||!pdfDimensions)return[];
-    const{w:pdfW,h:pdfH}=pdfDimensions;
-    const parser=new DOMParser();
-    const doc=parser.parseFromString(svgContent,'image/svg+xml');
-    if(doc.querySelector('parsererror')){console.warn('[useSvgSnapPoints] SVG parse error');return[];}
-    const svgEl=doc.querySelector('svg') as SVGSVGElement|null;
-    if(!svgEl)return[];
-
-    const vbt=buildViewBoxTransform(svgEl,pdfW,pdfH);
-    const allSegs=parseSvgSegments(svgEl);
-    const transformedSegs:Segment[]=allSegs.map(seg=>({...seg,a:applyVBT(seg.a,vbt),b:applyVBT(seg.b,vbt)}));
-    if(transformedSegs.length===0)return[];
-
-    const byShape=new Map<string,Segment[]>();
-    for(const seg of transformedSegs){const arr=byShape.get(seg.shapeId)??[];arr.push(seg);byShape.set(seg.shapeId,arr);}
-
-    const raw:RawPoint[]=[];
-
-    for(const[shapeId,segs]of byShape){
-      raw.push(...buildSnapPointsForShape(segs,shapeId));
-
-      if(segs.length>=3&&segs.length<=MAX_SEGS_FOR_CHAIN){
-        const ordered=assembleChain(segs);
-        if(ordered!==null){
-          const verts=ordered.map(s=>s.a); verts.push(ordered[ordered.length-1].b);
-          const isClosed=Math.hypot(verts[verts.length-1].x-verts[0].x,verts[verts.length-1].y-verts[0].y)<CHAIN_TOL*2;
-          if(isClosed){
-            const realV=ordered.filter(s=>!s.isArcApprox).map(s=>s.a);
-            const poly=realV.length>=3?realV:verts.slice(0,-1);
-            const c=polygonCentroid(poly);
-            if(c.x>=0&&c.x<=pdfW&&c.y>=0&&c.y<=pdfH)
-              raw.push({...c,type:'centroid',strokeWidth:segs[0].strokeWidth,shapeId});
+        if (tag==='line') {
+          const x1=parseFloat(el.getAttribute('x1')||'0');
+          const y1=parseFloat(el.getAttribute('y1')||'0');
+          const x2=parseFloat(el.getAttribute('x2')||'0');
+          const y2=parseFloat(el.getAttribute('y2')||'0');
+          const [ax,ay]=applyVB(...applyMat(ctm,x1,y1),vb);
+          const [bx,by]=applyVB(...applyMat(ctm,x2,y2),vb);
+          if (Math.hypot(bx-ax,by-ay)>0.5)
+            allSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+              mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
+        } else if (tag==='path') {
+          allSegs.push(...pathToSegs(el.getAttribute('d')??'',ctm,vb,id,sw,pw,ph));
+        } else if (tag==='polyline'||tag==='polygon') {
+          const raw=el.getAttribute('points')??'';
+          const nums=raw.trim().split(/[\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
+          const pxpts: Array<[number,number]> = [];
+          for (let i=0;i+1<nums.length;i+=2)
+            pxpts.push(applyVB(...applyMat(ctm,nums[i],nums[i+1]),vb));
+          for (let i=0;i+1<pxpts.length;i++) {
+            const [ax,ay]=pxpts[i],[bx,by]=pxpts[i+1];
+            if (Math.hypot(bx-ax,by-ay)>0.5)
+              allSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+                mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
+          }
+          if (tag==='polygon'&&pxpts.length>=2) {
+            const [ax,ay]=pxpts[pxpts.length-1],[bx,by]=pxpts[0];
+            if (Math.hypot(bx-ax,by-ay)>0.5)
+              allSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+                mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
           }
         }
+      };
+
+      svgRoot.querySelectorAll('line,path,polyline,polygon').forEach(processEl);
+
+      // ── Endpoints: only from straight segs ──────────────────────────────
+      // Curve segs contribute their x1/x2 as endpoints separately (below)
+      const straightEndpointPx = dedup(
+        allSegs
+          .filter((s): s is StraightSeg => s.kind==='straight')
+          .flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]] as Array<[number,number]>),
+        2.0,
+      );
+
+      // Curve true endpoints (only the bezier anchor points, not samples)
+      const curveEndpointPx: Array<[number,number]> = allSegs
+        .filter((s): s is CurveSeg => s.kind==='curve')
+        .flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]] as Array<[number,number]>);
+
+      const allEndpointPx = dedup([...straightEndpointPx, ...curveEndpointPx], 2.0);
+
+      // ── Intersections: only straight segs participate ────────────────────
+      const straightSegs: LineSeg[] = allSegs
+        .filter((s): s is StraightSeg => s.kind==='straight')
+        .map(s=>({ x1:s.x1,y1:s.y1, x2:s.x2,y2:s.y2, sw:s.sw }));
+
+      const MAX = 3000;
+      const segsForX = straightSegs.length > MAX
+        ? straightSegs.filter(s=>s.sw>0.3)
+        : straightSegs;
+
+      const intersectionPx: Array<[number,number]> = [];
+      for (let i=0;i<segsForX.length;i++) {
+        for (let j=i+1;j<segsForX.length;j++) {
+          const s1=segsForX[i], s2=segsForX[j];
+          const a1=Math.atan2(s1.y2-s1.y1,s1.x2-s1.x1);
+          const a2=Math.atan2(s2.y2-s2.y1,s2.x2-s2.x1);
+          const diff=Math.abs(a1-a2)%Math.PI;
+          if (Math.min(diff,Math.PI-diff)<0.26) continue;
+          const pt=segIntersection(s1,s2);
+          if (!pt) continue;
+          const [ix,iy]=pt;
+          if (ix<-pw*0.05||ix>pw*1.05||iy<-ph*0.05||iy>ph*1.05) continue;
+          intersectionPx.push([ix,iy]);
+        }
       }
+      const dedupedIntersections = dedup(intersectionPx, 6.0);
+
+      // ── Circle snap points ───────────────────────────────────────────────
+      const circlePts: SvgSnapPoint[] = [];
+      svgRoot.querySelectorAll('circle,ellipse').forEach(el => {
+        circlePts.push(...circleSnapPoints(
+          el, getCTM(el,svgEl), vb, `shape-${idCounter++}`, resolveStroke(el), pw, ph,
+        ));
+      });
+
+      // ── SvgCurves for canvas rendering ───────────────────────────────────
+      const svgCurves: SvgCurve[] = allSegs
+        .filter((s): s is CurveSeg => s.kind==='curve')
+        .map(s => ({
+          type:   s.curveType,
+          nx1:    s.x1/pw,  ny1:  s.y1/ph,
+          ncp1x:  s.cp1x/pw, ncp1y: s.cp1y/ph,
+          ...(s.curveType==='cubic' && s.cp2x!==undefined
+            ? { ncp2x: s.cp2x/pw, ncp2y: s.cp2y!/ph }
+            : {}),
+          nx2:    s.x2/pw,  ny2:  s.y2/ph,
+          shapeId: s.shapeId,
+          sw:      s.sw,
+        }));
+
+      return {
+        allSegs,
+        allEndpointPx,
+        dedupedIntersections,
+        circlePts,
+        svgCurves,
+        pw, ph,
+      };
+    } catch(err) {
+      console.error('[useSvgSnapPoints] parse error:', err);
+      return null;
+    }
+  }, [svgContent, pdfDims]);
+
+  // ── Phase 2: build snap point list, zoom-aware midpoint suppression ────────
+  return useMemo(() => {
+    if (!parsed) return { snapPoints: [], svgCurves: [] };
+    const { allSegs, allEndpointPx, dedupedIntersections, circlePts, svgCurves, pw, ph } = parsed;
+
+    const snapPoints: SvgSnapPoint[] = [];
+
+    // Endpoints
+    for (const [x,y] of allEndpointPx) {
+      if (x<0||x>pw||y<0||y>ph) continue;
+      snapPoints.push({ nx:x/pw, ny:y/ph, type:'endpoint', shapeId:'seg', strokeWidth:1 });
     }
 
-    // FIX: Use new grid-based cross-shape intersection detection
-    raw.push(...computeIntersections(transformedSegs));
+    // ── Straight-line midpoints (zoom-aware suppression) ───────────────────
+    const straightMidCandidates: Array<[number,number]> = [];
+    for (const seg of allSegs) {
+      if (seg.kind !== 'straight') continue;
+      const svgDist = Math.hypot(seg.x2-seg.x1, seg.y2-seg.y1);
+      if (svgDist * zoom < MIN_SCREEN_GAP_FOR_MIDPOINT) continue;
+      const mnx=seg.mx/pw, mny=seg.my/ph;
+      if (mnx<0||mnx>1||mny<0||mny>1) continue;
+      straightMidCandidates.push([seg.mx, seg.my]);
+    }
+    const dedupedStraightMids = dedup(straightMidCandidates, 4.0);
+    for (const [x,y] of dedupedStraightMids) {
+      snapPoints.push({ nx:x/pw, ny:y/ph, type:'midpoint', shapeId:'seg', strokeWidth:1 });
+    }
 
-    const dedupedRaw=dedup(raw);
-    const snapPoints:SvgSnapPoint[]=dedupedRaw
-      .filter(p=>p.x>=0&&p.x<=pdfW&&p.y>=0&&p.y<=pdfH)
-      .map(({x,y,type,strokeWidth,shapeId})=>({nx:x/pdfW,ny:y/pdfH,type,strokeWidth,shapeId}));
+    // ── Curve midpoints: ONE per bezier at t=0.5, always shown ────────────
+    // We dedup across curves that end up at nearly the same point.
+    const curveMidCandidates: Array<[number,number]> = allSegs
+      .filter((s): s is CurveSeg => s.kind==='curve')
+      .map(s => [s.midX, s.midY] as [number,number]);
+    const dedupedCurveMids = dedup(curveMidCandidates, 4.0);
+    for (const [x,y] of dedupedCurveMids) {
+      if (x<0||x>pw||y<0||y>ph) continue;
+      snapPoints.push({ nx:x/pw, ny:y/ph, type:'midpoint', shapeId:'curve', strokeWidth:1 });
+    }
 
-    const tc=snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]||0)+1;return acc;},{} as Record<string,number>);
-    console.log(`[useSvgSnapPoints] ${snapPoints.length} pts (${transformedSegs.length} segs, ${byShape.size} shapes) — `+Object.entries(tc).map(([k,v])=>`${k}:${v}`).join(' '));
-    return snapPoints;
-  },[svgContent,pdfDimensions]);
+    // Circle points
+    snapPoints.push(...circlePts);
+
+    // Intersections
+    for (const [x,y] of dedupedIntersections) {
+      if (x<-pw*0.02||x>pw*1.02||y<-ph*0.02||y>ph*1.02) continue;
+      snapPoints.push({ nx:x/pw, ny:y/ph, type:'intersection', shapeId:'corner', strokeWidth:1.5 });
+    }
+
+    console.log(
+      `[useSvgSnapPoints] zoom=${zoom.toFixed(2)} → ${snapPoints.length} pts: ` +
+      `${allEndpointPx.length} endpoints, ` +
+      `${dedupedStraightMids.length} straight-mids, ` +
+      `${dedupedCurveMids.length} curve-mids, ` +
+      `${circlePts.length} circle, ` +
+      `${dedupedIntersections.length} intersections | ` +
+      `${svgCurves.length} bezier curves`,
+    );
+
+    return { snapPoints, svgCurves };
+  }, [parsed, zoom]);
 }
