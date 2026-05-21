@@ -14,7 +14,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { MatchResult, SnapPointResult, TemplatePath } from './useTemplateMatcher';
+import type { MatchResult, SnapPointResult, TemplatePath } from '@/hooks/useTemplateMatcher';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
