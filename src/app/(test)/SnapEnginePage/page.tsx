@@ -1,7 +1,7 @@
 'use client';
 
 import React, {
-  useState, useEffect, useRef, useCallback, useMemo,
+  useState, useEffect, useRef, useCallback,
 } from 'react';
 
 import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
@@ -9,19 +9,25 @@ import { useSnapEngine }                        from '@/hooks/useSnapEngine';
 import type { SvgLine }                         from '@/hooks/useSvgInteraction';
 import type { PdfDimensions }                   from '@/types/viewerTypes';
 
-import { useShapeDetector }                                from '@/hooks/useShapeDetector';
-import { ShapeOverlayAdapted, LABEL_CONFIG }               from '@/components/ShapeOverlay';
-import type { ShapeLabel, DetectedRegion }                 from '@/hooks/useShapeDetector';
-
-// ── NEW: worker-based OpenCV matcher ─────────────────────────────────────────
-import { useOpenCVMatcher }                                from '@/hooks/useOpenCVMatcher';
+// ── CV Matcher (single-template) ──────────────────────────────────────────────
+import { useOpenCVMatcher }  from '@/hooks/useOpenCVMatcher';
 import {
   CVMatchOverlay,
-  CVWorkerBanner,        // ← new: floating progress banner on canvas
+  CVWorkerBanner,
   CVRubberBand,
   CVSamplerSidebar,
   useCVRubberBand,
 } from '@/components/CVMatchOverlay';
+
+// ── Pattern Painter (multi-pattern) ───────────────────────────────────────────
+import { usePatternPainter } from '@/hooks/usePatternPainter';
+import {
+  PatternPainterOverlay,
+  PatternPainterSidebar,
+  PatternRubberBand,
+  PatternWorkerBanner,
+  usePatternRubberBand,
+} from '@/components/PatternPainter';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +50,10 @@ const LOAD_LINES = [
 const DRAG_THRESHOLD = 5;
 
 const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+
+// ── Active tool type ──────────────────────────────────────────────────────────
+
+type ActiveTool = 'snap' | 'cv' | 'painter' | null;
 
 // ── SVG line extractor ────────────────────────────────────────────────────────
 
@@ -136,13 +146,11 @@ const S = {
   main:       { display:'flex',flex:1,overflow:'hidden',minHeight:0 },
   viewport:   { flex:1,position:'relative' as const,overflow:'hidden',background:'#F8F7F3',backgroundImage:'radial-gradient(circle, #D0CEC8 1px, transparent 1px)',backgroundSize:'20px 20px',userSelect:'none' as const },
   canvasWrap: { position:'absolute' as const,top:0,left:0,transformOrigin:'0 0',willChange:'transform' },
-  sidebar:    { width:240,background:'#0f0f0f',borderLeft:'1px solid #1e1e1e',display:'flex',flexDirection:'column' as const,flexShrink:0,overflow:'hidden' },
   statusbar:  { height:24,background:'#0a0a0a',borderTop:'1px solid #1a1a1a',display:'flex',alignItems:'center',padding:'0 10px',gap:12,flexShrink:0 },
   sep:        { width:1,height:18,background:'#222',flexShrink:0 },
   barSep:     { width:1,height:12,background:'#1e1e1e' },
-  lblStyle:   { fontSize:8,color:'#444',textTransform:'uppercase' as const,letterSpacing:'.08em',whiteSpace:'nowrap' as const },
-  sbLabel:    { fontSize:8,color:'#3a3a3a',textTransform:'uppercase' as const,letterSpacing:'.1em',marginBottom:8 },
   statusTxt:  { fontSize:8,color:'#555',textTransform:'uppercase' as const,letterSpacing:'.07em',maxWidth:340,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' as const },
+  lblStyle:   { fontSize:8,color:'#444',textTransform:'uppercase' as const,letterSpacing:'.08em',whiteSpace:'nowrap' as const },
 };
 
 function tbBtn(active: boolean, colour?: string): React.CSSProperties {
@@ -155,6 +163,74 @@ function tbBtn(active: boolean, colour?: string): React.CSSProperties {
     padding:'3px 7px',cursor:'pointer',fontFamily:'inherit',
     whiteSpace:'nowrap',flexShrink:0,
   };
+}
+
+// ── Tool button — larger, with icon + label ───────────────────────────────────
+
+function ToolBtn({
+  icon, label, active, color, onClick,
+}: { icon: string; label: string; active: boolean; color: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display:        'flex',
+        flexDirection:  'column',
+        alignItems:     'center',
+        justifyContent: 'center',
+        gap:            2,
+        width:          52,
+        height:         32,
+        border:         `1px solid ${active ? color : '#2a2a2a'}`,
+        background:     active ? `${color}15` : 'transparent',
+        color:          active ? color : '#555',
+        cursor:         'pointer',
+        fontFamily:     "'Courier New', monospace",
+        flexShrink:     0,
+        position:       'relative' as const,
+        transition:     'border-color .15s, color .15s, background .15s',
+      }}
+    >
+      <span style={{ fontSize: 11, lineHeight: 1 }}>{icon}</span>
+      <span style={{ fontSize: 6, textTransform: 'uppercase', letterSpacing: '.07em', lineHeight: 1 }}>{label}</span>
+      {active && (
+        <div style={{
+          position: 'absolute',
+          bottom:   0,
+          left:     0,
+          right:    0,
+          height:   2,
+          background: color,
+        }} />
+      )}
+    </button>
+  );
+}
+
+// ── Sidebar shell ─────────────────────────────────────────────────────────────
+
+function SidebarShell({
+  activeTool,
+  children,
+}: { activeTool: ActiveTool; children: React.ReactNode }) {
+  if (activeTool === null) return null;
+
+  const WIDTH = activeTool === 'painter' ? 260 : 240;
+
+  return (
+    <div style={{
+      width:           WIDTH,
+      background:      '#0f0f0f',
+      borderLeft:      '1px solid #1e1e1e',
+      display:         'flex',
+      flexDirection:   'column',
+      flexShrink:      0,
+      overflow:        'hidden',
+      transition:      'width .15s',
+    }}>
+      {children}
+    </div>
+  );
 }
 
 // ── Loading overlay ───────────────────────────────────────────────────────────
@@ -206,7 +282,7 @@ function IdleScreen() {
         <div style={{ fontSize:28,color:'#f59e0b',marginBottom:18 }}>⊕</div>
         <div style={{ fontSize:10,fontWeight:700,color:'#f59e0b',textTransform:'uppercase',letterSpacing:'.18em',marginBottom:6 }}>SVG Snap Engine</div>
         <p style={{ fontSize:8,color:'#444',textTransform:'uppercase',letterSpacing:'.1em',margin:'12px 0 20px',lineHeight:2 }}>Load a floor plan SVG to begin</p>
-        <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.07em',marginTop:20,lineHeight:2 }}>Hover: reveal snaps · Click: snap / chain<br />Ctrl+scroll: zoom · Drag: pan</p>
+        <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.07em',marginTop:20,lineHeight:2 }}>Select a tool from the toolbar · Ctrl+scroll: zoom · Drag: pan</p>
       </div>
     </div>
   );
@@ -248,10 +324,11 @@ function ChainSidebar({ chain, pdfDims, onRemove, onJump }: {
   const totalLen = chain.length >= 2
     ? chain.reduce((sum,p,i)=>i===0?0:sum+Math.hypot(p.x-chain[i-1].x,p.y-chain[i-1].y),0)
     : 0;
+
   return (
     <>
       <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-        <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:6 }}>Linear chain</div>
+        <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:4 }}>Linear Chain</div>
         <div style={{ display:'flex',gap:10,alignItems:'baseline' }}>
           <span style={{ fontSize:8,color:'#555' }}>Pts</span>
           <span style={{ fontSize:13,color:'#f59e0b',fontWeight:700 }}>{chain.length}</span>
@@ -262,7 +339,7 @@ function ChainSidebar({ chain, pdfDims, onRemove, onJump }: {
       <div style={{ flex:1,overflowY:'auto',padding:6,display:'flex',flexDirection:'column',gap:2 }}>
         {chain.length===0 ? (
           <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>
-            Enable Linear mode<br />click corners to chain
+            Click corners on the canvas<br />to build a chain
           </p>
         ) : (
           chain.map((p,i) => {
@@ -290,7 +367,7 @@ function ChainSidebar({ chain, pdfDims, onRemove, onJump }: {
   );
 }
 
-// ── Snap point list item ──────────────────────────────────────────────────────
+// ── Snap points sidebar ───────────────────────────────────────────────────────
 
 function PointItem({ point, pdfDims, isHighlighted, onClick }: { point: SvgSnapPoint; pdfDims: PdfDimensions | null; isHighlighted: boolean; onClick: () => void }) {
   const col=SNAP_COLOURS[point.type];
@@ -308,69 +385,118 @@ function PointItem({ point, pdfDims, isHighlighted, onClick }: { point: SvgSnapP
   );
 }
 
-// ── Shapes sidebar tab ────────────────────────────────────────────────────────
+// ── Snap tool sidebar (chain + points tabbed) ─────────────────────────────────
 
-function ShapesSidebar({ regions, isScanning, onRescan, onJump, pdfDims, zoom, pan }: {
-  regions: DetectedRegion[];
-  isScanning: boolean;
-  onRescan: () => void;
-  onJump: (r: DetectedRegion) => void;
+function SnapToolSidebar({
+  engine, snapPoints, svgLines, svgCurves, pdfDims,
+  highlightIdx, setHighlightIdx,
+  onJumpPoint, onJumpChain, onRemoveChain,
+}: {
+  engine: ReturnType<typeof useSnapEngine>;
+  snapPoints: SvgSnapPoint[];
+  svgLines: SvgLine[];
+  svgCurves: any[];
   pdfDims: PdfDimensions | null;
-  zoom: number;
-  pan: { x:number; y:number };
+  highlightIdx: number | null;
+  setHighlightIdx: (i: number | null) => void;
+  onJumpPoint: (i: number) => void;
+  onJumpChain: (i: number) => void;
+  onRemoveChain: (i: number) => void;
 }) {
-  const [selected, setSelected] = useState<string|null>(null);
-  const grouped = regions.reduce((acc,r)=>{(acc[r.label]=acc[r.label]??[]).push(r);return acc;},{} as Record<ShapeLabel,DetectedRegion[]>);
+  const [tab, setTab] = useState<'chain'|'points'>('chain');
+  const typeCounts = snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]??0)+1;return acc;},{} as Record<string,number>);
+
   return (
     <>
-      <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-        <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:6 }}>Shape detection</div>
-        <div style={{ display:'flex',gap:10,alignItems:'baseline' }}>
-          <span style={{ fontSize:8,color:'#555' }}>Found</span>
-          <span style={{ fontSize:13,color:'#f43f5e',fontWeight:700 }}>{regions.length}</span>
-          <button onClick={onRescan} disabled={isScanning} style={{ marginLeft:'auto',...tbBtn(isScanning,'#f43f5e'),padding:'2px 6px' }}>{isScanning?'⟳':'⟳ scan'}</button>
-        </div>
+      {/* Sub-tabs */}
+      <div style={{ display:'flex',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
+        {([['chain','Chain','#a78bfa'],['points','Points','#f59e0b']] as const).map(([key,label,color])=>(
+          <button key={key} onClick={()=>setTab(key)}
+            style={{ flex:1,fontSize:7,textTransform:'uppercase',letterSpacing:'.05em',padding:'6px 0',border:'none',background:tab===key?'#111':'transparent',color:tab===key?color:'#333',cursor:'pointer',borderBottom:tab===key?`1px solid ${color}`:'1px solid transparent',fontFamily:'inherit' }}>
+            {label} ({key==='chain'?engine.linearChain.length:snapPoints.length})
+          </button>
+        ))}
       </div>
-      <div style={{ flex:1,overflowY:'auto',padding:6,display:'flex',flexDirection:'column',gap:4 }}>
-        {regions.length===0 ? (
-          <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>{isScanning?'Scanning…':'No shapes detected.\nEnable Detect and rescan.'}</p>
-        ) : (
-          Object.entries(grouped).map(([label,items])=>{
-            const cfg=LABEL_CONFIG[label as ShapeLabel];
-            const color=items[0].color;
-            return (
-              <div key={label}>
-                <div style={{ display:'flex',alignItems:'center',gap:6,padding:'3px 4px',marginBottom:2,borderBottom:'1px solid #181818' }}>
-                  <div style={{ width:8,height:8,borderRadius:1,background:color,flexShrink:0 }} />
-                  <span style={{ fontSize:7,color:'#666',textTransform:'uppercase',letterSpacing:'.08em',flex:1 }}>{cfg.name}</span>
-                  <span style={{ fontSize:7,color:'#333' }}>{items.length}</span>
+
+      {tab==='chain' && (
+        <ChainSidebar chain={engine.linearChain} pdfDims={pdfDims} onRemove={onRemoveChain} onJump={onJumpChain} />
+      )}
+
+      {tab==='points' && (
+        <>
+          <div style={{ padding:10,borderBottom:'1px solid #1a1a1a' }}>
+            <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:6 }}>Snap types</div>
+            {(Object.entries(SNAP_COLOURS) as [SvgSnapPoint['type'],string][]).map(([type,col])=>(
+              <div key={type} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5 }}>
+                <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                  <div style={{ width:9,height:9,borderRadius:2,background:col,flexShrink:0 }} />
+                  <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>{type}</span>
                 </div>
-                {items.map(region=>{
-                  const isSel=selected===region.id;
-                  return (
-                    <div key={region.id} onClick={()=>{setSelected(isSel?null:region.id);onJump(region);}}
-                      style={{ border:`1px solid ${isSel?color:'#1e1e1e'}`,padding:'4px 6px',fontSize:8,cursor:'pointer',background:isSel?`${color}10`:'transparent',marginBottom:2,marginLeft:8,transition:'border-color .1s' }}>
-                      <div style={{ display:'flex',alignItems:'center',gap:4 }}>
-                        <span style={{ color:'#555',flex:1,fontSize:7 }}>{pdfDims?`${(region.normX*pdfDims.w).toFixed(0)}, ${(region.normY*pdfDims.h).toFixed(0)}`:`${region.normX.toFixed(3)}, ${region.normY.toFixed(3)}`}</span>
-                        <span style={{ color:isSel?color:'#333',fontSize:7 }}>{Math.round(region.confidence*100)}%</span>
-                      </div>
-                      <div style={{ fontSize:7,color:'#333',marginTop:1 }}>{region.pathCount} paths · {region.bbox.w.toFixed(0)}×{region.bbox.h.toFixed(0)}px</div>
-                    </div>
-                  );
-                })}
+                <span style={{ fontSize:8,color:'#444' }}>{typeCounts[type]??0}</span>
               </div>
-            );
-          })
-        )}
-      </div>
+            ))}
+            <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:3 }}>
+              <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                <div style={{ width:9,height:3,background:'#38bdf8',flexShrink:0 }} />
+                <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>lines</span>
+              </div>
+              <span style={{ fontSize:8,color:'#444' }}>{svgLines.length}</span>
+            </div>
+            <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:3 }}>
+              <div style={{ display:'flex',alignItems:'center',gap:8 }}>
+                <div style={{ width:9,height:3,background:'#38bdf8',borderRadius:1,flexShrink:0,opacity:0.6 }} />
+                <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>curves</span>
+              </div>
+              <span style={{ fontSize:8,color:'#444' }}>{svgCurves.length}</span>
+            </div>
+          </div>
+          <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a' }}>
+            <span style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.09em' }}>
+              Points ({snapPoints.length}{snapPoints.length>300?', showing 300':''})
+            </span>
+          </div>
+          <div style={{ flex:1,overflowY:'auto',padding:6,display:'flex',flexDirection:'column',gap:3 }}>
+            {snapPoints.length===0
+              ? <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'28px 8px',lineHeight:2.2 }}>Load an SVG to see<br />detected snap points</p>
+              : snapPoints.slice(0,300).map((p,i)=>(
+                <PointItem key={`${p.nx.toFixed(5)}-${p.ny.toFixed(5)}-${p.type}-${i}`} point={p} pdfDims={pdfDims} isHighlighted={highlightIdx===i} onClick={()=>onJumpPoint(i)} />
+              ))
+            }
+          </div>
+        </>
+      )}
     </>
+  );
+}
+
+// ── Sidebar header label ──────────────────────────────────────────────────────
+
+function SidebarHeader({ icon, label, color, onClose }: { icon: string; label: string; color: string; onClose: () => void }) {
+  return (
+    <div style={{
+      display:       'flex',
+      alignItems:    'center',
+      gap:           8,
+      padding:       '7px 10px',
+      borderBottom:  '1px solid #1a1a1a',
+      flexShrink:    0,
+      background:    `${color}08`,
+    }}>
+      <span style={{ fontSize: 12, color }}>{icon}</span>
+      <span style={{ fontSize: 8, color, textTransform: 'uppercase', letterSpacing: '.12em', fontWeight: 700, flex: 1 }}>{label}</span>
+      <button
+        onClick={onClose}
+        title="Close panel"
+        style={{ background:'transparent',border:'none',color:'#333',fontSize:13,cursor:'pointer',padding:'0 2px',lineHeight:1,fontFamily:'inherit' }}
+      >×</button>
+    </div>
   );
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type SidebarTab  = 'chain'|'points'|'shapes'|'sampler';
-type SamplerMode = 'idle'|'drawing'|'matched';
+type CVSamplerMode = 'idle' | 'drawing' | 'matched';
+type PainterDrawState = 'idle' | 'drawing' | 'naming';
 
 export default function SnapEnginePage() {
   // ── Core state ──────────────────────────────────────────────────────────────
@@ -384,6 +510,9 @@ export default function SnapEnginePage() {
   const [zoom,        setZoom]        = useState(1);
   const [pan,         setPan]         = useState({ x:0, y:0 });
 
+  // ── Active tool ──────────────────────────────────────────────────────────────
+  const [activeTool, setActiveTool] = useState<ActiveTool>(null);
+
   // ── Snap toggles ─────────────────────────────────────────────────────────────
   const [snapEnabled,     setSnapEnabled]     = useState(true);
   const [showPins,        setShowPins]        = useState(true);
@@ -392,20 +521,21 @@ export default function SnapEnginePage() {
   const [proximityRadius, setProximityRadius] = useState(40);
   const [linearMode,      setLinearMode]      = useState(true);
 
-  // ── Shape detection ──────────────────────────────────────────────────────────
-  const [detectEnabled,    setDetectEnabled]    = useState(false);
-  const [shapeThreshold,   setShapeThreshold]   = useState(72);
-  const [showShapeOverlay, setShowShapeOverlay] = useState(true);
-
   // ── CV Sampler state ─────────────────────────────────────────────────────────
-  const [samplerMode,  setSamplerMode]  = useState<SamplerMode>('idle');
-  const [cvThreshold,  setCVThreshold]  = useState(0.60);
-  const [cvRotations,  setCVRotations]  = useState<number[]>([0, 90, 180, 270]);
-  const [cvFlips,      setCVFlips]      = useState<boolean[]>([false, true]);
-  const [cvRemoveText, setCVRemoveText] = useState(true);
+  const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
+  const [cvThreshold,   setCVThreshold]   = useState(0.60);
+  const [cvRotations,   setCVRotations]   = useState<number[]>([0, 90, 180, 270]);
+  const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
+  const [cvRemoveText,  setCVRemoveText]  = useState(false);
+
+  // ── Pattern Painter state ─────────────────────────────────────────────────────
+  const [painterDrawState, setPainterDrawState] = useState<PainterDrawState>('idle');
+  const [painterRotations, setPainterRotations] = useState<number[]>([0, 90, 180, 270]);
+  const [painterFlips,     setPainterFlips]     = useState<boolean[]>([false, true]);
+  const [painterRemoveText,setPainterRemoveText] = useState(false);
+  const pendingPainterBoxRef = useRef<{ x:number;y:number;w:number;h:number } | null>(null);
 
   // ── UI state ─────────────────────────────────────────────────────────────────
-  const [sidebarTab,   setSidebarTab]   = useState<SidebarTab>('chain');
   const [highlightIdx, setHighlightIdx] = useState<number|null>(null);
 
   // ── Refs ──────────────────────────────────────────────────────────────────────
@@ -414,7 +544,6 @@ export default function SnapEnginePage() {
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const pinCanvasRef  = useRef<HTMLCanvasElement>(null);
   const fileInputRef  = useRef<HTMLInputElement>(null);
-  const hiddenSvgRef  = useRef<SVGSVGElement>(null);
 
   const pointerDownRef = useRef(false);
   const isDraggingRef  = useRef(false);
@@ -425,14 +554,14 @@ export default function SnapEnginePage() {
   const flashIdRef     = useRef(0);
   const pdfDimsRef     = useRef<PdfDimensions|null>(null);
   const pageNumberRef  = useRef(1);
-  const samplerModeRef = useRef<SamplerMode>('idle');
+  const activeToolRef  = useRef<ActiveTool>(null);
 
   const [flashes, setFlashes] = useState<Flash[]>([]);
 
   useEffect(()=>{ panRef.current     = pan;        },[pan]);
   useEffect(()=>{ zoomRef.current    = zoom;       },[zoom]);
   useEffect(()=>{ pdfDimsRef.current = pdfDims;    },[pdfDims]);
-  useEffect(()=>{ samplerModeRef.current = samplerMode; },[samplerMode]);
+  useEffect(()=>{ activeToolRef.current = activeTool; },[activeTool]);
 
   // ── Snap hooks ────────────────────────────────────────────────────────────────
   const { snapPoints, svgCurves } = useSvgSnapPoints(svgContent, pdfDims, zoom);
@@ -456,41 +585,83 @@ export default function SnapEnginePage() {
     pan,
   });
 
-  // ── Shape detection ──────────────────────────────────────────────────────────
-  const { regions, isScanning, rescan } = useShapeDetector(hiddenSvgRef, {
-    enabled:   detectEnabled,
-    threshold: shapeThreshold/100,
-  });
-
-  // ── OpenCV matcher (worker-based) ─────────────────────────────────────────────
+  // ── CV Matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  // ── Rubber-band (CV version) ─────────────────────────────────────────────────
-  const isDrawMode = samplerMode === 'drawing';
-
-  const handleBoxCommit = useCallback(async (box: { x:number; y:number; w:number; h:number }) => {
+  const handleCVBoxCommit = useCallback(async (box: { x:number; y:number; w:number; h:number }) => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
     cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
-    setSamplerMode('matched');
+    setCVSamplerMode('matched');
     await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText);
   }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText]);
 
-  const { drawBox, isDrawing, tooLarge, startDraw } = useCVRubberBand(
+  const handleClearCV = useCallback(() => {
+    cvMatcher.clearAll();
+    setCVSamplerMode('idle');
+  }, [cvMatcher]);
+
+  const handleEnterCVDraw = useCallback(() => {
+    cvMatcher.clearAll();
+    setCVSamplerMode('drawing');
+  }, [cvMatcher]);
+
+  const isCVDrawMode = activeTool === 'cv' && cvSamplerMode === 'drawing';
+
+  const {
+    drawBox:   cvDrawBox,
+    isDrawing: cvIsDrawing,
+    tooLarge:  cvTooLarge,
+    startDraw: cvStartDraw,
+  } = useCVRubberBand(
     viewportRef as React.RefObject<HTMLDivElement>,
-    isDrawMode,
-    handleBoxCommit,
+    isCVDrawMode,
+    handleCVBoxCommit,
   );
 
-  const handleClearSampler = useCallback(() => {
-    cvMatcher.clearAll();
-    setSamplerMode('idle');
-  }, [cvMatcher]);
+  // ── Pattern Painter ────────────────────────────────────────────────────────────
+  const painter = usePatternPainter();
 
-  const handleEnterDraw = useCallback(() => {
-    cvMatcher.clearAll();
-    setSamplerMode('drawing');
-  }, [cvMatcher]);
+  const isPainterDrawMode = activeTool === 'painter' && painterDrawState === 'drawing';
+
+  const handlePainterBoxCommit = useCallback((box: { x:number; y:number; w:number; h:number }) => {
+    pendingPainterBoxRef.current = box;
+    setPainterDrawState('naming');
+  }, []);
+
+  const handlePainterConfirmName = useCallback(async (name: string) => {
+    const box    = pendingPainterBoxRef.current;
+    const canvas = baseCanvasRef.current;
+    if (!box || !canvas) { setPainterDrawState('idle'); return; }
+    pendingPainterBoxRef.current = null;
+    setPainterDrawState('idle');
+    await painter.addPattern(name, canvas, box, zoomRef.current, panRef.current, {
+      threshold:   0.60,
+      rotations:   painterRotations,
+      flips:       painterFlips,
+      removeText:  painterRemoveText,
+    });
+  }, [painter, painterRotations, painterFlips, painterRemoveText]);
+
+  const handlePainterCancelDraw = useCallback(() => {
+    pendingPainterBoxRef.current = null;
+    setPainterDrawState('idle');
+  }, []);
+
+  const handleEnterPainterDraw = useCallback(() => {
+    setPainterDrawState('drawing');
+  }, []);
+
+  const {
+    drawBox:   painterDrawBox,
+    isDrawing: painterIsDrawing,
+    tooLarge:  painterTooLarge,
+    startDraw: painterStartDraw,
+  } = usePatternRubberBand(
+    viewportRef as React.RefObject<HTMLDivElement>,
+    isPainterDrawMode,
+    handlePainterBoxCommit,
+  );
 
   // ── Canvas transform ─────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -525,12 +696,6 @@ export default function SnapEnginePage() {
       setPdfDims(dims);pdfDimsRef.current=dims;
       const lines=extractSvgLines(text,w,h);
       setSvgLines(lines);
-      if(hiddenSvgRef.current){
-        const hsvg=hiddenSvgRef.current;
-        hsvg.setAttribute('viewBox',svgEl.getAttribute('viewBox')??`0 0 ${w} ${h}`);
-        hsvg.setAttribute('width',String(w));hsvg.setAttribute('height',String(h));
-        hsvg.innerHTML=svgEl.innerHTML;
-      }
       const blob=new Blob([text],{type:'image/svg+xml'});
       const url=URL.createObjectURL(blob);
       const img=new Image();
@@ -542,27 +707,26 @@ export default function SnapEnginePage() {
       ctx.drawImage(img,0,0,w,h);
       setSvgContent(text);
       engine.clearChain();
-      handleClearSampler();
+      handleClearCV();
+      painter.clearAll();
       setIsLoading(false);
       fitCanvas();
       setStatus(`Loaded · ${w.toFixed(0)}×${h.toFixed(0)}px · ${lines.length} line segs · parsing snaps…`);
-      if(detectEnabled)setTimeout(rescan,600);
     } catch(err){
       setIsLoading(false);setIsIdle(true);
       setStatus(`Error: ${(err as Error).message}`);
     }
-  },[fitCanvas,engine,detectEnabled,rescan,handleClearSampler]);
+  },[fitCanvas,engine,handleClearCV,painter]);
 
   // ── Status line ───────────────────────────────────────────────────────────────
   useEffect(()=>{
     if(snapPoints.length===0||!pdfDims)return;
     const counts=snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]??0)+1;return acc;},{} as Record<string,number>);
     const summary=(Object.entries(counts) as [string,number][]).map(([k,v])=>`${k}:${v}`).join(' · ');
-    const shapePart=detectEnabled?` · ${regions.length} shapes`:'';
-    const matcherPart=cvMatcher.matches.length>0?` · ${cvMatcher.matches.length} CV matches`:'';
-    const workerPart=cvMatcher.isSearching?` · [worker: ${cvMatcher.workerPhase}]`:'';
-    setStatus(`${snapPoints.length} snap pts · ${svgLines.length} line segs · ${svgCurves.length} curves${shapePart}${matcherPart}${workerPart} — ${summary}`);
-  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,regions.length,detectEnabled,cvMatcher.matches.length,cvMatcher.isSearching,cvMatcher.workerPhase]);
+    const cvPart=cvMatcher.matches.length>0?` · ${cvMatcher.matches.length} CV matches`:'';
+    const ppPart=painter.patterns.length>0?` · ${painter.patterns.reduce((s,p)=>s+p.matches.length,0)} painted`:'';
+    setStatus(`${snapPoints.length} snap pts · ${svgLines.length} segs · ${svgCurves.length} curves${cvPart}${ppPart} — ${summary}`);
+  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,cvMatcher.matches.length,painter.patterns]);
 
   // ── File upload ───────────────────────────────────────────────────────────────
   const handleUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>)=>{
@@ -587,15 +751,19 @@ export default function SnapEnginePage() {
   // ── Pointer handlers ──────────────────────────────────────────────────────────
   const handlePointerDown = useCallback((e: React.PointerEvent)=>{
     if(e.button!==0)return;
-    if(samplerModeRef.current==='drawing'){startDraw(e);return;}
+    const tool = activeToolRef.current;
+    if(tool==='cv' && cvSamplerMode==='drawing'){ cvStartDraw(e); return; }
+    if(tool==='painter' && painterDrawState==='drawing'){ painterStartDraw(e); return; }
     pointerDownRef.current=true;
     isDraggingRef.current=false;
     dragRef.current={mx:e.clientX,my:e.clientY,px:panRef.current.x,py:panRef.current.y};
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  },[startDraw]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[cvSamplerMode, painterDrawState, cvStartDraw, painterStartDraw]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent)=>{
-    if(samplerModeRef.current==='drawing')return;
+    const tool = activeToolRef.current;
+    if((tool==='cv' && cvSamplerMode==='drawing')||(tool==='painter' && painterDrawState==='drawing'))return;
     if(pointerDownRef.current&&!isDraggingRef.current){
       const dx=e.clientX-dragRef.current.mx,dy=e.clientY-dragRef.current.my;
       if(Math.hypot(dx,dy)>DRAG_THRESHOLD)isDraggingRef.current=true;
@@ -608,15 +776,19 @@ export default function SnapEnginePage() {
     const cxy=getCanvasXY(e);
     engine.cursorPointRef.current=cxy;
     engine.redrawPinCanvas();
-  },[engine,getCanvasXY]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[engine,getCanvasXY,cvSamplerMode,painterDrawState]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent)=>{
-    if(samplerModeRef.current==='drawing')return;
+    const tool = activeToolRef.current;
+    if((tool==='cv'&&cvSamplerMode==='drawing')||(tool==='painter'&&painterDrawState==='drawing'))return;
     const wasActualDrag=isDraggingRef.current;
     pointerDownRef.current=false;
     isDraggingRef.current=false;
     if(wasActualDrag)return;
     if(!pdfDimsRef.current)return;
+    // Only handle snap clicks when snap tool is active
+    if(tool!=='snap')return;
     const cxy=getCanvasXY(e);
     const vxy=getViewportXY(e);
     const result=engine.snapToCorner(cxy.x,cxy.y);
@@ -634,14 +806,14 @@ export default function SnapEnginePage() {
       setStatus(`Chain pt ${engine.linearChain.length+1}: (${px.toFixed(1)}, ${py.toFixed(1)})${snappedType!=='free'?' · '+snappedType:' · free'}`);
     } else {
       if(!result.snapped)return;
-      const color='#f59e0b';
       const id=++flashIdRef.current;
-      setFlashes(prev=>[...prev,{id,x:vxy.x,y:vxy.y,color}]);
+      setFlashes(prev=>[...prev,{id,x:vxy.x,y:vxy.y,color:'#f59e0b'}]);
       setTimeout(()=>setFlashes(prev=>prev.filter(f=>f.id!==id)),700);
       engine.triggerSnapFlash(result.point.x,result.point.y);
       setStatus(`Snapped → (${result.point.x.toFixed(1)}, ${result.point.y.toFixed(1)})`);
     }
-  },[linearMode,engine,getCanvasXY,getViewportXY,snapPoints]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[linearMode,engine,getCanvasXY,getViewportXY,snapPoints,cvSamplerMode,painterDrawState]);
 
   const handlePointerLeave = useCallback(()=>{
     pointerDownRef.current=false;
@@ -696,99 +868,130 @@ export default function SnapEnginePage() {
     engine.redrawPinCanvas();
   },[engine]);
 
-  const jumpToRegion = useCallback((region: DetectedRegion)=>{
-    if(!pdfDims)return;
-    const cx=(region.normX+region.normW/2)*pdfDims.w;
-    const cy=(region.normY+region.normH/2)*pdfDims.h;
-    const vr=viewportRef.current!.getBoundingClientRect();
-    setPan({x:(vr.width/2)-cx*zoomRef.current,y:(vr.height/2)-cy*zoomRef.current});
-  },[pdfDims]);
-
   const removeChainPoint = useCallback((idx: number)=>{
     const updated=engine.linearChain.filter((_,i)=>i!==idx);
     engine.clearChain();
     updated.forEach(p=>engine.addChainPoint(p.x,p.y,p.type));
   },[engine]);
 
-  // ── Derived ───────────────────────────────────────────────────────────────────
-  const cursor = pdfDims || samplerMode !== 'idle' ? 'crosshair' : 'default';
-  const typeCounts = snapPoints.reduce((acc,p)=>{acc[p.type]=(acc[p.type]??0)+1;return acc;},{} as Record<string,number>);
+  // ── Tool switching ────────────────────────────────────────────────────────────
+  const switchTool = useCallback((tool: ActiveTool) => {
+    setActiveTool(prev => prev === tool ? null : tool);
+    // Auto-enter draw mode when switching to CV or painter
+    if (tool === 'cv') {
+      setCVSamplerMode('idle');
+    }
+    if (tool === 'painter') {
+      setPainterDrawState('idle');
+    }
+  }, []);
 
-  const tabConfig: { key: SidebarTab; label: string; color: string }[] = [
-    { key:'chain',   label:`Chain (${engine.linearChain.length})`,  color:'#a78bfa' },
-    { key:'points',  label:`Snaps (${snapPoints.length})`,           color:'#f59e0b' },
-    { key:'shapes',  label:`Shapes (${regions.length})`,             color:'#f43f5e' },
-    { key:'sampler', label:`CV${cvMatcher.matches.length>0?` (${cvMatcher.matches.length})`:''}`, color:'#38bdf8' },
-  ];
+  // ── Cursor ────────────────────────────────────────────────────────────────────
+  const isAnyDrawMode =
+    (activeTool === 'cv' && cvSamplerMode === 'drawing') ||
+    (activeTool === 'painter' && painterDrawState === 'drawing');
+
+  const cursor = (pdfDims || isAnyDrawMode) ? 'crosshair' : 'default';
 
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* Hidden SVG for shape detector */}
-      <svg ref={hiddenSvgRef} style={{ position:'absolute',width:0,height:0,overflow:'hidden',pointerEvents:'none',opacity:0 }} aria-hidden="true" />
-
       {/* ── Toolbar ── */}
       <div style={S.toolbar}>
-        <span style={{ fontSize:9,fontWeight:700,color:'#555',textTransform:'uppercase',letterSpacing:'.1em',marginRight:4 }}>⊕ Snap Engine</span>
+        <span style={{ fontSize:9,fontWeight:700,color:'#555',textTransform:'uppercase',letterSpacing:'.1em',marginRight:4,flexShrink:0 }}>⊕ Snap Engine</span>
         <div style={S.sep} />
+
+        {/* Load */}
         <label style={{ fontSize:8,textTransform:'uppercase',letterSpacing:'.07em',border:'1px solid #383838',background:'transparent',color:'#999',padding:'3px 9px',cursor:'pointer',fontFamily:'inherit',flexShrink:0 }}>
           ↑ Load SVG
           <input ref={fileInputRef} type="file" accept=".svg" style={{ display:'none' }} onChange={handleUpload} />
         </label>
         <div style={S.sep} />
-        <button onClick={()=>setSnapEnabled(v=>!v)} style={tbBtn(snapEnabled)}>Snap {snapEnabled?'●':'○'}</button>
-        <button onClick={()=>setShowPins(v=>!v)}    style={tbBtn(showPins)}>Pins {showPins?'●':'○'}</button>
-        <button onClick={()=>setShowLines(v=>!v)}   style={tbBtn(showLines,'#38bdf8')}>Lines {showLines?'●':'○'}</button>
+
+        {/* ── Tool buttons ── */}
+        <ToolBtn icon="⊕" label="Snap"    active={activeTool==='snap'}    color="#f59e0b" onClick={()=>switchTool('snap')} />
+        <ToolBtn icon="⊡" label="CV Match" active={activeTool==='cv'}      color="#38bdf8" onClick={()=>switchTool('cv')} />
+        <ToolBtn icon="◈" label="Painter"  active={activeTool==='painter'} color="#a78bfa" onClick={()=>switchTool('painter')} />
         <div style={S.sep} />
-        <button onClick={()=>{setLinearMode(v=>!v);setSidebarTab('chain');}} style={tbBtn(linearMode,'#a78bfa')}>
-          Linear {linearMode?'●':'○'}
-        </button>
-        {linearMode&&(
+
+        {/* Snap tool sub-controls (only when snap tool active) */}
+        {activeTool==='snap' && (
           <>
-            <button onClick={()=>engine.undoChainPoint()} style={tbBtn(false)}>Undo</button>
-            <button onClick={()=>engine.clearChain()} style={{ ...tbBtn(false),color:'#f43f5e',borderColor:engine.linearChain.length>0?'#f43f5e44':'#2a2a2a' }}>Clear</button>
-            <span style={{ fontSize:8,border:'1px solid #2a2a2a',padding:'2px 6px',color:engine.linearChain.length>0?'#a78bfa':'#333' }}>
-              {engine.linearChain.length} pts
-            </span>
+            <button onClick={()=>setSnapEnabled(v=>!v)} style={tbBtn(snapEnabled)}>Snap {snapEnabled?'●':'○'}</button>
+            <button onClick={()=>setShowPins(v=>!v)}    style={tbBtn(showPins)}>Pins {showPins?'●':'○'}</button>
+            <button onClick={()=>setShowLines(v=>!v)}   style={tbBtn(showLines,'#38bdf8')}>Lines {showLines?'●':'○'}</button>
+            <div style={S.sep} />
+            <button onClick={()=>setLinearMode(v=>!v)} style={tbBtn(linearMode,'#a78bfa')}>
+              Linear {linearMode?'●':'○'}
+            </button>
+            {linearMode&&(
+              <>
+                <button onClick={()=>engine.undoChainPoint()} style={tbBtn(false)}>Undo</button>
+                <button onClick={()=>engine.clearChain()} style={{ ...tbBtn(false),color:'#f43f5e',borderColor:engine.linearChain.length>0?'#f43f5e44':'#2a2a2a' }}>Clear</button>
+                <span style={{ fontSize:8,border:'1px solid #2a2a2a',padding:'2px 6px',color:engine.linearChain.length>0?'#a78bfa':'#333' }}>
+                  {engine.linearChain.length} pts
+                </span>
+              </>
+            )}
+            <div style={S.sep} />
+            <span style={S.lblStyle}>Threshold</span>
+            <input type="range" min={8} max={80} step={1} value={snapThresh} onChange={e=>setSnapThresh(+e.target.value)} style={{ width:56,accentColor:'#f59e0b' }} />
+            <span style={{ fontSize:8,color:'#f59e0b',minWidth:28 }}>{snapThresh}px</span>
+            <div style={S.sep} />
+            <span style={S.lblStyle}>Radius</span>
+            <input type="range" min={40} max={300} step={5} value={proximityRadius} onChange={e=>setProximityRadius(+e.target.value)} style={{ width:56,accentColor:'#38bdf8' }} />
+            <span style={{ fontSize:8,color:'#38bdf8',minWidth:32 }}>{proximityRadius}px</span>
+            <div style={S.sep} />
+            <span style={{ fontSize:8,border:'1px solid #2a2a2a',padding:'2px 6px',color:snapPoints.length>0?'#f59e0b':'#333',letterSpacing:'.07em',flexShrink:0 }}>{snapPoints.length} pts</span>
           </>
         )}
-        <div style={S.sep} />
-        <button
-          onClick={()=>{const next=!detectEnabled;setDetectEnabled(next);if(next){setSidebarTab('shapes');setTimeout(rescan,200);}}}
-          style={tbBtn(detectEnabled,'#f43f5e')}
-        >Detect {detectEnabled?'●':'○'}</button>
-        {detectEnabled&&(
+
+        {/* CV tool sub-controls */}
+        {activeTool==='cv' && (
           <>
-            <button onClick={()=>setShowShapeOverlay(v=>!v)} style={tbBtn(showShapeOverlay,'#f43f5e')}>Overlay {showShapeOverlay?'●':'○'}</button>
-            <span style={S.lblStyle}>Conf</span>
-            <input type="range" min={40} max={95} step={1} value={shapeThreshold} onChange={e=>setShapeThreshold(+e.target.value)} style={{ width:48,accentColor:'#f43f5e' }} />
-            <span style={{ fontSize:8,color:'#f43f5e',minWidth:28 }}>{shapeThreshold}%</span>
-            <button onClick={rescan} style={{ ...tbBtn(isScanning,'#f43f5e'),opacity:isScanning?.5:1 }} disabled={isScanning}>{isScanning?'⟳':'⟳ scan'}</button>
+            {cvSamplerMode==='idle' && (
+              <button onClick={handleEnterCVDraw} style={tbBtn(false,'#38bdf8')}>⊡ Draw box</button>
+            )}
+            {cvSamplerMode==='drawing' && (
+              <span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
+                {cvTooLarge ? '⚠ Zoom in more' : 'Drag tight box around ONE symbol'}
+              </span>
+            )}
+            {cvSamplerMode==='matched' && (
+              <>
+                <span style={{ fontSize:8,border:'1px solid #38bdf844',padding:'2px 6px',color:'#38bdf8',flexShrink:0 }}>
+                  {cvMatcher.matches.length} matches
+                </span>
+                <button onClick={handleClearCV} style={tbBtn(false,'#f43f5e')}>Clear</button>
+              </>
+            )}
           </>
         )}
-        <div style={S.sep} />
-        {/* CV Sampler toolbar button */}
-        <button
-          onClick={()=>{setSidebarTab('sampler');if(samplerMode==='idle')handleEnterDraw();}}
-          style={tbBtn(samplerMode!=='idle','#38bdf8')}
-        >
-          ⊡ CV Match {samplerMode!=='idle'?'●':'○'}
-        </button>
-        {cvMatcher.matches.length>0&&(
-          <span style={{ fontSize:8,border:'1px solid #38bdf844',padding:'2px 6px',color:'#38bdf8',letterSpacing:'.07em',flexShrink:0 }}>
-            {cvMatcher.matches.length} CV matches
-          </span>
+
+        {/* Painter sub-controls */}
+        {activeTool==='painter' && (
+          <>
+            {painterDrawState==='idle' && (
+              <button onClick={handleEnterPainterDraw} style={tbBtn(false,'#a78bfa')}>◈ Add pattern</button>
+            )}
+            {painterDrawState==='drawing' && (
+              <span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>
+                {painterTooLarge ? '⚠ Zoom in more' : 'Drag tight box around ONE symbol'}
+              </span>
+            )}
+            {painterDrawState==='naming' && (
+              <span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>
+                Name pattern in sidebar →
+              </span>
+            )}
+            {painter.patterns.length > 0 && (
+              <span style={{ fontSize:8,border:'1px solid #a78bfa44',padding:'2px 6px',color:'#a78bfa',flexShrink:0 }}>
+                {painter.patterns.length} pattern{painter.patterns.length!==1?'s':''} · {painter.patterns.reduce((s,p)=>s+p.matches.length,0)} instances
+              </span>
+            )}
+          </>
         )}
-        <div style={S.sep} />
-        <span style={S.lblStyle}>Threshold</span>
-        <input type="range" min={8} max={80} step={1} value={snapThresh} onChange={e=>setSnapThresh(+e.target.value)} style={{ width:56,accentColor:'#f59e0b' }} />
-        <span style={{ fontSize:8,color:'#f59e0b',minWidth:28 }}>{snapThresh}px</span>
-        <div style={S.sep} />
-        <span style={S.lblStyle}>Radius</span>
-        <input type="range" min={40} max={300} step={5} value={proximityRadius} onChange={e=>setProximityRadius(+e.target.value)} style={{ width:56,accentColor:'#38bdf8' }} />
-        <span style={{ fontSize:8,color:'#38bdf8',minWidth:32 }}>{proximityRadius}px</span>
-        <div style={S.sep} />
-        <span style={{ fontSize:8,border:'1px solid #2a2a2a',padding:'2px 6px',color:snapPoints.length>0?'#f59e0b':'#333',letterSpacing:'.07em',flexShrink:0 }}>{snapPoints.length} pts</span>
+
         <div style={{ flex:1 }} />
         <span style={S.statusTxt}>{status}</span>
         <div style={S.sep} />
@@ -800,7 +1003,8 @@ export default function SnapEnginePage() {
 
       {/* ── Main ── */}
       <div style={S.main}>
-        {/* Viewport */}
+
+        {/* ── Viewport ── */}
         <div
           ref={viewportRef}
           style={{ ...S.viewport, cursor }}
@@ -818,48 +1022,65 @@ export default function SnapEnginePage() {
             <canvas ref={baseCanvasRef} style={{ display:'block',imageRendering:'auto' }} />
           </div>
 
-          {/* Snap pin overlay */}
-          <canvas ref={pinCanvasRef} style={{ position:'absolute',top:0,left:0,pointerEvents:'none',width:'100%',height:'100%' }} />
+          {/* Snap pin overlay — always present but only draws when snap tool active */}
+          <canvas
+            ref={pinCanvasRef}
+            style={{ position:'absolute',top:0,left:0,pointerEvents:'none',width:'100%',height:'100%',opacity: activeTool==='snap' ? 1 : 0.3 }}
+          />
 
-          {/* Shape overlay */}
-          {detectEnabled&&showShapeOverlay&&pdfDims&&(
-            <ShapeOverlayAdapted regions={regions} pdfDims={pdfDims} zoom={zoom} pan={pan} isScanning={isScanning} onRescan={rescan} visible={showShapeOverlay} />
+          {/* ── CV Match overlays ── */}
+          {activeTool==='cv' && (
+            <>
+              <CVWorkerBanner
+                isSearching={cvMatcher.isSearching}
+                workerPhase={cvMatcher.workerPhase}
+                workerDetail={cvMatcher.workerDetail}
+              />
+              <CVRubberBand
+                isDrawing={cvIsDrawing}
+                drawBox={cvTooLarge ? null : cvDrawBox}
+                tooLarge={cvTooLarge}
+                isSearching={cvMatcher.isSearching}
+                workerPhase={cvMatcher.workerPhase}
+                workerDetail={cvMatcher.workerDetail}
+              />
+              {cvIsDrawing && cvTooLarge && cvDrawBox && (
+                <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
+                  <rect x={cvDrawBox.x} y={cvDrawBox.y} width={cvDrawBox.w} height={cvDrawBox.h}
+                    fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
+                  <rect x={cvDrawBox.x+cvDrawBox.w/2-110} y={cvDrawBox.y+cvDrawBox.h/2-13} width={220} height={24}
+                    fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
+                  <text x={cvDrawBox.x+cvDrawBox.w/2} y={cvDrawBox.y+cvDrawBox.h/2+4}
+                    textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
+                    Zoom in — box covers too much of viewport
+                  </text>
+                </svg>
+              )}
+            </>
           )}
+          <CVMatchOverlay matches={cvMatcher.matches} zoom={zoom} pan={pan} />
 
-          {/* ── CV worker progress banner (floats above canvas, non-blocking) ── */}
-          <CVWorkerBanner
-            isSearching={cvMatcher.isSearching}
-            workerPhase={cvMatcher.workerPhase}
-            workerDetail={cvMatcher.workerDetail}
-          />
-
-          {/* ── CV rubber-band + match overlay ── */}
-          <CVRubberBand
-            isDrawing={isDrawing}
-            drawBox={tooLarge ? null : drawBox}
-            tooLarge={tooLarge}
-            isSearching={cvMatcher.isSearching}
-            workerPhase={cvMatcher.workerPhase}
-            workerDetail={cvMatcher.workerDetail}
-          />
-          <CVMatchOverlay
-            matches={cvMatcher.matches}
-            zoom={zoom}
-            pan={pan}
-          />
-
-          {/* Too-large warning */}
-          {isDrawing && tooLarge && drawBox && (
-            <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
-              <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h}
-                fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
-              <rect x={drawBox.x+drawBox.w/2-110} y={drawBox.y+drawBox.h/2-13} width={220} height={24}
-                fill="#0d0d0d" stroke="#f43f5e44" rx={3} />
-              <text x={drawBox.x+drawBox.w/2} y={drawBox.y+drawBox.h/2+4}
-                textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
-                Zoom in — box covers too much of viewport
-              </text>
-            </svg>
+          {/* ── Pattern Painter overlays ── */}
+          <PatternPainterOverlay painter={painter} zoom={zoom} pan={pan} />
+          {activeTool==='painter' && (
+            <>
+              <PatternWorkerBanner painter={painter} />
+              <PatternRubberBand
+                isDrawing={painterIsDrawing}
+                drawBox={painterTooLarge ? null : painterDrawBox}
+                tooLarge={painterTooLarge}
+              />
+              {painterIsDrawing && painterTooLarge && painterDrawBox && (
+                <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
+                  <rect x={painterDrawBox.x} y={painterDrawBox.y} width={painterDrawBox.w} height={painterDrawBox.h}
+                    fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
+                  <text x={painterDrawBox.x+painterDrawBox.w/2} y={painterDrawBox.y+painterDrawBox.h/2}
+                    textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New', monospace">
+                    Zoom in — box covers too much of viewport
+                  </text>
+                </svg>
+              )}
+            </>
           )}
 
           {/* Flash effects */}
@@ -874,132 +1095,151 @@ export default function SnapEnginePage() {
             </div>
           )}
 
-          {/* Mode badges */}
-          {linearMode&&(
+          {/* Active mode badge */}
+          {activeTool==='snap'&&linearMode&&(
             <div style={{ position:'absolute',top:10,left:10,background:'rgba(167,139,250,.15)',border:'1px solid rgba(167,139,250,.4)',padding:'3px 8px',fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              Linear mode · click to chain
+              Snap · Linear mode — click to chain
             </div>
           )}
-          {samplerMode==='drawing'&&(
-            <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {tooLarge ? '⚠ Zoom in more — box too large' : 'CV Sampler · drag tight box around ONE symbol'}
+          {activeTool==='cv'&&cvSamplerMode==='drawing'&&(
+            <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+              {cvTooLarge ? '⚠ Zoom in more — box too large' : 'CV Match · drag tight box around ONE symbol'}
             </div>
           )}
-          {samplerMode==='matched'&&cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
-            <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(244,63,94,.12)',border:'1px solid rgba(244,63,94,.3)',padding:'3px 8px',fontSize:8,color:'#f43f5e',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+          {activeTool==='cv'&&cvSamplerMode==='matched'&&cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
+            <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.3)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
               {cvMatcher.matches.length} CV match{cvMatcher.matches.length!==1?'es':''} · pixel-accurate
             </div>
           )}
+          {activeTool==='painter'&&painterDrawState==='drawing'&&(
+            <div style={{ position:'absolute',top:10,left:10,background:'rgba(167,139,250,.12)',border:'1px solid rgba(167,139,250,.4)',padding:'3px 8px',fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+              {painterTooLarge ? '⚠ Zoom in more — box too large' : 'Pattern Painter · drag tight box around ONE symbol'}
+            </div>
+          )}
+          {activeTool===null&&!isIdle&&(
+            <div style={{ position:'absolute',top:10,left:10,background:'rgba(0,0,0,.5)',border:'1px solid #222',padding:'3px 8px',fontSize:8,color:'#444',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+              Select a tool · Ctrl+scroll zoom · drag pan
+            </div>
+          )}
         </div>
 
-        {/* ── Sidebar ── */}
-        <div style={S.sidebar}>
-          <div style={{ display:'flex',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-            {tabConfig.map(tab=>(
-              <button key={tab.key} onClick={()=>setSidebarTab(tab.key)}
-                style={{ flex:1,fontSize:7,textTransform:'uppercase',letterSpacing:'.04em',padding:'6px 0',border:'none',background:sidebarTab===tab.key?'#111':'transparent',color:sidebarTab===tab.key?tab.color:'#333',cursor:'pointer',borderBottom:sidebarTab===tab.key?`1px solid ${tab.color}`:'1px solid transparent',fontFamily:'inherit',whiteSpace:'nowrap' }}>
-                {tab.label}
-              </button>
-            ))}
-          </div>
+        {/* ── Context-sensitive Sidebar ── */}
+        <SidebarShell activeTool={activeTool}>
 
-          {sidebarTab==='chain'&&(
-            <ChainSidebar chain={engine.linearChain} pdfDims={pdfDims} onRemove={removeChainPoint} onJump={jumpToChainPoint} />
-          )}
-
-          {sidebarTab==='points'&&(
+          {activeTool==='snap' && (
             <>
-              <div style={{ padding:10,borderBottom:'1px solid #1a1a1a' }}>
-                <div style={S.sbLabel}>Snap types</div>
-                {(Object.entries(SNAP_COLOURS) as [SvgSnapPoint['type'],string][]).map(([type,col])=>(
-                  <div key={type} style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:5 }}>
-                    <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-                      <div style={{ width:9,height:9,borderRadius:2,background:col,flexShrink:0 }} />
-                      <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>{type}</span>
-                    </div>
-                    <span style={{ fontSize:8,color:'#444' }}>{typeCounts[type]??0}</span>
-                  </div>
-                ))}
-                <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:3 }}>
-                  <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-                    <div style={{ width:9,height:3,background:'#38bdf8',flexShrink:0 }} />
-                    <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>lines</span>
-                  </div>
-                  <span style={{ fontSize:8,color:'#444' }}>{svgLines.length}</span>
-                </div>
-                <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginTop:3 }}>
-                  <div style={{ display:'flex',alignItems:'center',gap:8 }}>
-                    <div style={{ width:9,height:3,background:'#38bdf8',borderRadius:1,flexShrink:0,opacity:0.6 }} />
-                    <span style={{ fontSize:8,color:'#777',textTransform:'uppercase',letterSpacing:'.06em' }}>curves</span>
-                  </div>
-                  <span style={{ fontSize:8,color:'#444' }}>{svgCurves.length}</span>
-                </div>
-              </div>
-              <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a' }}>
-                <span style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.09em' }}>
-                  Points ({snapPoints.length}{snapPoints.length>300?', showing 300':''})
-                </span>
-              </div>
-              <div style={{ flex:1,overflowY:'auto',padding:6,display:'flex',flexDirection:'column',gap:3 }}>
-                {snapPoints.length===0
-                  ? <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'28px 8px',lineHeight:2.2 }}>Load an SVG to see<br />detected snap points</p>
-                  : snapPoints.slice(0,300).map((p,i)=>(
-                    <PointItem key={`${p.nx.toFixed(5)}-${p.ny.toFixed(5)}-${p.type}-${i}`} point={p} pdfDims={pdfDims} isHighlighted={highlightIdx===i} onClick={()=>jumpToPoint(i)} />
-                  ))
-                }
-              </div>
+              <SidebarHeader icon="⊕" label="Snap Tool" color="#f59e0b" onClose={()=>setActiveTool(null)} />
+              <SnapToolSidebar
+                engine={engine}
+                snapPoints={snapPoints}
+                svgLines={svgLines}
+                svgCurves={svgCurves}
+                pdfDims={pdfDims}
+                highlightIdx={highlightIdx}
+                setHighlightIdx={setHighlightIdx}
+                onJumpPoint={jumpToPoint}
+                onJumpChain={jumpToChainPoint}
+                onRemoveChain={removeChainPoint}
+              />
             </>
           )}
 
-          {sidebarTab==='shapes'&&(
-            <ShapesSidebar regions={regions} isScanning={isScanning} onRescan={rescan} onJump={jumpToRegion} pdfDims={pdfDims} zoom={zoom} pan={pan} />
+          {activeTool==='cv' && (
+            <>
+              <SidebarHeader icon="⊡" label="CV Match" color="#38bdf8" onClose={()=>setActiveTool(null)} />
+              <CVSamplerSidebar
+                matcher={cvMatcher}
+                samplerMode={cvSamplerMode}
+                onEnterDraw={handleEnterCVDraw}
+                onClear={handleClearCV}
+                threshold={cvThreshold}
+                onThreshold={setCVThreshold}
+                rotations={cvRotations}
+                onRotations={setCVRotations}
+                flips={cvFlips}
+                onFlips={setCVFlips}
+                removeText={cvRemoveText}
+                onRemoveText={setCVRemoveText}
+              />
+            </>
           )}
 
-          {sidebarTab==='sampler'&&(
-            <CVSamplerSidebar
-              matcher={cvMatcher}
-              samplerMode={samplerMode}
-              onEnterDraw={handleEnterDraw}
-              onClear={handleClearSampler}
-              threshold={cvThreshold}
-              onThreshold={setCVThreshold}
-              rotations={cvRotations}
-              onRotations={setCVRotations}
-              flips={cvFlips}
-              onFlips={setCVFlips}
-              removeText={cvRemoveText}
-              onRemoveText={setCVRemoveText}
-            />
+          {activeTool==='painter' && (
+            <>
+              <SidebarHeader icon="◈" label="Pattern Painter" color="#a78bfa" onClose={()=>setActiveTool(null)} />
+              <PatternPainterSidebar
+                painter={painter}
+                drawState={painterDrawState}
+                onEnterDraw={handleEnterPainterDraw}
+                onCancelDraw={handlePainterCancelDraw}
+                onConfirmName={handlePainterConfirmName}
+                rotations={painterRotations}
+                onRotations={setPainterRotations}
+                flips={painterFlips}
+                onFlips={setPainterFlips}
+                removeText={painterRemoveText}
+                onRemoveText={setPainterRemoveText}
+                canvasRef={baseCanvasRef}
+              />
+            </>
           )}
-        </div>
+
+        </SidebarShell>
       </div>
 
       {/* ── Status bar ── */}
       <div style={S.statusbar}>
-        {(samplerMode==='drawing'
-          ? [tooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol']
-          : linearMode
-          ? ['Hover: nearest snap','Click: add chain point','Ctrl+scroll: zoom','Drag: pan']
-          : ['Hover: nearest snap','Click: snap indicator','Ctrl+scroll: zoom','Drag: pan']
-        ).map((h,i)=>(
-          <React.Fragment key={h}>
-            {i>0&&<div style={S.barSep} />}
-            <span style={{ fontSize:8,color:samplerMode==='drawing'?(tooLarge?'#f43f5e':'#38bdf8'):'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
-          </React.Fragment>
-        ))}
+        {activeTool==='snap' ? (
+          (linearMode
+            ? ['Hover: nearest snap','Click: add chain point','Ctrl+scroll: zoom','Drag: pan']
+            : ['Hover: nearest snap','Click: snap indicator','Ctrl+scroll: zoom','Drag: pan']
+          ).map((h,i)=>(
+            <React.Fragment key={h}>
+              {i>0&&<div style={S.barSep} />}
+              <span style={{ fontSize:8,color:'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+            </React.Fragment>
+          ))
+        ) : activeTool==='cv' ? (
+          (cvSamplerMode==='drawing'
+            ? [cvTooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol']
+            : ['Draw box to sample','Find all matches','Ctrl+scroll: zoom','Drag: pan']
+          ).map((h,i)=>(
+            <React.Fragment key={h}>
+              {i>0&&<div style={S.barSep} />}
+              <span style={{ fontSize:8,color:cvSamplerMode==='drawing'&&cvTooLarge?'#f43f5e':'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+            </React.Fragment>
+          ))
+        ) : activeTool==='painter' ? (
+          (painterDrawState==='drawing'
+            ? [painterTooLarge?'⚠ Zoom in more':'Drag tight box · release to name']
+            : painterDrawState==='naming'
+            ? ['Enter name in sidebar → confirm']
+            : ['Add patterns · each gets own color','Ctrl+scroll: zoom','Drag: pan']
+          ).map((h,i)=>(
+            <React.Fragment key={h}>
+              {i>0&&<div style={S.barSep} />}
+              <span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+            </React.Fragment>
+          ))
+        ) : (
+          <span style={{ fontSize:8,color:'#2a2a2a',textTransform:'uppercase',letterSpacing:'.07em' }}>
+            Select a tool from the toolbar to begin
+          </span>
+        )}
+
         <div style={{ flex:1 }} />
-        {/* Live worker phase in status bar */}
+
         {cvMatcher.isSearching&&(
-          <><span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>
+          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
             ⟳ {cvMatcher.workerPhase}{cvMatcher.workerDetail?' · '+cvMatcher.workerDetail:''}
           </span><div style={S.barSep} /></>
         )}
-        {cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
-          <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{cvMatcher.matches.length} CV matches · pixel-accurate</span><div style={S.barSep} /></>
+        {painter.patterns.some(p=>p.isRunning)&&(
+          <><span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>
+            ⟳ {painter.workerPhase}
+          </span><div style={S.barSep} /></>
         )}
-        {detectEnabled&&(
-          <><span style={{ fontSize:8,color:isScanning?'#f43f5e':'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{isScanning?'⟳ scanning':`${regions.length} shapes`}</span><div style={S.barSep} /></>
-        )}
+
         <span style={{ fontSize:8,color:'#2e2e2e',textTransform:'uppercase',letterSpacing:'.07em' }}>{fileName}</span>
       </div>
     </div>
