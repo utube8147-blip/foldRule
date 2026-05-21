@@ -1,55 +1,52 @@
 /**
- * useOpenCVMatcher.ts  v1.3
+ * useOpenCVMatcher.ts  v2.2
  * ──────────────────────────
- * Canvas-pixel template matching using OpenCV.js.
+ * Thin React hook that manages a dedicated Web Worker running opencvWorker logic.
+ * All OpenCV work (loading, text removal, template matching) happens off the
+ * main thread so the UI never hangs.
  *
- * Strategy:
- *  1. Load opencv.js once from CDN (cached on window.cv)
- *  2. Crop the template region from the source canvas
- *  3. For each of 8 orientations (4 rotations × 2 flip states):
- *       - Prepare the source mat for that orientation (rotate + optional flip)
- *       - Match the ORIGINAL sharp 0° template against the prepared source
- *       - Map hit coordinates back to original canvas space
- *  4. Collect all hits above threshold, tag with rotation + flip
- *  5. Non-max suppression (IoU) to deduplicate
- *  6. Return results in SVG/canvas pixel coords
- *
- * v1.3 key changes vs v1.2:
- *  ─ Added FLIP support (horizontal + vertical).
- *    Architectural door symbols that face the other way are a mirror image,
- *    not a 180° rotation. Without flip support those instances score poorly
- *    because the arc curves in the wrong direction. Now all 8 rigid-body
- *    orientations are tested: 0°/90°/180°/270° × (normal / h-flip).
- *  ─ `rotation` field in CVMatchResult now encodes both rotation and flip
- *    as a human-readable string e.g. "90°↔" so the sidebar can show it.
- *  ─ Coordinate remapping extended to handle the flip component.
- *  ─ Template stays at 0° unflipped for every pass — source is transformed
- *    instead, keeping correlation scores consistent across all orientations.
- *  ─ Default threshold 0.60 (60 %).
+ * v2.2 changes:
+ *  ─ Worker sends TEMPLATE_CLEANED message with the text-erased template pixels
+ *    so TemplatePreview shows exactly what was matched against.
+ *  ─ templateCrop state is updated to the cleaned version once the worker
+ *    finishes text removal, giving visual proof of what was erased.
+ *  ─ rawTemplateCrop added to the return value so callers can show before/after.
+ *  ─ Buffer transfer fix from v2.1 retained (copy before transfer).
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface CVMatchResult {
-  id:        string;
-  score:     number;          // 0–1 normalised correlation
-  rotation:  number;          // degrees: 0 | 90 | 180 | 270
-  flipped:   boolean;         // true = horizontal flip applied after rotation
-  orientationLabel: string;   // human-readable e.g. "90°↔"
-  bbox: {
-    x: number; y: number;    // top-left in CANVAS pixel coords
-    w: number; h: number;
-  };
+  id:               string;
+  score:            number;
+  rotation:         number;
+  flipped:          boolean;
+  orientationLabel: string;
+  bbox: { x: number; y: number; w: number; h: number };
   snapPoints: Array<{ x: number; y: number; type: 'endpoint' | 'midpoint' | 'centroid' }>;
 }
 
 export interface UseOpenCVMatcherReturn {
-  isReady:      boolean;
-  isSearching:  boolean;
-  matches:      CVMatchResult[];
-  templateCrop: ImageData | null;
+  /** OpenCV in worker is loaded and ready */
+  isReady:         boolean;
+  /** A match run is currently in progress */
+  isSearching:     boolean;
+  /** Current verbose phase label from worker */
+  workerPhase:     string;
+  /** Optional extra detail for current phase */
+  workerDetail:    string;
+  matches:         CVMatchResult[];
+  /** Original captured crop (before text removal) */
+  rawTemplateCrop: ImageData | null;
+  /**
+   * Live template crop shown in preview:
+   *  - While/before matching: the original raw crop
+   *  - After text removal completes: the cleaned (text-erased) version
+   * This is what the worker actually matched against.
+   */
+  templateCrop:    ImageData | null;
   buildTemplate: (
     canvas: HTMLCanvasElement,
     vpBox:  { x: number; y: number; w: number; h: number },
@@ -57,145 +54,130 @@ export interface UseOpenCVMatcherReturn {
     pan:    { x: number; y: number },
   ) => void;
   findMatches: (
-    canvas:     HTMLCanvasElement,
-    threshold?: number,
-    rotations?: number[],
-    flips?:     boolean[],
+    canvas:       HTMLCanvasElement,
+    threshold?:   number,
+    rotations?:   number[],
+    flips?:       boolean[],
+    removeText?:  boolean,
   ) => Promise<void>;
   clearAll: () => void;
 }
 
-// ─── Orientation descriptor ───────────────────────────────────────────────────
+// ─── Inlined worker source ────────────────────────────────────────────────────
+// Compiled-JS equivalent of opencvWorker.ts — no bundler plugin required.
+// Mirrors the Blob URL pattern used by useCornerDetection.
 
-interface Orientation {
-  deg:     number;    // 0 | 90 | 180 | 270
-  flipped: boolean;   // horizontal flip after rotation
-  label:   string;
-}
-
-function buildOrientations(rotations: number[], flips: boolean[]): Orientation[] {
-  const out: Orientation[] = [];
-  for (const deg of rotations) {
-    for (const flipped of flips) {
-      out.push({
-        deg,
-        flipped,
-        label: flipped ? `${deg}°↔` : `${deg}°`,
-      });
-    }
-  }
-  return out;
-}
-
-// ─── OpenCV loader ────────────────────────────────────────────────────────────
-
+function getOpenCVWorkerSource(): string {
+  return `
 const OPENCV_URL = 'https://docs.opencv.org/4.x/opencv.js';
+let cvReady = false;
+let cvLoadPromise = null;
 
-declare global {
-  interface Window { cv: any; cvLoadPromise?: Promise<void>; }
-}
-
-function loadOpenCV(): Promise<void> {
-  if (window.cv && typeof window.cv.matchTemplate === 'function') return Promise.resolve();
-  if (window.cvLoadPromise) return window.cvLoadPromise;
-
-  window.cvLoadPromise = new Promise<void>((resolve, reject) => {
-    const existing = document.getElementById('opencv-js');
-    if (existing) {
-      const poll = setInterval(() => {
-        if (window.cv && typeof window.cv.matchTemplate === 'function') { clearInterval(poll); resolve(); }
-      }, 100);
-      return;
-    }
-    const script = document.createElement('script');
-    script.id    = 'opencv-js';
-    script.src   = OPENCV_URL;
-    script.async = true;
-    script.onload = () => {
-      const poll = setInterval(() => {
-        if (window.cv && typeof window.cv.matchTemplate === 'function') { clearInterval(poll); resolve(); }
-      }, 100);
-    };
-    script.onerror = () => reject(new Error('Failed to load opencv.js'));
-    document.head.appendChild(script);
+function loadCV() {
+  if (cvReady) return Promise.resolve();
+  if (cvLoadPromise) return cvLoadPromise;
+  cvLoadPromise = new Promise(function(resolve, reject) {
+    try { importScripts(OPENCV_URL); } catch(e) { reject(new Error('importScripts failed: ' + e)); return; }
+    var poll = setInterval(function() {
+      if (typeof cv !== 'undefined' && cv && typeof cv.matchTemplate === 'function') {
+        clearInterval(poll); cvReady = true; resolve();
+      }
+    }, 80);
+    setTimeout(function() { clearInterval(poll); reject(new Error('OpenCV load timeout')); }, 30000);
   });
-  return window.cvLoadPromise;
+  return cvLoadPromise;
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function snapPointsForBBox(x: number, y: number, w: number, h: number): CVMatchResult['snapPoints'] {
+function snapPointsForBBox(x, y, w, h) {
   return [
     { x: x + w / 2, y: y + h / 2, type: 'centroid' },
-    { x,             y,             type: 'endpoint' },
-    { x: x + w,     y,             type: 'endpoint' },
-    { x: x + w,     y: y + h,      type: 'endpoint' },
-    { x,             y: y + h,      type: 'endpoint' },
-    { x: x + w / 2, y,             type: 'midpoint' },
-    { x: x + w / 2, y: y + h,      type: 'midpoint' },
-    { x,             y: y + h / 2,  type: 'midpoint' },
-    { x: x + w,     y: y + h / 2,  type: 'midpoint' },
+    { x: x,         y: y,         type: 'endpoint' },
+    { x: x + w,     y: y,         type: 'endpoint' },
+    { x: x + w,     y: y + h,     type: 'endpoint' },
+    { x: x,         y: y + h,     type: 'endpoint' },
+    { x: x + w / 2, y: y,         type: 'midpoint' },
+    { x: x + w / 2, y: y + h,     type: 'midpoint' },
+    { x: x,         y: y + h / 2, type: 'midpoint' },
+    { x: x + w,     y: y + h / 2, type: 'midpoint' },
   ];
 }
 
-function iou(
-  a: { x: number; y: number; w: number; h: number },
-  b: { x: number; y: number; w: number; h: number },
-): number {
-  const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
-  const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
-  const inter = ix * iy;
+function iou(a, b) {
+  var ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+  var iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+  var inter = ix * iy;
   if (inter === 0) return 0;
   return inter / (a.w * a.h + b.w * b.h - inter);
 }
 
-const IOU_THRESHOLD = 0.3;
-
-function nms(results: CVMatchResult[]): CVMatchResult[] {
-  const sorted = [...results].sort((a, b) => b.score - a.score);
-  const kept: CVMatchResult[] = [];
-  for (const r of sorted) {
-    if (!kept.some(k => iou(k.bbox, r.bbox) > IOU_THRESHOLD)) kept.push(r);
+function nms(results) {
+  var sorted = results.slice().sort(function(a, b) { return b.score - a.score; });
+  var kept = [];
+  for (var i = 0; i < sorted.length; i++) {
+    var r = sorted[i];
+    if (!kept.some(function(k) { return iou(k.bbox, r.bbox) > 0.3; })) kept.push(r);
   }
   return kept;
 }
 
-// ─── Source mat preparation ───────────────────────────────────────────────────
-//
-// We ALWAYS keep the template at 0° (original, sharp).
-// Instead we transform the SOURCE for each orientation pass.
-//
-// Rotation uses transpose+flip (lossless, no interpolation).
-// Flip uses cv.flip after rotation.
-//
-// Combined transform applied to source for orientation (deg, flipped):
-//   1. Rotate source by `deg` CW
-//   2. If flipped: flip horizontally (flipCode = 1)
-//
-// A symbol that appears at orientation (deg, flipped) in the original canvas
-// will look like the original 0° unflipped template in this prepared source.
+function matWithoutText(cv, gray) {
+  var binary    = new cv.Mat();
+  var labels    = new cv.Mat();
+  var stats     = new cv.Mat();
+  var centroids = new cv.Mat();
+  cv.threshold(gray, binary, 180, 255, cv.THRESH_BINARY_INV);
+  var numLabels = cv.connectedComponentsWithStats(binary, labels, stats, centroids, 8, cv.CV_32S);
+  var out = gray.clone();
+  for (var i = 1; i < numLabels; i++) {
+    var x    = stats.intAt(i, cv.CC_STAT_LEFT);
+    var y    = stats.intAt(i, cv.CC_STAT_TOP);
+    var w    = stats.intAt(i, cv.CC_STAT_WIDTH);
+    var h    = stats.intAt(i, cv.CC_STAT_HEIGHT);
+    var ar   = w / Math.max(h, 1);
+    var area = stats.intAt(i, cv.CC_STAT_AREA);
+    if (w < 30 && h < 40 && ar >= 0.2 && ar <= 5.0 && area >= 4 && area <= 600) {
+      var roi = out.roi(new cv.Rect(x, y, w, h));
+      roi.setTo(new cv.Scalar(255));
+      roi.delete();
+    }
+  }
+  binary.delete(); labels.delete(); stats.delete(); centroids.delete();
+  return out;
+}
 
-function prepareSourceMat(cv: any, srcGray: any, deg: number, flipped: boolean): any {
-  // Step 1 — rotate
-  let rotated: any;
+// Convert a single-channel (grayscale) OpenCV Mat to a transferable
+// Uint8ClampedArray in RGBA layout (R=G=B=gray, A=255).
+function grayMatToRGBA(mat) {
+  var gd  = mat.data;          // Uint8Array, one byte per pixel
+  var len = gd.length;
+  var out = new Uint8ClampedArray(len * 4);
+  for (var i = 0; i < len; i++) {
+    var base = i * 4;
+    out[base]     = gd[i];
+    out[base + 1] = gd[i];
+    out[base + 2] = gd[i];
+    out[base + 3] = 255;
+  }
+  return out;
+}
+
+function prepareSourceMat(cv, srcGray, deg, flipped) {
+  var rotated;
   if (deg === 0) {
     rotated = srcGray.clone();
   } else if (deg === 180) {
     rotated = new cv.Mat();
     cv.flip(srcGray, rotated, -1);
   } else {
-    // 90 or 270
-    const transposed = new cv.Mat();
+    var transposed = new cv.Mat();
     cv.transpose(srcGray, transposed);
     rotated = new cv.Mat();
-    if (deg === 90)       cv.flip(transposed, rotated, 1);   // flip horizontally
-    else /* 270 */        cv.flip(transposed, rotated, 0);   // flip vertically
+    if (deg === 90) cv.flip(transposed, rotated, 1);
+    else             cv.flip(transposed, rotated, 0);
     transposed.delete();
   }
-
-  // Step 2 — horizontal flip
   if (flipped) {
-    const flippedMat = new cv.Mat();
+    var flippedMat = new cv.Mat();
     cv.flip(rotated, flippedMat, 1);
     rotated.delete();
     return flippedMat;
@@ -203,152 +185,299 @@ function prepareSourceMat(cv: any, srcGray: any, deg: number, flipped: boolean):
   return rotated;
 }
 
-// ─── Coordinate remapping ─────────────────────────────────────────────────────
-//
-// Given a hit at (hitX, hitY) in the PREPARED (rotated+flipped) source,
-// recover the top-left corner of the bbox in the ORIGINAL canvas space.
-//
-// We invert the transform: first undo the flip, then undo the rotation.
-// All arithmetic is on the CENTRE of the bbox for clarity.
-
-function remapToOriginal(
-  hitX: number, hitY: number,
-  deg: number, flipped: boolean,
-  srcW: number, srcH: number,
-  bboxW: number, bboxH: number,   // bbox dims IN ORIGINAL canvas space
-): { x: number; y: number } {
-
-  // Dimensions of the prepared (rotated) source
-  const rotW = (deg === 90 || deg === 270) ? srcH : srcW;
-  const rotH = (deg === 90 || deg === 270) ? srcW : srcH;
-
-  // Template dims in prepared source space (always origTemplW × origTemplH)
-  // which equals bboxW × bboxH when deg=0/180, and bboxH × bboxW when deg=90/270
-  const tmplInPrepW = (deg === 90 || deg === 270) ? bboxH : bboxW;
-  const tmplInPrepH = (deg === 90 || deg === 270) ? bboxW : bboxH;
-
-  // Centre of hit in prepared source space
-  let cx = hitX + tmplInPrepW / 2;
-  let cy = hitY + tmplInPrepH / 2;
-
-  // Step 1 — undo horizontal flip
-  if (flipped) {
-    cx = rotW - 1 - cx;
-    // cy unchanged
-  }
-
-  // Step 2 — undo rotation
-  let origCx: number, origCy: number;
+function remapToOriginal(hitX, hitY, deg, flipped, srcW, srcH, bboxW, bboxH) {
+  var rotW        = (deg === 90 || deg === 270) ? srcH : srcW;
+  var tmplInPrepW = (deg === 90 || deg === 270) ? bboxH : bboxW;
+  var cx = hitX + tmplInPrepW / 2;
+  var cy = hitY + ((deg === 90 || deg === 270) ? bboxW : bboxH) / 2;
+  if (flipped) cx = rotW - 1 - cx;
+  var origCx, origCy;
   switch (deg) {
-    case 0:
-      origCx = cx;
-      origCy = cy;
-      break;
-    case 90:
-      // rotate 90 CW maps (ox,oy) → (srcH-1-oy, ox)  in rotated space
-      // i.e. rotX = srcH-1-oy, rotY = ox
-      // inverse: oy = srcH-1-rotX, ox = rotY
-      origCx = cy;
-      origCy = srcH - 1 - cx;
-      break;
-    case 180:
-      origCx = srcW - 1 - cx;
-      origCy = srcH - 1 - cy;
-      break;
-    case 270:
-      // rotate 270 CW maps (ox,oy) → (oy, srcW-1-ox) in rotated space
-      // inverse: ox = srcW-1-rotY, oy = rotX
-      origCx = srcW - 1 - cy;
-      origCy = cx;
-      break;
-    default:
-      origCx = cx;
-      origCy = cy;
+    case 0:   origCx = cx;             origCy = cy;             break;
+    case 90:  origCx = cy;             origCy = srcH - 1 - cx;  break;
+    case 180: origCx = srcW - 1 - cx;  origCy = srcH - 1 - cy;  break;
+    case 270: origCx = srcW - 1 - cy;  origCy = cx;             break;
+    default:  origCx = cx;             origCy = cy;
   }
-
-  // Top-left of bbox in original canvas space
-  return {
-    x: Math.round(origCx - bboxW / 2),
-    y: Math.round(origCy - bboxH / 2),
-  };
+  return { x: Math.round(origCx - bboxW / 2), y: Math.round(origCy - bboxH / 2) };
 }
 
-// ─── Single orientation pass ──────────────────────────────────────────────────
-
-function runOrientationPass(
-  cv:         any,
-  srcGray:    any,
-  templGray:  any,       // always 0°, never rotated
-  orient:     Orientation,
-  threshold:  number,
-  idxOffset:  number,
-  origTemplW: number,
-  origTemplH: number,
-  srcW:       number,
-  srcH:       number,
-): CVMatchResult[] {
-
-  const { deg, flipped, label } = orient;
-
-  // Prepare source for this orientation
-  const preparedSrc = prepareSourceMat(cv, srcGray, deg, flipped);
-
-  // Check template fits in prepared source
+function runOrientationPass(cv, srcGray, templGray, orient, threshold, idxOffset, origTemplW, origTemplH, srcW, srcH) {
+  var deg      = orient.deg;
+  var flipped  = orient.flipped;
+  var label    = orient.label;
+  var preparedSrc = prepareSourceMat(cv, srcGray, deg, flipped);
   if (origTemplW > preparedSrc.cols || origTemplH > preparedSrc.rows) {
     preparedSrc.delete();
     return [];
   }
-
-  const result = new cv.Mat();
+  var result = new cv.Mat();
   cv.matchTemplate(preparedSrc, templGray, result, cv.TM_CCOEFF_NORMED);
   preparedSrc.delete();
-
-  const data  = result.data32F as Float32Array;
-  const rCols = result.cols;
-  const rRows = result.rows;
-  const matches: CVMatchResult[] = [];
-
-  for (let r = 0; r < rRows; r++) {
-    for (let c = 0; c < rCols; c++) {
-      const score = data[r * rCols + c];
+  var data  = result.data32F;
+  var rCols = result.cols;
+  var rRows = result.rows;
+  var matches = [];
+  for (var r = 0; r < rRows; r++) {
+    for (var c = 0; c < rCols; c++) {
+      var score = data[r * rCols + c];
       if (score < threshold) continue;
-
-      // Bbox dims in original canvas space
-      const bboxW = (deg === 90 || deg === 270) ? origTemplH : origTemplW;
-      const bboxH = (deg === 90 || deg === 270) ? origTemplW : origTemplH;
-
-      const orig = remapToOriginal(c, r, deg, flipped, srcW, srcH, bboxW, bboxH);
-
+      var bboxW = (deg === 90 || deg === 270) ? origTemplH : origTemplW;
+      var bboxH = (deg === 90 || deg === 270) ? origTemplW : origTemplH;
+      var orig  = remapToOriginal(c, r, deg, flipped, srcW, srcH, bboxW, bboxH);
       matches.push({
-        id:               `cv-${label}-${idxOffset + r * rCols + c}`,
-        score,
+        id:               'cv-' + label + '-' + (idxOffset + r * rCols + c),
+        score:            score,
         rotation:         deg,
-        flipped,
+        flipped:          flipped,
         orientationLabel: label,
         bbox:             { x: orig.x, y: orig.y, w: bboxW, h: bboxH },
         snapPoints:       snapPointsForBBox(orig.x, orig.y, bboxW, bboxH),
       });
     }
   }
-
   result.delete();
   return matches;
+}
+
+function imageDataToMat(cv, imgData) {
+  var mat = cv.matFromArray(imgData.height, imgData.width, cv.CV_8UC4, Array.from(imgData.data));
+  return mat;
+}
+
+async function doFindMatches(msg) {
+  var cvLib = self.cv;
+  var srcImageData  = msg.srcImageData;
+  var tmplImageData = msg.tmplImageData;
+  var threshold     = msg.threshold;
+  var rotations     = msg.rotations;
+  var flips         = msg.flips;
+  var removeText    = msg.removeText;
+  var origTemplW    = tmplImageData.width;
+  var origTemplH    = tmplImageData.height;
+
+  // ── Source ────────────────────────────────────────────────────────────────
+  self.postMessage({ type: 'PROGRESS', phase: 'Converting source image' });
+  var srcMat     = imageDataToMat(cvLib, srcImageData);
+  var srcGrayRaw = new cvLib.Mat();
+  cvLib.cvtColor(srcMat, srcGrayRaw, cvLib.COLOR_RGBA2GRAY);
+  srcMat.delete();
+
+  var srcGray;
+  if (removeText) {
+    self.postMessage({ type: 'PROGRESS', phase: 'Removing text from source', detail: 'Erasing text blobs from source…' });
+    srcGray = matWithoutText(cvLib, srcGrayRaw);
+    srcGrayRaw.delete();
+    self.postMessage({ type: 'PROGRESS', phase: 'Source text removed', detail: '✓ Source text erased' });
+  } else {
+    srcGray = srcGrayRaw;
+  }
+
+  var srcW = srcGray.cols;
+  var srcH = srcGray.rows;
+
+  // ── Template ──────────────────────────────────────────────────────────────
+  self.postMessage({ type: 'PROGRESS', phase: 'Converting template' });
+  var templMat     = imageDataToMat(cvLib, tmplImageData);
+  var templGrayRaw = new cvLib.Mat();
+  cvLib.cvtColor(templMat, templGrayRaw, cvLib.COLOR_RGBA2GRAY);
+  templMat.delete();
+
+  var templGray;
+  if (removeText) {
+    self.postMessage({ type: 'PROGRESS', phase: 'Removing text from template', detail: 'Erasing text blobs from template…' });
+    templGray = matWithoutText(cvLib, templGrayRaw);
+    templGrayRaw.delete();
+
+    // ── Send cleaned template pixels back so TemplatePreview can show
+    //    exactly what was matched against (white blobs where text was).
+    //    Transfer the buffer zero-copy — it's no longer needed here.
+    var cleanedRGBA = grayMatToRGBA(templGray);
+    self.postMessage(
+      {
+        type:   'TEMPLATE_CLEANED',
+        data:   cleanedRGBA,
+        width:  templGray.cols,
+        height: templGray.rows,
+      },
+      [cleanedRGBA.buffer],
+    );
+
+    self.postMessage({ type: 'PROGRESS', phase: 'Template text removed', detail: '✓ Template text erased' });
+  } else {
+    templGray = templGrayRaw;
+  }
+
+  // ── Orientation passes ────────────────────────────────────────────────────
+  var orientations = [];
+  for (var ri = 0; ri < rotations.length; ri++) {
+    for (var fi = 0; fi < flips.length; fi++) {
+      var deg     = rotations[ri];
+      var flipped = flips[fi];
+      orientations.push({ deg: deg, flipped: flipped, label: flipped ? deg + '°↔' : deg + '°' });
+    }
+  }
+
+  var allResults = [];
+  var idxOffset  = 0;
+
+  for (var i = 0; i < orientations.length; i++) {
+    var orient = orientations[i];
+    self.postMessage({
+      type:   'PROGRESS',
+      phase:  'Matching orientation ' + (i + 1) + '/' + orientations.length,
+      detail: orient.label,
+    });
+    var hits = runOrientationPass(
+      cvLib, srcGray, templGray,
+      orient, threshold, idxOffset,
+      origTemplW, origTemplH, srcW, srcH,
+    );
+    for (var h = 0; h < hits.length; h++) allResults.push(hits[h]);
+    idxOffset += srcW * srcH;
+  }
+
+  templGray.delete();
+  srcGray.delete();
+
+  self.postMessage({ type: 'PROGRESS', phase: 'Non-maximum suppression' });
+  var deduped = nms(allResults);
+  deduped.sort(function(a, b) { return b.score - a.score; });
+  return deduped;
+}
+
+self.onmessage = async function(e) {
+  var msg = e.data;
+
+  if (msg.type === 'LOAD') {
+    try {
+      self.postMessage({ type: 'PROGRESS', phase: 'Loading OpenCV.js…' });
+      await loadCV();
+      self.postMessage({ type: 'READY' });
+    } catch(err) {
+      self.postMessage({ type: 'ERROR', message: err.message });
+    }
+    return;
+  }
+
+  if (msg.type === 'FIND_MATCHES') {
+    try {
+      if (!cvReady) {
+        self.postMessage({ type: 'PROGRESS', phase: 'Waiting for OpenCV…' });
+        await loadCV();
+        self.postMessage({ type: 'READY' });
+      }
+      var matches = await doFindMatches(msg);
+      self.postMessage({ type: 'RESULTS', matches: matches });
+    } catch(err) {
+      self.postMessage({ type: 'ERROR', message: err.message });
+    }
+    return;
+  }
+};
+`;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
-  const [isReady,      setIsReady]      = useState(false);
-  const [isSearching,  setIsSearching]  = useState(false);
-  const [matches,      setMatches]      = useState<CVMatchResult[]>([]);
-  const [templateCrop, setTemplateCrop] = useState<ImageData | null>(null);
+  const [isReady,          setIsReady]          = useState(false);
+  const [isSearching,      setIsSearching]      = useState(false);
+  const [workerPhase,      setWorkerPhase]      = useState('');
+  const [workerDetail,     setWorkerDetail]     = useState('');
+  const [matches,          setMatches]          = useState<CVMatchResult[]>([]);
+  const [rawTemplateCrop,  setRawTemplateCrop]  = useState<ImageData | null>(null);
+  const [templateCrop,     setTemplateCrop]     = useState<ImageData | null>(null);
+
+  const workerRef   = useRef<Worker | null>(null);
+  const blobUrlRef  = useRef('');
   const templateRef = useRef<ImageData | null>(null);
 
-  const ensureReady = useCallback(async () => {
-    if (isReady) return true;
-    try { await loadOpenCV(); setIsReady(true); return true; }
-    catch (e) { console.error('OpenCV load failed', e); return false; }
-  }, [isReady]);
+  // Pending promise resolution for the current findMatches call
+  const resolveRef = useRef<(() => void) | null>(null);
+  const rejectRef  = useRef<((e: Error) => void) | null>(null);
+
+  // ── Spin up worker once ─────────────────────────────────────────────────────
+  useEffect(() => {
+    const src  = getOpenCVWorkerSource();
+    const blob = new Blob([src], { type: 'application/javascript' });
+    const url  = URL.createObjectURL(blob);
+    blobUrlRef.current = url;
+
+    const worker = new Worker(url);
+    workerRef.current = worker;
+
+    worker.onmessage = (e: MessageEvent) => {
+      const msg = e.data;
+
+      switch (msg.type) {
+
+        case 'READY':
+          setIsReady(true);
+          setWorkerPhase('OpenCV ready');
+          setWorkerDetail('');
+          break;
+
+        case 'PROGRESS':
+          setWorkerPhase(msg.phase ?? '');
+          setWorkerDetail(msg.detail ?? '');
+          break;
+
+        // ── Worker finished text removal on the template and sent back
+        //    the cleaned pixels so the preview reflects what was matched.
+        case 'TEMPLATE_CLEANED': {
+          const cleaned = new ImageData(
+            msg.data as Uint8ClampedArray,  // transferred buffer — already in main thread
+            msg.width  as number,
+            msg.height as number,
+          );
+          // Update the live preview to the cleaned version.
+          // rawTemplateCrop keeps the original for before/after comparison.
+          setTemplateCrop(cleaned);
+          break;
+        }
+
+        case 'RESULTS':
+          setMatches(msg.matches ?? []);
+          setIsSearching(false);
+          setWorkerPhase(`Done — ${msg.matches?.length ?? 0} match${msg.matches?.length !== 1 ? 'es' : ''}`);
+          setWorkerDetail('');
+          resolveRef.current?.();
+          resolveRef.current = null;
+          rejectRef.current  = null;
+          break;
+
+        case 'ERROR':
+          console.error('[CVWorker]', msg.message);
+          setIsSearching(false);
+          setWorkerPhase(`Error: ${msg.message}`);
+          setWorkerDetail('');
+          rejectRef.current?.(new Error(msg.message));
+          resolveRef.current = null;
+          rejectRef.current  = null;
+          break;
+      }
+    };
+
+    worker.onerror = (e) => {
+      console.error('[CVWorker] uncaught', e);
+      setIsSearching(false);
+      setWorkerPhase('Worker crashed');
+      rejectRef.current?.(new Error(e.message));
+      resolveRef.current = null;
+      rejectRef.current  = null;
+    };
+
+    // Kick off OpenCV load in background immediately
+    worker.postMessage({ type: 'LOAD' });
+    setWorkerPhase('Loading OpenCV.js…');
+
+    return () => {
+      worker.terminate();
+      URL.revokeObjectURL(url);
+      workerRef.current = null;
+    };
+  }, []);
 
   // ── buildTemplate ───────────────────────────────────────────────────────────
   const buildTemplate = useCallback((
@@ -368,82 +497,90 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
     if (clampedW < 4 || clampedH < 4) return;
     const crop = canvas.getContext('2d')!.getImageData(clampedX, clampedY, clampedW, clampedH);
     templateRef.current = crop;
+    // Both raw and live preview start as the original crop.
+    // templateCrop will be replaced by TEMPLATE_CLEANED once the worker
+    // finishes text removal — that is what the matcher actually used.
+    setRawTemplateCrop(crop);
     setTemplateCrop(crop);
     setMatches([]);
   }, []);
 
   // ── findMatches ─────────────────────────────────────────────────────────────
   const findMatches = useCallback(async (
-    canvas:    HTMLCanvasElement,
-    threshold  = 0.60,                    // 60% default
-    rotations  = [0, 90, 180, 270],
-    flips      = [false, true],           // test both normal and h-flipped
-  ) => {
-    const tmpl = templateRef.current;
-    if (!tmpl) return;
-    const ok = await ensureReady();
-    if (!ok) return;
+    canvas:     HTMLCanvasElement,
+    threshold   = 0.60,
+    rotations   = [0, 90, 180, 270],
+    flips       = [false, true],
+    removeText  = true,
+  ): Promise<void> => {
+    const tmpl   = templateRef.current;
+    const worker = workerRef.current;
+    if (!tmpl || !worker) return;
 
     setIsSearching(true);
-    await new Promise<void>(r => requestAnimationFrame(() => r()));
+    setMatches([]);
+    setWorkerDetail('');
 
-    const cv          = window.cv;
-    const allResults: CVMatchResult[] = [];
-    const origTemplW  = tmpl.width;
-    const origTemplH  = tmpl.height;
+    // Grab the full source image from the canvas
+    const srcCtx       = canvas.getContext('2d')!;
+    const srcImageData = srcCtx.getImageData(0, 0, canvas.width, canvas.height);
 
-    try {
-      // Build source grayscale Mat
-      const srcMat  = cv.imread(canvas);
-      const srcGray = new cv.Mat();
-      cv.cvtColor(srcMat, srcGray, cv.COLOR_RGBA2GRAY);
-      srcMat.delete();
-      const srcW = srcGray.cols;
-      const srcH = srcGray.rows;
+    // Copy the template buffer before transferring so templateRef.current
+    // (and rawTemplateCrop) remain valid after the transfer detaches the copy.
+    const tmplDataCopy  = new Uint8ClampedArray(tmpl.data);
+    const tmplImageData = {
+      data:   tmplDataCopy,
+      width:  tmpl.width,
+      height: tmpl.height,
+    };
 
-      // Build template grayscale Mat — always stays at 0°, never transformed
-      const tmpCanvas = document.createElement('canvas');
-      tmpCanvas.width  = origTemplW;
-      tmpCanvas.height = origTemplH;
-      tmpCanvas.getContext('2d')!.putImageData(tmpl, 0, 0);
-      const templMat  = cv.imread(tmpCanvas);
-      const templGray = new cv.Mat();
-      cv.cvtColor(templMat, templGray, cv.COLOR_RGBA2GRAY);
-      templMat.delete();
+    // Source is single-use in the worker — safe to transfer directly.
+    const srcData = {
+      data:   srcImageData.data,
+      width:  srcImageData.width,
+      height: srcImageData.height,
+    };
 
-      // Build all 8 orientations (4 rotations × 2 flip states)
-      const orientations = buildOrientations(rotations, flips);
+    return new Promise<void>((resolve, reject) => {
+      resolveRef.current = resolve;
+      rejectRef.current  = reject;
 
-      let idxOffset = 0;
-      for (const orient of orientations) {
-        const hits = runOrientationPass(
-          cv, srcGray, templGray,
-          orient, threshold, idxOffset,
-          origTemplW, origTemplH, srcW, srcH,
-        );
-        allResults.push(...hits);
-        idxOffset += srcW * srcH;
-      }
-
-      templGray.delete();
-      srcGray.delete();
-
-    } catch (err) {
-      console.error('OpenCV matchTemplate error', err);
-    }
-
-    const deduped = nms(allResults);
-    deduped.sort((a, b) => b.score - a.score);
-    setMatches(deduped);
-    setIsSearching(false);
-  }, [ensureReady]);
+      worker.postMessage(
+        {
+          type:          'FIND_MATCHES',
+          srcImageData:  srcData,
+          tmplImageData: tmplImageData,
+          threshold,
+          rotations,
+          flips,
+          removeText,
+        },
+        // Transfer only the copy's buffer + source buffer. Original tmpl.data untouched.
+        [srcData.data.buffer, tmplDataCopy.buffer],
+      );
+    });
+  }, []);
 
   // ── clearAll ────────────────────────────────────────────────────────────────
   const clearAll = useCallback(() => {
     templateRef.current = null;
+    setRawTemplateCrop(null);
     setTemplateCrop(null);
     setMatches([]);
-  }, []);
+    setWorkerPhase(isReady ? 'OpenCV ready' : 'Loading OpenCV.js…');
+    setWorkerDetail('');
+  }, [isReady]);
 
-  return { isReady, isSearching, matches, templateCrop, buildTemplate, findMatches, clearAll };
+  return {
+    isReady,
+    isSearching,
+    workerPhase,
+    workerDetail,
+    matches,
+    rawTemplateCrop,
+    templateCrop,
+    buildTemplate,
+    findMatches,
+    clearAll,
+  };
 }

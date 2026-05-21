@@ -1,8 +1,15 @@
 /**
- * CVMatchOverlay.tsx  v1.1
+ * CVMatchOverlay.tsx  v2.1
  * ─────────────────────────
  * Visual overlay for OpenCV template match results.
- * Updated to show orientationLabel (e.g. "90°↔") including flip state.
+ *
+ * v2.1 changes:
+ *  ─ TemplatePreview section in CVSamplerSidebar now shows two canvases:
+ *    "Original" (rawTemplateCrop) and "Matched against" (templateCrop, the
+ *    text-erased version sent back by the worker via TEMPLATE_CLEANED).
+ *  ─ The "Matched against" canvas only appears after text removal completes,
+ *    giving a clear before/after comparison.
+ *  ─ All v2.0 features retained.
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -18,7 +25,7 @@ const C = {
     centroid: '#8b5cf6',
   } as Record<string, string>,
   rubberBand: '#38bdf8',
-  template:   '#38bdf8',
+  worker:     '#a78bfa',
 };
 
 // ─── Coord helper ─────────────────────────────────────────────────────────────
@@ -52,12 +59,10 @@ export function CVMatchOverlay({ matches, zoom, pan }: CVMatchOverlayProps) {
 
       {matches.map((match, idx) => {
         const { bbox } = match;
-        const tl = toVP(bbox.x,         bbox.y,          zoom, pan);
-        const br = toVP(bbox.x + bbox.w, bbox.y + bbox.h, zoom, pan);
+        const tl = toVP(bbox.x,          bbox.y,           zoom, pan);
+        const br = toVP(bbox.x + bbox.w,  bbox.y + bbox.h,  zoom, pan);
         const vw = br.x - tl.x;
         const vh = br.y - tl.y;
-
-        // Use orientationLabel (e.g. "90°↔") if available, fallback to rotation
         const orientLabel = match.orientationLabel ?? `${match.rotation}°`;
 
         return (
@@ -89,7 +94,7 @@ export function CVMatchOverlay({ matches, zoom, pan }: CVMatchOverlayProps) {
                     </>
                   )}
                   <circle cx={vp.x} cy={vp.y} r={r+2} fill="none" stroke={col} strokeWidth={0.8} strokeOpacity={0.4} />
-                  <circle cx={vp.x} cy={vp.y} r={r} fill={col} fillOpacity={0.9} />
+                  <circle cx={vp.x} cy={vp.y} r={r}   fill={col} fillOpacity={0.9} />
                 </g>
               );
             })}
@@ -100,35 +105,94 @@ export function CVMatchOverlay({ matches, zoom, pan }: CVMatchOverlayProps) {
   );
 }
 
+// ─── Worker phase banner ──────────────────────────────────────────────────────
+
+interface CVWorkerBannerProps {
+  isSearching:  boolean;
+  workerPhase:  string;
+  workerDetail: string;
+}
+
+export function CVWorkerBanner({ isSearching, workerPhase, workerDetail }: CVWorkerBannerProps) {
+  if (!isSearching) return null;
+
+  const isTextPhase =
+    workerPhase.toLowerCase().includes('text') ||
+    workerDetail.toLowerCase().includes('text');
+
+  const phaseColor = isTextPhase ? '#f59e0b' : C.worker;
+
+  return (
+    <div style={{
+      position:      'absolute',
+      top:           48,
+      left:          '50%',
+      transform:     'translateX(-50%)',
+      background:    'rgba(13,13,13,0.96)',
+      border:        `1px solid ${phaseColor}44`,
+      padding:       '6px 14px',
+      display:       'flex',
+      flexDirection: 'column',
+      alignItems:    'center',
+      gap:           4,
+      zIndex:        50,
+      pointerEvents: 'none',
+      minWidth:      240,
+    }}>
+      <style>{`@keyframes cvspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
+
+      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+        <div style={{
+          width:10, height:10,
+          border:`1.5px solid transparent`,
+          borderTopColor: phaseColor,
+          borderRadius: '50%',
+          animation: 'cvspin .6s linear infinite',
+          flexShrink: 0,
+        }} />
+        <span style={{
+          fontSize: 8, color: phaseColor,
+          textTransform: 'uppercase', letterSpacing: '.1em',
+          fontFamily: "'Courier New', monospace",
+        }}>
+          {workerPhase || 'Working…'}
+        </span>
+      </div>
+
+      {workerDetail && (
+        <span style={{
+          fontSize:      7,
+          color:         isTextPhase ? '#f59e0b' : '#555',
+          textTransform: 'uppercase',
+          letterSpacing: '.07em',
+          fontFamily:    "'Courier New', monospace",
+          fontStyle:     workerDetail.startsWith('✓') ? 'normal' : 'italic',
+        }}>
+          {workerDetail}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─── Rubber-band overlay ──────────────────────────────────────────────────────
 
 interface DrawBox { x: number; y: number; w: number; h: number }
 
 interface CVRubberBandProps {
-  isDrawing:   boolean;
-  drawBox:     DrawBox | null;
-  tooLarge:    boolean;
-  isSearching: boolean;
+  isDrawing:    boolean;
+  drawBox:      DrawBox | null;
+  tooLarge:     boolean;
+  isSearching:  boolean;
+  workerPhase:  string;
+  workerDetail: string;
 }
 
-export function CVRubberBand({ isDrawing, drawBox, tooLarge, isSearching }: CVRubberBandProps) {
-  if (isSearching) {
-    return (
-      <div style={{
-        position: 'absolute', top: 48, left: '50%', transform: 'translateX(-50%)',
-        background: 'rgba(13,13,13,0.95)', border: '1px solid #f43f5e44',
-        padding: '6px 14px', display: 'flex', alignItems: 'center', gap: 8,
-        zIndex: 50, pointerEvents: 'none',
-      }}>
-        <style>{`@keyframes cvspin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
-        <div style={{ width:10,height:10,border:'1.5px solid transparent',borderTopColor:'#f43f5e',borderRadius:'50%',animation:'cvspin .6s linear infinite' }} />
-        <span style={{ fontSize:8,color:'#f43f5e',textTransform:'uppercase',letterSpacing:'.1em',fontFamily:"'Courier New',monospace" }}>
-          OpenCV matching…
-        </span>
-      </div>
-    );
-  }
+export function CVRubberBand({
+  isDrawing, drawBox, tooLarge,
+}: CVRubberBandProps) {
   if (!isDrawing || !drawBox) return null;
+
   const col = tooLarge ? '#f43f5e' : C.rubberBand;
   return (
     <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:35,overflow:'visible' }} width="100%" height="100%">
@@ -175,6 +239,48 @@ function tbBtn(active: boolean, colour?: string): React.CSSProperties {
   };
 }
 
+// ─── Template preview canvas ──────────────────────────────────────────────────
+
+function TemplatePreview({ crop, label, labelColor }: { crop: ImageData; label: string; labelColor: string }) {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const maxDim = 100;
+    const scale  = Math.min(maxDim / crop.width, maxDim / crop.height, 1);
+    canvas.width  = Math.round(crop.width  * scale);
+    canvas.height = Math.round(crop.height * scale);
+    const ctx = canvas.getContext('2d')!;
+    const tmp = document.createElement('canvas');
+    tmp.width  = crop.width;
+    tmp.height = crop.height;
+    tmp.getContext('2d')!.putImageData(crop, 0, 0);
+    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
+  }, [crop]);
+
+  return (
+    <div style={{ display:'flex',flexDirection:'column',gap:3,flex:1 }}>
+      <div style={{ fontSize:6,color:labelColor,textTransform:'uppercase',letterSpacing:'.08em' }}>{label}</div>
+      <canvas
+        ref={ref}
+        style={{ display:'block',border:`1px solid ${labelColor}44`,background:'#fff',maxWidth:'100%',imageRendering:'pixelated' }}
+      />
+      <div style={{ fontSize:6,color:'#333' }}>{crop.width}×{crop.height}px</div>
+    </div>
+  );
+}
+
+// ─── Worker log entry type ────────────────────────────────────────────────────
+
+interface WorkerLogEntry {
+  ts:     number;
+  phase:  string;
+  detail: string;
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
+
 type SamplerMode = 'idle' | 'drawing' | 'matched';
 
 interface CVSamplerSidebarProps {
@@ -188,6 +294,8 @@ interface CVSamplerSidebarProps {
   onRotations:  (v: number[]) => void;
   flips:        boolean[];
   onFlips:      (v: boolean[]) => void;
+  removeText:   boolean;
+  onRemoveText: (v: boolean) => void;
 }
 
 export function CVSamplerSidebar({
@@ -195,24 +303,51 @@ export function CVSamplerSidebar({
   threshold, onThreshold,
   rotations, onRotations,
   flips, onFlips,
+  removeText, onRemoveText,
 }: CVSamplerSidebarProps) {
   const COL    = '#38bdf8';
   const SNAP_C = { endpoint: '#f59e0b', midpoint: '#10b981', centroid: '#8b5cf6' };
   const ALL_ROTS = [0, 90, 180, 270];
 
+  // Are the raw and cleaned previews different? (text was actually removed)
+  const hasCleanedVersion =
+    removeText &&
+    matcher.rawTemplateCrop !== null &&
+    matcher.templateCrop    !== null &&
+    matcher.templateCrop !== matcher.rawTemplateCrop;
+
+  // ── Worker log ──────────────────────────────────────────────────────────────
+  const [log, setLog] = useState<WorkerLogEntry[]>([]);
+
+  useEffect(() => {
+    if (!matcher.workerPhase) return;
+    setLog(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.phase === matcher.workerPhase) return prev;
+      const entry: WorkerLogEntry = { ts: Date.now(), phase: matcher.workerPhase, detail: matcher.workerDetail };
+      return [...prev.slice(-9), entry];
+    });
+  }, [matcher.workerPhase, matcher.workerDetail]);
+
+  useEffect(() => {
+    if (matcher.isSearching) setLog([]);
+  }, [matcher.isSearching]);
+
   return (
     <>
-      {/* Header */}
+      {/* ── Header ── */}
       <div style={{ padding:'8px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
         <div style={{ fontSize:8,color:'#3a3a3a',textTransform:'uppercase',letterSpacing:'.1em',marginBottom:8 }}>OpenCV Sampler</div>
 
+        {/* Ready indicator */}
         <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:10,background:'rgba(56,189,248,0.06)',border:'1px solid #38bdf822',padding:'4px 8px' }}>
-          <div style={{ width:7,height:7,borderRadius:'50%',background:matcher.isReady?'#22c55e':'#f59e0b' }} />
+          <div style={{ width:7,height:7,borderRadius:'50%',background:matcher.isReady?'#22c55e':'#f59e0b',flexShrink:0 }} />
           <span style={{ fontSize:7,color:matcher.isReady?'#22c55e':'#f59e0b',textTransform:'uppercase',letterSpacing:'.07em' }}>
-            {matcher.isReady ? 'OpenCV ready' : 'Loading OpenCV…'}
+            {matcher.isReady ? 'Worker · OpenCV ready' : 'Worker · Loading…'}
           </span>
         </div>
 
+        {/* Step indicators */}
         {(['Draw','Match'] as const).map((step,i)=>{
           const stepMode = ['drawing','matched'][i];
           const done     = i===0 && samplerMode==='matched';
@@ -227,6 +362,7 @@ export function CVSamplerSidebar({
           );
         })}
 
+        {/* Action buttons */}
         <div style={{ display:'flex',gap:4,marginTop:10,flexWrap:'wrap' as const }}>
           {samplerMode==='idle' && (
             <button onClick={onEnterDraw} style={{ ...tbBtn(true,COL),flex:1 }}>⊡ Draw Sample</button>
@@ -239,13 +375,13 @@ export function CVSamplerSidebar({
           {samplerMode==='matched' && (
             <>
               <button onClick={onEnterDraw} style={{ ...tbBtn(false,COL),flex:1 }}>⊡ New Sample</button>
-              <button onClick={onClear} style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button>
+              <button onClick={onClear}     style={{ ...tbBtn(false),padding:'3px 7px' }}>✕</button>
             </>
           )}
         </div>
       </div>
 
-      {/* Settings */}
+      {/* ── Settings ── */}
       <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
         <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>Settings</div>
 
@@ -271,11 +407,26 @@ export function CVSamplerSidebar({
           })}
         </div>
 
-        {/* Flips — NEW */}
+        {/* Remove text */}
+        <div style={{ display:'flex',alignItems:'center',gap:4,marginBottom:6 }}>
+          <span style={{ fontSize:7,color:'#555',textTransform:'uppercase',letterSpacing:'.06em',minWidth:56 }}>Text</span>
+          <button
+            onClick={()=>onRemoveText(!removeText)}
+            style={{ fontSize:7,padding:'2px 5px',cursor:'pointer',border:`1px solid ${removeText?'#f43f5e':'#2a2a2a'}`,background:removeText?'rgba(244,63,94,0.1)':'transparent',color:removeText?'#f43f5e':'#444',fontFamily:'inherit',textTransform:'uppercase' }}
+            title="Strip text labels from symbols before matching"
+          >
+            {removeText ? '✕ strip text' : '· keep text'}
+          </button>
+          <span style={{ fontSize:7,color:'#2a2a2a',letterSpacing:'.04em' }}>
+            {removeText ? 'ignores labels' : 'exact match'}
+          </span>
+        </div>
+
+        {/* Flips */}
         <div style={{ display:'flex',alignItems:'center',gap:4 }}>
           <span style={{ fontSize:7,color:'#555',textTransform:'uppercase',letterSpacing:'.06em',minWidth:56 }}>Mirror</span>
           {([false, true] as const).map(f=>{
-            const on = flips.includes(f);
+            const on  = flips.includes(f);
             const lbl = f ? '↔ flip' : 'normal';
             return (
               <button key={String(f)} onClick={()=>onFlips(on?flips.filter(x=>x!==f):[...flips,f])}
@@ -287,19 +438,98 @@ export function CVSamplerSidebar({
         </div>
       </div>
 
-      {/* Template preview */}
-      {matcher.templateCrop && (
+      {/* ── Worker log ── */}
+      <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
+        <div style={{ display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:4 }}>
+          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em' }}>Worker log</div>
+          {matcher.isSearching && (
+            <div style={{ display:'flex',alignItems:'center',gap:4 }}>
+              <style>{`@keyframes cvspin2{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
+              <div style={{ width:6,height:6,border:'1px solid transparent',borderTopColor:C.worker,borderRadius:'50%',animation:'cvspin2 .5s linear infinite' }} />
+              <span style={{ fontSize:7,color:C.worker,textTransform:'uppercase',letterSpacing:'.06em' }}>running</span>
+            </div>
+          )}
+        </div>
+
+        {/* Live phase pill */}
+        {matcher.workerPhase && (
+          <div style={{ background:'#0a0a0a',border:`1px solid ${C.worker}22`,padding:'3px 6px',marginBottom:4 }}>
+            <div style={{ fontSize:7,color:C.worker,letterSpacing:'.06em',textTransform:'uppercase' }}>
+              {matcher.workerPhase}
+            </div>
+            {matcher.workerDetail && (
+              <div style={{ fontSize:7,color:matcher.workerDetail.startsWith('✓')?'#22c55e':'#f59e0b',letterSpacing:'.05em',marginTop:2 }}>
+                {matcher.workerDetail}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Log history */}
+        <div style={{ maxHeight:80,overflowY:'auto' }}>
+          {log.map((entry, i) => {
+            const isTextEntry = entry.phase.toLowerCase().includes('text') || entry.detail.toLowerCase().includes('text');
+            const isLast      = i === log.length - 1;
+            return (
+              <div key={entry.ts} style={{ display:'flex',alignItems:'baseline',gap:4,marginBottom:1,opacity:isLast?1:0.4 }}>
+                <span style={{ fontSize:6,color:isTextEntry?'#f59e0b':'#2a2a2a',flexShrink:0 }}>›</span>
+                <span style={{ fontSize:6,color:isTextEntry?'#f59e0b':'#3a3a3a',textTransform:'uppercase',letterSpacing:'.04em',lineHeight:1.6 }}>
+                  {entry.phase}{entry.detail ? ` · ${entry.detail}` : ''}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Template previews ── */}
+      {matcher.rawTemplateCrop && (
         <div style={{ padding:'6px 10px',borderBottom:'1px solid #1a1a1a',flexShrink:0 }}>
-          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:4 }}>Template</div>
-          <TRow label="Size" value={`${matcher.templateCrop.width} × ${matcher.templateCrop.height} px`} />
-          <TemplatePreview crop={matcher.templateCrop} />
+          <div style={{ fontSize:7,color:'#333',textTransform:'uppercase',letterSpacing:'.08em',marginBottom:6 }}>
+            Template preview
+          </div>
+
+          {hasCleanedVersion ? (
+            /* ── Before / after side-by-side ── */
+            <>
+              <div style={{ display:'flex',gap:8,alignItems:'flex-start' }}>
+                <TemplatePreview
+                  crop={matcher.rawTemplateCrop}
+                  label="Original"
+                  labelColor="#555"
+                />
+                <TemplatePreview
+                  crop={matcher.templateCrop!}
+                  label="Text stripped ✓"
+                  labelColor="#22c55e"
+                />
+              </div>
+              <div style={{ marginTop:5,fontSize:6,color:'#2a2a2a',textTransform:'uppercase',letterSpacing:'.06em',lineHeight:1.8 }}>
+                White areas = erased text blobs · right image is what was matched
+              </div>
+            </>
+          ) : (
+            /* ── Single preview (removeText off, or still waiting for cleaned) ── */
+            <>
+              <TemplatePreview
+                crop={matcher.rawTemplateCrop}
+                label={matcher.isSearching && removeText ? 'Original (stripping text…)' : 'Original'}
+                labelColor={matcher.isSearching && removeText ? '#f59e0b' : '#555'}
+              />
+              {matcher.isSearching && removeText && (
+                <div style={{ marginTop:4,fontSize:6,color:'#f59e0b',textTransform:'uppercase',letterSpacing:'.06em' }}>
+                  ⟳ Text-erased preview will appear here
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
 
-      {/* Results */}
+      {/* ── Results ── */}
       <div style={{ flex:1,overflowY:'auto',padding:6 }}>
         {matcher.isSearching && (
-          <p style={{ fontSize:8,color:'#555',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 0' }}>Running OpenCV…</p>
+          <p style={{ fontSize:8,color:'#555',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 0' }}>Running OpenCV in worker…</p>
         )}
         {!matcher.isSearching && samplerMode==='matched' && matcher.matches.length===0 && (
           <p style={{ fontSize:8,color:'#2a2a2a',textAlign:'center',textTransform:'uppercase',letterSpacing:'.08em',padding:'20px 8px',lineHeight:2.2 }}>
@@ -349,25 +579,6 @@ export function CVSamplerSidebar({
   );
 }
 
-// ─── Template preview canvas ──────────────────────────────────────────────────
-
-function TemplatePreview({ crop }: { crop: ImageData }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(()=>{
-    const canvas = ref.current; if (!canvas) return;
-    const maxDim = 100;
-    const scale  = Math.min(maxDim/crop.width, maxDim/crop.height, 1);
-    canvas.width  = Math.round(crop.width*scale);
-    canvas.height = Math.round(crop.height*scale);
-    const ctx = canvas.getContext('2d')!;
-    const tmp = document.createElement('canvas');
-    tmp.width=crop.width; tmp.height=crop.height;
-    tmp.getContext('2d')!.putImageData(crop,0,0);
-    ctx.drawImage(tmp,0,0,canvas.width,canvas.height);
-  },[crop]);
-  return <canvas ref={ref} style={{ display:'block',marginTop:6,border:'1px solid #38bdf844',background:'#fff',maxWidth:'100%' }} />;
-}
-
 // ─── Rubber-band draw hook ────────────────────────────────────────────────────
 
 const MAX_BOX_VP_FRAC = 0.35;
@@ -406,13 +617,23 @@ export function useCVRubberBand(
     const onMove = (e: PointerEvent)=>{
       if (!activeRef.current||!startRef.current) return;
       const vr=vp.getBoundingClientRect();
-      const box: DrawBox2 = { x:Math.min(startRef.current.x,e.clientX-vr.left), y:Math.min(startRef.current.y,e.clientY-vr.top), w:Math.abs(e.clientX-vr.left-startRef.current.x), h:Math.abs(e.clientY-vr.top-startRef.current.y) };
+      const box: DrawBox2 = {
+        x:Math.min(startRef.current.x,e.clientX-vr.left),
+        y:Math.min(startRef.current.y,e.clientY-vr.top),
+        w:Math.abs(e.clientX-vr.left-startRef.current.x),
+        h:Math.abs(e.clientY-vr.top-startRef.current.y),
+      };
       setDrawBox(box); setTooLarge(isTooLarge(box));
     };
     const onUp = (e: PointerEvent)=>{
       if (!activeRef.current||!startRef.current) return;
       const vr=vp.getBoundingClientRect();
-      const box: DrawBox2 = { x:Math.min(startRef.current.x,e.clientX-vr.left), y:Math.min(startRef.current.y,e.clientY-vr.top), w:Math.abs(e.clientX-vr.left-startRef.current.x), h:Math.abs(e.clientY-vr.top-startRef.current.y) };
+      const box: DrawBox2 = {
+        x:Math.min(startRef.current.x,e.clientX-vr.left),
+        y:Math.min(startRef.current.y,e.clientY-vr.top),
+        w:Math.abs(e.clientX-vr.left-startRef.current.x),
+        h:Math.abs(e.clientY-vr.top-startRef.current.y),
+      };
       activeRef.current=false; setIsDrawing(false); setDrawBox(null); setTooLarge(false); startRef.current=null;
       if (box.w>5&&box.h>5&&!isTooLarge(box)) onCommit(box);
     };

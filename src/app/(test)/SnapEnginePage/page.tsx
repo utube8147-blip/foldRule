@@ -13,10 +13,11 @@ import { useShapeDetector }                                from '@/hooks/useShap
 import { ShapeOverlayAdapted, LABEL_CONFIG }               from '@/components/ShapeOverlay';
 import type { ShapeLabel, DetectedRegion }                 from '@/hooks/useShapeDetector';
 
-// ── NEW: OpenCV matcher (replaces useTemplateMatcher) ─────────────────────────
+// ── NEW: worker-based OpenCV matcher ─────────────────────────────────────────
 import { useOpenCVMatcher }                                from '@/hooks/useOpenCVMatcher';
 import {
   CVMatchOverlay,
+  CVWorkerBanner,        // ← new: floating progress banner on canvas
   CVRubberBand,
   CVSamplerSidebar,
   useCVRubberBand,
@@ -369,7 +370,7 @@ function ShapesSidebar({ regions, isScanning, onRescan, onJump, pdfDims, zoom, p
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 type SidebarTab  = 'chain'|'points'|'shapes'|'sampler';
-type SamplerMode = 'idle'|'drawing'|'matched';   // 'selecting' removed — not needed with CV
+type SamplerMode = 'idle'|'drawing'|'matched';
 
 export default function SnapEnginePage() {
   // ── Core state ──────────────────────────────────────────────────────────────
@@ -400,8 +401,8 @@ export default function SnapEnginePage() {
   const [samplerMode,  setSamplerMode]  = useState<SamplerMode>('idle');
   const [cvThreshold,  setCVThreshold]  = useState(0.60);
   const [cvRotations,  setCVRotations]  = useState<number[]>([0, 90, 180, 270]);
-  const [cvFlips, setCVFlips] = useState<boolean[]>([false, true]);  // both normal + mirrored
- 
+  const [cvFlips,      setCVFlips]      = useState<boolean[]>([false, true]);
+  const [cvRemoveText, setCVRemoveText] = useState(true);
 
   // ── UI state ─────────────────────────────────────────────────────────────────
   const [sidebarTab,   setSidebarTab]   = useState<SidebarTab>('chain');
@@ -461,20 +462,19 @@ export default function SnapEnginePage() {
     threshold: shapeThreshold/100,
   });
 
-  // ── OpenCV matcher ───────────────────────────────────────────────────────────
+  // ── OpenCV matcher (worker-based) ─────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
   // ── Rubber-band (CV version) ─────────────────────────────────────────────────
   const isDrawMode = samplerMode === 'drawing';
 
-const handleBoxCommit = useCallback(async (box) => {
-  const canvas = baseCanvasRef.current;
-  if (!canvas) return;
-  cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
-  setSamplerMode('matched');
-  await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips);  // ← add cvFlips
-}, [cvMatcher, cvThreshold, cvRotations, cvFlips]);
- 
+  const handleBoxCommit = useCallback(async (box: { x:number; y:number; w:number; h:number }) => {
+    const canvas = baseCanvasRef.current;
+    if (!canvas) return;
+    cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
+    setSamplerMode('matched');
+    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText);
+  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText]);
 
   const { drawBox, isDrawing, tooLarge, startDraw } = useCVRubberBand(
     viewportRef as React.RefObject<HTMLDivElement>,
@@ -560,8 +560,9 @@ const handleBoxCommit = useCallback(async (box) => {
     const summary=(Object.entries(counts) as [string,number][]).map(([k,v])=>`${k}:${v}`).join(' · ');
     const shapePart=detectEnabled?` · ${regions.length} shapes`:'';
     const matcherPart=cvMatcher.matches.length>0?` · ${cvMatcher.matches.length} CV matches`:'';
-    setStatus(`${snapPoints.length} snap pts · ${svgLines.length} line segs · ${svgCurves.length} curves${shapePart}${matcherPart} — ${summary}`);
-  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,regions.length,detectEnabled,cvMatcher.matches.length]);
+    const workerPart=cvMatcher.isSearching?` · [worker: ${cvMatcher.workerPhase}]`:'';
+    setStatus(`${snapPoints.length} snap pts · ${svgLines.length} line segs · ${svgCurves.length} curves${shapePart}${matcherPart}${workerPart} — ${summary}`);
+  },[snapPoints,pdfDims,svgLines.length,svgCurves.length,regions.length,detectEnabled,cvMatcher.matches.length,cvMatcher.isSearching,cvMatcher.workerPhase]);
 
   // ── File upload ───────────────────────────────────────────────────────────────
   const handleUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>)=>{
@@ -825,12 +826,21 @@ const handleBoxCommit = useCallback(async (box) => {
             <ShapeOverlayAdapted regions={regions} pdfDims={pdfDims} zoom={zoom} pan={pan} isScanning={isScanning} onRescan={rescan} visible={showShapeOverlay} />
           )}
 
+          {/* ── CV worker progress banner (floats above canvas, non-blocking) ── */}
+          <CVWorkerBanner
+            isSearching={cvMatcher.isSearching}
+            workerPhase={cvMatcher.workerPhase}
+            workerDetail={cvMatcher.workerDetail}
+          />
+
           {/* ── CV rubber-band + match overlay ── */}
           <CVRubberBand
             isDrawing={isDrawing}
             drawBox={tooLarge ? null : drawBox}
             tooLarge={tooLarge}
             isSearching={cvMatcher.isSearching}
+            workerPhase={cvMatcher.workerPhase}
+            workerDetail={cvMatcher.workerDetail}
           />
           <CVMatchOverlay
             matches={cvMatcher.matches}
@@ -838,7 +848,7 @@ const handleBoxCommit = useCallback(async (box) => {
             pan={pan}
           />
 
-          {/* Too-large warning when tooLarge but no drawBox suppressed */}
+          {/* Too-large warning */}
           {isDrawing && tooLarge && drawBox && (
             <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
               <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h}
@@ -875,7 +885,7 @@ const handleBoxCommit = useCallback(async (box) => {
               {tooLarge ? '⚠ Zoom in more — box too large' : 'CV Sampler · drag tight box around ONE symbol'}
             </div>
           )}
-          {samplerMode==='matched'&&cvMatcher.matches.length>0&&(
+          {samplerMode==='matched'&&cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
             <div style={{ position:'absolute',top:linearMode?36:10,left:10,background:'rgba(244,63,94,.12)',border:'1px solid rgba(244,63,94,.3)',padding:'3px 8px',fontSize:8,color:'#f43f5e',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
               {cvMatcher.matches.length} CV match{cvMatcher.matches.length!==1?'es':''} · pixel-accurate
             </div>
@@ -946,18 +956,20 @@ const handleBoxCommit = useCallback(async (box) => {
           )}
 
           {sidebarTab==='sampler'&&(
-<CVSamplerSidebar
-  matcher={cvMatcher}
-  samplerMode={samplerMode}
-  onEnterDraw={handleEnterDraw}
-  onClear={handleClearSampler}
-  threshold={cvThreshold}
-  onThreshold={setCVThreshold}
-  rotations={cvRotations}
-  onRotations={setCVRotations}
-  flips={cvFlips}          // ← add
-  onFlips={setCVFlips}     // ← add
-/>
+            <CVSamplerSidebar
+              matcher={cvMatcher}
+              samplerMode={samplerMode}
+              onEnterDraw={handleEnterDraw}
+              onClear={handleClearSampler}
+              threshold={cvThreshold}
+              onThreshold={setCVThreshold}
+              rotations={cvRotations}
+              onRotations={setCVRotations}
+              flips={cvFlips}
+              onFlips={setCVFlips}
+              removeText={cvRemoveText}
+              onRemoveText={setCVRemoveText}
+            />
           )}
         </div>
       </div>
@@ -976,7 +988,13 @@ const handleBoxCommit = useCallback(async (box) => {
           </React.Fragment>
         ))}
         <div style={{ flex:1 }} />
-        {cvMatcher.matches.length>0&&(
+        {/* Live worker phase in status bar */}
+        {cvMatcher.isSearching&&(
+          <><span style={{ fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.07em' }}>
+            ⟳ {cvMatcher.workerPhase}{cvMatcher.workerDetail?' · '+cvMatcher.workerDetail:''}
+          </span><div style={S.barSep} /></>
+        )}
+        {cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
           <><span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{cvMatcher.matches.length} CV matches · pixel-accurate</span><div style={S.barSep} /></>
         )}
         {detectEnabled&&(
