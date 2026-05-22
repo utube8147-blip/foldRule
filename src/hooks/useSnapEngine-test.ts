@@ -1,504 +1,571 @@
-// hooks/useSnapEngine/useSnapEngine.tsx (SVG-only, normalized coords)
-//
-// NORMALIZATION FIX:
-//   • svgSnapPoints arrive as nx/ny ∈ [0,1] from useSvgSnapPoints
-//   • svgLines arrive as nx1/ny1/nx2/ny2 ∈ [0,1] from useSvgInteraction
-//   • svgAreas arrive with points[].nx/ny ∈ [0,1] and bounds.minNX/maxNX etc.
-//   • All snap math converts to pixels at call time: nx × pdfDimensions.w
-//   • redrawPinCanvas multiplies normalized coords by canvas.width/height at draw time
-//   • Zero re-detection on zoom — pdfDimensions changes do NOT trigger any effect here
+/**
+ * useSnapEngine.ts
+ *
+ * UX IMPROVEMENTS in this version:
+ * 1. Only the SINGLE nearest snap point is shown in the proximity radius.
+ *    No more cluster of dots — one clean indicator at a time.
+ * 2. No labels on snap points (endpoint / midpoint / intersection text removed).
+ * 3. Intersection points obey proximity gate like all other types.
+ * 4. Cursor is always crosshair when document is loaded.
+ */
 
 import { useRef, useState, useCallback, useEffect } from 'react';
-import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints-test';
+import type { SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
+import type { SvgCurve } from '@/hooks/useSvgSnapPoints';
 import type { SvgLine, SvgArea } from '@/hooks/useSvgInteraction';
-// Local minimal type definitions to avoid missing-module errors for viewerTypes
-// (keeps this hook self-contained; adjust as needed if shared types change)
-type PdfDimensions = { w: number; h: number };
-type ExtractionResult = any;
+
+type PdfDimensions       = { w: number; h: number };
+type ExtractionResult    = any;
 type PageExtractionState = any;
-type SnapFlash = { x: number; y: number; id: number };
-type SnapResult = {
-  point: { x: number; y: number };
-  snapped: boolean;
-};
+type SnapFlash           = { x: number; y: number; id: number };
+type SnapResult          = { point: { x: number; y: number }; snapped: boolean };
 
-// ─── Geometry helpers ─────────────────────────────────────────────────────────
-
-function closestPointOnSegment(
-  px: number, py: number,
-  x1: number, y1: number,
-  x2: number, y2: number,
-): { x: number; y: number } {
-  const ax = px - x1, ay = py - y1;
-  const bx = x2 - x1, by = y2 - y1;
-  const dot = ax * bx + ay * by;
-  const len2 = bx * bx + by * by;
-  if (len2 === 0) return { x: x1, y: y1 };
-  const t = Math.max(0, Math.min(1, dot / len2));
-  return { x: x1 + t * bx, y: y1 + t * by };
+export interface LinearChainPoint {
+  x: number;
+  y: number;
+  type: SvgSnapPoint['type'] | 'free';
+  label?: string;
 }
-
-function closestPointOnPolygonEdge(
-  x: number, y: number,
-  points: Array<{ x: number; y: number }>,
-): { x: number; y: number; dist: number } {
-  let best = { x, y, dist: Infinity };
-  for (let i = 0; i < points.length; i++) {
-    const j = (i + 1) % points.length;
-    const c = closestPointOnSegment(x, y, points[i].x, points[i].y, points[j].x, points[j].y);
-    const d = Math.hypot(c.x - x, c.y - y);
-    if (d < best.dist) best = { x: c.x, y: c.y, dist: d };
-  }
-  return best;
-}
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 export type { ExtractionResult, PageExtractionState, SnapFlash, SnapResult, PdfDimensions };
 
-// ─── Colour legend ────────────────────────────────────────────────────────────
+// ── Snap point visual styles ───────────────────────────────────────────────────
 
 const SVG_SNAP_COLOURS: Record<SvgSnapPoint['type'], { dot: string; ring: string; fill: string }> = {
   endpoint:     { dot: 'rgba(245,158,11,0.85)',  ring: 'rgba(245,158,11,0.5)',  fill: '#f59e0b' },
   midpoint:     { dot: 'rgba(16,185,129,0.85)',  ring: 'rgba(16,185,129,0.5)',  fill: '#10b981' },
   centroid:     { dot: 'rgba(139,92,246,0.85)',  ring: 'rgba(139,92,246,0.5)',  fill: '#8b5cf6' },
   intersection: { dot: 'rgba(244,63,94,0.85)',   ring: 'rgba(244,63,94,0.5)',   fill: '#f43f5e' },
-  'arc-center': { dot: 'rgba(34,211,238,0.90)',  ring: 'rgba(34,211,238,0.45)', fill: '#22d3ee' },
 };
 
-const SVG_LINE_COLOUR      = { stroke: 'rgba(56,189,248,0.55)',  fill: '#38bdf8' };
-const SVG_AREA_COLOUR      = { stroke: 'rgba(251,146,60,0.55)',  fill: '#fb923c' };
-const SVG_DOOR_LINE_COLOUR = { stroke: 'rgba(34,197,94,0.85)',   fill: '#22c55e' };
+// Type priority: lower = preferred when two points are equidistant
+const SNAP_PRIORITY: Record<SvgSnapPoint['type'], number> = {
+  endpoint:     0,
+  intersection: 1,
+  midpoint:     2,
+  centroid:     3,
+};
 
-// ─── Hook params ──────────────────────────────────────────────────────────────
+const SNAP_SIZE: Record<SvgSnapPoint['type'], number> = {
+  intersection: 1.0,
+  endpoint:     1.0,
+  midpoint:     0.85,
+  centroid:     0.85,
+};
+
+const SVG_LINE_COLOUR  = { base: 'rgba(56,189,248,{a})',  fill: '#38bdf8' };
+const SVG_CURVE_COLOUR = { base: 'rgba(56,189,248,{a})',  fill: '#38bdf8' };
+const SVG_AREA_COLOUR  = { stroke: 'rgba(251,146,60,{a})', fill: '#fb923c' };
+
+function withAlpha(template: string, a: number): string {
+  return template.replace('{a}', String(a.toFixed(2)));
+}
+
+// ── Viewport transform helpers ─────────────────────────────────────────────────
+
+interface ViewTransform { zoom: number; panX: number; panY: number; dpr: number }
+
+function svgToCanvas(x: number, y: number, vt: ViewTransform) {
+  return { x: (x * vt.zoom + vt.panX) * vt.dpr, y: (y * vt.zoom + vt.panY) * vt.dpr };
+}
+
+function vpToCanvas(x: number, y: number, dpr: number) {
+  return { x: x * dpr, y: y * dpr };
+}
+
+// ── Bezier helpers ─────────────────────────────────────────────────────────────
+
+function cubicAt(t: number, p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number, p3x: number, p3y: number) {
+  const u = 1 - t;
+  return { x: u*u*u*p0x+3*u*u*t*p1x+3*u*t*t*p2x+t*t*t*p3x, y: u*u*u*p0y+3*u*u*t*p1y+3*u*t*t*p2y+t*t*t*p3y };
+}
+
+function quadAt(t: number, p0x: number, p0y: number, p1x: number, p1y: number, p2x: number, p2y: number) {
+  const u = 1 - t;
+  return { x: u*u*p0x+2*u*t*p1x+t*t*p2x, y: u*u*p0y+2*u*t*p1y+t*t*p2y };
+}
+
+function distToBezierCanvas(
+  cursorCpx: number, cursorCpy: number,
+  curve: SvgCurve, dims: PdfDimensions, vt: ViewTransform, steps = 24,
+) {
+  const p0 = svgToCanvas(curve.nx1 * dims.w, curve.ny1 * dims.h, vt);
+  const p1 = svgToCanvas(curve.ncp1x * dims.w, curve.ncp1y * dims.h, vt);
+  const p3 = svgToCanvas(curve.nx2 * dims.w, curve.ny2 * dims.h, vt);
+  const p2 = curve.type === 'cubic' && curve.ncp2x !== undefined
+    ? svgToCanvas(curve.ncp2x * dims.w, curve.ncp2y! * dims.h, vt) : null;
+  let minDist = Infinity, closestCanvasPt = p0;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const pt = curve.type === 'cubic' && p2
+      ? cubicAt(t, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+      : quadAt(t, p0.x, p0.y, p1.x, p1.y, p3.x, p3.y);
+    const d = Math.hypot(cursorCpx - pt.x, cursorCpy - pt.y);
+    if (d < minDist) { minDist = d; closestCanvasPt = pt; }
+  }
+  return { dist: minDist, closestCanvasPt };
+}
+
+// ── Hook params / return ───────────────────────────────────────────────────────
 
 export interface UseSnapEngineParams {
-  pinCanvasRef:     React.RefObject<HTMLCanvasElement>;
-  pdfDimensionsRef: React.MutableRefObject<PdfDimensions | null>;
-  pageNumberRef:    React.MutableRefObject<number>;
-  snapEnabled:      boolean;
-  showPins:         boolean;
-  snapThreshold:    number;
-  confidenceFilter: number;
-  svgSnapPoints?:   SvgSnapPoint[];
-  svgLines?:        SvgLine[];
-  svgAreas?:        SvgArea[];
+  pinCanvasRef:      React.RefObject<HTMLCanvasElement>;
+  viewportRef:       React.RefObject<HTMLDivElement>;
+  pdfDimensionsRef:  React.MutableRefObject<PdfDimensions | null>;
+  pageNumberRef:     React.MutableRefObject<number>;
+  snapEnabled:       boolean;
+  showPins:          boolean;
+  snapThreshold:     number;
+  confidenceFilter:  number;
+  proximityRadius?:  number;
+  linearMode?:       boolean;
+  svgSnapPoints?:    SvgSnapPoint[];
+  svgLines?:         SvgLine[];
+  svgCurves?:        SvgCurve[];
+  svgAreas?:         SvgArea[];
+  zoom:              number;
+  pan:               { x: number; y: number };
 }
-
-// ─── Hook return ──────────────────────────────────────────────────────────────
 
 export interface UseSnapEngineReturn {
-  pageData:         Map<number, PageExtractionState>;
-  analysisStatus:   'idle' | 'analyzing' | 'done';
-  analysisPage:     { current: number; total: number } | null;
-  snapFlashes:      SnapFlash[];
-  startExtraction:  (pdf: any, file?: File) => void;
-  getScaledCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
+  pageData:             Map<number, PageExtractionState>;
+  analysisStatus:       'idle' | 'analyzing' | 'done';
+  analysisPage:         { current: number; total: number } | null;
+  snapFlashes:          SnapFlash[];
+  linearChain:          LinearChainPoint[];
+  startExtraction:      (pdf: any, file?: File) => void;
+  getScaledCorners:     (pageIdx: number) => Array<{ x: number; y: number; confidence: number }>;
   getScaledWallCorners: (pageIdx: number) => Array<{ x: number; y: number; confidence: number; lineIndices: number[] }>;
-  getScaledWallLines: (pageIdx: number) => Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }>;
-  snapToCorner:     (rawX: number, rawY: number) => SnapResult;
-  triggerSnapFlash: (x: number, y: number) => void;
-  redrawPinCanvas:  () => void;
-  cursorPointRef:   React.MutableRefObject<{ x: number; y: number } | null>;
+  getScaledWallLines:   (pageIdx: number) => Array<{ x1: number; y1: number; x2: number; y2: number; angle: number; length: number }>;
+  snapToCorner:         (rawX: number, rawY: number) => SnapResult;
+  triggerSnapFlash:     (x: number, y: number) => void;
+  addChainPoint:        (x: number, y: number, type?: SvgSnapPoint['type'] | 'free') => void;
+  undoChainPoint:       () => void;
+  clearChain:           () => void;
+  redrawPinCanvas:      () => void;
+  cursorPointRef:       React.MutableRefObject<{ x: number; y: number } | null>;
 }
 
-// ─── useSnapEngine ─────────────────────────────────────────────────────────────
-
 export function useSnapEngine({
-  pinCanvasRef,
-  pdfDimensionsRef,
-  pageNumberRef,
-  snapEnabled,
-  showPins,
-  snapThreshold,
-  confidenceFilter,
-  svgSnapPoints = [],
-  svgLines      = [],
-  svgAreas      = [],
+  pinCanvasRef, viewportRef, pdfDimensionsRef, pageNumberRef,
+  snapEnabled, showPins, snapThreshold, confidenceFilter,
+  proximityRadius = 120, linearMode = false,
+  svgSnapPoints = [], svgLines = [], svgCurves = [], svgAreas = [],
+  zoom, pan,
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
-  // ── Stable setting refs — no zoom re-renders ───────────────────────────────
   const snapEnabledRef      = useRef(snapEnabled);
   const showPinsRef         = useRef(showPins);
   const snapThresholdRef    = useRef(snapThreshold);
   const confidenceFilterRef = useRef(confidenceFilter);
-  // Normalized data refs — updated when SVG changes (not on zoom)
+  const proximityRadiusRef  = useRef(proximityRadius);
+  const linearModeRef       = useRef(linearMode);
   const svgSnapPointsRef    = useRef<SvgSnapPoint[]>(svgSnapPoints);
   const svgLinesRef         = useRef<SvgLine[]>(svgLines);
+  const svgCurvesRef        = useRef<SvgCurve[]>(svgCurves);
   const svgAreasRef         = useRef<SvgArea[]>(svgAreas);
+  const zoomRef             = useRef(zoom);
+  const panRef              = useRef(pan);
 
   useEffect(() => { snapEnabledRef.current      = snapEnabled;      }, [snapEnabled]);
   useEffect(() => { showPinsRef.current         = showPins;         }, [showPins]);
   useEffect(() => { snapThresholdRef.current    = snapThreshold;    }, [snapThreshold]);
   useEffect(() => { confidenceFilterRef.current = confidenceFilter; }, [confidenceFilter]);
+  useEffect(() => { proximityRadiusRef.current  = proximityRadius;  }, [proximityRadius]);
+  useEffect(() => { linearModeRef.current       = linearMode;       }, [linearMode]);
   useEffect(() => { svgSnapPointsRef.current    = svgSnapPoints;    }, [svgSnapPoints]);
   useEffect(() => { svgLinesRef.current         = svgLines;         }, [svgLines]);
+  useEffect(() => { svgCurvesRef.current        = svgCurves;        }, [svgCurves]);
   useEffect(() => { svgAreasRef.current         = svgAreas;         }, [svgAreas]);
+  useEffect(() => { zoomRef.current             = zoom;             }, [zoom]);
+  useEffect(() => { panRef.current              = pan;              }, [pan]);
 
-  // ── State ──────────────────────────────────────────────────────────────────
-  const [pageData]        = useState<Map<number, PageExtractionState>>(new Map());
-  const [analysisStatus]  = useState<'idle' | 'analyzing' | 'done'>('done');
-  const [analysisPage]    = useState<{ current: number; total: number } | null>(null);
+  const [pageData]       = useState<Map<number, PageExtractionState>>(new Map());
+  const [analysisStatus] = useState<'idle' | 'analyzing' | 'done'>('done');
+  const [analysisPage]   = useState<{ current: number; total: number } | null>(null);
   const [snapFlashes, setSnapFlashes] = useState<SnapFlash[]>([]);
+  const [linearChain, setLinearChain] = useState<LinearChainPoint[]>([]);
 
   const cursorPointRef = useRef<{ x: number; y: number } | null>(null);
+  const linearChainRef = useRef<LinearChainPoint[]>([]);
   const flashIdRef     = useRef(0);
 
-  // ── No-op startExtraction ─────────────────────────────────────────────────
-  const startExtraction = useCallback((_pdf: any, _file?: File) => {
-    console.log('[useSnapEngine] SVG-only mode — raster extraction disabled');
-  }, []);
+  useEffect(() => { linearChainRef.current = linearChain; }, [linearChain]);
 
-  // ── Empty scaled getters ─────────────────────────────────────────────────
-  const getScaledCorners      = useCallback(() => [], []);
-  const getScaledWallCorners  = useCallback(() => [], []);
-  const getScaledWallLines    = useCallback(() => [], []);
+  const startExtraction      = useCallback((_pdf: any, _file?: File) => {}, []);
+  const getScaledCorners     = useCallback(() => [], []);
+  const getScaledWallCorners = useCallback(() => [], []);
+  const getScaledWallLines   = useCallback(() => [], []);
 
-  // ── Scale normalized snap point to current canvas pixels ─────────────────
-  // Called only at snap/draw time, never stored
-  const normToCanvas = useCallback((nx: number, ny: number) => {
-    const dims = pdfDimensionsRef.current;
-    if (!dims) return null;
-    return { x: nx * dims.w, y: ny * dims.h };
-  }, [pdfDimensionsRef]);
-
-  // ── SVG candidate helpers (normalized → pixel at call time) ──────────────
   const getSvgPointCandidates = useCallback(() => {
     const dims = pdfDimensionsRef.current;
     if (!dims) return [];
     return svgSnapPointsRef.current.map(p => ({
-      x:           p.nx * dims.w,
-      y:           p.ny * dims.h,
-      type:        p.type,
-      strokeWidth: p.strokeWidth,
-      shapeId:     p.shapeId,
+      x: p.nx * dims.w, y: p.ny * dims.h,
+      type: p.type, strokeWidth: p.strokeWidth, shapeId: p.shapeId,
     }));
   }, [pdfDimensionsRef]);
 
-  // Expand normalized area bounds → pixel bounds at call time
   const getAreaPixelBounds = useCallback((area: SvgArea, dims: PdfDimensions) => ({
-    minX: area.bounds.minNX * dims.w,
-    minY: area.bounds.minNY * dims.h,
-    maxX: area.bounds.maxNX * dims.w,
-    maxY: area.bounds.maxNY * dims.h,
+    minX: area.bounds.minNX * dims.w, minY: area.bounds.minNY * dims.h,
+    maxX: area.bounds.maxNX * dims.w, maxY: area.bounds.maxNY * dims.h,
   }), []);
 
-  // Expand normalized area points → pixel points at call time
   const getAreaPixelPoints = useCallback((area: SvgArea, dims: PdfDimensions) =>
-    area.points.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h })),
-  []);
+    area.points.map(p => ({ x: p.nx * dims.w, y: p.ny * dims.h })), []);
 
-  // Expand normalized line → pixel line at call time
-  const getLinePixels = useCallback((line: SvgLine, dims: PdfDimensions) => ({
-    x1: line.nx1 * dims.w, y1: line.ny1 * dims.h,
-    x2: line.nx2 * dims.w, y2: line.ny2 * dims.h,
-  }), []);
-
-  // ── snapToCorner ──────────────────────────────────────────────────────────
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
-    if (!snapEnabledRef.current || !pdfDimensionsRef.current) {
+    if (!snapEnabledRef.current || !pdfDimensionsRef.current)
       return { point: { x: rawX, y: rawY }, snapped: false };
-    }
-
-    const dims   = pdfDimensionsRef.current;
-    const thresh = snapThresholdRef.current;
+    const thresh = snapThresholdRef.current / zoomRef.current;
     let bestPoint: { x: number; y: number } | null = null;
     let bestDist = thresh;
-
-    // Tier 1: SVG discrete snap points (normalized → pixel at call time)
     for (const c of getSvgPointCandidates()) {
-      if (c.type !== 'arc-center') {
-        const insideDoor = svgAreasRef.current
-          .filter(a => a.label === 'door' || a.isDoor)
-          .some(da => {
-            const b = getAreaPixelBounds(da, dims);
-            const pad = 20;
-            return c.x >= b.minX - pad && c.x <= b.maxX + pad &&
-                   c.y >= b.minY - pad && c.y <= b.maxY + pad;
-          });
-        if (insideDoor) continue;
-      }
-      const dist = Math.hypot(rawX - c.x, rawY - c.y);
-      if (dist < bestDist) { bestDist = dist; bestPoint = { x: c.x, y: c.y }; }
+      const bonus = c.type === 'intersection' ? 1.4 : 1.0;
+      const dist  = Math.hypot(rawX - c.x, rawY - c.y);
+      if (dist < bestDist * bonus) { bestDist = dist / bonus; bestPoint = { x: c.x, y: c.y }; }
     }
-
-    // Tier 2: SVG lines (normalized → pixel at call time)
     if (!bestPoint) {
-      for (const line of svgLinesRef.current) {
-        if (line.shapeId?.toLowerCase().includes('door') ||
-            line.shapeId?.toLowerCase().includes('swing')) continue;
-        const { x1, y1, x2, y2 } = getLinePixels(line, dims);
-        const closest = closestPointOnSegment(rawX, rawY, x1, y1, x2, y2);
-        const dist    = Math.hypot(rawX - closest.x, rawY - closest.y);
-        if (dist < bestDist) { bestDist = dist; bestPoint = closest; }
-      }
-    }
-
-    // Tier 3: SVG area edges (normalized → pixel at call time)
-    if (!bestPoint) {
+      const dims = pdfDimensionsRef.current;
       for (const area of svgAreasRef.current) {
-        if (area.label === 'door' || area.isDoor) continue;
         const b = getAreaPixelBounds(area, dims);
         if (rawX < b.minX - thresh || rawX > b.maxX + thresh ||
             rawY < b.minY - thresh || rawY > b.maxY + thresh) continue;
-        const pts    = getAreaPixelPoints(area, dims);
-        const onEdge = closestPointOnPolygonEdge(rawX, rawY, pts);
-        if (onEdge.dist < bestDist) {
-          bestDist = onEdge.dist;
-          bestPoint = { x: onEdge.x, y: onEdge.y };
+        const pts = getAreaPixelPoints(area, dims);
+        let minD = Infinity, closestPt = { x: rawX, y: rawY };
+        for (let i = 0; i < pts.length; i++) {
+          const j = (i + 1) % pts.length;
+          const ax = rawX - pts[i].x, ay = rawY - pts[i].y;
+          const bx = pts[j].x - pts[i].x, by = pts[j].y - pts[i].y;
+          const len2 = bx*bx + by*by;
+          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx + ay*by) / len2));
+          const cx2 = pts[i].x + t * bx, cy2 = pts[i].y + t * by;
+          const d = Math.hypot(rawX - cx2, rawY - cy2);
+          if (d < minD) { minD = d; closestPt = { x: cx2, y: cy2 }; }
         }
+        if (minD < bestDist) { bestDist = minD; bestPoint = closestPt; }
       }
     }
+    return bestPoint ? { point: bestPoint, snapped: true } : { point: { x: rawX, y: rawY }, snapped: false };
+  }, [getSvgPointCandidates, getAreaPixelBounds, getAreaPixelPoints]);
 
-    return bestPoint
-      ? { point: { x: bestPoint.x, y: bestPoint.y }, snapped: true }
-      : { point: { x: rawX, y: rawY }, snapped: false };
-  }, [getSvgPointCandidates, getAreaPixelBounds, getAreaPixelPoints, getLinePixels]);
-
-  // ── triggerSnapFlash ──────────────────────────────────────────────────────
   const triggerSnapFlash = useCallback((x: number, y: number) => {
     const id = ++flashIdRef.current;
     setSnapFlashes(prev => [...prev, { x, y, id }]);
     setTimeout(() => setSnapFlashes(prev => prev.filter(f => f.id !== id)), 700);
   }, []);
 
-  // ── redrawPinCanvas — all coords derived from normalized at draw time ──────
+  const addChainPoint = useCallback((x: number, y: number, type: SvgSnapPoint['type'] | 'free' = 'free') => {
+    setLinearChain(prev => [...prev, { x, y, type }]);
+  }, []);
+
+  const undoChainPoint = useCallback(() => setLinearChain(prev => prev.slice(0, -1)), []);
+  const clearChain     = useCallback(() => setLinearChain([]), []);
+
+  // ── redrawPinCanvas ──────────────────────────────────────────────────────────
+
   const redrawPinCanvas = useCallback(() => {
     const canvas = pinCanvasRef.current;
+    const vp     = viewportRef.current;
     const dims   = pdfDimensionsRef.current;
-    if (!canvas || !dims) return;
+    if (!canvas || !vp || !dims) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const vpW = vp.clientWidth;
+    const vpH = vp.clientHeight;
+
+    if (canvas.width !== Math.round(vpW * dpr) || canvas.height !== Math.round(vpH * dpr)) {
+      canvas.width  = Math.round(vpW * dpr);
+      canvas.height = Math.round(vpH * dpr);
+      canvas.style.width  = `${vpW}px`;
+      canvas.style.height = `${vpH}px`;
+    }
+
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (!showPinsRef.current) return;
 
-    const cursor        = cursorPointRef.current;
-    const thresh        = snapThresholdRef.current;
-    const CORNER_PROX   = 80;
-    const cw            = canvas.width;   // current canvas pixel size — may differ from detection size
-    const ch            = canvas.height;
+    const currentZoom = zoomRef.current;
+    const currentPan  = panRef.current;
+    const vt: ViewTransform = { zoom: currentZoom, panX: currentPan.x, panY: currentPan.y, dpr };
+    const s2c = (x: number, y: number) => svgToCanvas(x, y, vt);
 
-    // ── Layer 1: SVG area outlines ────────────────────────────────────────
+    const cursor = cursorPointRef.current;
+    const thresh = snapThresholdRef.current;
+    const prox   = proximityRadiusRef.current;
+
+    const cursorVP = cursor
+      ? { x: cursor.x * currentZoom + currentPan.x, y: cursor.y * currentZoom + currentPan.y }
+      : null;
+
+    const candidates = getSvgPointCandidates();
+
+    // ── Layer 1: SVG area outlines ───────────────────────────────────────────
     for (const area of svgAreasRef.current) {
       if (area.points.length < 3) continue;
-
-      // Scale normalized points → current canvas pixels at draw time
-      const pts = area.points.map(p => ({ x: p.nx * cw, y: p.ny * ch }));
-
-      const isDoor = area.label === 'door' || !!area.isDoor;
+      const pts = area.points.map(p => s2c(p.nx * dims.w, p.ny * dims.h));
+      let distEdge = Infinity;
+      let snapPt = { x: pts.reduce((s,p)=>s+p.x,0)/pts.length, y: pts.reduce((s,p)=>s+p.y,0)/pts.length };
+      if (cursorVP) {
+        for (let i = 0; i < pts.length; i++) {
+          const j = (i + 1) % pts.length;
+          const ax = cursorVP.x*dpr - pts[i].x, ay = cursorVP.y*dpr - pts[i].y;
+          const bx = pts[j].x - pts[i].x,       by = pts[j].y - pts[i].y;
+          const len2 = bx*bx + by*by;
+          const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx+ay*by)/len2));
+          const cx2 = pts[i].x+t*bx, cy2 = pts[i].y+t*by;
+          const d = Math.hypot(cursorVP.x*dpr-cx2, cursorVP.y*dpr-cy2) / dpr;
+          if (d < distEdge) { distEdge = d; snapPt = { x: cx2, y: cy2 }; }
+        }
+      }
+      if (cursorVP && distEdge > prox) continue;
+      const isSnapping = distEdge < thresh;
+      const fade       = cursorVP ? Math.max(0, 1 - distEdge / prox) : 0.25;
+      const alpha      = isSnapping ? 0.95 : 0.2 + fade * 0.55;
+      const lw         = (isSnapping ? 2.5 : 0.5 + fade * 1.5) * dpr;
       ctx.save();
-
-      if (isDoor) {
-        const pivot  = pts[0];
-        const arcPts = pts.slice(1);
-        if (arcPts.length < 2) { ctx.restore(); continue; }
-
-        const arcStart = arcPts[0];
-        const arcEnd   = arcPts[arcPts.length - 1];
-
-        const isHovered = cursor && (() => {
-          const r       = Math.hypot(arcStart.x - pivot.x, arcStart.y - pivot.y);
-          const cursorR = Math.hypot(cursor.x - pivot.x, cursor.y - pivot.y);
-          return Math.abs(cursorR - r) < CORNER_PROX;
-        })();
-
-        const alpha = isHovered ? 0.95 : 0.75;
-        const lw    = isHovered ? 2.5  : 1.8;
-
-        // Door leaf
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+      ctx.closePath();
+      ctx.strokeStyle = withAlpha(SVG_AREA_COLOUR.stroke, alpha);
+      ctx.lineWidth   = lw;
+      ctx.stroke();
+      if (isSnapping && cursorVP) {
         ctx.beginPath();
-        ctx.moveTo(pivot.x, pivot.y);
-        ctx.lineTo(arcStart.x, arcStart.y);
-        ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
-        ctx.lineWidth   = lw + 0.5;
-        ctx.stroke();
-
-        // Door swing arc (polyline)
-        ctx.beginPath();
-        ctx.moveTo(arcPts[0].x, arcPts[0].y);
-        for (let i = 1; i < arcPts.length; i++) ctx.lineTo(arcPts[i].x, arcPts[i].y);
-        ctx.strokeStyle = `rgba(34,197,94,${alpha})`;
-        ctx.lineWidth   = lw;
-        ctx.setLineDash([6, 4]);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Closing line (faint)
-        ctx.beginPath();
-        ctx.moveTo(pivot.x, pivot.y);
-        ctx.lineTo(arcEnd.x, arcEnd.y);
-        ctx.strokeStyle = `rgba(34,197,94,${alpha * 0.5})`;
-        ctx.lineWidth   = 1;
-        ctx.stroke();
-
-        if (isHovered && cursor) {
-          const midIdx = Math.floor(arcPts.length / 2);
-          const mid    = arcPts[midIdx];
-          ctx.beginPath();
-          ctx.arc(mid.x, mid.y, 7, 0, Math.PI * 2);
-          ctx.fillStyle   = SVG_DOOR_LINE_COLOUR.fill;
-          ctx.fill();
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth   = 1.5;
-          ctx.stroke();
-          ctx.font         = 'bold 9px ui-monospace,monospace';
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillStyle    = 'rgba(0,0,0,0.80)';
-          ctx.fillRect(mid.x - 24, mid.y - 23, 48, 13);
-          ctx.fillStyle = SVG_DOOR_LINE_COLOUR.fill;
-          ctx.fillText('DOOR', mid.x, mid.y - 16);
-        }
-
-      } else {
-        // Non-door room area
-        const centroidX = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-        const centroidY = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-
-        let distEdge = Infinity;
-        let snapPt   = { x: centroidX, y: centroidY };
-
-        if (cursor) {
-          const e = closestPointOnPolygonEdge(cursor.x, cursor.y, pts);
-          distEdge = e.dist;
-          snapPt   = { x: e.x, y: e.y };
-        }
-
-        const isSnapping  = distEdge < thresh;
-        const isProximity = distEdge < CORNER_PROX * 2;
-        const alpha = isSnapping ? 0.95 : isProximity ? 0.65 : 0.25;
-        const lw    = isSnapping ? 2.5  : isProximity ? 1.8  : 1;
-
-        ctx.beginPath();
-        ctx.moveTo(pts[0].x, pts[0].y);
-        pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
-        ctx.closePath();
-        ctx.strokeStyle = SVG_AREA_COLOUR.stroke.replace(/[\d.]+\)$/, `${alpha})`);
-        ctx.lineWidth   = lw;
-        ctx.stroke();
-
-        if (isSnapping && cursor) {
-          ctx.beginPath();
-          ctx.arc(snapPt.x, snapPt.y, 7, 0, Math.PI * 2);
-          ctx.fillStyle   = SVG_AREA_COLOUR.fill;
-          ctx.fill();
-          ctx.strokeStyle = 'white';
-          ctx.lineWidth   = 1.5;
-          ctx.stroke();
-          ctx.font         = 'bold 9px ui-monospace,monospace';
-          ctx.textAlign    = 'center';
-          ctx.textBaseline = 'middle';
-          const label = area.label ? area.label.toUpperCase() : 'AREA';
-          const tw    = ctx.measureText(label).width + 8;
-          ctx.fillStyle = 'rgba(0,0,0,0.80)';
-          ctx.fillRect(snapPt.x - tw / 2, snapPt.y - 23, tw, 13);
-          ctx.fillStyle = SVG_AREA_COLOUR.fill;
-          ctx.fillText(label, snapPt.x, snapPt.y - 16);
-        }
-      }
-
-      ctx.restore();
-    }
-
-    // ── Layer 2: SVG discrete snap points ─────────────────────────────────
-    // getSvgPointCandidates() scales nx/ny → pixels using current pdfDimensions
-    const svgCandidates = getSvgPointCandidates();
-    const doorAreas     = svgAreasRef.current.filter(a => a.label === 'door' || a.isDoor);
-
-    for (const c of svgCandidates) {
-      const col = SVG_SNAP_COLOURS[c.type];
-      if (!col) continue;
-
-      if (c.type !== 'arc-center') {
-        const insideDoor = doorAreas.some(da => {
-          const b   = getAreaPixelBounds(da, dims);
-          const pad = 20;
-          return c.x >= b.minX - pad && c.x <= b.maxX + pad &&
-                 c.y >= b.minY - pad && c.y <= b.maxY + pad;
-        });
-        if (insideDoor) continue;
-      }
-
-      if (c.shapeId?.toLowerCase().includes('door') ||
-          c.shapeId?.toLowerCase().includes('swing')) continue;
-
-      const dist    = cursor ? Math.hypot(cursor.x - c.x, cursor.y - c.y) : Infinity;
-      const isInSnap = dist < thresh;
-      const inRange  = dist < CORNER_PROX;
-
-      if (!cursor || !inRange) {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 2, 0, Math.PI * 2);
-        ctx.strokeStyle = col.dot;
-        ctx.lineWidth   = 1.2;
-        ctx.stroke();
-        continue;
-      }
-
-      const alpha   = Math.max(0, 1 - dist / CORNER_PROX);
-      const isClose = dist < 20;
-      const size    = isClose ? 7 : 4;
-
-      ctx.save();
-      if (isInSnap) {
-        ctx.beginPath();
-        ctx.arc(c.x, c.y, 8, 0, Math.PI * 2);
-        ctx.fillStyle   = col.fill;
+        ctx.arc(snapPt.x, snapPt.y, 7*dpr, 0, Math.PI*2);
+        ctx.fillStyle   = SVG_AREA_COLOUR.fill;
         ctx.fill();
         ctx.strokeStyle = 'white';
-        ctx.lineWidth   = 2;
+        ctx.lineWidth   = 1.5*dpr;
         ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(c.x - 12, c.y); ctx.lineTo(c.x + 12, c.y);
-        ctx.moveTo(c.x, c.y - 12); ctx.lineTo(c.x, c.y + 12);
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        ctx.lineWidth   = 1;
-        ctx.stroke();
-        ctx.font         = 'bold 9px ui-monospace,monospace';
-        ctx.textAlign    = 'center';
-        ctx.textBaseline = 'middle';
-        const label = c.type.toUpperCase();
-        const tw    = ctx.measureText(label).width + 8;
-        ctx.fillStyle = 'rgba(0,0,0,0.80)';
-        ctx.fillRect(c.x - tw / 2, c.y - 23, tw, 13);
-        ctx.fillStyle = col.fill;
-        ctx.fillText(label, c.x, c.y - 16);
-      } else {
-        ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${alpha})`);
-        ctx.lineWidth   = isClose ? 1.5 : 1;
-        ctx.beginPath();
-        ctx.moveTo(c.x - size, c.y); ctx.lineTo(c.x + size, c.y); ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(c.x, c.y - size); ctx.lineTo(c.x, c.y + size); ctx.stroke();
-        if (isClose) {
-          ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${alpha * 0.5})`);
-          ctx.beginPath();
-          ctx.arc(c.x, c.y, 11, 0, Math.PI * 2);
-          ctx.stroke();
-        }
       }
       ctx.restore();
     }
-  }, [pinCanvasRef, pdfDimensionsRef, getSvgPointCandidates, getAreaPixelBounds]);
 
-  // Redraw on SVG data changes or settings changes — NOT on zoom
+    // ── Layer 1b: Straight SVG lines ─────────────────────────────────────────
+    for (const line of svgLinesRef.current) {
+      if (!cursorVP) continue;
+      const p1 = s2c(line.nx1*dims.w, line.ny1*dims.h);
+      const p2 = s2c(line.nx2*dims.w, line.ny2*dims.h);
+      const ax = cursorVP.x*dpr-p1.x, ay = cursorVP.y*dpr-p1.y;
+      const bx = p2.x-p1.x, by = p2.y-p1.y;
+      const len2 = bx*bx + by*by;
+      const t  = len2 === 0 ? 0 : Math.max(0, Math.min(1, (ax*bx+ay*by)/len2));
+      const dist = Math.hypot(cursorVP.x*dpr-(p1.x+t*bx), cursorVP.y*dpr-(p1.y+t*by)) / dpr;
+      if (dist > prox) continue;
+      const fade = 1 - dist / prox;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(p1.x, p1.y);
+      ctx.lineTo(p2.x, p2.y);
+      ctx.strokeStyle = withAlpha(SVG_LINE_COLOUR.base, 0.12 + fade * 0.60);
+      ctx.lineWidth   = (0.5 + fade * 1.5) * dpr;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── Layer 1c: Bezier curves ───────────────────────────────────────────────
+    for (const curve of svgCurvesRef.current) {
+      const p0 = s2c(curve.nx1*dims.w, curve.ny1*dims.h);
+      const p1 = s2c(curve.ncp1x*dims.w, curve.ncp1y*dims.h);
+      const p3 = s2c(curve.nx2*dims.w, curve.ny2*dims.h);
+      const p2 = (curve.type === 'cubic' && curve.ncp2x !== undefined)
+        ? s2c(curve.ncp2x*dims.w, curve.ncp2y!*dims.h) : null;
+      let dist = Infinity;
+      if (cursorVP) {
+        dist = distToBezierCanvas(cursorVP.x*dpr, cursorVP.y*dpr, curve, dims, vt).dist / dpr;
+      }
+      if (cursorVP && dist > prox) continue;
+      const fade = cursorVP ? Math.max(0, 1 - dist / prox) : 0.0;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(p0.x, p0.y);
+      if (curve.type === 'cubic' && p2) ctx.bezierCurveTo(p1.x,p1.y,p2.x,p2.y,p3.x,p3.y);
+      else ctx.quadraticCurveTo(p1.x,p1.y,p3.x,p3.y);
+      ctx.strokeStyle = withAlpha(SVG_CURVE_COLOUR.base, 0.12 + fade * 0.60);
+      ctx.lineWidth   = (0.5 + fade * 1.5) * dpr;
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // ── Layer 2: Snap points — ONLY THE SINGLE NEAREST POINT ─────────────────
+    // Find the one closest point within proximity, respecting type priority
+    // when two points are nearly equidistant.
+    if (cursorVP && candidates.length > 0) {
+      let nearestCandidate: typeof candidates[0] | null = null;
+      let nearestDist = Infinity;
+
+      for (const c of candidates) {
+        const cp  = s2c(c.x, c.y);
+        const dist = Math.hypot(cursorVP.x - cp.x/dpr, cursorVP.y - cp.y/dpr);
+        if (dist > prox) continue;
+
+        // Prefer by distance first; break ties by type priority
+        const pri  = SNAP_PRIORITY[c.type as SvgSnapPoint['type']] ?? 99;
+        const nearPri = nearestCandidate
+          ? (SNAP_PRIORITY[nearestCandidate.type as SvgSnapPoint['type']] ?? 99) : 99;
+
+        // Within 4px treat as equidistant → prefer by priority
+        const effectively_same = Math.abs(dist - nearestDist) < 4;
+        if (
+          nearestCandidate === null ||
+          (effectively_same && pri < nearPri) ||
+          (!effectively_same && dist < nearestDist)
+        ) {
+          nearestDist = dist;
+          nearestCandidate = c;
+        }
+      }
+
+      if (nearestCandidate) {
+        const c   = nearestCandidate;
+        const col = SVG_SNAP_COLOURS[c.type as SvgSnapPoint['type']];
+        if (col) {
+          const cp      = s2c(c.x, c.y);
+          const sizeMul = SNAP_SIZE[c.type as SvgSnapPoint['type']] ?? 1.0;
+          const isSnap  = nearestDist < thresh * (c.type === 'intersection' ? 1.4 : 1.0);
+          const fade    = Math.max(0, 1 - nearestDist / prox);
+
+          ctx.save();
+
+          if (isSnap) {
+            // Filled dot + white ring + crosshair lines
+            const r = 7 * dpr * sizeMul;
+            ctx.beginPath();
+            ctx.arc(cp.x, cp.y, r, 0, Math.PI*2);
+            ctx.fillStyle   = col.fill;
+            ctx.fill();
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth   = 2 * dpr;
+            ctx.stroke();
+            const ch = 11 * dpr;
+            ctx.beginPath();
+            ctx.moveTo(cp.x-ch, cp.y); ctx.lineTo(cp.x+ch, cp.y);
+            ctx.moveTo(cp.x, cp.y-ch); ctx.lineTo(cp.x, cp.y+ch);
+            ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+            ctx.lineWidth   = 1 * dpr;
+            ctx.stroke();
+          } else {
+            // Approach indicator: small crosshair that grows as you close in
+            const sz = (2.5 + fade * 4.5) * dpr * sizeMul;
+            const a  = 0.2 + fade * 0.65;
+            ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
+            ctx.lineWidth   = (0.8 + fade * 0.8) * dpr;
+            ctx.beginPath();
+            ctx.moveTo(cp.x-sz, cp.y); ctx.lineTo(cp.x+sz, cp.y); ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(cp.x, cp.y-sz); ctx.lineTo(cp.x, cp.y+sz); ctx.stroke();
+            // Faint ring
+            if (fade > 0.35) {
+              ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${(a*0.35).toFixed(2)})`);
+              ctx.beginPath();
+              ctx.arc(cp.x, cp.y, sz + 4*dpr, 0, Math.PI*2);
+              ctx.stroke();
+            }
+          }
+
+          ctx.restore();
+        }
+      }
+    }
+
+    // ── Layer 3: Linear chain ────────────────────────────────────────────────
+    const chain = linearChainRef.current;
+
+    if (chain.length >= 2) {
+      const cp0 = s2c(chain[0].x, chain[0].y);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(245,158,11,0.90)';
+      ctx.lineWidth   = 1.5 * dpr;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(cp0.x, cp0.y);
+      for (let i = 1; i < chain.length; i++) {
+        const cp = s2c(chain[i].x, chain[i].y);
+        ctx.lineTo(cp.x, cp.y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      for (let i = 1; i < chain.length; i++) {
+        const ca = s2c(chain[i-1].x, chain[i-1].y);
+        const cb = s2c(chain[i].x, chain[i].y);
+        const mx = (ca.x+cb.x)/2, my = (ca.y+cb.y)/2;
+        const distLabel = Math.hypot(chain[i].x-chain[i-1].x, chain[i].y-chain[i-1].y).toFixed(1);
+        ctx.save();
+        ctx.font         = `bold ${9*dpr}px ui-monospace,monospace`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        const tw = ctx.measureText(distLabel).width + 6*dpr;
+        ctx.fillStyle = 'rgba(0,0,0,0.80)';
+        ctx.fillRect(mx-tw/2, my-8*dpr, tw, 13*dpr);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillText(distLabel, mx, my-1*dpr);
+        ctx.restore();
+      }
+
+      if (cursorVP && linearModeRef.current) {
+        const last = s2c(chain[chain.length-1].x, chain[chain.length-1].y);
+        const curC = vpToCanvas(cursorVP.x, cursorVP.y, dpr);
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245,158,11,0.35)';
+        ctx.lineWidth   = 1 * dpr;
+        ctx.setLineDash([4*dpr, 4*dpr]);
+        ctx.beginPath();
+        ctx.moveTo(last.x, last.y);
+        ctx.lineTo(curC.x, curC.y);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    for (let i = 0; i < chain.length; i++) {
+      const p  = chain[i];
+      const cp = s2c(p.x, p.y);
+      const col = p.type !== 'free'
+        ? SVG_SNAP_COLOURS[p.type as SvgSnapPoint['type']]?.fill ?? '#f59e0b'
+        : '#f59e0b';
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, 5*dpr, 0, Math.PI*2);
+      ctx.fillStyle   = col;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth   = 1.5*dpr;
+      ctx.stroke();
+      ctx.font         = `bold ${7*dpr}px ui-monospace,monospace`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#000';
+      ctx.fillText(String(i+1), cp.x, cp.y+0.5*dpr);
+      ctx.restore();
+    }
+
+    // ── Proximity circle guide ───────────────────────────────────────────────
+    if (cursorVP) {
+      const cc = vpToCanvas(cursorVP.x, cursorVP.y, dpr);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cc.x, cc.y, prox*dpr, 0, Math.PI*2);
+      ctx.strokeStyle = 'rgba(100,100,100,0.08)';
+      ctx.lineWidth   = 0.8*dpr;
+      ctx.setLineDash([3*dpr, 4*dpr]);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+  }, [pinCanvasRef, viewportRef, pdfDimensionsRef, getSvgPointCandidates, getAreaPixelBounds]);
+
   useEffect(() => {
     redrawPinCanvas();
-  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas]);
+  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgCurves, svgAreas, linearChain, zoom, pan]);
 
   return {
-    pageData,
-    analysisStatus,
-    analysisPage,
-    snapFlashes,
-    startExtraction,
-    getScaledCorners,
-    getScaledWallCorners,
-    getScaledWallLines,
-    snapToCorner,
-    triggerSnapFlash,
-    redrawPinCanvas,
-    cursorPointRef,
+    pageData, analysisStatus, analysisPage, snapFlashes, linearChain,
+    startExtraction, getScaledCorners, getScaledWallCorners, getScaledWallLines,
+    snapToCorner, triggerSnapFlash, addChainPoint, undoChainPoint, clearChain,
+    redrawPinCanvas, cursorPointRef,
   };
 }
