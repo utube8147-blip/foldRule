@@ -366,7 +366,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     pinCanvasRef:     pinCanvasRef         as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef     as React.RefObject<NonNullable<typeof pdfDimensions>>,
     pageNumberRef:    pageNumberRef        as React.RefObject<number>,
-    scaleRef:         scaleRef            as React.MutableRefObject<number>,
     snapEnabled,
     showPins,
     snapThreshold,
