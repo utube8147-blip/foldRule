@@ -1,48 +1,32 @@
 'use client';
-
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-//  FIX SUMMARY (this revision — green blob bleed when switching to grid-count):
+// Snap data now comes from useSvgSnapPoints (parses a real SVG string).
+// For now the SVG is fetched from /public/floorplan.svg as a hardcoded
+// placeholder — replace the fetch with your real SVG generation API later.
 //
-//  1. Triple-rAF fill-canvas clear — useMagicFillSession schedules async
-//     repaints on fillCanvasRef (triggered by pdfRenderCount changes). Even
-//     the previous double-rAF clear could be beaten by a repaint that was
-//     queued during the same React flush. A third nested rAF guarantees we
-//     are the LAST writer on the fill canvas after any in-flight repaints,
-//     eliminating the green blob bleed that appeared when switching to the
-//     grid-count tool after a magic-fill session.
-//
-//  PREVIOUS FIX SUMMARY (grid-count tool not working):
-//
-//  2. handleContainerPointerDown — early return when activeTool === 'grid-count'
-//     so the container never calls setPointerCapture and steals pointer events
-//     away from the GridCountOverlay canvas.
-//
-//  3. prevToolRef effect — clears fillCanvasRef whenever activeTool !== 'magic-fill'.
-//
-//  4. handleGridCountCommit — deferred setActiveTool('select') via setTimeout(0)
-//     so the commit flushes before the prevToolRef clear effect runs.
-//
-//  5. prevToolRef effect — abort + clear only runs when tool actually changes.
-//
+// Changes vs previous version:
+// 1. Removed usePdfSnapPoints — replaced with useSvgSnapPoints + extractSvgLines
+// 2. Added svgContent state + fetch from /floorplan.svg (hardcoded for now)
+// 3. svgCurves from useSvgSnapPoints now passed to useSnapEngine
+// 4. extractSvgLines used to build svgLines from the same SVG string
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
-  useRef, useEffect, useState, useCallback, useMemo,
+  useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect,
 } from 'react';
 import type * as pdfjsLibTypes from "pdfjs-dist/legacy/build/pdf";
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
-
 import { Minimap }           from './Minimap';
 import { SnapSettingsPanel } from './SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/useSnapEngine';
+import { useSvgSnapPoints }  from '@/hooks/useSvgSnapPoints';
 import { useMeasurements }   from '@/hooks/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/useViewerPdf';
 import { useMagicFillSession } from '@/hooks/useMagicFillSession';
-
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
 import {
@@ -52,7 +36,6 @@ import {
 import {
   CANVAS_PADDING, ZOOM_SENSITIVITY, MIN_ZOOM, MAX_ZOOM, VIEWER_TOOLS,
 } from './Viewer/ViewerConstants';
-
 import {
   MagicFillCanvas,
 } from '@/components/Viewer/MagicFillCanvas';
@@ -63,18 +46,136 @@ import {
   MagicFillSelectedPanel,
   fmtArea,
 } from '@/components/Viewer/MagicFillUI';
-
 import {
   stagedArcCount as calcStagedArcCount,
   stagedRadiusCount,
 } from '@/hooks/useMeasurements/useMeasurementCommit';
+import type { SvgLine } from '@/hooks/useSvgInteraction';
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
+
+// ─── extractSvgLines ──────────────────────────────────────────────────────────
+// Converts an SVG string into normalized SvgLine[] for the snap engine.
+// Every line carries a shapeId so useSnapEngine never receives undefined.
+
+function numA(el: Element, n: string, fb = 0): number {
+  const v = parseFloat(el.getAttribute(n) ?? '');
+  return isNaN(v) ? fb : v;
+}
+function _identMat() { return { a:1,b:0,c:0,d:1,e:0,f:0 }; }
+function _mulMat(m1: any, m2: any) {
+  return {
+    a: m1.a*m2.a+m1.c*m2.b, b: m1.b*m2.a+m1.d*m2.b,
+    c: m1.a*m2.c+m1.c*m2.d, d: m1.b*m2.c+m1.d*m2.d,
+    e: m1.a*m2.e+m1.c*m2.f+m1.e, f: m1.b*m2.e+m1.d*m2.f+m1.f,
+  };
+}
+function _applyMat(m: any, x: number, y: number) {
+  return { x: m.a*x+m.c*y+m.e, y: m.b*x+m.d*y+m.f };
+}
+function _parseTfm(t: string | null): any {
+  if (!t) return _identMat();
+  const re = /(matrix|translate|scale|rotate)\(([^)]*)\)/g;
+  const mats: any[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(t)) !== null) {
+    const args = m[2].trim().split(/[\s,]+/).map(parseFloat);
+    let mat = _identMat();
+    if      (m[1]==='matrix')    mat={a:args[0],b:args[1],c:args[2],d:args[3],e:args[4],f:args[5]};
+    else if (m[1]==='translate') mat={..._identMat(),e:args[0]??0,f:args[1]??0};
+    else if (m[1]==='scale')     { const s=args[0]??1,sy=args[1]??s; mat={a:s,b:0,c:0,d:sy,e:0,f:0}; }
+    else if (m[1]==='rotate')    { const a=(args[0]??0)*Math.PI/180,cos=Math.cos(a),sin=Math.sin(a); mat={a:cos,b:sin,c:-sin,d:cos,e:0,f:0}; }
+    mats.push(mat);
+  }
+  return mats.reduce((acc,mx)=>_mulMat(acc,mx),_identMat());
+}
+function _getCTM(el: Element, root: Element): any {
+  const mats: any[] = [];
+  let node: Element|null = el;
+  while (node && node !== root.parentElement) {
+    const t = node.getAttribute('transform');
+    if (t) mats.unshift(_parseTfm(t));
+    node = node.parentElement;
+  }
+  return mats.reduce((acc,mx)=>_mulMat(acc,mx),_identMat());
+}
+
+export function extractSvgLines(svgText: string, pdfW: number, pdfH: number): SvgLine[] {
+  if (typeof window === 'undefined') return [];
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(svgText, 'image/svg+xml');
+  if (doc.querySelector('parseerror')) return [];
+  const svgEl = doc.querySelector('svg');
+  if (!svgEl) return [];
+
+  let sx=1, sy=1, tx=0, ty=0;
+  const vb = svgEl.getAttribute('viewBox');
+  if (vb) {
+    const [minX,minY,vbW,vbH] = vb.trim().split(/[\s,]+/).map(parseFloat);
+    if (vbW>0 && vbH>0) { sx=pdfW/vbW; sy=pdfH/vbH; tx=-minX*sx; ty=-minY*sy; }
+  } else {
+    const wa = parseFloat(svgEl.getAttribute('width')??'0')  || pdfW;
+    const ha = parseFloat(svgEl.getAttribute('height')??'0') || pdfH;
+    sx=pdfW/wa; sy=pdfH/ha;
+  }
+
+  const toCanvas = (x: number, y: number, ctm: any) => {
+    const p = _applyMat(ctm, x, y);
+    return { x: p.x*sx+tx, y: p.y*sy+ty };
+  };
+
+  const lines: SvgLine[] = [];
+
+  const pushLine = (
+    ax: number, ay: number,
+    bx: number, by: number,
+    ctm: any,
+    shapeId: string,
+  ) => {
+    const a = toCanvas(ax, ay, ctm);
+    const b = toCanvas(bx, by, ctm);
+    if (Math.hypot(a.x-b.x, a.y-b.y) < 0.5) return;
+    lines.push({
+      nx1: a.x/pdfW, ny1: a.y/pdfH,
+      nx2: b.x/pdfW, ny2: b.y/pdfH,
+      shapeId,
+    } as unknown as SvgLine);
+  };
+
+  svgEl.querySelectorAll('line,polyline,polygon,rect').forEach(el => {
+    const tag     = el.tagName.toLowerCase();
+    const ctm     = _getCTM(el, svgEl);
+    const shapeId = el.getAttribute('id') || el.getAttribute('class') || tag;
+
+    if (tag === 'line') {
+      pushLine(numA(el,'x1'), numA(el,'y1'), numA(el,'x2'), numA(el,'y2'), ctm, shapeId);
+    } else if (tag === 'polyline' || tag === 'polygon') {
+      const raw  = el.getAttribute('points') ?? '';
+      const nums = raw.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
+      for (let i = 0; i+3 < nums.length; i+=2)
+        pushLine(nums[i], nums[i+1], nums[i+2], nums[i+3], ctm, shapeId);
+      if (tag === 'polygon' && nums.length >= 4)
+        pushLine(nums[nums.length-2], nums[nums.length-1], nums[0], nums[1], ctm, shapeId);
+    } else if (tag === 'rect') {
+      const x=numA(el,'x'), y=numA(el,'y'), w=numA(el,'width'), h=numA(el,'height');
+      if (w>0 && h>0) {
+        pushLine(x,   y,   x+w, y,   ctm, shapeId);
+        pushLine(x+w, y,   x+w, y+h, ctm, shapeId);
+        pushLine(x+w, y+h, x,   y+h, ctm, shapeId);
+        pushLine(x,   y+h, x,   y,   ctm, shapeId);
+      }
+    }
+  });
+
+  return lines;
+}
 
 function getPdfLib(): typeof pdfjsLibTypes {
   if (typeof window === "undefined") throw new Error("pdfjs not available on server");
   return require("pdfjs-dist/legacy/build/pdf");
 }
+
+// ─── Internal types ───────────────────────────────────────────────────────────
 
 interface PendingMeasurementData {
   id: string;
@@ -85,6 +186,8 @@ interface PendingMeasurementData {
 interface UndoRedoRefValue {
   setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
 }
+
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const {
@@ -104,7 +207,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     | ((...args: any[]) => any)
     | undefined;
 
-  // ── Canvas refs ────────────────────────────────────────────────────────────
+  // ── Canvas refs ───────────────────────────────────────────────────────────
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null!);
   const drawingCanvasRef = useRef<HTMLCanvasElement>(null!);
   const pinCanvasRef     = useRef<HTMLCanvasElement>(null!);
@@ -115,21 +218,38 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const activeDrawingId  = activeDrawing?.id     ?? null;
   const activeDrawingUrl = activeDrawing?.fileUrl ?? null;
 
-  // ── Settings ───────────────────────────────────────────────────────────────
+  // ── Settings ──────────────────────────────────────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(true);
   const [showPins,         setShowPins]         = useState(true);
   const [snapThreshold,    setSnapThreshold]    = useState(14);
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
-  // ── Dialog state ───────────────────────────────────────────────────────────
+  // ── Dialog state ──────────────────────────────────────────────────────────
   const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
   const [pendingPtLen,           setPendingPtLen]           = useState(0);
   const [calibrationInput,       setCalibrationInput]       = useState('');
   const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<PendingMeasurementData | null>(null);
 
-  // ── Context ────────────────────────────────────────────────────────────────
+  // ── isZooming flag ────────────────────────────────────────────────────────
+  const isZoomingRef      = useRef(false);
+  const [isZooming, setIsZooming] = useState(false);
+  const zoomFlagTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markZoomStart = useCallback(() => {
+    if (!isZoomingRef.current) {
+      isZoomingRef.current = true;
+      setIsZooming(true);
+    }
+    if (zoomFlagTimerRef.current) clearTimeout(zoomFlagTimerRef.current);
+    zoomFlagTimerRef.current = setTimeout(() => {
+      isZoomingRef.current = false;
+      setIsZooming(false);
+    }, 150);
+  }, []);
+
+  // ── Context ───────────────────────────────────────────────────────────────
   const {
     tempPoints, pushPoint, commitMeasurement, batchCommitMeasurements,
     clearTempPoints, undo, redo, canUndo, canRedo,
@@ -140,13 +260,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const handleUndo  = useCallback(() => { undo();  undoRedoRef.current.setCursorPoint(null); }, [undo]);
   const handleRedo  = useCallback(() => { redo();  undoRedoRef.current.setCursorPoint(null); }, [redo]);
 
-  // ── isMagicFillActiveRef — hoisted so useViewerPdf can read it ───────────
   const isMagicFillActiveRef = useRef(activeTool === 'magic-fill');
   isMagicFillActiveRef.current = activeTool === 'magic-fill';
 
-  // ── PDF hook ───────────────────────────────────────────────────────────────
+  // ── PDF hook ──────────────────────────────────────────────────────────────
   const startExtractionRef = useRef<((pdf: any, file?: File) => void) | null>(null);
-
   const {
     pdf, pageNumber, setPageNumber, loading,
     scale, setScale, committedScale,
@@ -171,27 +289,98 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onPdfLoaded: (doc, file) => startExtractionRef.current?.(doc, file),
     onScaleSet,
     shouldPreserveFillCanvas: isMagicFillActiveRef,
+    onZoom: markZoomStart,
   });
 
   const appendToGroupId = propAppendToGroupId ?? undefined;
 
-  // ── Snap engine ────────────────────────────────────────────────────────────
+  // ── SVG content — hardcoded fetch from /public/floorplan.svg ─────────────
+  // TODO: replace this fetch with your real SVG generation API.
+  // The SVG should match the currently loaded PDF page.
+  // When you have a real API, do something like:
+  //   fetch(`/api/pdf-to-svg?drawingId=${activeDrawingId}&page=${pageNumber}`)
+  const [svgContent, setSvgContent] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Reset SVG when drawing or page changes
+    setSvgContent(null);
+
+    if (!activeDrawingId) return;
+
+    // Hardcoded: always load /floorplan.svg from /public
+    // Replace this with your real SVG source later
+    fetch('/floorplan.svg')
+      .then(r => {
+        if (!r.ok) {
+          console.warn('[Viewer] /floorplan.svg not found — snap will have no data');
+          return null;
+        }
+        return r.text();
+      })
+      .then(text => {
+        if (text) {
+          console.log('[Viewer] SVG loaded, length:', text.length);
+          setSvgContent(text);
+        }
+      })
+      .catch(err => {
+        console.warn('[Viewer] Failed to load /floorplan.svg:', err);
+      });
+  }, [activeDrawingId, pageNumber]);
+
+  // ── Snap points from SVG ──────────────────────────────────────────────────
+  // useSvgSnapPoints parses the SVG string into snap points and bezier curves.
+  // scale is passed for zoom-aware midpoint suppression.
+  const { snapPoints: svgSnapPoints, svgCurves } = useSvgSnapPoints(
+    svgContent,
+    pdfDimensions,
+    scale,
+  );
+
+  // ── SVG lines from same SVG string ────────────────────────────────────────
+  // extractSvgLines pulls line/polyline/polygon/rect elements for proximity snapping.
+  const svgLines = useMemo((): SvgLine[] => {
+    if (!svgContent || !pdfDimensions) return [];
+    return extractSvgLines(svgContent, pdfDimensions.w, pdfDimensions.h);
+  }, [svgContent, pdfDimensions]);
+
+  // ── Keep pinCanvas pixel dimensions in sync with pdfDimensions ────────────
+  useLayoutEffect(() => {
+    const canvas = pinCanvasRef.current;
+    const dims   = pdfDimensions;
+    if (!canvas || !dims) return;
+    if (canvas.width !== dims.w || canvas.height !== dims.h) {
+      canvas.width  = dims.w;
+      canvas.height = dims.h;
+    }
+  });
+
+  // ── Snap engine ───────────────────────────────────────────────────────────
   const {
     pageData, analysisStatus, analysisPage, snapFlashes,
     startExtraction, getScaledCorners,
-    snapToCorner, triggerSnapFlash, redrawPinCanvas, cursorPointRef,
+    snapToCorner, triggerSnapFlash,
+    redrawPinCanvas: _redrawPinCanvas,
+    cursorPointRef,
   } = useSnapEngine({
-    pinCanvasRef:     pinCanvasRef     as React.RefObject<HTMLCanvasElement>,
-    pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
-    pageNumberRef:    pageNumberRef    as React.RefObject<number>,
-    viewportRef:      containerRef     as React.RefObject<HTMLDivElement>,
-    zoom:             scale,
-    pan:              { x: 0, y: 0 },
-    snapEnabled, showPins, snapThreshold, confidenceFilter,
+    pinCanvasRef:     pinCanvasRef         as React.RefObject<HTMLCanvasElement>,
+    pdfDimensionsRef: pdfDimensionsRef     as React.RefObject<NonNullable<typeof pdfDimensions>>,
+    pageNumberRef:    pageNumberRef        as React.RefObject<number>,
+    scaleRef:         scaleRef            as React.MutableRefObject<number>,
+    snapEnabled,
+    showPins,
+    snapThreshold,
+    confidenceFilter,
+    svgSnapPoints,
+    svgLines,
+    svgCurves,
+    svgAreas: [],
+    isZooming,
   });
 
-  const stagedArcs = calcStagedArcCount(tempPoints);
+  const redrawPinCanvas = _redrawPinCanvas;
 
+  const stagedArcs = calcStagedArcCount(tempPoints);
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   const setActiveToolString = useCallback(
@@ -199,7 +388,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     [setActiveTool],
   );
 
-  // ── Calibration ────────────────────────────────────────────────────────────
+  // ── Calibration ───────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
     setPendingPtLen(ptLen);
     setCalibrationInput('');
@@ -217,7 +406,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     [onUpdateMeasurementProp],
   );
 
-  // ── Measurements engine ────────────────────────────────────────────────────
+  // ── Measurements engine ───────────────────────────────────────────────────
   const {
     pendingSnapCandidates, setPendingSnapCandidates,
     finishMeasurement, handleCanvasClick, handleContextMenu,
@@ -241,15 +430,44 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
-  // ── Grid-count commit handler ──────────────────────────────────────────────
-  //
-  //  FIX: Deferred setActiveTool('select') via setTimeout(0) so the commit
-  //  flush + fillCanvasRef paint complete before the prevToolRef clear runs.
+  // ── Pointer move ──────────────────────────────────────────────────────────
+  const wrappedPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      const canvas = pinCanvasRef.current;
+      const dims   = pdfDimensionsRef.current;
+      if (canvas && dims) {
+        const rect   = canvas.getBoundingClientRect();
+        const ratioX = rect.width  > 0 ? dims.w / rect.width  : 1;
+        const ratioY = rect.height > 0 ? dims.h / rect.height : 1;
+        cursorPointRef.current = {
+          x: (e.clientX - rect.left) * ratioX,
+          y: (e.clientY - rect.top)  * ratioY,
+        };
+      }
+      handleCanvasPointerMove(e);
+      redrawPinCanvas();
+    },
+    [handleCanvasPointerMove, redrawPinCanvas, cursorPointRef, pdfDimensionsRef, pinCanvasRef],
+  );
+
+  const wrappedPointerLeave = useCallback(() => {
+    cursorPointRef.current = null;
+    setCursorPoint(null);
+    redrawPinCanvas();
+  }, [cursorPointRef, setCursorPoint, redrawPinCanvas]);
+
+  // ── Wheel → isZooming flag ────────────────────────────────────────────────
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const onWheel = () => markZoomStart();
+    el.addEventListener('wheel', onWheel, { passive: true });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [markZoomStart]);
+
+  // ── Grid-count commit ─────────────────────────────────────────────────────
   const handleGridCountCommit = useCallback((
-    count: number,
-    spacingMm: number,
-    cols: number,
-    rows: number,
+    count: number, spacingMm: number, cols: number, rows: number,
   ) => {
     const id    = crypto.randomUUID();
     const color = '#4ADE80';
@@ -270,11 +488,10 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       childIds:    [],
       gridSpacing: spacingMm,
     });
-
     setTimeout(() => setActiveTool('select'), 0);
   }, [commitMeasurement, activeDrawingId, setActiveTool]);
 
-  // ── Magic Fill session ─────────────────────────────────────────────────────
+  // ── Magic Fill session ────────────────────────────────────────────────────
   const {
     allVisibleFills, magicFills, mfStagedCount,
     mfSelectedId, setMfSelectedId,
@@ -308,33 +525,17 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     batchCommitMeasurements,
   });
 
-  // ── Tool-switch side effects: abort magic-fill + clear fill canvas ─────────
-  //
-  //  GREEN BLOB BLEED FIX:
-  //  useMagicFillSession repaints fillCanvasRef asynchronously in response to
-  //  pdfRenderCount changes. The previous double-rAF clear could be beaten by
-  //  a repaint queued during the same React flush. We now use a triple nested
-  //  rAF: by the time the third frame fires, all same-flush async repaints
-  //  will have completed, making our clear the guaranteed last writer.
-  //
-  //  isMagicFillActiveRef is checked before every clear so we never erase a
-  //  legitimate magic-fill repaint if the user switches back quickly.
+  // ── Tool-switch side effects ───────────────────────────────────────────────
   const prevToolRef = useRef(activeTool);
-
   useEffect(() => {
     const prev = prevToolRef.current;
-
-    // Only act when the tool actually changed.
     if (prev === activeTool) return;
-
     prevToolRef.current = activeTool;
 
-    // Abort any in-progress magic-fill session when leaving the tool.
     if (prev === 'magic-fill' && activeTool !== 'magic-fill') {
       handleMagicAbortSession();
     }
 
-    // Clear the fill canvas whenever we leave magic-fill.
     if (activeTool !== 'magic-fill') {
       const clearFillCanvas = () => {
         const canvas = fillCanvasRef.current;
@@ -343,17 +544,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
           if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
         }
       };
-
-      // Synchronous clear — removes any paint already on the canvas now.
       clearFillCanvas();
-
-      // Triple nested rAF clear:
-      //   rAF 1 — fires after current frame's queued micro/macrotasks.
-      //   rAF 2 — fires after any repaints triggered by rAF-1 callbacks.
-      //   rAF 3 — fires after any repaints triggered by rAF-2 callbacks.
-      //           By this point all useMagicFillSession async repaints that
-      //           were in-flight at the time of the tool switch will have run,
-      //           so this clear is guaranteed to be the last writer.
       const rafId = requestAnimationFrame(() => {
         if (!isMagicFillActiveRef.current) {
           clearFillCanvas();
@@ -367,7 +558,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
           });
         }
       });
-
       return () => cancelAnimationFrame(rafId);
     }
   }, [activeTool, handleMagicAbortSession]);
@@ -400,7 +590,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     finishMeasurement();
   }, [finishMeasurement]);
 
-  // ── Pitch factor — apply to selected measurement row ──────────────────────
+  // ── Pitch factor ──────────────────────────────────────────────────────────
   const handleApplyPitchFactor = useCallback((factor: number) => {
     if (!selectedId) return;
     const row = projectState?.measurements?.find((m: TakeoffRow) => m.id === selectedId);
@@ -414,7 +604,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     });
   }, [selectedId, projectState, updateMeasurement]);
 
-  // ── Toolbar API ────────────────────────────────────────────────────────────
+  // ── Toolbar API ───────────────────────────────────────────────────────────
   const toolbarAPI = useMemo(() => ({
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool, scale, setScale, scaleFactor,
@@ -436,7 +626,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
 
-  // ── Keyboard shortcuts ─────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -449,8 +639,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         const map: Record<string, ToolType> = {
           v: 'select',    l: 'linear',   r: 'rectangle',
           p: 'polygon',   n: 'count',    t: 'point',
-          b: 'arc',
-          g: 'grid-count',
+          b: 'arc',       g: 'grid-count',
         };
         if (map[e.key.toLowerCase()]) {
           e.preventDefault();
@@ -469,14 +658,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo, setActiveTool, handleMagicAbortSession, setScale]);
 
-  // ── Pan: activeTool-aware container pointer down ───────────────────────────
-  //
-  //  FIX: Early-return when activeTool === 'grid-count' so the container
-  //  never calls setPointerCapture, leaving the GridCountOverlay canvas free
-  //  to handle its own full drag sequence.
+  // ── Pan handler ───────────────────────────────────────────────────────────
   const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
     if (activeTool === 'grid-count') return;
-
     if (
       e.button === 1 ||
       (e.button === 0 && spaceHeldRef.current) ||
@@ -486,25 +670,23 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     }
   }, [activeTool, spaceHeldRef, pdfContainerPointerDown]);
 
-  // ── File upload ────────────────────────────────────────────────────────────
+  // ── File upload ───────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) =>
     Array.from(e.target.files ?? []).forEach(f =>
       onDrawingAdded(f.name, URL.createObjectURL(f), f));
 
-  // ── Derived state ──────────────────────────────────────────────────────────
+  // ── Derived state ─────────────────────────────────────────────────────────
   const isMagicFillTool = activeTool === 'magic-fill';
   const isGridCountTool = activeTool === 'grid-count';
-
   const mfHoveredFill  = allVisibleFills.find(f => f.id === mfHoveredId)  ?? null;
   const mfSelectedFill = allVisibleFills.find(f => f.id === mfSelectedId) ?? null;
   const mfGroupFills   = mfSelectedGroup != null
     ? magicFills.filter(f => f.groupId === mfSelectedGroup)
     : [];
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full">
-
       {!hideToolbar && (
         <div className="relative z-30 flex-shrink-0">
           <ViewerToolbar
@@ -533,7 +715,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       )}
 
       <div className="flex flex-1 overflow-hidden min-h-0 relative isolate">
-
         {isMagicFillTool && (
           <MagicFillProgressOverlay
             active={mfIsFilling || mfIsRepainting}
@@ -589,12 +770,13 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               readyToDraw={true}
               handleCanvasClick={handleCanvasClick}
               handleContextMenu={handleContextMenu}
-              handleCanvasPointerMove={handleCanvasPointerMove}
+              handleCanvasPointerMove={wrappedPointerMove}
               handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
               handleCanvasPointerUp={handleCanvasPointerUp}
               handleDrawingCanvasPointerDown={handleDrawingCanvasPointerDown}
               setCursorPoint={setCursorPoint} cursorPointRef={cursorPointRef}
               redrawPinCanvas={redrawPinCanvas}
+              onDrawingCanvasPointerLeave={wrappedPointerLeave}
               handleFinishMeasurement={handleFinishMeasurement}
               handleFileUpload={handleFileUpload}
               containerRef={containerRef} CANVAS_PADDING={CANVAS_PADDING}
@@ -749,7 +931,12 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               </span>
             ) : (
               <span>
-                Double-click or right-click to finish · ESC to cancel · Enter to finish
+                {svgSnapPoints.length > 0
+                  ? `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`
+                  : svgContent
+                  ? 'Parsing snap data…'
+                  : 'No SVG snap data — place floorplan.svg in /public to enable snapping'
+                }
               </span>
             )}
             <span>RENDER_ENGINE: PDF.JS V{getPdfLib().version}</span>
@@ -762,24 +949,20 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         setCalibrationInput={setCalibrationInput}
         onConfirm={handleCalibrationConfirm} onCancel={() => setShowCalibrationDialog(false)}
       />
-
       <MeasurementDetailsWired
         show={showMeasurementDialog} pendingMeasurementData={pendingMeasurementData}
         onConfirm={handleDialogConfirm} onSkip={handleDialogSkip}
       />
-
       <MeasurementDetailsWired
         show={showMfNameDialog} pendingMeasurementData={pendingMfData}
         onConfirm={(name) => handleMfNameConfirm(name)}
         onSkip={handleMfNameSkip}
       />
-
       <PresetDrawerWired
         showPresetDrawer={showPresetDrawer ?? false}
         onClosePresetDrawer={onClosePresetDrawer ?? (() => {})}
         onSelectPreset={onSelectPreset ?? (() => {})}
       />
-
       <AppendGroupBanner
         appendToGroupId={propAppendToGroupId}
         onCancel={() => onAppendComplete?.()}

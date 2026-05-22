@@ -2,19 +2,19 @@
 
 // ─── components/Viewer/ViewerCanvas.tsx ───────────────────────────────────────
 //
-//  FIX: Finish buttons were never visible because they used toCanvas() which
-//  returns coords relative to the scrollable viewport, but the buttons are
-//  children of the canvas wrap div (positioned absolutely inside that
-//  container). Button positions must be in PDF-canvas space, i.e. simply the
-//  tempPoint x/y values already scaled by the current zoom (which is what the
-//  drawing canvas itself uses). We now compute button positions directly from
-//  tempPoint coords without going through toCanvas().
+//  CHANGE vs previous:
 //
-//  ARC TOOL CHANGES (unchanged from before):
-//   • Finish button shows when stagedArcCount > 0.
-//   • stagedArcCount prop added — computed in Viewer.tsx from tempPoints.
-//   • The "click end point" hint is shown only while the in-progress arc has
-//     exactly 2 points and no arcs are staged yet.
+//  Pin canvas (layer 50) — removed `w-full h-full` Tailwind classes and the
+//  inline width/height CSS. The canvas pixel dimensions are now set explicitly
+//  by Viewer.tsx via useLayoutEffect (canvas.width = dims.w / canvas.height =
+//  dims.h). Keeping CSS `width: 100%; height: 100%` alongside an explicit
+//  canvas.width causes the browser to stretch the pixel buffer, which makes
+//  snap dots draw in the wrong place. Instead we let the canvas render at its
+//  natural pixel size (matching pdfDimensions) and position it absolutely
+//  over the PDF. The `pointer-events-none` and z-index are unchanged.
+//
+//  All other logic (finish buttons, arc/radius helpers, pointer leave handler,
+//  onDrawingCanvasPointerLeave prop) is identical to the previous version.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -57,7 +57,6 @@ interface ViewerCanvasProps {
 
   readyToDraw?: boolean;
 
-  /** Number of completed (3-point) arcs staged in tempPoints awaiting Finish. */
   stagedArcCount: number;
 
   toCanvas: (x: number, y: number) => { x: number; y: number };
@@ -71,6 +70,8 @@ interface ViewerCanvasProps {
   setCursorPoint:                 (p: any) => void;
   cursorPointRef:                 React.RefObject<any>;
   redrawPinCanvas:                () => void;
+
+  onDrawingCanvasPointerLeave?:   () => void;
 
   handleFinishMeasurement: () => void;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
@@ -87,21 +88,6 @@ interface ViewerCanvasProps {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Convert a point from PDF-space (the coordinate system tempPoints are stored
- * in) to canvas-wrap-relative pixels.
- *
- * tempPoints use the same coordinate space as the PDF canvas — i.e. PDF units
- * multiplied by the current devicePixelRatio-aware render scale.  The canvas
- * wrap div has width = pdfDimensions.w and height = pdfDimensions.h (already
- * in those scaled pixels), so the point coords are already in the right space.
- * We just return them as-is so that `style={{ left: x, top: y }}` on an
- * absolutely-positioned child of the wrap div lands in the correct spot.
- *
- * DO NOT use the `toCanvas()` hook here — that function converts to *viewport*
- * pixels (accounting for scroll position and container offsets) which is the
- * wrong reference frame for children of the canvas wrap div.
- */
 function pdfPtToWrapPx(pt: InProgressPoint): { x: number; y: number } {
   return { x: pt.x, y: pt.y };
 }
@@ -121,6 +107,7 @@ export function ViewerCanvas({
   handleCanvasPointerMove, handleCanvasPointerDown,
   handleCanvasPointerUp, handleDrawingCanvasPointerDown,
   setCursorPoint, cursorPointRef, redrawPinCanvas,
+  onDrawingCanvasPointerLeave,
   handleFinishMeasurement, handleFileUpload,
   containerRef, CANVAS_PADDING,
   isGridCountActive,
@@ -154,12 +141,10 @@ export function ViewerCanvas({
     : undefined;
 
   // ── Arc/radius point helpers ──────────────────────────────────────────────
-  // Last non-sentinel point — used to anchor the arc finish button.
   const lastNonSentinelPoint = [...tempPoints]
     .reverse()
     .find(p => p.segmentId !== '__arc_break__' && p.segmentId !== '__radius_break__');
 
-  // Points after the last arc sentinel — the "in-progress" arc being drawn.
   const inProgressArcPts = (() => {
     const pts: InProgressPoint[] = [];
     for (let i = tempPoints.length - 1; i >= 0; i--) {
@@ -170,8 +155,6 @@ export function ViewerCanvas({
   })();
 
   // ── Finish button position helpers ────────────────────────────────────────
-  // All buttons are absolutely positioned children of the canvas wrap div,
-  // so we convert using pdfPtToWrapPx (PDF space == wrap-div space).
   const lastPt = tempPoints.length > 0
     ? pdfPtToWrapPx(tempPoints[tempPoints.length - 1])
     : null;
@@ -179,6 +162,20 @@ export function ViewerCanvas({
   const arcBtnPos = lastNonSentinelPoint
     ? pdfPtToWrapPx(lastNonSentinelPoint)
     : lastPt;
+
+  // ── Pointer leave handler ─────────────────────────────────────────────────
+  const handlePointerLeave = onDrawingCanvasPointerLeave ?? (() => {
+    setCursorPoint(null);
+    cursorPointRef.current = null;
+    redrawPinCanvas();
+  });
+
+  // ── Pin canvas visibility ─────────────────────────────────────────────────
+  // showPins hides the canvas via opacity so it doesn't intercept any events
+  // (pointer-events-none is always set). The canvas pixel dimensions are
+  // managed externally by Viewer.tsx useLayoutEffect — do not set w-full /
+  // h-full here as that creates a CSS-vs-pixel size mismatch.
+  const pinCanvasVisible = showPins && readyToDraw;
 
   return (
     <>
@@ -248,11 +245,7 @@ export function ViewerCanvas({
               if (!handled) handleDrawingCanvasPointerDown(e);
             }}
             onPointerUp={handleCanvasPointerUp}
-            onPointerLeave={() => {
-              setCursorPoint(null);
-              cursorPointRef.current = null;
-              redrawPinCanvas();
-            }}
+            onPointerLeave={handlePointerLeave}
             className={cn(
               'absolute inset-0 z-40 w-full h-full mix-blend-multiply',
               drawingCanvasCursor,
@@ -264,13 +257,20 @@ export function ViewerCanvas({
             }}
           />
 
-          {/* Layer 50: Snap pin canvas */}
+          {/* Layer 50: Snap pin canvas
+              NOTE: No w-full/h-full here. The canvas.width/height pixel
+              dimensions are set by Viewer.tsx useLayoutEffect to match
+              pdfDimensions exactly. CSS width/height are left at their
+              natural size (= pixel dimensions) so there is no stretch.
+              position:absolute + inset-0 keeps it aligned with the PDF. */}
           <canvas
             ref={pinCanvasRef}
-            className="absolute inset-0 z-50 w-full h-full pointer-events-none"
+            className="absolute inset-0 z-50 pointer-events-none"
             style={{
-              opacity:    showPins && activeTool !== 'select' && readyToDraw ? 1 : 0,
+              opacity:    pinCanvasVisible ? 1 : 0,
               transition: 'opacity 0.2s',
+              // width/height intentionally omitted — driven by canvas.width/height
+              // set in Viewer.tsx. Do not add w-full/h-full or explicit px sizes.
             }}
           />
 
@@ -342,9 +342,8 @@ export function ViewerCanvas({
               </button>
             )}
 
-          {/* Layer 70: Arc tool UI — Finish button or hint label */}
+          {/* Layer 70: Arc tool UI */}
           {readyToDraw && activeTool === 'arc' && (() => {
-            // Show Finish button when at least one arc is fully staged
             if (stagedArcCount > 0 && arcBtnPos) {
               return (
                 <button
@@ -364,7 +363,6 @@ export function ViewerCanvas({
               );
             }
 
-            // Show hint label when the in-progress arc has exactly 2 points
             if (inProgressArcPts.length === 2 && arcBtnPos) {
               return (
                 <div

@@ -4,8 +4,8 @@ import React, {
   useState, useEffect, useRef, useCallback,
 } from 'react';
 
-import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/useSvgSnapPoints';
-import { useSnapEngine }                        from '@/hooks/useSnapEngine';
+import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/useSvgSnapPoints-test';
+import { useSnapEngine }                        from '@/hooks/useSnapEngine-test';
 import type { SvgLine }                         from '@/hooks/useSvgInteraction';
 import type { PdfDimensions }                   from '@/types/viewerTypes';
 
