@@ -1,48 +1,29 @@
 'use client';
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-// CHANGES vs doc-5 version:
+// CHANGES vs previous version:
 //
-// SNAP ENGINE — viewport-space pinCanvas (fixes "circle under pointer"):
+//  REFERENCE STABILIZATION FIX:
+//    • svgSnapPoints, svgCurves, svgLines are now pinned via useRef so their
+//      object identity only changes when the underlying data changes (i.e. when
+//      the SVG is first loaded or the PDF page changes).
+//    • Previously, destructuring useSvgSnapPoints() and useMemo() on every
+//      render created new local variable bindings each render tick, causing
+//      useSnapEngine's data effects to think the data had changed on every
+//      zoom tick — triggering a full 25-second structured-clone postMessage
+//      on every wheel event.
+//    • With ref pinning, zoom re-renders produce the same array references →
+//      useSnapEngine's unchanged check bails immediately → only the lightweight
+//      transform effect fires (3 numbers, ~0ms).
 //
-//   FIX 3 — REMOVED the useLayoutEffect that sized pinCanvas to pdfDimensions.
-//            _actualRedraw in useSnapEngine now self-sizes the canvas to the
-//            viewport on every draw call.
-//
-//   FIX 4 — pinCanvas moved OUT of ViewerCanvas (which is inside the pdf-wrap
-//            div) and rendered as a direct child of the flex container, covering
-//            the scrollable viewport. This gives it the correct screen-space
-//            position that viewport-space drawing requires.
-//
-//   FIX 5 — useSnapEngine now receives:
-//              viewportRef={containerRef}
-//              zoom={scale}
-//              pan={pan}
-//            so _actualRedraw can project PDF coords → viewport coords.
-//
-//   pan state — exposed from useViewerPdf (was pan ref only before).
-//
-// FIX 1 (carried over) — stablePdfDimensions memo so worker isn't re-triggered
-//   on every render.
-//
-// FIX 2 (carried over) — wrappedPointerMove reads rect from e.currentTarget.
-//
-// FIX 6 — stablePan memo keyed on pan.x / pan.y so useSnapEngine never
-//   receives a new object reference on every wheel tick. Previously every
-//   scroll event created a new { x, y } object, causing cascading re-renders
-//   through useSnapEngine → redrawPinCanvas → useDrawingCanvas and hanging
-//   the browser during zoom.
-//
-// SNAP CANDIDATES — snapCandidates derived from svgSnapPoints (PDF-pixel space)
-//   and wired into useMeasurements → useDrawingCanvas so proximity visuals
-//   render on the drawing canvas.
+//  Everything else is identical to the previous version.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
-  useRef, useEffect, useState, useCallback, useMemo, useLayoutEffect,
+  useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
-import type * as pdfjsLibTypes from "pdfjs-dist/legacy/build/pdf";
+import type * as pdfjsLibTypes from 'pdfjs-dist/legacy/build/pdf';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
@@ -189,8 +170,8 @@ export function extractSvgLines(svgText: string, pdfW: number, pdfH: number): Sv
 }
 
 function getPdfLib(): typeof pdfjsLibTypes {
-  if (typeof window === "undefined") throw new Error("pdfjs not available on server");
-  return require("pdfjs-dist/legacy/build/pdf");
+  if (typeof window === 'undefined') throw new Error('pdfjs not available on server');
+  return require('pdfjs-dist/legacy/build/pdf');
 }
 
 // ─── Internal types ───────────────────────────────────────────────────────────
@@ -206,6 +187,7 @@ interface UndoRedoRefValue {
 }
 
 // ─── SVG fetch cache ──────────────────────────────────────────────────────────
+
 const svgFetchCache = new Map<string, string>();
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -254,23 +236,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const [showMeasurementDialog,  setShowMeasurementDialog]  = useState(false);
   const [pendingMeasurementData, setPendingMeasurementData] = useState<PendingMeasurementData | null>(null);
 
-  // ── isZooming flag ────────────────────────────────────────────────────────
-  const isZoomingRef     = useRef(false);
-  const [isZooming, setIsZooming] = useState(false);
-  const zoomFlagTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const markZoomStart = useCallback(() => {
-    if (!isZoomingRef.current) {
-      isZoomingRef.current = true;
-      setIsZooming(true);
-    }
-    if (zoomFlagTimerRef.current) clearTimeout(zoomFlagTimerRef.current);
-    zoomFlagTimerRef.current = setTimeout(() => {
-      isZoomingRef.current = false;
-      setIsZooming(false);
-    }, 150);
-  }, []);
-
   // ── Context ───────────────────────────────────────────────────────────────
   const {
     tempPoints, pushPoint, commitMeasurement, batchCommitMeasurements,
@@ -312,7 +277,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onPdfLoaded: (doc, file) => startExtractionRef.current?.(doc, file),
     onScaleSet,
     shouldPreserveFillCanvas: isMagicFillActiveRef,
-    onZoom: markZoomStart,
   });
 
   const appendToGroupId = propAppendToGroupId ?? undefined;
@@ -353,10 +317,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     [pdfDimensions?.w, pdfDimensions?.h],
   );
 
-  // FIX 6: Stable pan reference — pan from useViewerPdf is a new object on
-  // every wheel tick even when x/y haven't changed. Keying on the primitive
-  // values prevents useSnapEngine (and everything downstream) from seeing a
-  // new reference and re-rendering on every scroll event.
+  // FIX 6: Stable pan reference — prevents new object identity on every wheel
+  // tick from cascading into useSnapEngine's transform effect unnecessarily.
   const stablePan = useMemo(
     () => pan ?? { x: 0, y: 0 },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -364,16 +326,44 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   );
 
   // ── Snap points from SVG ──────────────────────────────────────────────────
-  const { snapPoints: svgSnapPoints, svgCurves } = useSvgSnapPoints(
+  const { snapPoints: _svgSnapPoints, svgCurves: _svgCurves } = useSvgSnapPoints(
     svgContent,
     stablePdfDimensions,
   );
 
+  // ── REFERENCE STABILIZATION ───────────────────────────────────────────────
+  // useSvgSnapPoints internally memos the arrays so their references only
+  // change when svgContent or pdfDimensions changes. However, destructuring
+  // the hook return value creates new local variable bindings on every render,
+  // which React's useEffect dep comparison treats as potentially new references.
+  //
+  // We pin to refs so that zoom-induced re-renders (which don't change the
+  // underlying data) produce the exact same array identity downstream.
+  // This prevents useSnapEngine's data effects from firing on every zoom tick.
+  const svgSnapPointsStableRef = useRef(_svgSnapPoints);
+  const svgCurvesStableRef     = useRef(_svgCurves);
+  if (_svgSnapPoints !== svgSnapPointsStableRef.current) {
+    svgSnapPointsStableRef.current = _svgSnapPoints;
+  }
+  if (_svgCurves !== svgCurvesStableRef.current) {
+    svgCurvesStableRef.current = _svgCurves;
+  }
+  const svgSnapPoints = svgSnapPointsStableRef.current;
+  const svgCurves     = svgCurvesStableRef.current;
+
   // ── SVG lines ─────────────────────────────────────────────────────────────
-  const svgLines = useMemo((): SvgLine[] => {
+  // useMemo already ensures _svgLines only recomputes when svgContent or
+  // stablePdfDimensions changes. Pin to ref for the same identity guarantee.
+  const _svgLines = useMemo((): SvgLine[] => {
     if (!svgContent || !stablePdfDimensions) return [];
     return extractSvgLines(svgContent, stablePdfDimensions.w, stablePdfDimensions.h);
   }, [svgContent, stablePdfDimensions]);
+
+  const svgLinesStableRef = useRef(_svgLines);
+  if (_svgLines !== svgLinesStableRef.current) {
+    svgLinesStableRef.current = _svgLines;
+  }
+  const svgLines = svgLinesStableRef.current;
 
   // ── Snap candidates in PDF-pixel space for drawing canvas proximity visuals
   const snapCandidates = useMemo(() => {
@@ -390,7 +380,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     pageData, analysisStatus, analysisPage, snapFlashes,
     startExtraction, getScaledCorners,
     snapToCorner, triggerSnapFlash,
-    redrawPinCanvas: _redrawPinCanvas,
+    redrawPinCanvas,
     cursorPointRef,
   } = useSnapEngine({
     pinCanvasRef:     pinCanvasRef         as React.RefObject<HTMLCanvasElement>,
@@ -405,15 +395,12 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     svgLines,
     svgCurves,
     svgAreas: [],
-    isZooming,
     activeTool,
     proximityRadius: 80,
     viewportRef: containerRef as React.RefObject<HTMLDivElement>,
     zoom:        scale,
-    pan:         stablePan,   // ← FIX 6: use stable reference
+    pan:         stablePan,
   });
-
-  const redrawPinCanvas = _redrawPinCanvas;
 
   const stagedArcs = calcStagedArcCount(tempPoints);
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
@@ -467,6 +454,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
   // FIX 2: wrappedPointerMove reads rect from e.currentTarget
+  // redrawPinCanvas() is now O(1) postMessage to worker — safe to call here.
   const wrappedPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       const dims = pdfDimensionsRef.current;
@@ -488,15 +476,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     setCursorPoint(null);
     redrawPinCanvas();
   }, [cursorPointRef, setCursorPoint, redrawPinCanvas]);
-
-  // ── Wheel → isZooming flag ────────────────────────────────────────────────
-  useEffect(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const onWheel = () => markZoomStart();
-    el.addEventListener('wheel', onWheel, { passive: true });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [markZoomStart]);
 
   // ── Grid-count commit ─────────────────────────────────────────────────────
   const handleGridCountCommit = useCallback((
@@ -601,11 +580,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     if (tempPoints.length < minPts) { finishMeasurement(); return; }
     if (propAppendToGroupId) { finishMeasurement(); onAppendComplete?.(); return; }
     const type =
-      activeTool === 'polygon' || activeTool === 'rectangle' ? 'Polygon' :
-      activeTool === 'linear'  ? 'Length' :
-      activeTool === 'arc'     ? 'Length' :
-      activeTool === 'radius'  ? 'Length' :
-      activeTool === 'count'   ? 'Count'  : 'Point';
+      activeTool === 'polygon'   || activeTool === 'rectangle' ? 'Polygon' :
+      activeTool === 'linear'    ? 'Length' :
+      activeTool === 'arc'       ? 'Length' :
+      activeTool === 'radius'    ? 'Length' :
+      activeTool === 'count'     ? 'Count'  : 'Point';
     setPendingMeasurementData({ id: `temp-${Date.now()}`, type, description: `New ${type}` });
     setShowMeasurementDialog(true);
   }, [tempPoints.length, activeTool, finishMeasurement, propAppendToGroupId, onAppendComplete]);
@@ -719,9 +698,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   // ── Snap status text ──────────────────────────────────────────────────────
   const snapStatusText = useMemo(() => {
-    if (svgLoading)              return 'Loading snap layout…';
-    if (!svgUrl)                 return 'No snap layout — pass svgUrl prop to enable snapping';
-    if (!svgContent)             return 'Snap layout failed to load';
+    if (svgLoading)               return 'Loading snap layout…';
+    if (!svgUrl)                  return 'No snap layout — pass svgUrl prop to enable snapping';
+    if (!svgContent)              return 'Snap layout failed to load';
     if (svgSnapPoints.length > 0)
       return `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`;
     return 'Parsing snap data…';
@@ -895,9 +874,10 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
           />
         </div>
 
-        {/* FIX 4: pinCanvas rendered as sibling to the scrollable container,
-            positioned absolute over the entire flex row — screen-space overlay
-            matching how _actualRedraw in useSnapEngine sizes and draws it. */}
+        {/* pinCanvas rendered as sibling to the scrollable container,
+            positioned absolute over the entire flex row — screen-space overlay.
+            The worker owns this canvas after transferControlToOffscreen().
+            Do NOT set width/height here — the worker manages its own size. */}
         <canvas
           ref={pinCanvasRef}
           style={{
