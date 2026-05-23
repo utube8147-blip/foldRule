@@ -1,4 +1,20 @@
 // ─── hooks/useMeasurements/useMeasurementCommit.ts ───────────────────────────
+//
+// CHANGE vs previous version:
+//
+// RECTANGLE TOOL — handleCanvasClick now auto-commits after the 2nd point is
+//   placed (the "opposite corner").  Previously it kept accumulating points
+//   like a polygon and required the user to double-click or press Finish.
+//   The new behaviour:
+//     • Click 1 → place first corner (segmentId assigned, stored in tempPoints)
+//     • Click 2 → place second corner and immediately call finishMeasurement()
+//   This mirrors how a real rectangle tool works in every CAD / takeoff app.
+//
+//   The segment grouping logic in finishMeasurement already handles exactly-2-
+//   point segments correctly (validSegs filter: s.points.length === 2), so no
+//   changes are needed there.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useCallback } from 'react';
 import React from 'react';
@@ -841,6 +857,10 @@ export function useMeasurementCommit({
     }
 
     // ── Rectangle ─────────────────────────────────────────────────────────────
+    // NOTE: This branch is now only reached via finishMeasurement() called
+    // externally (e.g. keyboard Enter, Finish button in append mode).
+    // In normal use the rectangle auto-commits inside handleCanvasClick after
+    // the 2nd point, so this path handles multi-rect batches and edge cases.
     if (activeTool === 'rectangle') {
       const allSegs   = groupPointsBySegment(pts);
       const validSegs = allSegs.filter(s => s.points.length === 2);
@@ -898,8 +918,9 @@ export function useMeasurementCommit({
     if (activeTool === 'select') return;
     if (e.button !== 0) return;
 
+    // Double-click to finish — only for multi-point tools that aren't rectangle
     if (e.detail === 2) {
-      const multiPointTools = ['linear', 'polygon', 'rectangle', 'count'];
+      const multiPointTools = ['linear', 'polygon', 'count'];
       if (multiPointTools.includes(activeTool) && tempPoints.length > 0) {
         finishMeasurement();
         return;
@@ -962,22 +983,44 @@ export function useMeasurementCommit({
       return;
     }
 
+    // ── RECTANGLE: 2-click mode ───────────────────────────────────────────────
+    // Click 1: record first corner with a new segmentId.
+    // Click 2: record second corner and immediately commit the rectangle.
     if (activeTool === 'rectangle') {
-      let segmentId: string;
-      if (tempPoints.length === 0) {
-        segmentId = crypto.randomUUID();
-      } else if (pendingBreak) {
-        segmentId = nextSegmentIdRef.current ?? crypto.randomUUID();
-        nextSegmentIdRef.current = null;
-        setPendingBreak(false);
+      const segs    = groupPointsBySegment(tempPoints);
+      const lastSeg = segs.length > 0 ? segs[segs.length - 1] : null;
+
+      // If the last segment already has 2 points (a completed rect from a
+      // previous click pair), start a fresh segment for a new rectangle.
+      const needsNewSeg =
+        !lastSeg ||
+        lastSeg.points.length === 0 ||
+        lastSeg.points.length >= 2 ||
+        pendingBreak;
+
+      if (needsNewSeg) {
+        // Click 1 of a new rectangle
+        const segmentId = pendingBreak
+          ? (nextSegmentIdRef.current ?? crypto.randomUUID())
+          : crypto.randomUUID();
+        if (pendingBreak) {
+          nextSegmentIdRef.current = null;
+          setPendingBreak(false);
+        }
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentId });
       } else {
-        const segs    = groupPointsBySegment(tempPoints);
-        const lastSeg = segs[segs.length - 1];
-        segmentId = lastSeg.points.length >= 2
-          ? crypto.randomUUID()
-          : tempPoints[tempPoints.length - 1].segmentId!;
+        // Click 2 — place second corner then immediately commit
+        const segmentId = lastSeg!.points[0].segmentId!;
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentId });
+        // Use setTimeout so the state update from pushPoint settles before we
+        // read tempPoints inside finishMeasurement.  We pass the points directly
+        // so we don't rely on stale closure state.
+        const p1 = lastSeg!.points[0];
+        const p2: InProgressPoint = { x: norm.x, y: norm.y, snapped: snap.snapped, segmentId };
+        setTimeout(() => {
+          finishMeasurement([p1, p2]);
+        }, 0);
       }
-      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentId });
       return;
     }
 
@@ -1057,14 +1100,11 @@ export function useMeasurementCommit({
       return;
     }
 
+    // Rectangle: right-click cancels the in-progress corner and resets
     if (activeTool === 'rectangle') {
       if (tempPoints.length === 0) return;
-      if (appendToGroupId && tempPoints.length >= 2) {
-        finishMeasurement();
-        return;
-      }
-      nextSegmentIdRef.current = crypto.randomUUID();
-      setPendingBreak(true);
+      clearTempPoints();
+      setCursorPoint(null);
       return;
     }
 

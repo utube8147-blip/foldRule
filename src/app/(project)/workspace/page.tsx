@@ -2,9 +2,10 @@
 
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
 //
-// CHANGES:
-//   • onDeleteMeasurement={deleteMeasurement} passed to Viewer so magic fill
-//     delete/clear/undo can sync removals back to TakeoffContext.
+// CHANGES vs previous:
+//   • svgUrl constant added at top — set this to your public SVG URL.
+//   • svgUrl prop passed to <Viewer> for snap layout.
+//   • onDeleteMeasurement={deleteMeasurement} passed to Viewer (unchanged).
 //   • No other changes.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -34,6 +35,16 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
+
+// ─── SVG snap layout URL ──────────────────────────────────────────────────────
+// Set this to any publicly accessible SVG URL.
+// Examples:
+//   'https://your-cdn.com/drawings/floorplan.svg'
+//   'https://storage.googleapis.com/your-bucket/plans/building-a.svg'
+//   '/floorplan.svg'  ← still works if you have one in /public
+//
+// Set to undefined (or remove the prop from <Viewer>) to disable snapping.
+const SNAP_SVG_URL = '/floorplan.svg';
 
 // ─── Stable color palette for presets ────────────────────────────────────────
 const PRESET_COLORS = [
@@ -84,23 +95,23 @@ export default function Workspace() {
     updateProjectMeta,
   } = useTakeoffContext();
 
-  const [leftCollapsed, setLeftCollapsed]             = useState(false);
-  const [rightCollapsed, setRightCollapsed]           = useState(false);
+  const [leftCollapsed,       setLeftCollapsed]       = useState(false);
+  const [rightCollapsed,      setRightCollapsed]      = useState(false);
   const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
-  const [showExportModal, setShowExportModal]         = useState(false);
-  const [showPresetDrawer, setShowPresetDrawer]       = useState(false);
-  const [toasts, setToasts]                           = useState<any[]>([]);
-  const [isMounted, setIsMounted]                     = useState(false);
-  const [toolbarAPI, setToolbarAPI]                   = useState<ViewerToolbarAPI | null>(null);
-  const [appendToGroupId, setAppendToGroupId]         = useState<string | null>(null);
+  const [showExportModal,     setShowExportModal]     = useState(false);
+  const [showPresetDrawer,    setShowPresetDrawer]    = useState(false);
+  const [toasts,              setToasts]              = useState<any[]>([]);
+  const [isMounted,           setIsMounted]           = useState(false);
+  const [toolbarAPI,          setToolbarAPI]          = useState<ViewerToolbarAPI | null>(null);
+  const [appendToGroupId,     setAppendToGroupId]     = useState<string | null>(null);
 
-  // ── Toolbar state managed at workspace level ────────────────────────────────
+  // ── Toolbar state managed at workspace level ──────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(false);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
 
-  // ── Fix existing groups with mismatched types ──────────────────────────────
+  // ── Fix existing groups with mismatched types ─────────────────────────────
   useEffect(() => {
     ps.measurements
       .filter(m => m.isGroupHeader && m.childIds && m.childIds.length > 0)
@@ -112,7 +123,7 @@ export default function Workspace() {
       });
   }, [ps.measurements, updateMeasurement]);
 
-  // ── Derived values ──────────────────────────────────────────────────────────
+  // ── Derived values ────────────────────────────────────────────────────────
   const activeDrawing = useMemo(
     () => ps.drawings.find((d: { id: any }) => d.id === ps.activeDrawingId) || null,
     [ps.drawings, ps.activeDrawingId],
@@ -131,14 +142,14 @@ export default function Workspace() {
   const toolbarAPIRef = useRef<ViewerToolbarAPI | null>(null);
   useEffect(() => { toolbarAPIRef.current = toolbarAPI; }, [toolbarAPI]);
 
-  // ── Toast helper ────────────────────────────────────────────────────────────
+  // ── Toast helper ──────────────────────────────────────────────────────────
   const addToast = useCallback((message: string, type: 'success' | 'info' = 'info') => {
     const id = Math.random().toString(36).substr(2, 9);
     setToasts(prev => [...prev, { id, message, type }]);
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3000);
   }, []);
 
-  // ── Carcass preset generator ────────────────────────────────────────────────
+  // ── Carcass preset generator ──────────────────────────────────────────────
   const generateGroupedCarcassMeasurements = useCallback((
     data: Record<string, any>,
     template: PresetTemplate,
@@ -194,7 +205,7 @@ export default function Workspace() {
     return { measurements, groupName };
   }, []);
 
-  // ── Preset select handler ───────────────────────────────────────────────────
+  // ── Preset select handler ─────────────────────────────────────────────────
   const handlePresetSelect = useCallback((data: Record<string, any>, template: PresetTemplate) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -295,16 +306,16 @@ export default function Workspace() {
     }
   }, [activeDrawing, addMeasurement, addToast, generateGroupedCarcassMeasurements]);
 
-  // ── Group append handlers ───────────────────────────────────────────────────
+  // ── Group append handlers ─────────────────────────────────────────────────
   const handleAddSegmentToGroup = useCallback((groupId: string, groupType: string) => {
     setAppendToGroupId(groupId);
     const toolMap: Record<string, ToolType> = {
-      'Length':    'linear',
-      'Polygon':   'polygon',
-      'Rectangle': 'rectangle',
-      'Count':     'count',
-      'Point':     'point',
-      'Area':      'magic-fill',
+      'Length':     'linear',
+      'Polygon':    'polygon',
+      'Rectangle':  'rectangle',
+      'Count':      'count',
+      'Point':      'point',
+      'Area':       'magic-fill',
       'magic-fill': 'magic-fill',
     };
     const newTool = toolMap[groupType] || 'linear';
@@ -314,17 +325,17 @@ export default function Workspace() {
 
   const handleAppendComplete = useCallback(() => setAppendToGroupId(null), []);
 
-  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
       switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear'     as ToolType); break;
-        case 'a': setActiveTool('area'       as ToolType); break;
-        case 'c': setActiveTool('count'      as ToolType); break;
-        case 'p': setActiveTool('point'      as ToolType); break;
-        case 'v': setActiveTool('select'     as ToolType); break;
-        case 'm': setActiveTool('magic-fill' as ToolType); break;
+        case 'l': setActiveTool('linear'      as ToolType); break;
+        case 'a': setActiveTool('area'        as ToolType); break;
+        case 'c': setActiveTool('count'       as ToolType); break;
+        case 'p': setActiveTool('point'       as ToolType); break;
+        case 'v': setActiveTool('select'      as ToolType); break;
+        case 'm': setActiveTool('magic-fill'  as ToolType); break;
         case 'escape': setActiveTool('select' as ToolType); break;
       }
     };
@@ -332,7 +343,7 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [setActiveTool]);
 
-  // ── onAddMeasurement ────────────────────────────────────────────────────────
+  // ── onAddMeasurement ──────────────────────────────────────────────────────
   const handleAddMeasurement = useCallback((m: any) => {
     if (!activeDrawing) {
       addToast('PLEASE SELECT OR IMPORT A DRAWING FIRST', 'info');
@@ -513,6 +524,10 @@ export default function Workspace() {
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}
+                // ── Snap layout SVG ──────────────────────────────────────────
+                // Change SNAP_SVG_URL at the top of this file to point at your SVG.
+                // Pass undefined to disable snapping entirely.
+                svgUrl={SNAP_SVG_URL}
               />
             </div>
 

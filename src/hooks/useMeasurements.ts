@@ -5,6 +5,8 @@
 // FIX B: pendingSnapCandidates type import uses the canonical source.
 // FIX C: redrawDrawingCanvasRef is pre-populated via a lazy initializer pattern
 //         so the first-render race window is closed.
+// FIX D: snapCandidates prop wired through to useDrawingCanvas so the
+//         proximity visuals actually have candidates to draw.
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import React from 'react';
@@ -14,9 +16,9 @@ import { toCanvas as toCanvasUtil, toNorm as toNormUtil } from './useMeasurement
 import { useDrawingCanvas } from './useMeasurements/useDrawingCanvas';
 import { usePointDrag } from './useMeasurements/usePointDrag';
 import { useMeasurementCommit } from './useMeasurements/useMeasurementCommit';
-import type { PendingSnapCandidate } from '@/types/viewerTypes'; // FIX B
+import type { PendingSnapCandidate } from '@/types/viewerTypes';
 import type { ToolType } from '@/types';
-import type { DragState } from '@/hooks/useMeasurements/types'; // FIX C
+import type { DragState } from '@/hooks/useMeasurements/types';
 
 export { getNextMeasurementColor, resetColorIndex };
 export type { UseMeasurementsParams, UseMeasurementsReturn };
@@ -48,7 +50,11 @@ export function useMeasurements({
   onScalePrompt,
   appendToGroupId,
   onAppendComplete,
-}: UseMeasurementsParams): UseMeasurementsReturn {
+  // FIX D: snap candidates in PDF-pixel space forwarded from Viewer
+  snapCandidates,
+}: UseMeasurementsParams & {
+  snapCandidates?: Array<{ x: number; y: number; type: string }>;
+}): UseMeasurementsReturn {
 
   const typedActiveTool = activeTool as ToolType;
 
@@ -57,7 +63,6 @@ export function useMeasurements({
   useEffect(() => { snapEnabledRef.current   = snapEnabled;   }, [snapEnabled]);
   useEffect(() => { snapThresholdRef.current = snapThreshold; }, [snapThreshold]);
 
-  // FIX B: canonical import, no inline dynamic import string
   const [pendingSnapCandidates, setPendingSnapCandidates] = useState<PendingSnapCandidate[] | null>(null);
 
   const [pendingBreak, setPendingBreak] = useState(false);
@@ -74,10 +79,6 @@ export function useMeasurements({
     resetBreakState();
   }, [typedActiveTool, clearTempPoints, cursorPointRef, resetBreakState]);
 
-  // ── FIX C: stable ref initialized to a no-op; populated before any drag ────
-  // Using a ref-of-ref pattern means usePointDrag always calls the latest
-  // version of redrawDrawingCanvas without needing it in its dependency array,
-  // and without the one-render race the useEffect approach had.
   const redrawDrawingCanvasRef = useRef<(pt?: { x: number; y: number }) => void>(() => {});
 
   const drag = usePointDrag({
@@ -94,10 +95,9 @@ export function useMeasurements({
     redrawPinCanvas,
     cursorPointRef,
     onUpdateMeasurement,
-    // Indirection through the ref — always calls the current canvas.redrawDrawingCanvas
     redrawDrawingCanvas: useCallback(
       (pt?: { x: number; y: number }) => redrawDrawingCanvasRef.current(pt),
-      [], // stable — only reads the ref, never captures canvas directly
+      [],
     ),
   });
 
@@ -116,10 +116,10 @@ export function useMeasurements({
     snapToCorner,
     redrawPinCanvas,
     snapEnabledRef,
+    // FIX D: wire snap candidates through so proximity visuals render
+    snapCandidates: snapCandidates ?? [],
   });
 
-  // FIX C: synchronously assign after useDrawingCanvas returns — no useEffect
-  // delay, so redrawDrawingCanvasRef is valid before the first pointer event.
   redrawDrawingCanvasRef.current = canvas.redrawDrawingCanvas;
 
   const commit = useMeasurementCommit({
@@ -168,16 +168,9 @@ export function useMeasurements({
     [drag, canvas],
   );
 
-  // FIX A: return type is void to match UseMeasurementsReturn.
-  // When drag doesn't claim the event (returns false), we do NOT call
-  // preventDefault/stopPropagation so the subsequent 'click' event still fires,
-  // allowing commit.handleCanvasClick to handle drawing placement normally.
   const handleCanvasPointerDown = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>): void => {
       drag.handleCanvasPointerDown(e);
-      // Intentionally no fallback here: non-drag clicks are handled by
-      // handleCanvasClick (MouseEvent), which fires after pointerdown+pointerup
-      // on the same element. Intercepting here would double-handle placements.
     },
     [drag],
   );

@@ -1,15 +1,36 @@
 'use client';
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-// Snap data now comes from useSvgSnapPoints (parses a real SVG string).
-// For now the SVG is fetched from /public/floorplan.svg as a hardcoded
-// placeholder — replace the fetch with your real SVG generation API later.
+// CHANGES vs doc-5 version:
 //
-// Changes vs previous version:
-// 1. Removed usePdfSnapPoints — replaced with useSvgSnapPoints + extractSvgLines
-// 2. Added svgContent state + fetch from /floorplan.svg (hardcoded for now)
-// 3. svgCurves from useSvgSnapPoints now passed to useSnapEngine
-// 4. extractSvgLines used to build svgLines from the same SVG string
+// SNAP ENGINE — viewport-space pinCanvas (fixes "circle under pointer"):
+//
+//   FIX 3 — REMOVED the useLayoutEffect that sized pinCanvas to pdfDimensions.
+//            _actualRedraw in useSnapEngine now self-sizes the canvas to the
+//            viewport on every draw call.
+//
+//   FIX 4 — pinCanvas moved OUT of ViewerCanvas (which is inside the pdf-wrap
+//            div) and rendered as a direct child of the flex container, covering
+//            the scrollable viewport. This gives it the correct screen-space
+//            position that viewport-space drawing requires.
+//
+//   FIX 5 — useSnapEngine now receives:
+//              viewportRef={containerRef}
+//              zoom={scale}
+//              pan={pan}
+//            so _actualRedraw can project PDF coords → viewport coords.
+//
+//   pan state — exposed from useViewerPdf (was pan ref only before).
+//
+// FIX 1 (carried over) — stablePdfDimensions memo so worker isn't re-triggered
+//   on every render.
+//
+// FIX 2 (carried over) — wrappedPointerMove reads rect from e.currentTarget.
+//
+// SNAP CANDIDATES — snapCandidates derived from svgSnapPoints (PDF-pixel space)
+//   and wired into useMeasurements → useDrawingCanvas so proximity visuals
+//   render on the drawing canvas.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
@@ -36,9 +57,7 @@ import {
 import {
   CANVAS_PADDING, ZOOM_SENSITIVITY, MIN_ZOOM, MAX_ZOOM, VIEWER_TOOLS,
 } from './Viewer/ViewerConstants';
-import {
-  MagicFillCanvas,
-} from '@/components/Viewer/MagicFillCanvas';
+import { MagicFillCanvas } from '@/components/Viewer/MagicFillCanvas';
 import {
   MagicFillProgressOverlay,
   MagicFillHoverTooltip,
@@ -55,14 +74,12 @@ import type { SvgLine } from '@/hooks/useSvgInteraction';
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
 // ─── extractSvgLines ──────────────────────────────────────────────────────────
-// Converts an SVG string into normalized SvgLine[] for the snap engine.
-// Every line carries a shapeId so useSnapEngine never receives undefined.
 
 function numA(el: Element, n: string, fb = 0): number {
   const v = parseFloat(el.getAttribute(n) ?? '');
   return isNaN(v) ? fb : v;
 }
-function _identMat() { return { a:1,b:0,c:0,d:1,e:0,f:0 }; }
+function _identMat() { return { a:1, b:0, c:0, d:1, e:0, f:0 }; }
 function _mulMat(m1: any, m2: any) {
   return {
     a: m1.a*m2.a+m1.c*m2.b, b: m1.b*m2.a+m1.d*m2.b,
@@ -87,7 +104,7 @@ function _parseTfm(t: string | null): any {
     else if (m[1]==='rotate')    { const a=(args[0]??0)*Math.PI/180,cos=Math.cos(a),sin=Math.sin(a); mat={a:cos,b:sin,c:-sin,d:cos,e:0,f:0}; }
     mats.push(mat);
   }
-  return mats.reduce((acc,mx)=>_mulMat(acc,mx),_identMat());
+  return mats.reduce((acc,mx) => _mulMat(acc,mx), _identMat());
 }
 function _getCTM(el: Element, root: Element): any {
   const mats: any[] = [];
@@ -97,7 +114,7 @@ function _getCTM(el: Element, root: Element): any {
     if (t) mats.unshift(_parseTfm(t));
     node = node.parentElement;
   }
-  return mats.reduce((acc,mx)=>_mulMat(acc,mx),_identMat());
+  return mats.reduce((acc,mx) => _mulMat(acc,mx), _identMat());
 }
 
 export function extractSvgLines(svgText: string, pdfW: number, pdfH: number): SvgLine[] {
@@ -126,12 +143,7 @@ export function extractSvgLines(svgText: string, pdfW: number, pdfH: number): Sv
 
   const lines: SvgLine[] = [];
 
-  const pushLine = (
-    ax: number, ay: number,
-    bx: number, by: number,
-    ctm: any,
-    shapeId: string,
-  ) => {
+  const pushLine = (ax: number, ay: number, bx: number, by: number, ctm: any, shapeId: string) => {
     const a = toCanvas(ax, ay, ctm);
     const b = toCanvas(bx, by, ctm);
     if (Math.hypot(a.x-b.x, a.y-b.y) < 0.5) return;
@@ -187,6 +199,9 @@ interface UndoRedoRefValue {
   setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
 }
 
+// ─── SVG fetch cache ──────────────────────────────────────────────────────────
+const svgFetchCache = new Map<string, string>();
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
@@ -201,6 +216,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     appendToGroupId: propAppendToGroupId,
     onAppendComplete,
     onToolbarReady,
+    svgUrl,
   } = props as any;
 
   const onDeleteMeasurementProp = (props as any).onDeleteMeasurement as
@@ -233,9 +249,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const [pendingMeasurementData, setPendingMeasurementData] = useState<PendingMeasurementData | null>(null);
 
   // ── isZooming flag ────────────────────────────────────────────────────────
-  const isZoomingRef      = useRef(false);
+  const isZoomingRef     = useRef(false);
   const [isZooming, setIsZooming] = useState(false);
-  const zoomFlagTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const zoomFlagTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const markZoomStart = useCallback(() => {
     if (!isZoomingRef.current) {
@@ -276,6 +292,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     handleContainerPointerUp,
     handleDrawingCanvasPointerDown,
     pdfRef, pageNumberRef, scaleRef, pdfDimensionsRef, onScaleSetRef,
+    pan,
   } = useViewerPdf({
     containerRef,
     pdfCanvasRef,
@@ -294,66 +311,66 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   const appendToGroupId = propAppendToGroupId ?? undefined;
 
-  // ── SVG content — hardcoded fetch from /public/floorplan.svg ─────────────
-  // TODO: replace this fetch with your real SVG generation API.
-  // The SVG should match the currently loaded PDF page.
-  // When you have a real API, do something like:
-  //   fetch(`/api/pdf-to-svg?drawingId=${activeDrawingId}&page=${pageNumber}`)
+  // ── SVG fetch ─────────────────────────────────────────────────────────────
   const [svgContent, setSvgContent] = useState<string | null>(null);
+  const [svgLoading, setSvgLoading] = useState(false);
 
   useEffect(() => {
-    // Reset SVG when drawing or page changes
-    setSvgContent(null);
-
-    if (!activeDrawingId) return;
-
-    // Hardcoded: always load /floorplan.svg from /public
-    // Replace this with your real SVG source later
-    fetch('/floorplan.svg')
-      .then(r => {
-        if (!r.ok) {
-          console.warn('[Viewer] /floorplan.svg not found — snap will have no data');
-          return null;
-        }
-        return r.text();
-      })
+    if (!svgUrl) { setSvgContent(null); return; }
+    if (svgFetchCache.has(svgUrl)) {
+      setSvgContent(svgFetchCache.get(svgUrl) ?? null);
+      return;
+    }
+    setSvgLoading(true);
+    let cancelled = false;
+    fetch(svgUrl)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
       .then(text => {
-        if (text) {
-          console.log('[Viewer] SVG loaded, length:', text.length);
-          setSvgContent(text);
-        }
+        if (cancelled) return;
+        svgFetchCache.set(svgUrl, text);
+        setSvgContent(text);
+        console.log(`[Viewer] SVG loaded from ${svgUrl}, length: ${text.length}`);
       })
       .catch(err => {
-        console.warn('[Viewer] Failed to load /floorplan.svg:', err);
-      });
-  }, [activeDrawingId, pageNumber]);
+        if (cancelled) return;
+        console.warn(`[Viewer] Failed to load SVG from ${svgUrl}:`, err);
+        setSvgContent(null);
+      })
+      .finally(() => { if (!cancelled) setSvgLoading(false); });
+    return () => { cancelled = true; };
+  }, [svgUrl]);
+
+  // FIX 1: Stable pdfDimensions reference
+  const stablePdfDimensions = useMemo(
+    () => pdfDimensions,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pdfDimensions?.w, pdfDimensions?.h],
+  );
 
   // ── Snap points from SVG ──────────────────────────────────────────────────
-  // useSvgSnapPoints parses the SVG string into snap points and bezier curves.
-  // scale is passed for zoom-aware midpoint suppression.
   const { snapPoints: svgSnapPoints, svgCurves } = useSvgSnapPoints(
     svgContent,
-    pdfDimensions,
+    stablePdfDimensions,
     scale,
   );
 
-  // ── SVG lines from same SVG string ────────────────────────────────────────
-  // extractSvgLines pulls line/polyline/polygon/rect elements for proximity snapping.
+  // ── SVG lines ─────────────────────────────────────────────────────────────
   const svgLines = useMemo((): SvgLine[] => {
-    if (!svgContent || !pdfDimensions) return [];
-    return extractSvgLines(svgContent, pdfDimensions.w, pdfDimensions.h);
-  }, [svgContent, pdfDimensions]);
+    if (!svgContent || !stablePdfDimensions) return [];
+    return extractSvgLines(svgContent, stablePdfDimensions.w, stablePdfDimensions.h);
+  }, [svgContent, stablePdfDimensions]);
 
-  // ── Keep pinCanvas pixel dimensions in sync with pdfDimensions ────────────
-  useLayoutEffect(() => {
-    const canvas = pinCanvasRef.current;
-    const dims   = pdfDimensions;
-    if (!canvas || !dims) return;
-    if (canvas.width !== dims.w || canvas.height !== dims.h) {
-      canvas.width  = dims.w;
-      canvas.height = dims.h;
-    }
-  });
+  // ── Snap candidates in PDF-pixel space for drawing canvas proximity visuals
+  // svgSnapPoints uses normalised nx/ny (0-1); drawing canvas works in PDF
+  // pixels, so we convert once here and pass down the chain.
+  const snapCandidates = useMemo(() => {
+    if (!stablePdfDimensions) return [];
+    return svgSnapPoints.map(p => ({
+      x:    p.nx * stablePdfDimensions.w,
+      y:    p.ny * stablePdfDimensions.h,
+      type: p.type,
+    }));
+  }, [svgSnapPoints, stablePdfDimensions]);
 
   // ── Snap engine ───────────────────────────────────────────────────────────
   const {
@@ -366,6 +383,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     pinCanvasRef:     pinCanvasRef         as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef     as React.RefObject<NonNullable<typeof pdfDimensions>>,
     pageNumberRef:    pageNumberRef        as React.RefObject<number>,
+    scaleRef:         scaleRef            as React.RefObject<number>,
     snapEnabled,
     showPins,
     snapThreshold,
@@ -375,6 +393,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     svgCurves,
     svgAreas: [],
     isZooming,
+    activeTool,
+    proximityRadius: 80,
+    viewportRef: containerRef as React.RefObject<HTMLDivElement>,
+    zoom:        scale,
+    pan:         pan ?? { x: 0, y: 0 },
   });
 
   const redrawPinCanvas = _redrawPinCanvas;
@@ -425,28 +448,27 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     isPanning, snapToCorner: snapToCorner as any, getScaledCorners,
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
-  });
+    // Wire snap candidates so drawing canvas proximity visuals work
+    snapCandidates,
+  } as any);
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
-  // ── Pointer move ──────────────────────────────────────────────────────────
+  // FIX 2: wrappedPointerMove reads rect from e.currentTarget
   const wrappedPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
-      const canvas = pinCanvasRef.current;
-      const dims   = pdfDimensionsRef.current;
-      if (canvas && dims) {
-        const rect   = canvas.getBoundingClientRect();
-        const ratioX = rect.width  > 0 ? dims.w / rect.width  : 1;
-        const ratioY = rect.height > 0 ? dims.h / rect.height : 1;
+      const dims = pdfDimensionsRef.current;
+      if (dims) {
+        const rect = e.currentTarget.getBoundingClientRect();
         cursorPointRef.current = {
-          x: (e.clientX - rect.left) * ratioX,
-          y: (e.clientY - rect.top)  * ratioY,
+          x: (e.clientX - rect.left) * (dims.w / rect.width),
+          y: (e.clientY - rect.top)  * (dims.h / rect.height),
         };
       }
       handleCanvasPointerMove(e);
       redrawPinCanvas();
     },
-    [handleCanvasPointerMove, redrawPinCanvas, cursorPointRef, pdfDimensionsRef, pinCanvasRef],
+    [handleCanvasPointerMove, redrawPinCanvas, cursorPointRef, pdfDimensionsRef],
   );
 
   const wrappedPointerLeave = useCallback(() => {
@@ -677,11 +699,21 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   // ── Derived state ─────────────────────────────────────────────────────────
   const isMagicFillTool = activeTool === 'magic-fill';
   const isGridCountTool = activeTool === 'grid-count';
-  const mfHoveredFill  = allVisibleFills.find(f => f.id === mfHoveredId)  ?? null;
-  const mfSelectedFill = allVisibleFills.find(f => f.id === mfSelectedId) ?? null;
-  const mfGroupFills   = mfSelectedGroup != null
+  const mfHoveredFill   = allVisibleFills.find(f => f.id === mfHoveredId)  ?? null;
+  const mfSelectedFill  = allVisibleFills.find(f => f.id === mfSelectedId) ?? null;
+  const mfGroupFills    = mfSelectedGroup != null
     ? magicFills.filter(f => f.groupId === mfSelectedGroup)
     : [];
+
+  // ── Snap status text ──────────────────────────────────────────────────────
+  const snapStatusText = useMemo(() => {
+    if (svgLoading)              return 'Loading snap layout…';
+    if (!svgUrl)                 return 'No snap layout — pass svgUrl prop to enable snapping';
+    if (!svgContent)             return 'Snap layout failed to load';
+    if (svgSnapPoints.length > 0)
+      return `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`;
+    return 'Parsing snap data…';
+  }, [svgLoading, svgUrl, svgContent, svgSnapPoints.length, svgLines.length]);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -723,6 +755,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
           />
         )}
 
+        {/* Scrollable viewport */}
         <div
           ref={containerRef}
           className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
@@ -849,6 +882,22 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
           />
         </div>
+
+        {/* FIX 4: pinCanvas rendered as sibling to the scrollable container,
+            positioned absolute over the entire flex row — screen-space overlay
+            matching how _actualRedraw in useSnapEngine sizes and draws it. */}
+        <canvas
+          ref={pinCanvasRef}
+          style={{
+            position:      'absolute',
+            top:           0,
+            left:          0,
+            pointerEvents: 'none',
+            zIndex:        50,
+            opacity:       showPins ? 1 : 0,
+            transition:    'opacity 0.2s',
+          }}
+        />
       </div>
 
       {pdf && pdfDimensions && (
@@ -929,13 +978,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 }
               </span>
             ) : (
-              <span>
-                {svgSnapPoints.length > 0
-                  ? `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`
-                  : svgContent
-                  ? 'Parsing snap data…'
-                  : 'No SVG snap data — place floorplan.svg in /public to enable snapping'
-                }
+              <span className={svgLoading ? 'text-amber-400' : !svgContent ? 'text-zinc-600' : ''}>
+                {snapStatusText}
               </span>
             )}
             <span>RENDER_ENGINE: PDF.JS V{getPdfLib().version}</span>

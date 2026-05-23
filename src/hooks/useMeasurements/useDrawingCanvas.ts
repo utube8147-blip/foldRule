@@ -1,4 +1,23 @@
 // ─── hooks/useMeasurements/useDrawingCanvas.ts ────────────────────────────────
+//
+// SNAP VISUAL — PROXIMITY-ONLY (matches demo design exactly):
+//
+//  • NOTHING is drawn near snap points unless the cursor is within
+//    PROX_RADIUS_PDF of at least one candidate.
+//  • When in range:
+//      - Dashed proximity circle appears around cursor.
+//      - Secondary candidates (non-nearest): hollow ring + tiny type label,
+//        fading with distance.
+//      - Nearest candidate:
+//          · Approaching  → crosshair arms grow + brighten as cursor closes in;
+//                           faint ring appears when fade > 0.35.
+//          · Locked       → filled dot + white ring + crosshair arms.
+//  • Plain cursor dot (#EF9F27) is drawn whenever NOT locked to a snap point.
+//  • Radius tool: no always-on crosshair — proximity circle replaces it,
+//    fading in as cursor nears any snap candidate (unchanged from before).
+//  • Applies to ALL tools except 'select'.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import React from 'react';
@@ -27,14 +46,17 @@ interface UseDrawingCanvasParams {
   snapToCorner:     ((...args: any[]) => any) | null;
   redrawPinCanvas:  () => void;
   snapEnabledRef:   React.RefObject<boolean>;
+  snapCandidates?:  Array<{ x: number; y: number; type: string }>;
 }
 
 interface UseDrawingCanvasReturn {
-  cursorPoint:    { x: number; y: number } | null;
-  setCursorPoint: React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
+  cursorPoint:         { x: number; y: number } | null;
+  setCursorPoint:      React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
   redrawDrawingCanvas: (pt?: { x: number; y: number }) => void;
   handleCanvasPointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => void;
 }
+
+// ─── Geometry helpers ─────────────────────────────────────────────────────────
 
 function isAngleBetweenCCW(start: number, mid: number, end: number): boolean {
   const norm = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
@@ -67,18 +89,350 @@ function circumscribedCircleCanvas(
   return { cx: ux, cy: uy, r };
 }
 
-const COLOUR_ACTIVE     = '#EF9F27';
-const COLOUR_ARC        = '#2DD4BF';
-const COLOUR_ARC_STAGED = '#14B8A6';
-const COLOUR_RADIUS     = '#A78BFA';
+// ─── Drawing constants ────────────────────────────────────────────────────────
+
+const COLOUR_ACTIVE        = '#EF9F27';
+const COLOUR_ARC           = '#2DD4BF';
+const COLOUR_ARC_STAGED    = '#14B8A6';
+const COLOUR_RADIUS        = '#A78BFA';
 const COLOUR_RADIUS_STAGED = '#7C3AED';
-const COLOUR_SNAP       = '#4ADE80';
-const COLOUR_UNSNAPPED  = '#EF9F27';
-const DOT_RADIUS        = 3.5;
-const SNAP_DOT_RADIUS   = 4.5;
-const LINE_WIDTH        = 1.5;
-const DASH_ACTIVE       = [6, 4] as number[];
-const DASH_PREVIEW      = [4, 4] as number[];
+const COLOUR_UNSNAPPED     = '#EF9F27';
+const DOT_RADIUS           = 3.5;
+const LINE_WIDTH           = 1.5;
+const DASH_ACTIVE          = [6, 4] as number[];
+const DASH_PREVIEW         = [4, 4] as number[];
+
+// ─── Snap visual constants ────────────────────────────────────────────────────
+
+const PROX_RADIUS_PDF = 80;
+
+const SNAP_TYPE_COLOURS: Record<string, { fill: string; ring: string; dot: string }> = {
+  endpoint:     { fill: '#f59e0b', ring: 'rgba(245,158,11,0.45)',  dot: 'rgba(245,158,11,0.85)'  },
+  midpoint:     { fill: '#10b981', ring: 'rgba(16,185,129,0.45)', dot: 'rgba(16,185,129,0.85)'  },
+  centroid:     { fill: '#8b5cf6', ring: 'rgba(139,92,246,0.45)', dot: 'rgba(139,92,246,0.85)'  },
+  intersection: { fill: '#f43f5e', ring: 'rgba(244,63,94,0.45)',  dot: 'rgba(244,63,94,0.85)'   },
+  'arc-center': { fill: '#22d3ee', ring: 'rgba(34,211,238,0.40)', dot: 'rgba(34,211,238,0.90)'  },
+};
+
+const SNAP_PRIORITY: Record<string, number> = {
+  endpoint: 0, intersection: 1, midpoint: 2, centroid: 3,
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  endpoint: 'e', midpoint: 'm', intersection: 'i', centroid: 'c', 'arc-center': 'a',
+};
+
+function snapColour(type: string): { fill: string; ring: string; dot: string } {
+  return SNAP_TYPE_COLOURS[type] ?? SNAP_TYPE_COLOURS['endpoint'];
+}
+
+// ─── Find nearest snap candidate (priority-aware) ─────────────────────────────
+
+function findNearest(
+  cursor:     { x: number; y: number },
+  candidates: Array<{ x: number; y: number; type: string }>,
+  proxRadius: number,
+): { candidate: typeof candidates[0]; dist: number } | null {
+  let nearest:    typeof candidates[0] | null = null;
+  let nearestDist = Infinity;
+
+  for (const c of candidates) {
+    const dist = Math.hypot(cursor.x - c.x, cursor.y - c.y);
+    if (dist > proxRadius) continue;
+
+    const pri     = SNAP_PRIORITY[c.type] ?? 99;
+    const nearPri = nearest ? (SNAP_PRIORITY[nearest.type] ?? 99) : 99;
+    const tooClose = nearest !== null && Math.abs(dist - nearestDist) < 4;
+
+    if (
+      nearest === null ||
+      (tooClose && pri < nearPri) ||
+      (!tooClose && dist < nearestDist)
+    ) {
+      nearestDist = dist;
+      nearest     = c;
+    }
+  }
+
+  return nearest ? { candidate: nearest, dist: nearestDist } : null;
+}
+
+// ─── Draw a placed/locked snap dot (filled + white ring + crosshair arms) ─────
+
+function drawSnapLockedDot(
+  ctx:  CanvasRenderingContext2D,
+  x:    number,
+  y:    number,
+  type: string,
+  r:    number = 7,
+): void {
+  const col = snapColour(type);
+  ctx.save();
+
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = col.fill;
+  ctx.fill();
+
+  ctx.strokeStyle = 'white';
+  ctx.lineWidth   = 2;
+  ctx.stroke();
+
+  const ch = r + 4;
+  ctx.beginPath();
+  ctx.moveTo(x - ch, y); ctx.lineTo(x + ch, y);
+  ctx.moveTo(x, y - ch); ctx.lineTo(x, y + ch);
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth   = 1;
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+// ─── Draw plain un-snapped cursor dot (ENHANCED DESIGN) ─────────────────────────
+//
+// Features:
+//   - Outer glow/halo for better visibility
+//   - Gradient-like appearance with inner highlight
+//   - Subtle white center specular for depth
+//   - Thin contrast ring around the dot
+//
+
+function drawFreeDot(
+  ctx:   CanvasRenderingContext2D,
+  x:     number,
+  y:     number,
+  r:     number = DOT_RADIUS,
+  color: string = COLOUR_UNSNAPPED,
+): void {
+  ctx.save();
+  
+  // Outer glow/halo (soft spread)
+  ctx.shadowBlur = 0;
+  ctx.beginPath();
+  ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+  ctx.fillStyle = `${color}20`; // 12% opacity
+  ctx.fill();
+  
+  // Main dot with slight gradient effect
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  
+  // Inner highlight (brighter center for 3D effect)
+  ctx.beginPath();
+  ctx.arc(x - 0.5, y - 0.5, r * 0.4, 0, Math.PI * 2);
+  ctx.fillStyle = `${color}cc`;
+  ctx.fill();
+  
+  // Subtle white center specular (shiny reflection)
+  ctx.beginPath();
+  ctx.arc(x - 1, y - 1, r * 0.2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fill();
+  
+  // Thin white ring around dot for better contrast against dark backgrounds
+  ctx.beginPath();
+  ctx.arc(x, y, r + 0.5, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  
+  ctx.restore();
+}
+
+// ─── Draw plain cursor dot for placed points ──────────────────────────────────
+
+function drawPlacedDot(
+  ctx:       CanvasRenderingContext2D,
+  pt:        { x: number; y: number },
+  srcPoint:  InProgressPoint | undefined,
+  overrideColor?: string,
+): void {
+  if (srcPoint?.snapped) {
+    const snapType = (srcPoint as any).snapType ?? 'endpoint';
+    drawSnapLockedDot(ctx, pt.x, pt.y, snapType, 7);
+  } else {
+    drawFreeDot(ctx, pt.x, pt.y, DOT_RADIUS, overrideColor ?? COLOUR_UNSNAPPED);
+  }
+}
+
+// ─── CORE: Draw all snap proximity visuals (proximity-only) ───────────────────
+//
+// Nothing is drawn if no candidate is within PROX_RADIUS_PDF.
+// When candidates are in range:
+//   1. Secondary candidates  → hollow fading ring + type label.
+//   2. Nearest candidate     → approach crosshair (growing) or lock indicator.
+//   3. Dashed proximity circle around cursor.
+//
+// The plain cursor dot is drawn by the caller ONLY when NOT locked.
+//
+// Returns true if cursor is currently locked to a snap point so callers
+// can skip drawing their own cursor dot.
+//
+function drawSnapProximityVisuals(
+  ctx:           CanvasRenderingContext2D,
+  cursor:        { x: number; y: number },
+  candidates:    Array<{ x: number; y: number; type: string }>,
+  snapThreshold: number,
+  proxRadius:    number = PROX_RADIUS_PDF,
+): boolean {
+  if (!candidates.length) return false;
+
+  const inRange = candidates
+    .map(c => ({ c, dist: Math.hypot(cursor.x - c.x, cursor.y - c.y) }))
+    .filter(({ dist }) => dist <= proxRadius);
+
+  if (!inRange.length) return false;
+
+  const nearestResult    = findNearest(cursor, candidates, proxRadius);
+  const nearestCandidate = nearestResult?.candidate ?? null;
+  const nearestDist      = nearestResult?.dist ?? Infinity;
+  const isLocked         = nearestDist < snapThreshold;
+
+  ctx.save();
+
+  // ── 1. Secondary candidates ───────────────────────────────────────────────
+  for (const { c, dist } of inRange) {
+    if (c === nearestCandidate) continue;
+
+    const col  = snapColour(c.type);
+    const fade = Math.max(0, 1 - dist / proxRadius);
+    const a    = 0.12 + fade * 0.40;
+    const r    = 3 + fade * 3.5;
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
+    ctx.strokeStyle = col.fill;
+    ctx.globalAlpha = a;
+    ctx.lineWidth   = 1;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 1.5, 0, Math.PI * 2);
+    ctx.fillStyle   = col.fill;
+    ctx.globalAlpha = a + 0.15;
+    ctx.fill();
+
+    if (fade > 0.25) {
+      ctx.globalAlpha  = a * 0.9;
+      ctx.fillStyle    = col.fill;
+      ctx.font         = `${Math.round(8 + fade * 3)}px monospace`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(TYPE_LABEL[c.type] ?? '?', c.x, c.y - r - 2);
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  // ── 2. Primary / nearest candidate ───────────────────────────────────────
+  if (nearestCandidate) {
+    const col  = snapColour(nearestCandidate.type);
+    const fade = Math.max(0, 1 - nearestDist / proxRadius);
+
+    if (isLocked) {
+      // Snap locked: filled dot + white ring + crosshair arms
+      const r  = 7;
+      const ch = 11;
+
+      ctx.beginPath();
+      ctx.arc(nearestCandidate.x, nearestCandidate.y, r, 0, Math.PI * 2);
+      ctx.fillStyle   = col.fill;
+      ctx.globalAlpha = 1;
+      ctx.fill();
+
+      ctx.strokeStyle = 'white';
+      ctx.lineWidth   = 2;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(nearestCandidate.x - ch, nearestCandidate.y);
+      ctx.lineTo(nearestCandidate.x + ch, nearestCandidate.y);
+      ctx.moveTo(nearestCandidate.x, nearestCandidate.y - ch);
+      ctx.lineTo(nearestCandidate.x, nearestCandidate.y + ch);
+      ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+
+    } else {
+      // Approaching: crosshair grows and brightens
+      const sz = 2.5 + fade * 4.5;
+      const a  = 0.20 + fade * 0.65;
+
+      ctx.strokeStyle = col.dot.replace(/[\d.]+\)$/, `${a.toFixed(2)})`);
+      ctx.lineWidth   = 0.8 + fade * 0.8;
+
+      ctx.beginPath();
+      ctx.moveTo(nearestCandidate.x - sz, nearestCandidate.y);
+      ctx.lineTo(nearestCandidate.x + sz, nearestCandidate.y);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(nearestCandidate.x, nearestCandidate.y - sz);
+      ctx.lineTo(nearestCandidate.x, nearestCandidate.y + sz);
+      ctx.stroke();
+
+      if (fade > 0.35) {
+        ctx.beginPath();
+        ctx.arc(nearestCandidate.x, nearestCandidate.y, sz + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = col.ring.replace(/[\d.]+\)$/, `${(a * 0.35).toFixed(2)})`);
+        ctx.lineWidth   = 0.8;
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ── 3. Dashed proximity circle around cursor ──────────────────────────────
+  // Only when at least one candidate is in range (already guaranteed here)
+  ctx.beginPath();
+  ctx.arc(cursor.x, cursor.y, proxRadius, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(100,100,100,0.08)';
+  ctx.lineWidth   = 0.8;
+  ctx.setLineDash([3, 4]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.restore();
+
+  return isLocked;
+}
+
+// ─── Draw proximity circle for radius tool ────────────────────────────────────
+//
+// Semi-transparent filled circle at cursor, only visible near snap candidates.
+//
+function drawRadiusProximityCircle(
+  ctx:        CanvasRenderingContext2D,
+  cursor:     { x: number; y: number },
+  candidates: Array<{ x: number; y: number; type: string }>,
+  proxRadius: number = PROX_RADIUS_PDF,
+): void {
+  const result = findNearest(cursor, candidates, proxRadius);
+  if (!result) return;
+
+  const { dist } = result;
+  const fade  = Math.max(0, 1 - dist / proxRadius);
+  const alpha = fade * 0.50;
+  const r     = 6 + fade * 10;
+  const col   = snapColour(result.candidate.type);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cursor.x, cursor.y, r, 0, Math.PI * 2);
+  ctx.fillStyle   = col.fill;
+  ctx.globalAlpha = alpha;
+  ctx.fill();
+  ctx.globalAlpha = Math.min(1, alpha + 0.18);
+  ctx.strokeStyle = col.fill;
+  ctx.lineWidth   = 1;
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+// ─── Arc helper ───────────────────────────────────────────────────────────────
 
 function drawArcFromPoints(
   ctx: CanvasRenderingContext2D,
@@ -102,6 +456,33 @@ function drawArcFromPoints(
   ctx.stroke();
 }
 
+// ─── Rectangle preview helper ─────────────────────────────────────────────────
+
+function drawRect(
+  ctx:      CanvasRenderingContext2D,
+  p1:       { x: number; y: number },
+  p2:       { x: number; y: number },
+  dashed:   boolean,
+  color:    string,
+  fillAlpha = 0.08,
+): void {
+  const x = Math.min(p1.x, p2.x);
+  const y = Math.min(p1.y, p2.y);
+  const w = Math.abs(p2.x - p1.x);
+  const h = Math.abs(p2.y - p1.y);
+  if (w < 1 || h < 1) return;
+
+  ctx.setLineDash(dashed ? DASH_ACTIVE : []);
+  ctx.globalAlpha = fillAlpha;
+  ctx.fillStyle   = color;
+  ctx.fillRect(x, y, w, h);
+  ctx.globalAlpha = 1;
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
+}
+
+// ─── Hook ─────────────────────────────────────────────────────────────────────
+
 export function useDrawingCanvas({
   drawingCanvasRef,
   pdfDimensionsRef,
@@ -117,8 +498,15 @@ export function useDrawingCanvas({
   snapToCorner,
   redrawPinCanvas,
   snapEnabledRef,
+  snapCandidates = [],
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
   const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
+
+  const lastCursorRef     = useRef<{ x: number; y: number } | null>(null);
+  const snapCandidatesRef = useRef(snapCandidates);
+  useEffect(() => { snapCandidatesRef.current = snapCandidates; }, [snapCandidates]);
+
+  const snapThresholdRef = useRef(14);
 
   const toCanvas = useCallback(
     (nx: number, ny: number): { x: number; y: number } => {
@@ -140,9 +528,12 @@ export function useDrawingCanvas({
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const cursor = overrideCursor ?? cursorPointRef.current;
+      const cursor =
+        overrideCursor ??
+        cursorPointRef.current ??
+        lastCursorRef.current;
 
-      // ── Draw committed measurements ──────────────────────────────────────
+      // ── Committed measurements ────────────────────────────────────────────
       for (const m of measurements) {
         if (!m.isVisible || !m.points?.length) continue;
         const pts = m.points.map(p => toCanvas(p.x, p.y));
@@ -164,11 +555,21 @@ export function useDrawingCanvas({
           ctx.beginPath();
           ctx.arc(pts[0].x, pts[0].y, r, 0, 2 * Math.PI);
           ctx.stroke();
+          ctx.globalAlpha = 0.1;
+          ctx.fill();
           ctx.globalAlpha = 0.4;
           ctx.beginPath();
           ctx.moveTo(pts[0].x - 5, pts[0].y); ctx.lineTo(pts[0].x + 5, pts[0].y);
           ctx.moveTo(pts[0].x, pts[0].y - 5); ctx.lineTo(pts[0].x, pts[0].y + 5);
           ctx.stroke();
+        } else if (m.type === 'Rectangle' && pts.length === 4) {
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.closePath();
+          ctx.stroke();
+          ctx.globalAlpha = 0.12;
+          ctx.fill();
         } else if (m.type === 'Length') {
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
@@ -195,12 +596,14 @@ export function useDrawingCanvas({
       );
       const tPts = nonSentinelPoints.map(p => toCanvas(p.x, p.y));
 
-      // ── ARC TOOL ────────────────────────────────────────────────────────
+      const candidates = snapCandidatesRef.current;
+
+      // ── ARC TOOL ──────────────────────────────────────────────────────────
       if (activeTool === 'arc') {
         ctx.save();
-        const arcGroups      = splitArcPoints(tempPoints);
+        const arcGroups       = splitArcPoints(tempPoints);
         const inProgressGroup = arcGroups[arcGroups.length - 1];
-        const stagedGroups   = arcGroups.slice(0, -1).filter(g => g.length === 3);
+        const stagedGroups    = arcGroups.slice(0, -1).filter(g => g.length === 3);
 
         if (stagedGroups.length > 0) {
           ctx.strokeStyle = COLOUR_ARC_STAGED;
@@ -211,17 +614,11 @@ export function useDrawingCanvas({
             const cPts = group.map(p => toCanvas(p.x, p.y));
             drawArcFromPoints(ctx, cPts);
           }
+          ctx.globalAlpha = 1;
           for (const group of stagedGroups) {
             const cPts = group.map(p => toCanvas(p.x, p.y));
-            cPts.forEach((pt, i) => {
-              ctx.fillStyle   = i === 0 || i === 2 ? COLOUR_ARC_STAGED : COLOUR_SNAP;
-              ctx.globalAlpha = 0.6;
-              ctx.beginPath();
-              ctx.arc(pt.x, pt.y, DOT_RADIUS, 0, 2 * Math.PI);
-              ctx.fill();
-            });
+            cPts.forEach((pt, i) => drawPlacedDot(ctx, pt, group[i], COLOUR_ARC_STAGED));
           }
-          ctx.globalAlpha = 1;
         }
 
         const ipPts = inProgressGroup.map(p => toCanvas(p.x, p.y));
@@ -246,7 +643,7 @@ export function useDrawingCanvas({
             ctx.stroke();
             ctx.setLineDash([]);
             ctx.globalAlpha = 0.2;
-            ctx.fillStyle = COLOUR_ARC;
+            ctx.fillStyle   = COLOUR_ARC;
             ctx.beginPath();
             ctx.arc(arc.cx, arc.cy, 3, 0, 2 * Math.PI);
             ctx.fill();
@@ -261,15 +658,9 @@ export function useDrawingCanvas({
 
         ctx.setLineDash([]);
         ipPts.forEach((pt, i) => {
-          const srcPt  = inProgressGroup[i];
-          const isSnap = srcPt?.snapped ?? false;
-          ctx.fillStyle   = isSnap ? COLOUR_SNAP : COLOUR_ARC;
-          ctx.globalAlpha = 1;
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, isSnap ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.fill();
+          drawPlacedDot(ctx, pt, inProgressGroup[i], COLOUR_ARC);
           ctx.fillStyle = COLOUR_ARC;
-          ctx.font = 'bold 9px monospace';
+          ctx.font      = 'bold 9px monospace';
           ctx.fillText(['①', '②', '③'][i] ?? `${i + 1}`, pt.x + 6, pt.y - 4);
         });
 
@@ -282,55 +673,65 @@ export function useDrawingCanvas({
           ctx.globalAlpha = 1;
         }
 
-        if (cursor) {
-          ctx.strokeStyle = COLOUR_ARC;
-          ctx.lineWidth   = 1;
-          ctx.beginPath();
-          ctx.arc(cursor.x, cursor.y, DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.stroke();
-        }
-
         ctx.restore();
+
+        // Snap visuals — cursor dot only when not locked
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) {
+            ctx.save();
+            ctx.strokeStyle = COLOUR_ARC;
+            ctx.lineWidth   = 1;
+            ctx.beginPath();
+            ctx.arc(cursor.x, cursor.y, DOT_RADIUS, 0, 2 * Math.PI);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
         return;
       }
 
-      // ── RADIUS TOOL ──────────────────────────────────────────────────────
+      // ── RADIUS TOOL ────────────────────────────────────────────────────────
       if (activeTool === 'radius') {
         ctx.save();
 
-        const radiusGroups   = splitRadiusPoints(tempPoints);
-        const stagedCircles  = radiusGroups.slice(0, -1).filter(g => g.length === 2);
+        const radiusGroups    = splitRadiusPoints(tempPoints);
+        const stagedCircles   = radiusGroups.slice(0, -1).filter(g => g.length === 2);
         const inProgressGroup = radiusGroups[radiusGroups.length - 1];
-        const ipPts          = inProgressGroup.map(p => toCanvas(p.x, p.y));
+        const ipPts           = inProgressGroup.map(p => toCanvas(p.x, p.y));
 
-        // Draw staged circles (solid purple)
         if (stagedCircles.length > 0) {
           ctx.strokeStyle = COLOUR_RADIUS_STAGED;
           ctx.lineWidth   = LINE_WIDTH + 0.5;
           ctx.setLineDash([]);
-          ctx.globalAlpha = 0.85;
 
           for (const circle of stagedCircles) {
             const [centre, edge] = circle.map(p => toCanvas(p.x, p.y));
             const r = Math.hypot(edge.x - centre.x, edge.y - centre.y);
+
+            ctx.globalAlpha = 0.85;
             ctx.beginPath();
             ctx.arc(centre.x, centre.y, r, 0, 2 * Math.PI);
             ctx.stroke();
-            // Centre crosshair
+
+            ctx.globalAlpha = 0.1;
+            ctx.fillStyle   = COLOUR_RADIUS_STAGED;
+            ctx.fill();
+            ctx.globalAlpha = 0.85;
+
+            ctx.strokeStyle = COLOUR_RADIUS_STAGED;
             ctx.globalAlpha = 0.5;
             ctx.beginPath();
             ctx.moveTo(centre.x - 6, centre.y); ctx.lineTo(centre.x + 6, centre.y);
             ctx.moveTo(centre.x, centre.y - 6); ctx.lineTo(centre.x, centre.y + 6);
             ctx.stroke();
-            ctx.globalAlpha = 0.85;
-            // Centre dot
-            ctx.fillStyle = COLOUR_RADIUS_STAGED;
-            ctx.beginPath();
-            ctx.arc(centre.x, centre.y, DOT_RADIUS, 0, 2 * Math.PI);
-            ctx.fill();
+
+            ctx.globalAlpha = 1;
+            drawPlacedDot(ctx, centre, circle[0], COLOUR_RADIUS_STAGED);
           }
 
-          // Staged count badge
           const firstCentre = toCanvas(stagedCircles[0][0].x, stagedCircles[0][0].y);
           ctx.fillStyle   = COLOUR_RADIUS_STAGED;
           ctx.font        = 'bold 9px monospace';
@@ -342,21 +743,10 @@ export function useDrawingCanvas({
           ctx.globalAlpha = 1;
         }
 
-        // Draw in-progress circle preview (dashed)
         ctx.strokeStyle = COLOUR_RADIUS;
         ctx.lineWidth   = LINE_WIDTH;
 
-        if (ipPts.length === 0 && cursor) {
-          // No points yet — ghost circle at cursor
-          ctx.setLineDash(DASH_PREVIEW);
-          ctx.beginPath();
-          ctx.arc(cursor.x, cursor.y, 16, 0, 2 * Math.PI);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.moveTo(cursor.x - 8, cursor.y); ctx.lineTo(cursor.x + 8, cursor.y);
-          ctx.moveTo(cursor.x, cursor.y - 8); ctx.lineTo(cursor.x, cursor.y + 8);
-          ctx.stroke();
-        } else if (ipPts.length === 1 && cursor) {
+        if (ipPts.length === 1 && cursor) {
           const centre = ipPts[0];
           const r = Math.hypot(cursor.x - centre.x, cursor.y - centre.y);
 
@@ -371,38 +761,56 @@ export function useDrawingCanvas({
           ctx.stroke();
           ctx.setLineDash([]);
 
-          // Radius label
+          ctx.globalAlpha = 0.12;
+          ctx.fillStyle   = COLOUR_RADIUS;
+          ctx.fill();
+          ctx.globalAlpha = 1;
+
+          const midX  = (centre.x + cursor.x) / 2;
+          const midY  = (centre.y + cursor.y) / 2;
           const realR = (r / dim.w) * scaleFactor;
           ctx.fillStyle = COLOUR_RADIUS;
-          ctx.font = 'bold 9px monospace';
-          const midX = (centre.x + cursor.x) / 2;
-          const midY = (centre.y + cursor.y) / 2;
+          ctx.font      = 'bold 9px monospace';
           ctx.fillText(`r=${realR.toFixed(3)}m`, midX + 4, midY - 4);
 
-          // Centre crosshair + dot
           ctx.globalAlpha = 0.6;
+          ctx.strokeStyle = COLOUR_RADIUS;
           ctx.beginPath();
           ctx.moveTo(centre.x - 6, centre.y); ctx.lineTo(centre.x + 6, centre.y);
           ctx.moveTo(centre.x, centre.y - 6); ctx.lineTo(centre.x, centre.y + 6);
           ctx.stroke();
           ctx.globalAlpha = 1;
-          ctx.fillStyle = COLOUR_RADIUS;
-          ctx.beginPath();
-          ctx.arc(centre.x, centre.y, DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.fill();
+
+          drawPlacedDot(ctx, centre, inProgressGroup[0], COLOUR_RADIUS);
         }
 
         ctx.setLineDash([]);
         ctx.restore();
+
+        // Radius tool: proximity circle + snap visuals. No plain cursor dot
+        // (radius tool uses the proximity circle instead).
+        if (cursor) {
+          drawRadiusProximityCircle(ctx, cursor, candidates, PROX_RADIUS_PDF);
+          drawSnapProximityVisuals(ctx, cursor, candidates, snapThresholdRef.current);
+        }
         return;
       }
 
-      // ── GRID-COUNT TOOL ──────────────────────────────────────────────────
+      // ── GRID-COUNT TOOL ───────────────────────────────────────────────────
       if (activeTool === 'grid-count') return;
 
-      // ── LINEAR TOOL ──────────────────────────────────────────────────────
+      // ── LINEAR TOOL ───────────────────────────────────────────────────────
       if (activeTool === 'linear') {
-        if (tPts.length === 0) return;
+        if (tPts.length === 0) {
+          if (cursor) {
+            const locked = drawSnapProximityVisuals(
+              ctx, cursor, candidates, snapThresholdRef.current,
+            );
+            if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+          }
+          return;
+        }
+
         ctx.save();
         ctx.strokeStyle = COLOUR_ACTIVE;
         ctx.lineWidth   = LINE_WIDTH;
@@ -422,13 +830,7 @@ export function useDrawingCanvas({
           ctx.setLineDash([]);
         }
 
-        tPts.forEach((pt, i) => {
-          const isSnapped = nonSentinelPoints[i]?.snapped ?? false;
-          ctx.fillStyle = isSnapped ? COLOUR_SNAP : COLOUR_UNSNAPPED;
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, isSnapped ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.fill();
-        });
+        tPts.forEach((pt, i) => drawPlacedDot(ctx, pt, nonSentinelPoints[i]));
 
         if (pendingBreak && tPts.length > 0) {
           ctx.setLineDash([3, 3]);
@@ -442,12 +844,76 @@ export function useDrawingCanvas({
         }
 
         ctx.restore();
+
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+        }
         return;
       }
 
-      // ── POLYGON / RECTANGLE TOOL ─────────────────────────────────────────
-      if (activeTool === 'polygon' || activeTool === 'rectangle') {
-        if (tPts.length === 0) return;
+      // ── RECTANGLE TOOL ────────────────────────────────────────────────────
+      if (activeTool === 'rectangle') {
+        ctx.save();
+        ctx.strokeStyle = COLOUR_ACTIVE;
+        ctx.lineWidth   = LINE_WIDTH;
+
+        const segs: InProgressPoint[][] = [];
+        let curSeg: InProgressPoint[]   = [];
+        let curSegId: string | undefined;
+        for (const p of tempPoints) {
+          if (isArcSentinel(p) || isRadiusSentinel(p)) continue;
+          const id = p.segmentId || 'default';
+          if (curSegId !== undefined && id !== curSegId) {
+            segs.push(curSeg);
+            curSeg = [];
+          }
+          curSeg.push(p);
+          curSegId = id;
+        }
+        if (curSeg.length) segs.push(curSeg);
+
+        for (const seg of segs) {
+          if (seg.length !== 2) continue;
+          const p1c = toCanvas(seg[0].x, seg[0].y);
+          const p2c = toCanvas(seg[1].x, seg[1].y);
+          drawRect(ctx, p1c, p2c, false, COLOUR_ACTIVE, 0.12);
+          drawPlacedDot(ctx, p1c, seg[0]);
+          drawPlacedDot(ctx, p2c, seg[1]);
+        }
+
+        const inProgressSeg = segs.find(s => s.length === 1);
+        if (inProgressSeg && cursor) {
+          const p1c = toCanvas(inProgressSeg[0].x, inProgressSeg[0].y);
+          drawRect(ctx, p1c, cursor, true, COLOUR_ACTIVE, 0.08);
+          drawPlacedDot(ctx, p1c, inProgressSeg[0]);
+        }
+
+        ctx.restore();
+
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+        }
+        return;
+      }
+
+      // ── POLYGON TOOL ──────────────────────────────────────────────────────
+      if (activeTool === 'polygon') {
+        if (tPts.length === 0) {
+          if (cursor) {
+            const locked = drawSnapProximityVisuals(
+              ctx, cursor, candidates, snapThresholdRef.current,
+            );
+            if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+          }
+          return;
+        }
+
         ctx.save();
         ctx.strokeStyle = COLOUR_ACTIVE;
         ctx.lineWidth   = LINE_WIDTH;
@@ -471,28 +937,20 @@ export function useDrawingCanvas({
           ctx.globalAlpha = 1;
         }
 
-        tPts.forEach((pt, i) => {
-          const isSnapped = nonSentinelPoints[i]?.snapped ?? false;
-          ctx.fillStyle = isSnapped ? COLOUR_SNAP : COLOUR_UNSNAPPED;
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, isSnapped ? SNAP_DOT_RADIUS : DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.fill();
-        });
-
-        if (cursor) {
-          ctx.strokeStyle = COLOUR_ACTIVE;
-          ctx.lineWidth   = 1;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.arc(cursor.x, cursor.y, DOT_RADIUS, 0, 2 * Math.PI);
-          ctx.stroke();
-        }
+        tPts.forEach((pt, i) => drawPlacedDot(ctx, pt, nonSentinelPoints[i]));
 
         ctx.restore();
+
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+        }
         return;
       }
 
-      // ── COUNT TOOL ───────────────────────────────────────────────────────
+      // ── COUNT TOOL ────────────────────────────────────────────────────────
       if (activeTool === 'count') {
         ctx.save();
         tPts.forEach((pt, idx) => {
@@ -510,10 +968,18 @@ export function useDrawingCanvas({
           ctx.fillText(String(idx + 1), pt.x, pt.y);
         });
         ctx.restore();
+
+        // Count tool also gets snap proximity visuals
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+        }
         return;
       }
 
-      // ── POINT TOOL ───────────────────────────────────────────────────────
+      // ── POINT TOOL ────────────────────────────────────────────────────────
       if (activeTool === 'point') {
         ctx.save();
         tPts.forEach(pt => {
@@ -523,12 +989,23 @@ export function useDrawingCanvas({
           ctx.fill();
         });
         ctx.restore();
+
+        if (cursor) {
+          const locked = drawSnapProximityVisuals(
+            ctx, cursor, candidates, snapThresholdRef.current,
+          );
+          if (!locked) drawFreeDot(ctx, cursor.x, cursor.y);
+        }
         return;
       }
 
-      // ── SCALE TOOL ───────────────────────────────────────────────────────
+      // ── SCALE TOOL ────────────────────────────────────────────────────────
       if (activeTool === 'scale') {
-        if (tPts.length === 0) return;
+        if (tPts.length === 0) {
+          if (cursor) drawFreeDot(ctx, cursor.x, cursor.y, DOT_RADIUS, '#FBBF24');
+          return;
+        }
+
         ctx.save();
         ctx.strokeStyle = '#FBBF24';
         ctx.lineWidth   = 2;
@@ -554,6 +1031,8 @@ export function useDrawingCanvas({
           ctx.fill();
         });
 
+        if (cursor) drawFreeDot(ctx, cursor.x, cursor.y, DOT_RADIUS, '#FBBF24');
+
         ctx.restore();
         return;
       }
@@ -578,9 +1057,14 @@ export function useDrawingCanvas({
 
       if (snapEnabledRef.current && snapToCorner) {
         const s = snapToCorner(canvasX, canvasY);
-        if (s) snappedCanvas = { x: s.x, y: s.y };
+        if (s?.point) {
+          snappedCanvas = { x: s.point.x, y: s.point.y };
+          const snapDist = Math.hypot(canvasX - s.point.x, canvasY - s.point.y);
+          if (s.snapped && snapDist > 0) snapThresholdRef.current = snapDist * 1.2;
+        }
       }
 
+      lastCursorRef.current  = snappedCanvas;
       cursorPointRef.current = snappedCanvas;
       setCursorPoint(snappedCanvas);
       redrawDrawingCanvas(snappedCanvas);
@@ -593,7 +1077,7 @@ export function useDrawingCanvas({
   );
 
   useEffect(() => {
-    redrawDrawingCanvas(cursorPointRef.current ?? undefined);
+    redrawDrawingCanvas(lastCursorRef.current ?? cursorPointRef.current ?? undefined);
   }, [tempPoints, activeTool, measurements, redrawDrawingCanvas, cursorPointRef]);
 
   return {
