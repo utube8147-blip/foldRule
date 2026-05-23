@@ -1,17 +1,26 @@
 /**
  * useSvgSnapPoints.ts
  *
- * MODIFIED: Merges collinear segments to produce ONLY:
- *   - Corner points (where lines change direction)
+ * PERF FIX: zoom param removed entirely from both phases.
+ *
+ * Previously zoom was a useMemo dependency in phase 2 which caused the entire
+ * snap point list to be rebuilt on every wheel tick, hanging the browser.
+ *
+ * Snap points are normalised (0-1) and are zoom-independent — there is no
+ * reason to recompute them when zoom changes.
+ *
+ * Phase 1: parse SVG → segs (runs only when svgContent or pdfDims change)
+ * Phase 2: build snap point list (runs only when parsed changes)
+ *
+ * Produces ONLY:
+ *   - Corner points (where lines change direction / bezier anchors)
  *   - One midpoint per continuous straight line
  *   - One midpoint per bezier curve (at t=0.5)
  *   - Circle/ellipse endpoints and centroids
  *   - Line intersections
- *
- * No more intermediate snap points along continuous straight lines!
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 
 export interface SvgSnapPoint {
   nx:          number;
@@ -21,19 +30,22 @@ export interface SvgSnapPoint {
   strokeWidth: number;
 }
 
+/** A bezier curve stored with real control points for smooth canvas rendering. */
 export interface SvgCurve {
-  type:   'cubic' | 'quadratic';
-  nx1:    number; ny1:    number;
-  ncp1x:  number; ncp1y:  number;
-  ncp2x?: number; ncp2y?: number;
-  nx2:    number; ny2:    number;
+  type:    'cubic' | 'quadratic';
+  nx1:     number; ny1:    number;
+  ncp1x:   number; ncp1y:  number;
+  ncp2x?:  number; ncp2y?: number; // cubic only
+  nx2:     number; ny2:    number;
   shapeId: string;
   sw:      number;
 }
 
 interface PdfDimensions { w: number; h: number }
 
-const MIN_SCREEN_GAP_FOR_MIDPOINT = 12;
+// Minimum distance in PDF-pixel space for a midpoint to be worth showing.
+// No zoom multiplication — snap points are zoom-independent.
+const MIN_PDF_PX_FOR_MIDPOINT = 12;
 
 // ── Matrix helpers ────────────────────────────────────────────────────────────
 
@@ -118,6 +130,7 @@ interface StraightSeg {
   kind: 'straight';
   x1: number; y1: number;
   x2: number; y2: number;
+  mx: number; my: number;
   shapeId: string;
   sw: number;
 }
@@ -136,77 +149,54 @@ interface CurveSeg {
 
 type Seg = StraightSeg | CurveSeg;
 
-// ─── NEW: Merge collinear straight segments into continuous lines ─────────────
-// This is the key function that eliminates intermediate points along lines
+// ── Merge collinear straight segments ─────────────────────────────────────────
 
 function mergeCollinearSegments(segs: StraightSeg[]): StraightSeg[] {
   if (segs.length < 2) return segs;
-  
+
   const merged: StraightSeg[] = [];
   const used = new Set<number>();
-  const EPS_ANGLE = 0.01; // ~0.5 degrees - tolerance for collinearity
-  const EPS_DIST = 2;     // pixels - tolerance for connecting endpoints
-  
+  const EPS_ANGLE = 0.01;
+  const EPS_DIST  = 2;
+
   for (let i = 0; i < segs.length; i++) {
     if (used.has(i)) continue;
-    
+
     let current = { ...segs[i] };
     let changed = true;
-    
+
     while (changed) {
       changed = false;
       for (let j = 0; j < segs.length; j++) {
         if (used.has(j) || i === j) continue;
         const seg = segs[j];
-        
-        // Check if segments are collinear (same direction)
+
         const angle1 = Math.atan2(current.y2 - current.y1, current.x2 - current.x1);
         const angle2 = Math.atan2(seg.y2 - seg.y1, seg.x2 - seg.x1);
         const angleDiff = Math.abs(angle1 - angle2) % Math.PI;
-        
         if (Math.min(angleDiff, Math.PI - angleDiff) > EPS_ANGLE) continue;
-        
-        // Check if seg connects to current's end
+
         if (Math.hypot(current.x2 - seg.x1, current.y2 - seg.y1) < EPS_DIST) {
-          // Extend current to seg's end
-          current.x2 = seg.x2;
-          current.y2 = seg.y2;
-          used.add(j);
-          changed = true;
-        }
-        // Check if seg connects to current's start
-        else if (Math.hypot(current.x1 - seg.x2, current.y1 - seg.y2) < EPS_DIST) {
-          // Extend current backward
-          current.x1 = seg.x1;
-          current.y1 = seg.y1;
-          used.add(j);
-          changed = true;
-        }
-        // Check if seg is in the middle of current (rare, but possible)
-        else if (Math.abs(current.x1 - seg.x1) < EPS_DIST && Math.abs(current.y1 - seg.y1) < EPS_DIST) {
-          // seg starts at current's start, extend other way
-          current.x1 = seg.x2;
-          current.y1 = seg.y2;
-          used.add(j);
-          changed = true;
-        }
-        else if (Math.abs(current.x2 - seg.x2) < EPS_DIST && Math.abs(current.y2 - seg.y2) < EPS_DIST) {
-          // seg ends at current's end
-          current.x2 = seg.x1;
-          current.y2 = seg.y1;
-          used.add(j);
-          changed = true;
+          current.x2 = seg.x2; current.y2 = seg.y2; used.add(j); changed = true;
+        } else if (Math.hypot(current.x1 - seg.x2, current.y1 - seg.y2) < EPS_DIST) {
+          current.x1 = seg.x1; current.y1 = seg.y1; used.add(j); changed = true;
+        } else if (Math.abs(current.x1 - seg.x1) < EPS_DIST && Math.abs(current.y1 - seg.y1) < EPS_DIST) {
+          current.x1 = seg.x2; current.y1 = seg.y2; used.add(j); changed = true;
+        } else if (Math.abs(current.x2 - seg.x2) < EPS_DIST && Math.abs(current.y2 - seg.y2) < EPS_DIST) {
+          current.x2 = seg.x1; current.y2 = seg.y1; used.add(j); changed = true;
         }
       }
     }
-    
-    // Only keep if length is significant (avoid zero-length lines)
+
     const length = Math.hypot(current.x2 - current.x1, current.y2 - current.y1);
     if (length > 2) {
+      // Recompute midpoint after merging
+      current.mx = (current.x1 + current.x2) / 2;
+      current.my = (current.y1 + current.y2) / 2;
       merged.push(current);
     }
   }
-  
+
   return merged;
 }
 
@@ -251,7 +241,8 @@ function pathToSegs(
   const pushStraight = (ax:number,ay:number, bx:number,by:number) => {
     const [pax,pay]=toPage(ax,ay), [pbx,pby]=toPage(bx,by);
     if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
-    segs.push({ kind:'straight', x1:pax,y1:pay, x2:pbx,y2:pby, shapeId, sw });
+    segs.push({ kind:'straight', x1:pax,y1:pay, x2:pbx,y2:pby,
+      mx:(pax+pbx)/2, my:(pay+pby)/2, shapeId, sw });
   };
 
   const pushCubic = (
@@ -259,10 +250,10 @@ function pathToSegs(
     c1x:number,c1y:number, c2x:number,c2y:number,
     bx:number,by:number,
   ) => {
-    const [pax,pay]  = toPage(ax,ay);
-    const [pbx,pby]  = toPage(bx,by);
-    const [pc1x,pc1y]= toPage(c1x,c1y);
-    const [pc2x,pc2y]= toPage(c2x,c2y);
+    const [pax,pay]   = toPage(ax,ay);
+    const [pbx,pby]   = toPage(bx,by);
+    const [pc1x,pc1y] = toPage(c1x,c1y);
+    const [pc2x,pc2y] = toPage(c2x,c2y);
     if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
     const [midX,midY] = cubicMidpoint(pax,pay,pc1x,pc1y,pc2x,pc2y,pbx,pby);
     segs.push({ kind:'curve', curveType:'cubic',
@@ -275,9 +266,9 @@ function pathToSegs(
   const pushQuad = (
     ax:number,ay:number, c1x:number,c1y:number, bx:number,by:number,
   ) => {
-    const [pax,pay]  = toPage(ax,ay);
-    const [pbx,pby]  = toPage(bx,by);
-    const [pc1x,pc1y]= toPage(c1x,c1y);
+    const [pax,pay]   = toPage(ax,ay);
+    const [pbx,pby]   = toPage(bx,by);
+    const [pc1x,pc1y] = toPage(c1x,c1y);
     if (Math.hypot(pbx-pax,pby-pay)<0.5) return;
     const [midX,midY] = quadMidpoint(pax,pay,pc1x,pc1y,pbx,pby);
     segs.push({ kind:'curve', curveType:'quadratic',
@@ -452,9 +443,12 @@ function circleSnapPoints(
 export function useSvgSnapPoints(
   svgContent: string | null,
   pdfDims: PdfDimensions | null,
-  zoom: number = 1,
+  // zoom param intentionally removed — snap points are normalised (0-1) and
+  // are zoom-independent. Passing zoom caused useMemo to re-run on every wheel
+  // tick, rebuilding thousands of snap points and hanging the browser.
 ): { snapPoints: SvgSnapPoint[]; svgCurves: SvgCurve[] } {
 
+  // ── Phase 1: parse SVG → segs (zoom-independent, expensive) ───────────────
   const parsed = useMemo(() => {
     if (!svgContent || !pdfDims) return null;
     const { w: pw, h: ph } = pdfDims;
@@ -487,7 +481,8 @@ export function useSvgSnapPoints(
           const [ax,ay]=applyVB(...applyMat(ctm,x1,y1),vb);
           const [bx,by]=applyVB(...applyMat(ctm,x2,y2),vb);
           if (Math.hypot(bx-ax,by-ay)>0.5)
-            rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by, shapeId:id, sw });
+            rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+              mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
         } else if (tag==='path') {
           const segs = pathToSegs(el.getAttribute('d')??'',ctm,vb,id,sw,pw,ph);
           for (const seg of segs) {
@@ -503,35 +498,37 @@ export function useSvgSnapPoints(
           for (let i=0;i+1<pxpts.length;i++) {
             const [ax,ay]=pxpts[i],[bx,by]=pxpts[i+1];
             if (Math.hypot(bx-ax,by-ay)>0.5)
-              rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by, shapeId:id, sw });
+              rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+                mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
           }
           if (tag==='polygon'&&pxpts.length>=2) {
             const [ax,ay]=pxpts[pxpts.length-1],[bx,by]=pxpts[0];
             if (Math.hypot(bx-ax,by-ay)>0.5)
-              rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by, shapeId:id, sw });
+              rawStraightSegs.push({ kind:'straight', x1:ax,y1:ay, x2:bx,y2:by,
+                mx:(ax+bx)/2, my:(ay+by)/2, shapeId:id, sw });
           }
         }
       };
 
       svgRoot.querySelectorAll('line,path,polyline,polygon').forEach(processEl);
 
-      // 🔥 KEY CHANGE: Merge collinear segments into continuous lines
       const mergedStraightSegs = mergeCollinearSegments(rawStraightSegs);
-      
-      console.log(`[merge] ${rawStraightSegs.length} raw segments → ${mergedStraightSegs.length} merged lines`);
 
-      // ── Endpoints: only from merged straight segs AND curve endpoints ──────
+      console.log(`[useSvgSnapPoints] ${rawStraightSegs.length} raw segs → ${mergedStraightSegs.length} merged lines`);
+
+      // Endpoints from merged straight segs
       const straightEndpointPx = dedup(
         mergedStraightSegs.flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]] as Array<[number,number]>),
         2.0,
       );
 
+      // Endpoints from curve anchor points only (not samples)
       const curveEndpointPx: Array<[number,number]> = curveSegs
         .flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]] as Array<[number,number]>);
 
       const allEndpointPx = dedup([...straightEndpointPx, ...curveEndpointPx], 2.0);
 
-      // ── Intersections: only from merged straight segs ────────────────────
+      // Intersections — only straight segs participate
       const straightSegsForIntersection: LineSeg[] = mergedStraightSegs
         .map(s=>({ x1:s.x1,y1:s.y1, x2:s.x2,y2:s.y2, sw:s.sw }));
 
@@ -557,7 +554,6 @@ export function useSvgSnapPoints(
       }
       const dedupedIntersections = dedup(intersectionPx, 6.0);
 
-      // ── Circle snap points ───────────────────────────────────────────────
       const circlePts: SvgSnapPoint[] = [];
       svgRoot.querySelectorAll('circle,ellipse').forEach(el => {
         circlePts.push(...circleSnapPoints(
@@ -565,7 +561,6 @@ export function useSvgSnapPoints(
         ));
       });
 
-      // ── SvgCurves for canvas rendering ───────────────────────────────────
       const svgCurves: SvgCurve[] = curveSegs.map(s => ({
         type:   s.curveType,
         nx1:    s.x1/pw,  ny1:  s.y1/ph,
@@ -594,40 +589,42 @@ export function useSvgSnapPoints(
   }, [svgContent, pdfDims]);
 
   // ── Phase 2: build snap point list ────────────────────────────────────────
+  // zoom intentionally omitted from deps — normalised coords are zoom-independent.
+  // This memo now only re-runs when SVG content or PDF dimensions change,
+  // never on wheel/zoom events.
   return useMemo(() => {
     if (!parsed) return { snapPoints: [], svgCurves: [] };
     const { mergedStraightSegs, curveSegs, allEndpointPx, dedupedIntersections, circlePts, svgCurves, pw, ph } = parsed;
 
     const snapPoints: SvgSnapPoint[] = [];
 
-    // Endpoints (corner points)
+    // Endpoints (corner points where lines change direction)
     for (const [x,y] of allEndpointPx) {
       if (x<0||x>pw||y<0||y>ph) continue;
       snapPoints.push({ nx:x/pw, ny:y/ph, type:'endpoint', shapeId:'corner', strokeWidth:1 });
     }
 
-    // ── ONE MIDPOINT per merged straight line (no more intermediate points!) ──
+    // One midpoint per merged straight line.
+    // Raw PDF-pixel distance — no zoom multiplication needed since these are
+    // computed once at parse time and stored as normalised coords.
     for (const seg of mergedStraightSegs) {
       const svgDist = Math.hypot(seg.x2 - seg.x1, seg.y2 - seg.y1);
-      // Skip if line is too short on screen at current zoom
-      if (svgDist * zoom < MIN_SCREEN_GAP_FOR_MIDPOINT) continue;
-      
-      const midX = (seg.x1 + seg.x2) / 2;
-      const midY = (seg.y1 + seg.y2) / 2;
-      const mnx = midX / pw, mny = midY / ph;
+      if (svgDist < MIN_PDF_PX_FOR_MIDPOINT) continue;
+      const mnx = seg.mx / pw, mny = seg.my / ph;
       if (mnx<0||mnx>1||mny<0||mny>1) continue;
-      
       snapPoints.push({ nx:mnx, ny:mny, type:'midpoint', shapeId:'seg', strokeWidth:1 });
     }
 
-    // ── ONE MIDPOINT per bezier curve (at t=0.5) ───────────────────────────
-    for (const seg of curveSegs) {
-      const mnx = seg.midX / pw, mny = seg.midY / ph;
-      if (mnx<0||mnx>1||mny<0||mny>1) continue;
-      snapPoints.push({ nx:mnx, ny:mny, type:'midpoint', shapeId:'curve', strokeWidth:1 });
+    // One midpoint per bezier curve (at t=0.5) — always shown, one per curve
+    const curveMidCandidates: Array<[number,number]> = curveSegs
+      .map(s => [s.midX, s.midY] as [number,number]);
+    const dedupedCurveMids = dedup(curveMidCandidates, 4.0);
+    for (const [x,y] of dedupedCurveMids) {
+      if (x<0||x>pw||y<0||y>ph) continue;
+      snapPoints.push({ nx:x/pw, ny:y/ph, type:'midpoint', shapeId:'curve', strokeWidth:1 });
     }
 
-    // Circle points
+    // Circle / ellipse points
     snapPoints.push(...circlePts);
 
     // Intersections
@@ -637,15 +634,15 @@ export function useSvgSnapPoints(
     }
 
     console.log(
-      `[useSvgSnapPoints] zoom=${zoom.toFixed(2)} → ${snapPoints.length} pts: ` +
+      `[useSvgSnapPoints] ${snapPoints.length} pts: ` +
       `${allEndpointPx.length} corners, ` +
       `${mergedStraightSegs.length} straight-mids, ` +
-      `${curveSegs.length} curve-mids, ` +
+      `${dedupedCurveMids.length} curve-mids, ` +
       `${circlePts.length} circle, ` +
       `${dedupedIntersections.length} intersections | ` +
       `${svgCurves.length} bezier curves`,
     );
 
     return { snapPoints, svgCurves };
-  }, [parsed, zoom]);
+  }, [parsed]); // zoom intentionally omitted — normalised coords are zoom-independent
 }

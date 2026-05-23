@@ -1,890 +1,526 @@
-// hooks/useSvgInteraction.ts
+/**
+ * useSvgSnapPoints.ts
+ *
+ * PERF: SVG parsing + snap-point computation moved into an inline Web Worker.
+ *
+ * The main thread:
+ *   1. Spawns a single worker (blob URL, created once per module load).
+ *   2. Posts { svgContent, pw, ph } whenever the SVG or PDF dims change.
+ *   3. Keeps the LAST successfully computed result in state and returns it
+ *      immediately — so zoom / pan never stall waiting for a new parse.
+ *   4. When the worker finishes, state is updated and components re-render
+ *      with the fresh snap data.
+ *
+ * zoom param intentionally absent — snap points are normalised (0-1) and
+ * are zoom-independent.  Passing zoom previously caused the entire list to
+ * be rebuilt on every wheel tick, hanging the browser.
+ */
+
+import { useState, useEffect, useRef } from 'react';
+
+// ─── Public types (unchanged API) ─────────────────────────────────────────────
+
+export interface SvgSnapPoint {
+  nx:          number;
+  ny:          number;
+  type:        'endpoint' | 'midpoint' | 'centroid' | 'intersection';
+  shapeId:     string;
+  strokeWidth: number;
+}
+
+export interface SvgCurve {
+  type:    'cubic' | 'quadratic';
+  nx1:     number; ny1:    number;
+  ncp1x:   number; ncp1y:  number;
+  ncp2x?:  number; ncp2y?: number;
+  nx2:     number; ny2:    number;
+  shapeId: string;
+  sw:      number;
+}
+
+interface PdfDimensions { w: number; h: number }
+
+// ─── Worker source ─────────────────────────────────────────────────────────────
 //
-// NORMALIZATION FIX:
-//   • Detection always runs at pdfIntrinsicDims × DETECT_SCALE (MAX_ZOOM) — fixed canvas size
-//   • Every extracted point is immediately divided by detectionW/detectionH → stored as nx/ny ∈ [0,1]
-//   • All SvgLine, SvgArea, SvgPoint coords are now NORMALIZED (nx,ny not px,py)
-//   • Consumers multiply nx × currentCanvasW at render/snap time — zero reprocessing on zoom
-//   • pdfDimensions is NOT a dependency of this hook — only pdfIntrinsicDims is
+// Everything inside WORKER_SRC runs in a separate thread.
+// It receives  { type:'compute', svgContent, pw, ph }
+// and posts back { type:'result', snapPoints, svgCurves }  (or { type:'error' }).
+
+const WORKER_SRC = /* javascript */ `
+
+// ── Matrix helpers ────────────────────────────────────────────────────────────
+function identMat() { return { a:1,b:0,c:0,d:1,e:0,f:0 }; }
+function mulMat(m1,m2) {
+  return {
+    a:m1.a*m2.a+m1.c*m2.b, b:m1.b*m2.a+m1.d*m2.b,
+    c:m1.a*m2.c+m1.c*m2.d, d:m1.b*m2.c+m1.d*m2.d,
+    e:m1.a*m2.e+m1.c*m2.f+m1.e, f:m1.b*m2.e+m1.d*m2.f+m1.f,
+  };
+}
+function applyMat(m,x,y) { return [m.a*x+m.c*y+m.e, m.b*x+m.d*y+m.f]; }
+function parseTfm(t) {
+  if (!t) return identMat();
+  const re=/(matrix|translate|scale|rotate|skewX|skewY)\\(([^)]*)\\)/g;
+  const mats=[]; let m;
+  while((m=re.exec(t))!==null){
+    const args=m[2].trim().split(/[\\s,]+/).map(parseFloat);
+    let mat=identMat();
+    switch(m[1]){
+      case'matrix':    mat={a:args[0],b:args[1],c:args[2],d:args[3],e:args[4],f:args[5]}; break;
+      case'translate': mat={...identMat(),e:args[0]??0,f:args[1]??0}; break;
+      case'scale':     { const sx=args[0]??1,sy=args[1]??sx; mat={a:sx,b:0,c:0,d:sy,e:0,f:0}; break; }
+      case'rotate':    {
+        const ang=(args[0]??0)*Math.PI/180,cos=Math.cos(ang),sin=Math.sin(ang);
+        const cx=args[1]??0,cy=args[2]??0;
+        mat={a:cos,b:sin,c:-sin,d:cos,e:cx-cos*cx+sin*cy,f:cy-sin*cx-cos*cy}; break;
+      }
+    }
+    mats.push(mat);
+  }
+  return mats.reduce((acc,mm)=>mulMat(acc,mm),identMat());
+}
+function getCTM(el,root){
+  const mats=[]; let node=el;
+  while(node&&node!==root.parentElement){
+    const t=node.getAttribute('transform');
+    if(t) mats.unshift(parseTfm(t));
+    node=node.parentElement;
+  }
+  return mats.reduce((acc,mm)=>mulMat(acc,mm),identMat());
+}
+
+// ── ViewBox → page-unit transform ─────────────────────────────────────────────
+function buildVBTransform(svgEl,pw,ph){
+  const vb=svgEl.getAttribute('viewBox');
+  if(vb){
+    const [minX,minY,vbW,vbH]=vb.trim().split(/[\\s,]+/).map(parseFloat);
+    if([minX,minY,vbW,vbH].every(n=>!isNaN(n))&&vbW>0&&vbH>0)
+      return{sx:pw/vbW,sy:ph/vbH,tx:-minX*(pw/vbW),ty:-minY*(ph/vbH)};
+  }
+  const wa=parseFloat(svgEl.getAttribute('width')??'0')||pw;
+  const ha=parseFloat(svgEl.getAttribute('height')??'0')||ph;
+  return{sx:pw/wa,sy:ph/ha,tx:0,ty:0};
+}
+function applyVB(x,y,vb){ return[x*vb.sx+vb.tx,y*vb.sy+vb.ty]; }
+
+function resolveStroke(el){
+  let node=el;
+  while(node){
+    const sw=node.getAttribute('stroke-width')??node.getAttribute('strokeWidth');
+    if(sw){const v=parseFloat(sw);if(!isNaN(v)&&v>0)return v;}
+    const style=node.getAttribute('style')??'';
+    const mm=style.match(/stroke-width\\s*:\\s*([\\d.]+)/);
+    if(mm){const v=parseFloat(mm[1]);if(!isNaN(v)&&v>0)return v;}
+    node=node.parentElement;
+  }
+  return 1.0;
+}
+
+// ── Merge collinear straight segments ─────────────────────────────────────────
+function mergeCollinear(segs){
+  if(segs.length<2)return segs;
+  const merged=[],used=new Set(),EPS_ANGLE=0.01,EPS_DIST=2;
+  for(let i=0;i<segs.length;i++){
+    if(used.has(i))continue;
+    let cur={...segs[i]},changed=true;
+    while(changed){
+      changed=false;
+      for(let j=0;j<segs.length;j++){
+        if(used.has(j)||i===j)continue;
+        const seg=segs[j];
+        const a1=Math.atan2(cur.y2-cur.y1,cur.x2-cur.x1);
+        const a2=Math.atan2(seg.y2-seg.y1,seg.x2-seg.x1);
+        const diff=Math.abs(a1-a2)%Math.PI;
+        if(Math.min(diff,Math.PI-diff)>EPS_ANGLE)continue;
+        if(Math.hypot(cur.x2-seg.x1,cur.y2-seg.y1)<EPS_DIST){cur.x2=seg.x2;cur.y2=seg.y2;used.add(j);changed=true;}
+        else if(Math.hypot(cur.x1-seg.x2,cur.y1-seg.y2)<EPS_DIST){cur.x1=seg.x1;cur.y1=seg.y1;used.add(j);changed=true;}
+        else if(Math.abs(cur.x1-seg.x1)<EPS_DIST&&Math.abs(cur.y1-seg.y1)<EPS_DIST){cur.x1=seg.x2;cur.y1=seg.y2;used.add(j);changed=true;}
+        else if(Math.abs(cur.x2-seg.x2)<EPS_DIST&&Math.abs(cur.y2-seg.y2)<EPS_DIST){cur.x2=seg.x1;cur.y2=seg.y1;used.add(j);changed=true;}
+      }
+    }
+    if(Math.hypot(cur.x2-cur.x1,cur.y2-cur.y1)>2)merged.push(cur);
+  }
+  return merged;
+}
+
+// ── Bezier midpoints ──────────────────────────────────────────────────────────
+function cubicMid(x0,y0,cx1,cy1,cx2,cy2,x3,y3){
+  const t=.5,u=.5;
+  return[u*u*u*x0+3*u*u*t*cx1+3*u*t*t*cx2+t*t*t*x3,
+         u*u*u*y0+3*u*u*t*cy1+3*u*t*t*cy2+t*t*t*y3];
+}
+function quadMid(x0,y0,cx,cy,x2,y2){
+  const t=.5,u=.5;
+  return[u*u*x0+2*u*t*cx+t*t*x2,u*u*y0+2*u*t*cy+t*t*y2];
+}
+
+// ── Path → segments ───────────────────────────────────────────────────────────
+function pathToSegs(d,ctm,vb,shapeId,sw,pw,ph){
+  const segs=[];
+  let cx=0,cy=0,sx=0,sy=0,lastCpX=0,lastCpY=0,lastCmd='';
+  const toPage=(x,y)=>{ const[mx,my]=applyMat(ctm,x,y); return applyVB(mx,my,vb); };
+  const pushStraight=(ax,ay,bx,by)=>{
+    const[pax,pay]=toPage(ax,ay),[pbx,pby]=toPage(bx,by);
+    if(Math.hypot(pbx-pax,pby-pay)<.5)return;
+    segs.push({kind:'straight',x1:pax,y1:pay,x2:pbx,y2:pby,shapeId,sw});
+  };
+  const pushCubic=(ax,ay,c1x,c1y,c2x,c2y,bx,by)=>{
+    const[pax,pay]=toPage(ax,ay),[pbx,pby]=toPage(bx,by);
+    const[pc1x,pc1y]=toPage(c1x,c1y),[pc2x,pc2y]=toPage(c2x,c2y);
+    if(Math.hypot(pbx-pax,pby-pay)<.5)return;
+    const[midX,midY]=cubicMid(pax,pay,pc1x,pc1y,pc2x,pc2y,pbx,pby);
+    segs.push({kind:'curve',curveType:'cubic',x1:pax,y1:pay,x2:pbx,y2:pby,midX,midY,cp1x:pc1x,cp1y:pc1y,cp2x:pc2x,cp2y:pc2y,shapeId,sw});
+  };
+  const pushQuad=(ax,ay,c1x,c1y,bx,by)=>{
+    const[pax,pay]=toPage(ax,ay),[pbx,pby]=toPage(bx,by),[pc1x,pc1y]=toPage(c1x,c1y);
+    if(Math.hypot(pbx-pax,pby-pay)<.5)return;
+    const[midX,midY]=quadMid(pax,pay,pc1x,pc1y,pbx,pby);
+    segs.push({kind:'curve',curveType:'quadratic',x1:pax,y1:pay,x2:pbx,y2:pby,midX,midY,cp1x:pc1x,cp1y:pc1y,shapeId,sw});
+  };
+  const tokens=d.match(/[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*/g);
+  if(!tokens)return segs;
+  for(const token of tokens){
+    const cmd=token[0],upper=cmd.toUpperCase(),rel=cmd!==upper;
+    const nums=token.slice(1).trim().split(/[\\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
+    const ox=rel?cx:0,oy=rel?cy:0;
+    switch(upper){
+      case'M':
+        for(let i=0;i+1<nums.length;i+=2){
+          const bx=i===0?ox:(rel?cx:0),by=i===0?oy:(rel?cy:0);
+          cx=bx+nums[i];cy=by+nums[i+1];
+          if(i===0){sx=cx;sy=cy;}
+        }
+        lastCpX=cx;lastCpY=cy;break;
+      case'L':
+        for(let i=0;i+1<nums.length;i+=2){const nx=ox+nums[i],ny=oy+nums[i+1];pushStraight(cx,cy,nx,ny);cx=nx;cy=ny;}
+        lastCpX=cx;lastCpY=cy;break;
+      case'H':
+        for(const n of nums){const nx=ox+n;pushStraight(cx,cy,nx,cy);cx=nx;}
+        lastCpX=cx;lastCpY=cy;break;
+      case'V':
+        for(const n of nums){const ny=oy+n;pushStraight(cx,cy,cx,ny);cy=ny;}
+        lastCpX=cx;lastCpY=cy;break;
+      case'C':
+        for(let i=0;i+5<nums.length;i+=6){
+          const c1x=ox+nums[i],c1y=oy+nums[i+1],c2x=ox+nums[i+2],c2y=oy+nums[i+3],nx=ox+nums[i+4],ny=oy+nums[i+5];
+          pushCubic(cx,cy,c1x,c1y,c2x,c2y,nx,ny);lastCpX=c2x;lastCpY=c2y;cx=nx;cy=ny;
+        }break;
+      case'S':{
+        for(let i=0;i+3<nums.length;i+=4){
+          const prev=lastCmd==='C'||lastCmd==='S';
+          const c1x=prev?2*cx-lastCpX:cx,c1y=prev?2*cy-lastCpY:cy;
+          const c2x=ox+nums[i],c2y=oy+nums[i+1],nx=ox+nums[i+2],ny=oy+nums[i+3];
+          pushCubic(cx,cy,c1x,c1y,c2x,c2y,nx,ny);lastCpX=c2x;lastCpY=c2y;cx=nx;cy=ny;
+        }break;
+      }
+      case'Q':
+        for(let i=0;i+3<nums.length;i+=4){
+          const c1x=ox+nums[i],c1y=oy+nums[i+1],nx=ox+nums[i+2],ny=oy+nums[i+3];
+          pushQuad(cx,cy,c1x,c1y,nx,ny);lastCpX=c1x;lastCpY=c1y;cx=nx;cy=ny;
+        }break;
+      case'T':{
+        for(let i=0;i+1<nums.length;i+=2){
+          const prev=lastCmd==='Q'||lastCmd==='T';
+          const c1x=prev?2*cx-lastCpX:cx,c1y=prev?2*cy-lastCpY:cy;
+          const nx=ox+nums[i],ny=oy+nums[i+1];
+          pushQuad(cx,cy,c1x,c1y,nx,ny);lastCpX=c1x;lastCpY=c1y;cx=nx;cy=ny;
+        }break;
+      }
+      case'A':
+        for(let i=0;i+6<nums.length;i+=7){const nx=ox+nums[i+5],ny=oy+nums[i+6];pushStraight(cx,cy,nx,ny);cx=nx;cy=ny;}
+        lastCpX=cx;lastCpY=cy;break;
+      case'Z':
+        if(Math.hypot(cx-sx,cy-sy)>.5)pushStraight(cx,cy,sx,sy);
+        cx=sx;cy=sy;lastCpX=cx;lastCpY=cy;break;
+    }
+    lastCmd=upper;
+  }
+  return segs;
+}
+
+// ── Intersection helpers ──────────────────────────────────────────────────────
+function segIntersection(s1,s2){
+  const dx1=s1.x2-s1.x1,dy1=s1.y2-s1.y1,dx2=s2.x2-s2.x1,dy2=s2.y2-s2.y1;
+  const denom=dx1*dy2-dy1*dx2;
+  if(Math.abs(denom)<1e-8)return null;
+  const dx3=s2.x1-s1.x1,dy3=s2.y1-s1.y1;
+  const t=(dx3*dy2-dy3*dx2)/denom,u=(dx3*dy1-dy3*dx1)/denom;
+  const EPS=0.01;
+  if(t<-EPS||t>1+EPS||u<-EPS||u>1+EPS)return null;
+  return[s1.x1+t*dx1,s1.y1+t*dy1];
+}
+function dedup(pts,radius){
+  const out=[];
+  for(const[x,y]of pts)
+    if(!out.some(([ox,oy])=>Math.hypot(x-ox,y-oy)<radius))out.push([x,y]);
+  return out;
+}
+
+// ── Circle / ellipse snap points ──────────────────────────────────────────────
+function circleSnapPoints(el,ctm,vb,shapeId,sw,pw,ph){
+  const pts=[];
+  const toNorm=(x,y)=>{const[mx,my]=applyMat(ctm,x,y);const[vx,vy]=applyVB(mx,my,vb);return[vx/pw,vy/ph];};
+  const tag=el.tagName.toLowerCase();
+  if(tag==='circle'){
+    const cx2=parseFloat(el.getAttribute('cx')??'0'),cy2=parseFloat(el.getAttribute('cy')??'0');
+    const r=parseFloat(el.getAttribute('r')??'0');
+    if(r<=0)return pts;
+    const[cnx,cny]=toNorm(cx2,cy2);
+    pts.push({nx:cnx,ny:cny,type:'centroid',shapeId,strokeWidth:sw});
+    for(const[dx,dy]of[[0,-r],[0,r],[-r,0],[r,0]]){
+      const[enx,eny]=toNorm(cx2+dx,cy2+dy);
+      if(enx>=0&&enx<=1&&eny>=0&&eny<=1)pts.push({nx:enx,ny:eny,type:'endpoint',shapeId,strokeWidth:sw});
+    }
+  } else if(tag==='ellipse'){
+    const cx2=parseFloat(el.getAttribute('cx')??'0'),cy2=parseFloat(el.getAttribute('cy')??'0');
+    const rx=parseFloat(el.getAttribute('rx')??'0'),ry=parseFloat(el.getAttribute('ry')??'0');
+    if(rx<=0||ry<=0)return pts;
+    const[cnx,cny]=toNorm(cx2,cy2);
+    pts.push({nx:cnx,ny:cny,type:'centroid',shapeId,strokeWidth:sw});
+    for(const[dx,dy]of[[0,-ry],[0,ry],[-rx,0],[rx,0]]){
+      const[enx,eny]=toNorm(cx2+dx,cy2+dy);
+      if(enx>=0&&enx<=1&&eny>=0&&eny<=1)pts.push({nx:enx,ny:eny,type:'endpoint',shapeId,strokeWidth:sw});
+    }
+  }
+  return pts;
+}
+
+// ── Main compute function ─────────────────────────────────────────────────────
+const MIN_PDF_PX_FOR_MIDPOINT=12;
+
+function compute(svgContent,pw,ph){
+  const parser=new DOMParser();
+  const svgDoc=parser.parseFromString(svgContent,'image/svg+xml');
+  const svgRoot=svgDoc.documentElement;
+  if(svgRoot.querySelector('parsererror'))throw new Error('Invalid SVG');
+  const svgEl=svgDoc.querySelector('svg');
+  if(!svgEl)throw new Error('No <svg>');
+
+  const vb=buildVBTransform(svgEl,pw,ph);
+  const rawStraight=[],curveSegs=[];
+  let idCounter=0;
+
+  const processEl=el=>{
+    const tag=el.tagName.toLowerCase();
+    if(['circle','ellipse','rect'].includes(tag))return;
+    const ctm=getCTM(el,svgEl),sw=resolveStroke(el),id='shape-'+idCounter++;
+    if(tag==='line'){
+      const x1=parseFloat(el.getAttribute('x1')||'0'),y1=parseFloat(el.getAttribute('y1')||'0');
+      const x2=parseFloat(el.getAttribute('x2')||'0'),y2=parseFloat(el.getAttribute('y2')||'0');
+      const[ax,ay]=applyVB(...applyMat(ctm,x1,y1),vb),[bx,by]=applyVB(...applyMat(ctm,x2,y2),vb);
+      if(Math.hypot(bx-ax,by-ay)>.5)rawStraight.push({kind:'straight',x1:ax,y1:ay,x2:bx,y2:by,shapeId:id,sw});
+    } else if(tag==='path'){
+      for(const seg of pathToSegs(el.getAttribute('d')??'',ctm,vb,id,sw,pw,ph)){
+        if(seg.kind==='straight')rawStraight.push(seg); else curveSegs.push(seg);
+      }
+    } else if(tag==='polyline'||tag==='polygon'){
+      const raw=el.getAttribute('points')??'';
+      const nums=raw.trim().split(/[\\s,]+/).map(parseFloat).filter(n=>!isNaN(n));
+      const pxpts=[];
+      for(let i=0;i+1<nums.length;i+=2)pxpts.push(applyVB(...applyMat(ctm,nums[i],nums[i+1]),vb));
+      for(let i=0;i+1<pxpts.length;i++){
+        const[ax,ay]=pxpts[i],[bx,by]=pxpts[i+1];
+        if(Math.hypot(bx-ax,by-ay)>.5)rawStraight.push({kind:'straight',x1:ax,y1:ay,x2:bx,y2:by,shapeId:id,sw});
+      }
+      if(tag==='polygon'&&pxpts.length>=2){
+        const[ax,ay]=pxpts[pxpts.length-1],[bx,by]=pxpts[0];
+        if(Math.hypot(bx-ax,by-ay)>.5)rawStraight.push({kind:'straight',x1:ax,y1:ay,x2:bx,y2:by,shapeId:id,sw});
+      }
+    }
+  };
+
+  svgRoot.querySelectorAll('line,path,polyline,polygon').forEach(processEl);
+
+  const merged=mergeCollinear(rawStraight);
+
+  const straightEndPx=dedup(merged.flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]]),2.0);
+  const curveEndPx=curveSegs.flatMap(s=>[[s.x1,s.y1],[s.x2,s.y2]]);
+  const allEndPx=dedup([...straightEndPx,...curveEndPx],2.0);
+
+  const segsForX=merged.length>3000?merged.filter(s=>s.sw>0.3):merged;
+  const intersectionPx=[];
+  for(let i=0;i<segsForX.length;i++){
+    for(let j=i+1;j<segsForX.length;j++){
+      const s1=segsForX[i],s2=segsForX[j];
+      const a1=Math.atan2(s1.y2-s1.y1,s1.x2-s1.x1),a2=Math.atan2(s2.y2-s2.y1,s2.x2-s2.x1);
+      const diff=Math.abs(a1-a2)%Math.PI;
+      if(Math.min(diff,Math.PI-diff)<0.26)continue;
+      const pt=segIntersection(s1,s2);
+      if(!pt)continue;
+      const[ix,iy]=pt;
+      if(ix<-pw*.05||ix>pw*1.05||iy<-ph*.05||iy>ph*1.05)continue;
+      intersectionPx.push([ix,iy]);
+    }
+  }
+  const dedupedIntersections=dedup(intersectionPx,6.0);
+
+  const circlePts=[];
+  svgRoot.querySelectorAll('circle,ellipse').forEach(el=>{
+    circlePts.push(...circleSnapPoints(el,getCTM(el,svgEl),vb,'shape-'+idCounter++,resolveStroke(el),pw,ph));
+  });
+
+  // ── Build snap point list ─────────────────────────────────────────────────
+  const snapPoints=[];
+
+  for(const[x,y]of allEndPx){
+    if(x<0||x>pw||y<0||y>ph)continue;
+    snapPoints.push({nx:x/pw,ny:y/ph,type:'endpoint',shapeId:'corner',strokeWidth:1});
+  }
+
+  for(const seg of merged){
+    const svgDist=Math.hypot(seg.x2-seg.x1,seg.y2-seg.y1);
+    if(svgDist<MIN_PDF_PX_FOR_MIDPOINT)continue;
+    const midX=(seg.x1+seg.x2)/2,midY=(seg.y1+seg.y2)/2;
+    const mnx=midX/pw,mny=midY/ph;
+    if(mnx<0||mnx>1||mny<0||mny>1)continue;
+    snapPoints.push({nx:mnx,ny:mny,type:'midpoint',shapeId:'seg',strokeWidth:1});
+  }
+
+  for(const seg of curveSegs){
+    const mnx=seg.midX/pw,mny=seg.midY/ph;
+    if(mnx<0||mnx>1||mny<0||mny>1)continue;
+    snapPoints.push({nx:mnx,ny:mny,type:'midpoint',shapeId:'curve',strokeWidth:1});
+  }
+
+  snapPoints.push(...circlePts);
+
+  for(const[x,y]of dedupedIntersections){
+    if(x<-pw*.02||x>pw*1.02||y<-ph*.02||y>ph*1.02)continue;
+    snapPoints.push({nx:x/pw,ny:y/ph,type:'intersection',shapeId:'corner',strokeWidth:1.5});
+  }
+
+  // ── Build SVG curves list ─────────────────────────────────────────────────
+  const svgCurves=curveSegs.map(s=>({
+    type:s.curveType,
+    nx1:s.x1/pw,ny1:s.y1/ph,
+    ncp1x:s.cp1x/pw,ncp1y:s.cp1y/ph,
+    ...(s.curveType==='cubic'&&s.cp2x!==undefined?{ncp2x:s.cp2x/pw,ncp2y:s.cp2y/ph}:{}),
+    nx2:s.x2/pw,ny2:s.y2/ph,
+    shapeId:s.shapeId,sw:s.sw,
+  }));
+
+  return{snapPoints,svgCurves};
+}
+
+// ── Worker message handler ────────────────────────────────────────────────────
+self.onmessage=function(e){
+  const{type,svgContent,pw,ph,requestId}=e.data;
+  if(type!=='compute')return;
+  try{
+    const result=compute(svgContent,pw,ph);
+    self.postMessage({type:'result',requestId,...result});
+  }catch(err){
+    self.postMessage({type:'error',requestId,message:String(err)});
+  }
+};
+`;
+
+// ─── Singleton worker (created once per module load) ──────────────────────────
 //
-// STRUCTURAL ELEMENT FIX:
-//   • detectRooms() now returns { rooms, pillars, windows, all }
-//   • Pillars get label="Pillar", windows get label="Window"
-//   • Both are added to extractedElements so they render with correct labels
-//   • Deduplication only runs against rooms, not structural elements
+// We use a module-level singleton so that:
+//   a) The blob URL is created only once (cheap).
+//   b) Multiple component instances share the same worker thread.
+//   c) Cleanup on HMR / module unload is handled in the hook via a WeakRef
+//      approach — we just terminate when all hooks unmount.
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import {
-  isDecorationElement,
-  isFullPageShape,
-  resolveStrokeWidth,
-} from './svgDecorationFilter';
-import { detectDoorSymbols }                                from './detectDoorSymbols';
-import { detectRooms, resolveRoomLabel, STRUCTURAL_LABELS } from './detectRoomAreas';
+let _workerInstance: Worker | null = null;
+let _workerRefCount = 0;
 
-// ─── Public types ─────────────────────────────────────────────────────────────
-
-export interface SvgPoint {
-  id: string;
-  type: 'point';
-  // Normalized [0,1] — multiply by canvas dims at use-time
-  nx: number;
-  ny: number;
-  element: Element;
-  attributes: Record<string, string>;
-  label?: string;
-  // Legacy pixel coords derived at render time — set by useSvgInteraction consumers
-  x?: number;
-  y?: number;
-}
-
-export interface SvgLine {
-  id: string;
-  type: 'line';
-  // Normalized [0,1]
-  nx1: number; ny1: number;
-  nx2: number; ny2: number;
-  // Derived (unit-less) — computed from normalized coords
-  lengthN: number;
-  angle: number;
-  element: Element;
-  attributes: Record<string, string>;
-  label?: string;
-  shapeId?: string;
-  // Legacy pixel fields — populated by toPixels() helper for consumers that need them
-  x1?: number; y1?: number;
-  x2?: number; y2?: number;
-  length?: number;
-}
-
-export interface SvgArea {
-  id: string;
-  type: 'area';
-  // All points normalized [0,1]
-  points: Array<{ nx: number; ny: number }>;
-  // Normalized bounds
-  bounds: { minNX: number; minNY: number; maxNX: number; maxNY: number };
-  areaN: number; // area in normalized space
-  element: Element;
-  attributes: Record<string, string>;
-  label?: string;
-  shapeId?: string;
-  isDoor?: boolean;
-}
-
-export type SvgElement = SvgPoint | SvgLine | SvgArea;
-
-export interface SnapResult {
-  type: 'point' | 'line' | 'area';
-  element: SvgElement;
-  snapPoint: { x: number; y: number };
-  distance: number;
-}
-
-export interface Vec2 { x: number; y: number }
-export interface VBTransform { sx: number; sy: number; tx: number; ty: number }
-
-interface UseSvgInteractionProps {
-  svgContent: string | null;
-  // CHANGED: was pdfDimensions — now only intrinsic (zoom-independent) dims needed
-  pdfIntrinsicDims: { w: number; h: number } | null;
-  // Fixed scale to run detection at — should equal MAX_ZOOM in ViewerConstants
-  detectScale?: number;
-  snapThreshold?: number;
-  enabled?: boolean;
-}
-
-// ─── Matrix types + helpers (exported for detectDoorSymbols / detectRoomAreas) ─
-
-interface Mat2D { a: number; b: number; c: number; d: number; e: number; f: number }
-
-function identityMatrix(): Mat2D {
-  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
-}
-
-function multiplyMatrix(m1: Mat2D, m2: Mat2D): Mat2D {
-  return {
-    a: m1.a * m2.a + m1.c * m2.b,
-    b: m1.b * m2.a + m1.d * m2.b,
-    c: m1.a * m2.c + m1.c * m2.d,
-    d: m1.b * m2.c + m1.d * m2.d,
-    e: m1.a * m2.e + m1.c * m2.f + m1.e,
-    f: m1.b * m2.e + m1.d * m2.f + m1.f,
-  };
-}
-
-export function applyMatrix(m: Mat2D, v: Vec2): Vec2 {
-  return {
-    x: m.a * v.x + m.c * v.y + m.e,
-    y: m.b * v.x + m.d * v.y + m.f,
-  };
-}
-
-function parseTransformAttr(transform: string | null): Mat2D {
-  if (!transform) return identityMatrix();
-  const re = /(matrix|translate|scale|rotate|skewX|skewY)\(([^)]*)\)/g;
-  const transforms: Mat2D[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(transform)) !== null) {
-    const type = m[1];
-    const args = m[2].trim().split(/[\s,]+/).map(parseFloat);
-    let mat = identityMatrix();
-    switch (type) {
-      case 'matrix':
-        mat = { a: args[0], b: args[1], c: args[2], d: args[3], e: args[4], f: args[5] };
-        break;
-      case 'translate':
-        mat = { a: 1, b: 0, c: 0, d: 1, e: args[0] ?? 0, f: args[1] ?? 0 };
-        break;
-      case 'scale': {
-        const sx = args[0] ?? 1, sy = args[1] ?? sx;
-        mat = { a: sx, b: 0, c: 0, d: sy, e: 0, f: 0 };
-        break;
-      }
-      case 'rotate': {
-        const ang = (args[0] ?? 0) * Math.PI / 180;
-        const cos = Math.cos(ang), sin = Math.sin(ang);
-        const cx = args[1] ?? 0, cy = args[2] ?? 0;
-        mat = { a: cos, b: sin, c: -sin, d: cos,
-                e: cx - cos * cx + sin * cy, f: cy - sin * cx - cos * cy };
-        break;
-      }
-      case 'skewX': {
-        const t = Math.tan((args[0] ?? 0) * Math.PI / 180);
-        mat = { a: 1, b: 0, c: t, d: 1, e: 0, f: 0 };
-        break;
-      }
-      case 'skewY': {
-        const t = Math.tan((args[0] ?? 0) * Math.PI / 180);
-        mat = { a: 1, b: t, c: 0, d: 1, e: 0, f: 0 };
-        break;
-      }
-    }
-    transforms.push(mat);
+function acquireWorker(): Worker {
+  if (!_workerInstance) {
+    const blob = new Blob([WORKER_SRC], { type: 'application/javascript' });
+    const url  = URL.createObjectURL(blob);
+    _workerInstance = new Worker(url);
+    // The blob URL can be revoked immediately; the worker holds its own copy.
+    URL.revokeObjectURL(url);
   }
-  let composed = identityMatrix();
-  for (const t of transforms) composed = multiplyMatrix(composed, t);
-  return composed;
+  _workerRefCount++;
+  return _workerInstance;
 }
 
-export function getCTM(el: Element, svgRoot: Element): Mat2D {
-  const matrices: Mat2D[] = [];
-  let node: Element | null = el;
-  while (node && node !== svgRoot.parentElement) {
-    const t = node.getAttribute('transform');
-    if (t) matrices.unshift(parseTransformAttr(t));
-    node = node.parentElement;
+function releaseWorker(): void {
+  _workerRefCount--;
+  if (_workerRefCount <= 0) {
+    _workerInstance?.terminate();
+    _workerInstance = null;
+    _workerRefCount = 0;
   }
-  let ctm = identityMatrix();
-  for (const m of matrices) ctm = multiplyMatrix(ctm, m);
-  return ctm;
-}
-
-// ─── ViewBox → canvas transform ───────────────────────────────────────────────
-
-function buildViewBoxTransform(
-  svgEl: SVGSVGElement,
-  canvasW: number,
-  canvasH: number,
-): VBTransform {
-  const vb = svgEl.getAttribute('viewBox');
-  if (vb) {
-    const [minX, minY, vbW, vbH] = vb.trim().split(/[\s,]+/).map(parseFloat);
-    if ([minX, minY, vbW, vbH].every(n => !isNaN(n)) && vbW > 0 && vbH > 0) {
-      return {
-        sx: canvasW / vbW, sy: canvasH / vbH,
-        tx: -minX * (canvasW / vbW), ty: -minY * (canvasH / vbH),
-      };
-    }
-  }
-  const wAttr = svgEl.getAttribute('width');
-  const hAttr = svgEl.getAttribute('height');
-  const svgW  = wAttr ? parseFloat(wAttr) : canvasW;
-  const svgH  = hAttr ? parseFloat(hAttr) : canvasH;
-  return {
-    sx: svgW > 0 ? canvasW / svgW : 1,
-    sy: svgH > 0 ? canvasH / svgH : 1,
-    tx: 0, ty: 0,
-  };
-}
-
-export function applyVBTransform(v: Vec2, t: VBTransform): Vec2 {
-  return { x: v.x * t.sx + t.tx, y: v.y * t.sy + t.ty };
-}
-
-// ─── Geometry helpers (exported) ──────────────────────────────────────────────
-
-export function closestPointOnLine(
-  px: number, py: number,
-  x1: number, y1: number,
-  x2: number, y2: number,
-): { x: number; y: number } {
-  const ax = px - x1, ay = py - y1;
-  const bx = x2 - x1, by = y2 - y1;
-  const dot  = ax * bx + ay * by;
-  const len2 = bx * bx + by * by;
-  if (len2 === 0) return { x: x1, y: y1 };
-  const t = Math.max(0, Math.min(1, dot / len2));
-  return { x: x1 + t * bx, y: y1 + t * by };
-}
-
-export function pointInPolygon(
-  x: number, y: number,
-  points: Array<{ x: number; y: number }>,
-): boolean {
-  let inside = false;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    const xi = points[i].x, yi = points[i].y;
-    const xj = points[j].x, yj = points[j].y;
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi)
-      inside = !inside;
-  }
-  return inside;
-}
-
-export function pointInNormalizedPolygon(
-  nx: number, ny: number,
-  points: Array<{ nx: number; ny: number }>,
-): boolean {
-  let inside = false;
-  for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-    const xi = points[i].nx, yi = points[i].ny;
-    const xj = points[j].nx, yj = points[j].ny;
-    if ((yi > ny) !== (yj > ny) && nx < ((xj - xi) * (ny - yi)) / (yj - yi) + xi)
-      inside = !inside;
-  }
-  return inside;
-}
-
-export function distanceToPolygonEdge(
-  x: number, y: number,
-  points: Array<{ x: number; y: number }>,
-): number {
-  let minDist = Infinity;
-  for (let i = 0; i < points.length; i++) {
-    const j       = (i + 1) % points.length;
-    const closest = closestPointOnLine(x, y, points[i].x, points[i].y, points[j].x, points[j].y);
-    minDist = Math.min(minDist, Math.hypot(closest.x - x, closest.y - y));
-  }
-  return minDist;
-}
-
-// ─── Path parser (exported — used by detectDoorSymbols + detectRoomAreas) ─────
-
-export function parsePathToPoints(d: string): Array<{ x: number; y: number }> {
-  const points: Array<{ x: number; y: number }> = [];
-  const tokens = d.match(/[MmLlHhVvCcSsQqTtAaZz][^MmLlHhVvCcSsQqTtAaZz]*/g);
-  if (!tokens) return points;
-
-  let cx = 0, cy = 0, sx = 0, sy = 0;
-  let lastCpX = 0, lastCpY = 0;
-  let lastCmd = '';
-
-  const push = (x: number, y: number) => points.push({ x, y });
-
-  const sampleCubic = (
-    x0: number, y0: number, x1: number, y1: number,
-    x2: number, y2: number, x3: number, y3: number, steps = 8,
-  ) => {
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps, u = 1 - t;
-      push(
-        u*u*u*x0 + 3*u*u*t*x1 + 3*u*t*t*x2 + t*t*t*x3,
-        u*u*u*y0 + 3*u*u*t*y1 + 3*u*t*t*y2 + t*t*t*y3,
-      );
-    }
-  };
-
-  const sampleQuad = (
-    x0: number, y0: number, x1: number, y1: number,
-    x2: number, y2: number, steps = 6,
-  ) => {
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps, u = 1 - t;
-      push(u*u*x0 + 2*u*t*x1 + t*t*x2, u*u*y0 + 2*u*t*y1 + t*t*y2);
-    }
-  };
-
-  for (const token of tokens) {
-    const cmd   = token[0];
-    const upper = cmd.toUpperCase();
-    const rel   = cmd !== upper;
-    const nums  = token.slice(1).trim()
-      .split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
-    const ox = rel ? cx : 0;
-    const oy = rel ? cy : 0;
-
-    switch (upper) {
-      case 'M': {
-        for (let i = 0; i + 1 < nums.length; i += 2) {
-          const bx = i === 0 ? ox : (rel ? cx : 0);
-          const by = i === 0 ? oy : (rel ? cy : 0);
-          cx = bx + nums[i]; cy = by + nums[i + 1];
-          if (i === 0) { sx = cx; sy = cy; }
-          push(cx, cy);
-        }
-        lastCpX = cx; lastCpY = cy; break;
-      }
-      case 'L': {
-        for (let i = 0; i + 1 < nums.length; i += 2) {
-          cx = ox + nums[i]; cy = oy + nums[i + 1]; push(cx, cy);
-        }
-        lastCpX = cx; lastCpY = cy; break;
-      }
-      case 'H': {
-        for (const n of nums) { cx = ox + n; push(cx, cy); }
-        lastCpX = cx; lastCpY = cy; break;
-      }
-      case 'V': {
-        for (const n of nums) { cy = oy + n; push(cx, cy); }
-        lastCpX = cx; lastCpY = cy; break;
-      }
-      case 'C': {
-        for (let i = 0; i + 5 < nums.length; i += 6) {
-          const x1 = ox+nums[i],   y1 = oy+nums[i+1];
-          const x2 = ox+nums[i+2], y2 = oy+nums[i+3];
-          const x3 = ox+nums[i+4], y3 = oy+nums[i+5];
-          sampleCubic(cx, cy, x1, y1, x2, y2, x3, y3);
-          lastCpX = x2; lastCpY = y2; cx = x3; cy = y3;
-        }
-        break;
-      }
-      case 'S': {
-        for (let i = 0; i + 3 < nums.length; i += 4) {
-          const prev = lastCmd === 'C' || lastCmd === 'S';
-          const x1 = prev ? 2*cx - lastCpX : cx;
-          const y1 = prev ? 2*cy - lastCpY : cy;
-          const x2 = ox+nums[i],   y2 = oy+nums[i+1];
-          const x3 = ox+nums[i+2], y3 = oy+nums[i+3];
-          sampleCubic(cx, cy, x1, y1, x2, y2, x3, y3);
-          lastCpX = x2; lastCpY = y2; cx = x3; cy = y3;
-        }
-        break;
-      }
-      case 'Q': {
-        for (let i = 0; i + 3 < nums.length; i += 4) {
-          const x1 = ox+nums[i],   y1 = oy+nums[i+1];
-          const x2 = ox+nums[i+2], y2 = oy+nums[i+3];
-          sampleQuad(cx, cy, x1, y1, x2, y2);
-          lastCpX = x1; lastCpY = y1; cx = x2; cy = y2;
-        }
-        break;
-      }
-      case 'T': {
-        for (let i = 0; i + 1 < nums.length; i += 2) {
-          const prev = lastCmd === 'Q' || lastCmd === 'T';
-          const x1 = prev ? 2*cx - lastCpX : cx;
-          const y1 = prev ? 2*cy - lastCpY : cy;
-          const x2 = ox+nums[i], y2 = oy+nums[i+1];
-          sampleQuad(cx, cy, x1, y1, x2, y2);
-          lastCpX = x1; lastCpY = y1; cx = x2; cy = y2;
-        }
-        break;
-      }
-      case 'A': {
-        for (let i = 0; i + 6 < nums.length; i += 7) {
-          cx = ox + nums[i + 5]; cy = oy + nums[i + 6]; push(cx, cy);
-        }
-        lastCpX = cx; lastCpY = cy; break;
-      }
-      case 'Z': {
-        if (cx !== sx || cy !== sy) push(sx, sy);
-        cx = sx; cy = sy; lastCpX = cx; lastCpY = cy; break;
-      }
-    }
-    lastCmd = upper;
-  }
-  return points;
-}
-
-// ─── Segment chaining (exported — used by detectDoorSymbols) ─────────────────
-
-export interface RawSeg { a: Vec2; b: Vec2; el: Element }
-
-export function chainRawSegments(segs: RawSeg[], tol = 8.0): Vec2[][] {
-  if (segs.length === 0) return [];
-  const used   = new Set<number>();
-  const chains: Vec2[][] = [];
-
-  for (let i = 0; i < segs.length; i++) {
-    if (used.has(i)) continue;
-    used.add(i);
-    const pts: Vec2[] = [{ ...segs[i].a }, { ...segs[i].b }];
-    let tail = segs[i].b;
-    let grew = true, iters = 0;
-
-    while (grew && iters < 200) {
-      grew = false; iters++;
-      let bestIdx = -1, bestDist = tol, reverse = false;
-      for (let j = 0; j < segs.length; j++) {
-        if (used.has(j)) continue;
-        const dA = Math.hypot(segs[j].a.x - tail.x, segs[j].a.y - tail.y);
-        const dB = Math.hypot(segs[j].b.x - tail.x, segs[j].b.y - tail.y);
-        if (dA < bestDist) { bestDist = dA; bestIdx = j; reverse = false; }
-        if (dB < bestDist) { bestDist = dB; bestIdx = j; reverse = true;  }
-      }
-      if (bestIdx !== -1) {
-        if (reverse) { pts.push({ ...segs[bestIdx].a }); tail = segs[bestIdx].a; }
-        else         { pts.push({ ...segs[bestIdx].b }); tail = segs[bestIdx].b; }
-        used.add(bestIdx); grew = true;
-      }
-    }
-    chains.push(pts);
-  }
-  return chains;
-}
-
-// ─── Hook constants ───────────────────────────────────────────────────────────
-
-const MIN_AREA_THRESHOLD_N = 0.00005; // normalized — ~1500px at 1x, scales correctly
-const MAX_ASPECT_RATIO     = 14;
-
-// ─── Pixel → normalized helpers ──────────────────────────────────────────────
-
-// Expand legacy pixel-based SvgArea from detectDoorSymbols/detectRoomAreas into normalized form
-function normalizeAreaPoints(
-  pixelPoints: Array<{ x: number; y: number }>,
-  dw: number,
-  dh: number,
-): Array<{ nx: number; ny: number }> {
-  return pixelPoints.map(p => ({ nx: p.x / dw, ny: p.y / dh }));
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
-export function useSvgInteraction({
-  svgContent,
-  pdfIntrinsicDims,  // zoom-independent page size in points
-  detectScale = 4,   // MAX_ZOOM — detection canvas size = intrinsic × detectScale
-  snapThreshold = 14,
-  enabled = true,
-}: UseSvgInteractionProps) {
-  const [elements, setElements]               = useState<SvgElement[]>([]);
-  const [hoveredElement, setHoveredElement]   = useState<SvgElement | null>(null);
-  const [selectedElement, setSelectedElement] = useState<SvgElement | null>(null);
-  const [loading, setLoading]                 = useState(false);
-  const [error, setError]                     = useState<string | null>(null);
+const EMPTY: { snapPoints: SvgSnapPoint[]; svgCurves: SvgCurve[] } = {
+  snapPoints: [],
+  svgCurves:  [],
+};
 
-  const spatialIndexRef = useRef<Map<string, SvgElement>>(new Map());
+export function useSvgSnapPoints(
+  svgContent: string | null,
+  pdfDims: PdfDimensions | null,
+): { snapPoints: SvgSnapPoint[]; svgCurves: SvgCurve[] } {
 
-  // Fixed detection canvas size — never changes with zoom
-  const detectionDims = useMemo(
-    () => pdfIntrinsicDims
-      ? { w: pdfIntrinsicDims.w * detectScale, h: pdfIntrinsicDims.h * detectScale }
-      : null,
-    [pdfIntrinsicDims, detectScale],
-  );
+  const [result, setResult] = useState(EMPTY);
+
+  // Stable ref to the worker so effect cleanup can unsubscribe correctly.
+  const workerRef   = useRef<Worker | null>(null);
+  // Incrementing request ID so stale responses from a previous SVG/dims pair
+  // are silently discarded.
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
-    // Only re-run when SVG content or intrinsic dims change — NOT on zoom
-    if (!enabled || !svgContent || !detectionDims) {
-      setElements([]);
-      spatialIndexRef.current.clear();
+    // Acquire the shared worker on first mount.
+    workerRef.current = acquireWorker();
+
+    return () => {
+      releaseWorker();
+      workerRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!svgContent || !pdfDims) {
+      setResult(EMPTY);
       return;
     }
 
-    const { w: dw, h: dh } = detectionDims;
+    const worker = workerRef.current;
+    if (!worker) return;
 
-    setLoading(true);
-    setError(null);
+    // Tag this request so we can ignore any in-flight older response.
+    const requestId = ++requestIdRef.current;
 
-    try {
-      const parser  = new DOMParser();
-      const svgDoc  = parser.parseFromString(svgContent, 'image/svg+xml');
-      const svgRoot = svgDoc.documentElement;
+    const handleMessage = (e: MessageEvent) => {
+      const { type, requestId: rid, snapPoints, svgCurves, message } = e.data;
+      // Discard stale responses.
+      if (rid !== requestId) return;
 
-      if (svgRoot.querySelector('parsererror')) throw new Error('Invalid SVG format');
-
-      const svgEl = svgDoc.querySelector('svg') as SVGSVGElement | null;
-      if (!svgEl) throw new Error('No <svg> element found');
-
-      // Build transform at MAX_ZOOM detection size — fixed forever for this SVG+page combo
-      const vbt = buildViewBoxTransform(svgEl, dw, dh);
-
-      const extractedElements: SvgElement[] = [];
-      let idCounter = 0;
-
-      const getAttributes = (el: Element): Record<string, string> => {
-        const attrs: Record<string, string> = {};
-        for (let i = 0; i < el.attributes.length; i++) {
-          attrs[el.attributes[i].name] = el.attributes[i].value;
-        }
-        return attrs;
-      };
-
-      // Returns pixel coords in detection space, then immediately normalized
-      const toNorm = (el: Element, x: number, y: number) => {
-        const ctm = getCTM(el, svgEl);
-        const px  = applyVBTransform(applyMatrix(ctm, { x, y }), vbt);
-        return { nx: px.x / dw, ny: px.y / dh };
-      };
-
-      // ── Circles / points ─────────────────────────────────────────────────
-      svgRoot.querySelectorAll(
-        'circle, [data-type="point"], [data-snap="point"]',
-      ).forEach(el => {
-        const sw = resolveStrokeWidth(el);
-        if (isDecorationElement(el, sw)) return;
-        const cx    = parseFloat(el.getAttribute('cx') || el.getAttribute('x') || '0');
-        const cy    = parseFloat(el.getAttribute('cy') || el.getAttribute('y') || '0');
-        const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const { nx, ny } = toNorm(el, cx, cy);
-        extractedElements.push({
-          id: `point-${idCounter++}`, type: 'point',
-          nx, ny,
-          element: el, attributes: getAttributes(el), label,
-        });
-      });
-
-      // ── Explicit <line> elements ─────────────────────────────────────────
-      svgRoot.querySelectorAll(
-        'line, [data-type="line"], [data-snap="line"]',
-      ).forEach(el => {
-        const sw = resolveStrokeWidth(el);
-        if (isDecorationElement(el, sw)) return;
-        const rx1 = parseFloat(el.getAttribute('x1') || '0');
-        const ry1 = parseFloat(el.getAttribute('y1') || '0');
-        const rx2 = parseFloat(el.getAttribute('x2') || '0');
-        const ry2 = parseFloat(el.getAttribute('y2') || '0');
-        const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const n1 = toNorm(el, rx1, ry1);
-        const n2 = toNorm(el, rx2, ry2);
-        const lenN = Math.hypot(n2.nx - n1.nx, n2.ny - n1.ny);
-        if (lenN < 0.0001) return;
-        extractedElements.push({
-          id: `line-${idCounter++}`, type: 'line',
-          nx1: n1.nx, ny1: n1.ny, nx2: n2.nx, ny2: n2.ny,
-          lengthN: lenN,
-          angle: Math.atan2(n2.ny - n1.ny, n2.nx - n1.nx),
-          element: el, attributes: getAttributes(el), label,
-        });
-      });
-
-      // ── Open <path> → SvgLine ────────────────────────────────────────────
-      svgRoot.querySelectorAll('path').forEach(el => {
-        const sw = resolveStrokeWidth(el);
-        if (isDecorationElement(el, sw)) return;
-        const d = el.getAttribute('d') ?? '';
-        if (/[Zz]/.test(d)) return;
-        const rawPts = parsePathToPoints(d);
-        if (rawPts.length < 2) return;
-        const first = rawPts[0], last = rawPts[rawPts.length - 1];
-        if (Math.hypot(last.x - first.x, last.y - first.y) < 2) return;
-        const label = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const n1 = toNorm(el, first.x, first.y);
-        const n2 = toNorm(el, last.x, last.y);
-        const lenN = Math.hypot(n2.nx - n1.nx, n2.ny - n1.ny);
-        if (lenN < 0.0001) return;
-        extractedElements.push({
-          id: `line-${idCounter++}`, type: 'line',
-          nx1: n1.nx, ny1: n1.ny, nx2: n2.nx, ny2: n2.ny,
-          lengthN: lenN,
-          angle: Math.atan2(n2.ny - n1.ny, n2.nx - n1.nx),
-          element: el, attributes: getAttributes(el), label,
-        });
-      });
-
-      // ── Explicit closed shapes → SvgArea ─────────────────────────────────
-      svgRoot.querySelectorAll(
-        'path, polygon, [data-type="area"], [data-snap="area"]',
-      ).forEach(el => {
-        const sw = resolveStrokeWidth(el);
-        if (isDecorationElement(el, sw)) return;
-
-        const d = el.getAttribute('d') || '';
-
-        if (el.tagName === 'path') {
-          const hasZ = /[Zz]/.test(d);
-          if (!hasZ) {
-            const pts = parsePathToPoints(d);
-            if (pts.length < 3) return;
-            const first = pts[0], last = pts[pts.length - 1];
-            if (Math.hypot(last.x - first.x, last.y - first.y) >= 2) return;
-          }
-        }
-
-        const ctm = getCTM(el, svgEl);
-        const transformToDetectionPx = (rx: number, ry: number) =>
-          applyVBTransform(applyMatrix(ctm, { x: rx, y: ry }), vbt);
-
-        let pixelPoints: Array<{ x: number; y: number }> = [];
-
-        if (el.tagName === 'polygon') {
-          const raw    = el.getAttribute('points') || '';
-          const coords = raw.trim().split(/[\s,]+/).map(parseFloat);
-          for (let i = 0; i + 1 < coords.length; i += 2) {
-            pixelPoints.push(transformToDetectionPx(coords[i], coords[i + 1]));
-          }
-        } else if (el.tagName === 'path') {
-          pixelPoints = parsePathToPoints(d).map(p => transformToDetectionPx(p.x, p.y));
-        }
-
-        if (pixelPoints.length < 3) return;
-
-        // Full-page check uses detection-space pixel coords
-        if (isFullPageShape(pixelPoints, dw, dh)) return;
-
-        // Compute area in pixel space, then normalize threshold check
-        let area = 0;
-        for (let i = 0; i < pixelPoints.length; i++) {
-          const j = (i + 1) % pixelPoints.length;
-          area += pixelPoints[i].x * pixelPoints[j].y - pixelPoints[j].x * pixelPoints[i].y;
-        }
-        area = Math.abs(area) / 2;
-        if (area < MIN_AREA_THRESHOLD_N * dw * dh) return;
-
-        const bounds = pixelPoints.reduce(
-          (b, p) => ({
-            minX: Math.min(b.minX, p.x), minY: Math.min(b.minY, p.y),
-            maxX: Math.max(b.maxX, p.x), maxY: Math.max(b.maxY, p.y),
-          }),
-          { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity },
+      if (type === 'result') {
+        setResult({ snapPoints, svgCurves });
+        console.log(
+          `[useSvgSnapPoints worker] ${snapPoints.length} snap pts, ` +
+          `${svgCurves.length} curves`,
         );
-
-        const shapeW  = bounds.maxX - bounds.minX;
-        const shapeH  = bounds.maxY - bounds.minY;
-        const shorter = Math.min(shapeW, shapeH);
-        const longer  = Math.max(shapeW, shapeH);
-        if (shorter > 0 && longer / shorter > MAX_ASPECT_RATIO) return;
-
-        // Normalize immediately — pixel coords discarded
-        const normPoints = normalizeAreaPoints(pixelPoints, dw, dh);
-        const normBounds = {
-          minNX: bounds.minX / dw, minNY: bounds.minY / dh,
-          maxNX: bounds.maxX / dw, maxNY: bounds.maxY / dh,
-        };
-        const areaN = area / (dw * dh);
-
-        const rawLabel = el.getAttribute('data-label') || el.getAttribute('label') || undefined;
-        const label    = rawLabel ? (resolveRoomLabel(rawLabel) ?? rawLabel) : undefined;
-
-        extractedElements.push({
-          id: `area-${idCounter++}`, type: 'area',
-          points: normPoints, bounds: normBounds, areaN,
-          element: el, attributes: getAttributes(el), label,
-        });
-      });
-
-      // ── Door symbol detection ────────────────────────────────────────────
-      // detectDoorSymbols still returns pixel areas in detection space — normalize them
-      const doorAreasRaw = detectDoorSymbols(svgRoot, svgEl, vbt, idCounter);
-      const doorAreas: SvgArea[] = doorAreasRaw.map(da => {
-        const pixPts = (da as any).points as Array<{ x: number; y: number }>;
-        const normPts = normalizeAreaPoints(pixPts, dw, dh);
-        const normBounds = {
-          minNX: Math.min(...normPts.map(p => p.nx)),
-          minNY: Math.min(...normPts.map(p => p.ny)),
-          maxNX: Math.max(...normPts.map(p => p.nx)),
-          maxNY: Math.max(...normPts.map(p => p.ny)),
-        };
-        return {
-          ...da,
-          points: normPts,
-          bounds: normBounds,
-          areaN: (da as any).area / (dw * dh),
-          isDoor: true,
-          label: 'door',
-        } as SvgArea;
-      });
-      idCounter += doorAreas.length;
-      extractedElements.push(...doorAreas);
-
-      // ── Wall-graph room detection ────────────────────────────────────────
-      // detectRooms() now returns { rooms, pillars, windows, all }
-      const wallDetectionResult = detectRooms(svgRoot, svgEl, vbt, idCounter, dw, dh);
-
-      // Helper: normalize a pixel-space SvgArea from detectRooms into normalized form.
-      // NOTE: detectRooms stores raw pixel coords in .points and raw pixel² in .areaN
-      // (the field is named areaN but holds px² at this stage — divide by dw*dh here).
-      const normalizeWallArea = (wr: SvgArea): SvgArea => {
-        const pixPts = (wr as any).points as Array<{ x: number; y: number }>;
-        const normPts = normalizeAreaPoints(pixPts, dw, dh);
-        const normBounds = {
-          minNX: Math.min(...normPts.map(p => p.nx)),
-          minNY: Math.min(...normPts.map(p => p.ny)),
-          maxNX: Math.max(...normPts.map(p => p.nx)),
-          maxNY: Math.max(...normPts.map(p => p.ny)),
-        };
-        return {
-          ...wr,
-          points: normPts,
-          bounds: normBounds,
-          // areaN from detectRooms is actually px² — normalize it here
-          areaN: (wr as any).areaN / (dw * dh),
-        } as SvgArea;
-      };
-
-      // Normalize all three buckets
-      const wallRoomsNorm:   SvgArea[] = wallDetectionResult.rooms.map(normalizeWallArea);
-      const wallPillarsNorm: SvgArea[] = wallDetectionResult.pillars.map(normalizeWallArea);
-      const wallWindowsNorm: SvgArea[] = wallDetectionResult.windows.map(normalizeWallArea);
-
-      idCounter += wallDetectionResult.all.length;
-
-      // Deduplicate ROOMS only against existing explicit closed-path areas.
-      // Pillars and windows are structural — always keep them all.
-      const existingAreas = extractedElements.filter(e => e.type === 'area') as SvgArea[];
-
-      const dedupedRooms = wallRoomsNorm.filter(wr =>
-        !existingAreas.some(ea => {
-          const overlapNX = Math.max(0,
-            Math.min(wr.bounds.maxNX, ea.bounds.maxNX) - Math.max(wr.bounds.minNX, ea.bounds.minNX));
-          const overlapNY = Math.max(0,
-            Math.min(wr.bounds.maxNY, ea.bounds.maxNY) - Math.max(wr.bounds.minNY, ea.bounds.minNY));
-          return wr.areaN > 0 && (overlapNX * overlapNY) / wr.areaN > 0.8;
-        }),
-      );
-
-      // Push rooms (deduped), pillars, and windows into the element list
-      extractedElements.push(...dedupedRooms, ...wallPillarsNorm, ...wallWindowsNorm);
-
-      // ── Index + publish ──────────────────────────────────────────────────
-      const index = new Map<string, SvgElement>();
-      extractedElements.forEach(el => index.set(el.id, el));
-      setElements(extractedElements);
-      spatialIndexRef.current = index;
-      setLoading(false);
-
-      const pts        = extractedElements.filter(e => e.type === 'point').length;
-      const lns        = extractedElements.filter(e => e.type === 'line').length;
-      const ars        = extractedElements.filter(e => e.type === 'area').length;
-      const labelled   = dedupedRooms.filter(r => r.label).length;
-      const explicitAr = ars - dedupedRooms.length - doorAreas.length
-                           - wallPillarsNorm.length - wallWindowsNorm.length;
-      console.log(
-        `[useSvgInteraction] detected at ${dw}×${dh} (${detectScale}× MAX_ZOOM) | ` +
-        `points=${pts} lines=${lns} areas=${ars} ` +
-        `(${doorAreas.length} doors + ${explicitAr} explicit + ` +
-        `${dedupedRooms.length} rooms [${labelled} labelled] + ` +
-        `${wallPillarsNorm.length} pillars + ${wallWindowsNorm.length} windows) ` +
-        `| all coords normalized [0,1]`,
-      );
-
-    } catch (err) {
-      console.error('[useSvgInteraction] parse error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to parse SVG');
-      setLoading(false);
-    }
-  // KEY: pdfIntrinsicDims here (zoom-independent), NOT pdfDimensions
-  }, [svgContent, detectionDims, enabled]);
-
-  // ─── Snap (all math in normalized space, result scaled to canvas) ──────────
-  const findNearestSnap = useCallback((
-    mouseX: number,
-    mouseY: number,
-    canvasW: number,
-    canvasH: number,
-  ): SnapResult | null => {
-    if (!enabled || elements.length === 0) return null;
-
-    // Convert mouse pixel → normalized
-    const mnx = mouseX / canvasW;
-    const mny = mouseY / canvasH;
-    // Scale threshold to normalized space
-    const threshN = snapThreshold / Math.min(canvasW, canvasH);
-
-    let best: SnapResult | null = null;
-
-    for (const el of elements) {
-      if (el.type === 'point') {
-        const dist = Math.hypot(el.nx - mnx, el.ny - mny);
-        if (dist < threshN && (!best || dist < best.distance)) {
-          best = {
-            type: 'point', element: el,
-            snapPoint: { x: el.nx * canvasW, y: el.ny * canvasH },
-            distance: dist,
-          };
-        }
+      } else if (type === 'error') {
+        console.error('[useSvgSnapPoints worker] parse error:', message);
+        setResult(EMPTY);
       }
-    }
-    if (!best) {
-      for (const el of elements) {
-        if (el.type === 'line') {
-          const closest = closestPointOnLine(mnx, mny, el.nx1, el.ny1, el.nx2, el.ny2);
-          const dist = Math.hypot(closest.x - mnx, closest.y - mny);
-          if (dist < threshN && (!best || dist < best.distance)) {
-            best = {
-              type: 'line', element: el,
-              snapPoint: { x: closest.x * canvasW, y: closest.y * canvasH },
-              distance: dist,
-            };
-          }
-        }
-      }
-    }
-    if (!best) {
-      for (const el of elements) {
-        if (el.type === 'area') {
-          if (
-            mnx >= el.bounds.minNX && mnx <= el.bounds.maxNX &&
-            mny >= el.bounds.minNY && mny <= el.bounds.maxNY &&
-            pointInNormalizedPolygon(mnx, mny, el.points)
-          ) {
-            const pixPts = el.points.map(p => ({ x: p.nx * canvasW, y: p.ny * canvasH }));
-            const dist = distanceToPolygonEdge(mouseX, mouseY, pixPts) / Math.min(canvasW, canvasH);
-            if (dist < threshN && (!best || dist < best.distance)) {
-              const edge = closestPointOnLine(
-                mouseX, mouseY,
-                el.points[0].nx * canvasW, el.points[0].ny * canvasH,
-                el.points[1].nx * canvasW, el.points[1].ny * canvasH,
-              );
-              best = {
-                type: 'area', element: el,
-                snapPoint: edge,
-                distance: dist,
-              };
-            }
-          }
-        }
-      }
-    }
-    return best;
-  }, [elements, snapThreshold, enabled]);
+    };
 
-  // ─── Hit test (pixel coords in, uses normalized internally) ───────────────
-  const hitTest = useCallback((
-    mouseX: number,
-    mouseY: number,
-    canvasW: number,
-    canvasH: number,
-  ): SvgElement | null => {
-    if (!enabled || elements.length === 0) return null;
-    const mnx = mouseX / canvasW, mny = mouseY / canvasH;
+    worker.addEventListener('message', handleMessage);
 
-    for (const el of elements) {
-      if (el.type === 'area' && pointInNormalizedPolygon(mnx, mny, el.points)) return el;
-    }
-    for (const el of elements) {
-      if (el.type === 'line') {
-        const closest = closestPointOnLine(mnx, mny, el.nx1, el.ny1, el.nx2, el.ny2);
-        if (Math.hypot(closest.x - mnx, closest.y - mny) < 10 / Math.min(canvasW, canvasH)) return el;
-      }
-    }
-    for (const el of elements) {
-      if (el.type === 'point' && Math.hypot(el.nx - mnx, el.ny - mny) < 12 / Math.min(canvasW, canvasH)) return el;
-    }
-    return null;
-  }, [elements, enabled]);
+    // Post work to the worker — main thread returns immediately.
+    worker.postMessage({
+      type: 'compute',
+      requestId,
+      svgContent,
+      pw: pdfDims.w,
+      ph: pdfDims.h,
+    });
 
-  const checkHover = useCallback((
-    mouseX: number,
-    mouseY: number,
-    canvasW: number,
-    canvasH: number,
-  ) => {
-    if (!enabled) { setHoveredElement(null); return null; }
-    const hit = hitTest(mouseX, mouseY, canvasW, canvasH);
-    setHoveredElement(hit);
-    return hit;
-  }, [hitTest, enabled]);
+    return () => {
+      worker.removeEventListener('message', handleMessage);
+    };
+  }, [svgContent, pdfDims]);
 
-  const clearSelection = useCallback(() => setSelectedElement(null), []);
-  const getElementById = useCallback((id: string) => spatialIndexRef.current.get(id), []);
-
-  return {
-    elements, hoveredElement, selectedElement,
-    setSelectedElement, clearSelection,
-    findNearestSnap, hitTest, checkHover, getElementById,
-    loading, error,
-  };
+  return result;
 }

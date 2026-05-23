@@ -27,6 +27,12 @@
 //
 // FIX 2 (carried over) — wrappedPointerMove reads rect from e.currentTarget.
 //
+// FIX 6 — stablePan memo keyed on pan.x / pan.y so useSnapEngine never
+//   receives a new object reference on every wheel tick. Previously every
+//   scroll event created a new { x, y } object, causing cascading re-renders
+//   through useSnapEngine → redrawPinCanvas → useDrawingCanvas and hanging
+//   the browser during zoom.
+//
 // SNAP CANDIDATES — snapCandidates derived from svgSnapPoints (PDF-pixel space)
 //   and wired into useMeasurements → useDrawingCanvas so proximity visuals
 //   render on the drawing canvas.
@@ -347,11 +353,20 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     [pdfDimensions?.w, pdfDimensions?.h],
   );
 
+  // FIX 6: Stable pan reference — pan from useViewerPdf is a new object on
+  // every wheel tick even when x/y haven't changed. Keying on the primitive
+  // values prevents useSnapEngine (and everything downstream) from seeing a
+  // new reference and re-rendering on every scroll event.
+  const stablePan = useMemo(
+    () => pan ?? { x: 0, y: 0 },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pan?.x, pan?.y],
+  );
+
   // ── Snap points from SVG ──────────────────────────────────────────────────
   const { snapPoints: svgSnapPoints, svgCurves } = useSvgSnapPoints(
     svgContent,
     stablePdfDimensions,
-    scale,
   );
 
   // ── SVG lines ─────────────────────────────────────────────────────────────
@@ -361,8 +376,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   }, [svgContent, stablePdfDimensions]);
 
   // ── Snap candidates in PDF-pixel space for drawing canvas proximity visuals
-  // svgSnapPoints uses normalised nx/ny (0-1); drawing canvas works in PDF
-  // pixels, so we convert once here and pass down the chain.
   const snapCandidates = useMemo(() => {
     if (!stablePdfDimensions) return [];
     return svgSnapPoints.map(p => ({
@@ -397,7 +410,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     proximityRadius: 80,
     viewportRef: containerRef as React.RefObject<HTMLDivElement>,
     zoom:        scale,
-    pan:         pan ?? { x: 0, y: 0 },
+    pan:         stablePan,   // ← FIX 6: use stable reference
   });
 
   const redrawPinCanvas = _redrawPinCanvas;
@@ -448,7 +461,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     isPanning, snapToCorner: snapToCorner as any, getScaledCorners,
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
-    // Wire snap candidates so drawing canvas proximity visuals work
     snapCandidates,
   } as any);
 

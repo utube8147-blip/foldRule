@@ -1,13 +1,13 @@
 // ─── hooks/useMeasurements/useDrawingCanvas.ts ────────────────────────────────
 //
-// SNAP VISUAL — PROXIMITY-ONLY (matches demo design exactly):
+// SNAP VISUAL — PROXIMITY-ONLY, SINGLE NEAREST CANDIDATE ONLY:
 //
 //  • NOTHING is drawn near snap points unless the cursor is within
 //    PROX_RADIUS_PDF of at least one candidate.
 //  • When in range:
 //      - Dashed proximity circle appears around cursor.
-//      - Secondary candidates (non-nearest): hollow ring + tiny type label,
-//        fading with distance.
+//      - ONLY the single nearest candidate is shown (secondary candidates
+//        are NOT rendered — no more visual bloat).
 //      - Nearest candidate:
 //          · Approaching  → crosshair arms grow + brighten as cursor closes in;
 //                           faint ring appears when fade > 0.35.
@@ -118,10 +118,6 @@ const SNAP_PRIORITY: Record<string, number> = {
   endpoint: 0, intersection: 1, midpoint: 2, centroid: 3,
 };
 
-const TYPE_LABEL: Record<string, string> = {
-  endpoint: 'e', midpoint: 'm', intersection: 'i', centroid: 'c', 'arc-center': 'a',
-};
-
 function snapColour(type: string): { fill: string; ring: string; dot: string } {
   return SNAP_TYPE_COLOURS[type] ?? SNAP_TYPE_COLOURS['endpoint'];
 }
@@ -189,14 +185,7 @@ function drawSnapLockedDot(
   ctx.restore();
 }
 
-// ─── Draw plain un-snapped cursor dot (ENHANCED DESIGN) ─────────────────────────
-//
-// Features:
-//   - Outer glow/halo for better visibility
-//   - Gradient-like appearance with inner highlight
-//   - Subtle white center specular for depth
-//   - Thin contrast ring around the dot
-//
+// ─── Draw plain un-snapped cursor dot ────────────────────────────────────────
 
 function drawFreeDot(
   ctx:   CanvasRenderingContext2D,
@@ -206,39 +195,38 @@ function drawFreeDot(
   color: string = COLOUR_UNSNAPPED,
 ): void {
   ctx.save();
-  
-  // Outer glow/halo (soft spread)
-  ctx.shadowBlur = 0;
+
+  // Outer glow/halo
   ctx.beginPath();
   ctx.arc(x, y, r + 4, 0, Math.PI * 2);
-  ctx.fillStyle = `${color}20`; // 12% opacity
+  ctx.fillStyle = `${color}20`;
   ctx.fill();
-  
-  // Main dot with slight gradient effect
+
+  // Main dot
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fillStyle = color;
   ctx.fill();
-  
-  // Inner highlight (brighter center for 3D effect)
+
+  // Inner highlight
   ctx.beginPath();
   ctx.arc(x - 0.5, y - 0.5, r * 0.4, 0, Math.PI * 2);
   ctx.fillStyle = `${color}cc`;
   ctx.fill();
-  
-  // Subtle white center specular (shiny reflection)
+
+  // White specular
   ctx.beginPath();
   ctx.arc(x - 1, y - 1, r * 0.2, 0, Math.PI * 2);
   ctx.fillStyle = 'rgba(255,255,255,0.8)';
   ctx.fill();
-  
-  // Thin white ring around dot for better contrast against dark backgrounds
+
+  // Thin white ring
   ctx.beginPath();
   ctx.arc(x, y, r + 0.5, 0, Math.PI * 2);
   ctx.strokeStyle = 'rgba(255,255,255,0.5)';
   ctx.lineWidth = 0.8;
   ctx.stroke();
-  
+
   ctx.restore();
 }
 
@@ -258,15 +246,15 @@ function drawPlacedDot(
   }
 }
 
-// ─── CORE: Draw all snap proximity visuals (proximity-only) ───────────────────
+// ─── CORE: Draw snap proximity visuals — NEAREST CANDIDATE ONLY ───────────────
 //
 // Nothing is drawn if no candidate is within PROX_RADIUS_PDF.
-// When candidates are in range:
-//   1. Secondary candidates  → hollow fading ring + type label.
-//   2. Nearest candidate     → approach crosshair (growing) or lock indicator.
+// When a candidate is in range, only the SINGLE NEAREST is shown:
+//   1. Nearest approaching  → crosshair arms grow + brighten.
+//   2. Nearest locked       → filled dot + white ring + crosshair arms.
 //   3. Dashed proximity circle around cursor.
 //
-// The plain cursor dot is drawn by the caller ONLY when NOT locked.
+// Secondary candidates are NOT drawn — this eliminates visual clutter.
 //
 // Returns true if cursor is currently locked to a snap point so callers
 // can skip drawing their own cursor dot.
@@ -293,41 +281,7 @@ function drawSnapProximityVisuals(
 
   ctx.save();
 
-  // ── 1. Secondary candidates ───────────────────────────────────────────────
-  for (const { c, dist } of inRange) {
-    if (c === nearestCandidate) continue;
-
-    const col  = snapColour(c.type);
-    const fade = Math.max(0, 1 - dist / proxRadius);
-    const a    = 0.12 + fade * 0.40;
-    const r    = 3 + fade * 3.5;
-
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
-    ctx.strokeStyle = col.fill;
-    ctx.globalAlpha = a;
-    ctx.lineWidth   = 1;
-    ctx.stroke();
-
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, 1.5, 0, Math.PI * 2);
-    ctx.fillStyle   = col.fill;
-    ctx.globalAlpha = a + 0.15;
-    ctx.fill();
-
-    if (fade > 0.25) {
-      ctx.globalAlpha  = a * 0.9;
-      ctx.fillStyle    = col.fill;
-      ctx.font         = `${Math.round(8 + fade * 3)}px monospace`;
-      ctx.textAlign    = 'center';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(TYPE_LABEL[c.type] ?? '?', c.x, c.y - r - 2);
-    }
-
-    ctx.globalAlpha = 1;
-  }
-
-  // ── 2. Primary / nearest candidate ───────────────────────────────────────
+  // ── Nearest candidate only ────────────────────────────────────────────────
   if (nearestCandidate) {
     const col  = snapColour(nearestCandidate.type);
     const fade = Math.max(0, 1 - nearestDist / proxRadius);
@@ -357,7 +311,7 @@ function drawSnapProximityVisuals(
       ctx.stroke();
 
     } else {
-      // Approaching: crosshair grows and brightens
+      // Approaching: crosshair grows and brightens, no secondary indicators
       const sz = 2.5 + fade * 4.5;
       const a  = 0.20 + fade * 0.65;
 
@@ -384,8 +338,7 @@ function drawSnapProximityVisuals(
     }
   }
 
-  // ── 3. Dashed proximity circle around cursor ──────────────────────────────
-  // Only when at least one candidate is in range (already guaranteed here)
+  // ── Dashed proximity circle around cursor ─────────────────────────────────
   ctx.beginPath();
   ctx.arc(cursor.x, cursor.y, proxRadius, 0, Math.PI * 2);
   ctx.strokeStyle = 'rgba(100,100,100,0.08)';
@@ -400,9 +353,7 @@ function drawSnapProximityVisuals(
 }
 
 // ─── Draw proximity circle for radius tool ────────────────────────────────────
-//
-// Semi-transparent filled circle at cursor, only visible near snap candidates.
-//
+
 function drawRadiusProximityCircle(
   ctx:        CanvasRenderingContext2D,
   cursor:     { x: number; y: number },
@@ -787,8 +738,7 @@ export function useDrawingCanvas({
         ctx.setLineDash([]);
         ctx.restore();
 
-        // Radius tool: proximity circle + snap visuals. No plain cursor dot
-        // (radius tool uses the proximity circle instead).
+        // Radius tool: proximity circle + snap visuals
         if (cursor) {
           drawRadiusProximityCircle(ctx, cursor, candidates, PROX_RADIUS_PDF);
           drawSnapProximityVisuals(ctx, cursor, candidates, snapThresholdRef.current);
@@ -969,7 +919,6 @@ export function useDrawingCanvas({
         });
         ctx.restore();
 
-        // Count tool also gets snap proximity visuals
         if (cursor) {
           const locked = drawSnapProximityVisuals(
             ctx, cursor, candidates, snapThresholdRef.current,

@@ -2,31 +2,29 @@
 
 // ─── hooks/useViewerPdf.ts ────────────────────────────────────────────────────
 //
-//  FIX: Stale green paint appearing on canvas after scale calibration.
+//  FIX A: pan is now properly tracked and returned.
+//    Previously pan was not in the return interface at all, so Viewer.tsx
+//    was destructuring undefined. stablePan in Viewer.tsx was memoizing
+//    undefined?.x which is always undefined — meaning the snap overlay
+//    never tracked scroll position and always drew at { x:0, y:0 }.
 //
-//  ROOT CAUSE:
-//  The PDF render effect resizes all overlay canvases whenever committedScale
-//  changes (e.g. after calibration). For fillCanvasRef it had a special
-//  "preserve" branch that copied existing canvas contents into a temp canvas
-//  and drew them back at the new size:
+//    pan is now derived from a scroll listener on containerRef. On every
+//    scroll event it computes the PDF origin in viewport-space:
+//      x = pdfLeft - scrollLeft
+//      y = pdfTop  - scrollTop
+//    This matches the coordinate system used by useSnapEngine._actualRedraw
+//    when projecting PDF coords → screen coords for the pin canvas.
 //
-//    if (ref === fillCanvasRef && c.width > 0 && c.height > 0) {
-//      // copy → resize → draw back
-//    }
+//  FIX B: onZoom callback added to options interface.
+//    Viewer.tsx previously added its own separate wheel listener on the
+//    same container element just to call markZoomStart. That was a
+//    duplicate listener. onZoom is now called inside the existing wheel
+//    handler here, and the redundant listener in Viewer.tsx can be removed.
 //
-//  This was written so magic-fill region paint survives PDF re-renders.
-//  However it fires unconditionally — so ANY content on fillCanvasRef
-//  (grid-count preview paint, leftover magic-fill from a prior session,
-//  etc.) gets stretched and re-stamped back onto the canvas after every
-//  calibration or zoom commit, producing the green cross artifact.
+//  FIX C: pan and onZoom added to UseViewerPdfReturn interface.
 //
-//  FIX:
-//  Added `shouldPreserveFillCanvas: React.RefObject<boolean>` to the hook
-//  options. The caller (Viewer.tsx) passes `isMagicFillActiveRef` — a ref
-//  that is true only while activeTool === 'magic-fill'. The preserve branch
-//  now checks this ref before copying, so fillCanvasRef is only preserved
-//  during an active magic-fill session. At all other times the canvas is
-//  simply resized (cleared), which is the correct behaviour.
+//  FIX D (carried over): shouldPreserveFillCanvas guard prevents stale
+//    paint bleeding through after calibration / tool switches.
 
 import {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -55,16 +53,19 @@ export interface UseViewerPdfOptions {
   onPdfLoaded?: (doc: PDFDocumentProxy, file?: File) => void;
   /** Called after each successful page render. */
   onPageRendered?: () => void;
-  onScaleSet:      (metersPerPixel: number) => void;
+  onScaleSet: (metersPerPixel: number) => void;
   /**
    * Ref that is `true` only while the magic-fill tool is active.
-   * When true, fillCanvasRef contents are preserved across PDF re-renders
-   * (so committed fills survive zoom/calibration). When false the canvas
-   * is simply cleared on resize, preventing stale paint from bleeding through.
-   *
-   * Pass `isMagicFillActiveRef` from Viewer.tsx.
+   * When true, fillCanvasRef contents are preserved across PDF re-renders.
+   * When false the canvas is simply cleared on resize.
    */
   shouldPreserveFillCanvas: React.RefObject<boolean>;
+  /**
+   * Called on every wheel zoom event (before scale is updated).
+   * Viewer.tsx passes markZoomStart here so the isZooming flag is set
+   * from a single listener rather than a duplicate one on the container.
+   */
+  onZoom?: () => void;
 }
 
 export interface UseViewerPdfReturn {
@@ -100,6 +101,14 @@ export interface UseViewerPdfReturn {
   scaleRef:          React.RefObject<number>;
   pdfDimensionsRef:  React.RefObject<PdfDimensions | null>;
   onScaleSetRef:     React.RefObject<(v: number) => void>;
+  /**
+   * Current PDF-origin position in viewport-space pixels.
+   * x = distance from left edge of viewport to left edge of PDF.
+   * y = distance from top  edge of viewport to top  edge of PDF.
+   * Updated on every scroll event. Used by useSnapEngine to project
+   * PDF-pixel coords → screen coords for the pin canvas overlay.
+   */
+  pan: { x: number; y: number };
 }
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -118,6 +127,7 @@ export function useViewerPdf({
   onPageRendered,
   onScaleSet,
   shouldPreserveFillCanvas,
+  onZoom,
 }: UseViewerPdfOptions): UseViewerPdfReturn {
 
   // ── Core state ─────────────────────────────────────────────────────────────
@@ -132,6 +142,9 @@ export function useViewerPdf({
   const [pdfDimensions,  setPdfDimensions]  = useState<PdfDimensions | null>(null);
   const [pdfRenderCount, setPdfRenderCount] = useState(0);
 
+  // FIX A: pan state — PDF origin in viewport-space pixels.
+  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+
   // ── Stable refs ────────────────────────────────────────────────────────────
   const pdfRef            = useRef<PDFDocumentProxy | null>(null);
   const pageNumberRef     = useRef(pageNumber);
@@ -140,13 +153,15 @@ export function useViewerPdf({
   const onScaleSetRef     = useRef(onScaleSet);
   const currentPdfPageRef = useRef<PDFPageProxy | null>(null);
   const activeDrawingFileRef = useRef<File | undefined>(activeDrawingFile);
+  const onZoomRef         = useRef(onZoom);
 
-  useEffect(() => { pdfRef.current           = pdf;           }, [pdf]);
-  useEffect(() => { pageNumberRef.current    = pageNumber;    }, [pageNumber]);
-  useEffect(() => { scaleRef.current         = scale;         }, [scale]);
-  useEffect(() => { pdfDimensionsRef.current = pdfDimensions; }, [pdfDimensions]);
-  useEffect(() => { onScaleSetRef.current    = onScaleSet;    }, [onScaleSet]);
+  useEffect(() => { pdfRef.current              = pdf;              }, [pdf]);
+  useEffect(() => { pageNumberRef.current       = pageNumber;       }, [pageNumber]);
+  useEffect(() => { scaleRef.current            = scale;            }, [scale]);
+  useEffect(() => { pdfDimensionsRef.current    = pdfDimensions;    }, [pdfDimensions]);
+  useEffect(() => { onScaleSetRef.current       = onScaleSet;       }, [onScaleSet]);
   useEffect(() => { activeDrawingFileRef.current = activeDrawingFile; }, [activeDrawingFile]);
+  useEffect(() => { onZoomRef.current           = onZoom;           }, [onZoom]);
 
   // ── Committed scale (debounced 150 ms) ────────────────────────────────────
   useEffect(() => {
@@ -197,6 +212,56 @@ export function useViewerPdf({
       if (!isNaN(f) && f > 0) onScaleSetRef.current(f);
     }
   }, []);
+
+  // ── FIX A: Scroll → pan ───────────────────────────────────────────────────
+  // Tracks the PDF origin in viewport-space on every scroll event.
+  // Formula: pan.x = pdfLeft - scrollLeft, pan.y = pdfTop - scrollTop
+  // where pdfLeft/pdfTop is the pixel offset of the PDF inside the wrap div
+  // (which is centred inside the large wrapStyle div).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const compute = () => {
+      const dims = pdfDimensionsRef.current;
+      if (!dims) return;
+      const vw    = el.clientWidth;
+      const vh    = el.clientHeight;
+      const wrapW = Math.max(dims.w + CANVAS_PADDING * 2, vw  * 3);
+      const wrapH = Math.max(dims.h + CANVAS_PADDING * 2, vh * 3);
+      const pdfLeft = Math.round((wrapW - dims.w) / 2);
+      const pdfTop  = Math.round((wrapH - dims.h) / 2);
+      setPan({
+        x: pdfLeft - el.scrollLeft,
+        y: pdfTop  - el.scrollTop,
+      });
+    };
+
+    el.addEventListener('scroll', compute, { passive: true });
+    // Initialise immediately and also after the first render settles
+    compute();
+    const t = setTimeout(compute, 200);
+    return () => {
+      el.removeEventListener('scroll', compute);
+      clearTimeout(t);
+    };
+  }, [containerRef, pdfDimensionsRef]);
+
+  // Re-initialise pan whenever PDF dimensions change (new document / new page)
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || !pdfDimensions) return;
+    const vw    = el.clientWidth;
+    const vh    = el.clientHeight;
+    const wrapW = Math.max(pdfDimensions.w + CANVAS_PADDING * 2, vw  * 3);
+    const wrapH = Math.max(pdfDimensions.h + CANVAS_PADDING * 2, vh * 3);
+    const pdfLeft = Math.round((wrapW - pdfDimensions.w) / 2);
+    const pdfTop  = Math.round((wrapH - pdfDimensions.h) / 2);
+    setPan({
+      x: pdfLeft - el.scrollLeft,
+      y: pdfTop  - el.scrollTop,
+    });
+  }, [pdfDimensions, containerRef]);
 
   // ── PDF load ───────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -306,13 +371,8 @@ export function useViewerPdf({
               ref === fillCanvasRef &&
               c.width > 0 &&
               c.height > 0 &&
-              // FIX: only preserve fill canvas paint when magic-fill is the
-              // active tool. At all other times (calibration, grid-count, etc.)
-              // simply clear and resize so stale paint cannot bleed through.
               shouldPreserveFillCanvas.current
             ) {
-              // Preserve magic-fill region paint across PDF re-renders
-              // (e.g. zoom commits, page changes) so committed fills survive.
               const tmp = document.createElement('canvas');
               tmp.width  = c.width;
               tmp.height = c.height;
@@ -321,7 +381,6 @@ export function useViewerPdf({
               c.height = logVP.height;
               c.getContext('2d')!.drawImage(tmp, 0, 0, logVP.width, logVP.height);
             } else {
-              // Default: resize (which implicitly clears the canvas).
               c.width  = logVP.width;
               c.height = logVP.height;
             }
@@ -376,12 +435,16 @@ export function useViewerPdf({
   }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
   // ── Wheel zoom ─────────────────────────────────────────────────────────────
+  // FIX B: onZoom (markZoomStart) is called here so Viewer.tsx does not need
+  // a duplicate wheel listener on the same container element.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
+      // Notify caller that a zoom gesture is in progress
+      onZoomRef.current?.();
       const delta =
         (e.deltaY > 0 ? -1 : 1) *
         ZOOM_SENSITIVITY *
@@ -516,5 +579,6 @@ export function useViewerPdf({
     scaleRef,
     pdfDimensionsRef,
     onScaleSetRef,
+    pan,  // FIX A: properly returned
   };
 }

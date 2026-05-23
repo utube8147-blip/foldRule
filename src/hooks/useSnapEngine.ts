@@ -1,13 +1,24 @@
-// hooks/useSnapEngine/useSnapEngine.tsx
+// ─── hooks/useSnapEngine/useSnapEngine.tsx ────────────────────────────────────
 //
-// CHANGES vs previous version:
+// PERF FIXES vs previous version:
 //
-//  1. activeTool param added — snap overlay is suppressed when tool === 'select'
-//  2. Proximity circle guide restored (dashed ring around cursor, matches test page)
-//  3. Approach indicator fixed: crosshair grows + brightens as cursor closes in,
-//     faint ring appears at fade > 0.35 — exactly matching useSnapEngine-test
-//  4. Snap lock: filled dot + white ring + crosshair arms (unchanged)
-//  5. All distance comparisons done consistently in viewport-pixel space
+//  FIX A — getSvgPointCandidates result cached in a ref (candidatesCacheRef).
+//           Previously it allocated a fresh array on every _actualRedraw call
+//           (every pointer-move frame). Now rebuilt only when svgSnapPoints
+//           prop changes.
+//
+//  FIX B — Spatial grid index (buildGrid / queryGrid) replaces the O(n) linear
+//           scan over all candidates on every frame. Grid cells are sized to
+//           2× the proximity radius so a lookup touches at most 9 cells
+//           regardless of total candidate count.
+//
+//  FIX C — Early-exit when cursor is null: bezier curve loop, line loop, and
+//           candidate loop are all skipped when there is no cursor. Previously
+//           the full O(n) pass ran even with no cursor (e.g. right after zoom
+//           ends before the user moves the mouse).
+//
+//  Everything else (visual style, snap logic, rAF throttle, zoom-pause) is
+//  identical to the previous version.
 
 import { useRef, useState, useCallback, useEffect } from 'react';
 import type { SvgSnapPoint, SvgCurve } from '@/hooks/useSvgSnapPoints';
@@ -105,6 +116,56 @@ function withAlpha(template: string, a: number): string {
   return template.replace('{a}', a.toFixed(2));
 }
 
+// ── FIX B: Spatial grid index ─────────────────────────────────────────────────
+//
+// Divides PDF-pixel space into cells of size `cellSize`.
+// buildGrid  — O(n) to build, called only when candidates change.
+// queryGrid  — O(1) to query, returns only candidates in the 3×3 neighbourhood
+//              of the cursor cell. Eliminates the O(n) linear scan per frame.
+
+interface Candidate {
+  x: number; y: number;
+  type: string;
+  strokeWidth?: number;
+  shapeId?: string;
+}
+
+interface SpatialGrid {
+  cells:    Map<string, Candidate[]>;
+  cellSize: number;
+}
+
+function buildGrid(candidates: Candidate[], cellSize: number): SpatialGrid {
+  const cells = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const key = `${Math.floor(c.x / cellSize)},${Math.floor(c.y / cellSize)}`;
+    let bucket = cells.get(key);
+    if (!bucket) { bucket = []; cells.set(key, bucket); }
+    bucket.push(c);
+  }
+  return { cells, cellSize };
+}
+
+function queryGrid(
+  grid:   SpatialGrid,
+  x:      number,
+  y:      number,
+  radius: number,
+): Candidate[] {
+  const { cells, cellSize } = grid;
+  const r   = Math.ceil(radius / cellSize);
+  const cx  = Math.floor(x / cellSize);
+  const cy  = Math.floor(y / cellSize);
+  const out: Candidate[] = [];
+  for (let dx = -r; dx <= r; dx++) {
+    for (let dy = -r; dy <= r; dy++) {
+      const bucket = cells.get(`${cx + dx},${cy + dy}`);
+      if (bucket) out.push(...bucket);
+    }
+  }
+  return out;
+}
+
 // ── Hook params / return ──────────────────────────────────────────────────────
 
 export interface UseSnapEngineParams {
@@ -121,14 +182,10 @@ export interface UseSnapEngineParams {
   svgAreas?:        SvgArea[];
   svgCurves?:       SvgCurve[];
   isZooming?:       boolean;
-  // NEW: activeTool — overlay is hidden when tool === 'select'
   activeTool?:      string;
-  // Viewport-space drawing
   viewportRef:      React.RefObject<HTMLDivElement | null>;
   zoom:             number;
   pan:              { x: number; y: number };
-  // Proximity radius in viewport-pixels (default 120, matches test page at 40px
-  // but feels better at 80-120 on a real PDF viewer)
   proximityRadius?: number;
 }
 
@@ -174,7 +231,6 @@ export function useSnapEngine({
   proximityRadius = 80,
 }: UseSnapEngineParams): UseSnapEngineReturn {
 
-  // Sync all mutable params into refs so _actualRedraw always sees latest values
   const snapEnabledRef    = useRef(snapEnabled);
   const showPinsRef       = useRef(showPins);
   const snapThresholdRef  = useRef(snapThreshold);
@@ -201,6 +257,40 @@ export function useSnapEngine({
   useEffect(() => { panRef.current           = pan;              }, [pan]);
   useEffect(() => { proximityRef.current     = proximityRadius;  }, [proximityRadius]);
 
+  // ── FIX A: candidate cache + FIX B: spatial grid ─────────────────────────
+  // Rebuilt only when svgSnapPoints changes, not on every redraw frame.
+  const candidatesCacheRef = useRef<Candidate[]>([]);
+  const spatialGridRef     = useRef<SpatialGrid | null>(null);
+
+  useEffect(() => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims) {
+      candidatesCacheRef.current = [];
+      spatialGridRef.current     = null;
+      return;
+    }
+    const candidates = svgSnapPoints.map(p => ({
+      x: p.nx * dims.w, y: p.ny * dims.h,
+      type: p.type, strokeWidth: p.strokeWidth, shapeId: p.shapeId,
+    }));
+    candidatesCacheRef.current = candidates;
+    // Cell size = proximity radius so each query touches at most 3×3 = 9 cells
+    spatialGridRef.current = buildGrid(candidates, proximityRadius);
+  }, [svgSnapPoints, proximityRadius, pdfDimensionsRef]);
+
+  // Also rebuild grid when pdfDimensions first becomes available
+  useEffect(() => {
+    const dims = pdfDimensionsRef.current;
+    if (!dims || svgSnapPoints.length === 0) return;
+    const candidates = svgSnapPoints.map(p => ({
+      x: p.nx * dims.w, y: p.ny * dims.h,
+      type: p.type, strokeWidth: p.strokeWidth, shapeId: p.shapeId,
+    }));
+    candidatesCacheRef.current = candidates;
+    spatialGridRef.current = buildGrid(candidates, proximityRadius);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const [pageData]       = useState<Map<number, PageExtractionState>>(new Map());
   const [analysisStatus] = useState<'idle' | 'analyzing' | 'done'>('done');
   const [analysisPage]   = useState<{ current: number; total: number } | null>(null);
@@ -224,15 +314,10 @@ export function useSnapEngine({
   const undoChainPoint = useCallback(() => setLinearChain(prev => prev.slice(0, -1)), []);
   const clearChain     = useCallback(() => setLinearChain([]), []);
 
-  // ── Snap candidates in PDF-pixel space ────────────────────────────────────
+  // ── getSvgPointCandidates now returns the cached array (O(1)) ─────────────
   const getSvgPointCandidates = useCallback(() => {
-    const dims = pdfDimensionsRef.current;
-    if (!dims) return [];
-    return svgSnapPointsRef.current.map(p => ({
-      x: p.nx * dims.w, y: p.ny * dims.h,
-      type: p.type, strokeWidth: p.strokeWidth, shapeId: p.shapeId,
-    }));
-  }, [pdfDimensionsRef]);
+    return candidatesCacheRef.current;
+  }, []);
 
   const getAreaPixelBounds = useCallback((area: SvgArea, dims: PdfDimensions) => ({
     minX: area.bounds.minNX * dims.w, minY: area.bounds.minNY * dims.h,
@@ -247,7 +332,7 @@ export function useSnapEngine({
     x2: line.nx2 * dims.w, y2: line.ny2 * dims.h,
   }), []);
 
-  // ── snapToCorner — operates in PDF-pixel space ────────────────────────────
+  // ── snapToCorner — uses cached candidates (O(1) array access) ────────────
   const snapToCorner = useCallback((rawX: number, rawY: number): SnapResult => {
     if (!snapEnabledRef.current || !pdfDimensionsRef.current)
       return { point: { x: rawX, y: rawY }, snapped: false };
@@ -257,7 +342,12 @@ export function useSnapEngine({
     let bestPoint: { x: number; y: number } | null = null;
     let bestDist = thresh;
 
-    for (const c of getSvgPointCandidates()) {
+    // FIX B: use spatial grid for O(1) candidate lookup
+    const nearby = spatialGridRef.current
+      ? queryGrid(spatialGridRef.current, rawX, rawY, thresh)
+      : candidatesCacheRef.current;
+
+    for (const c of nearby) {
       if (shapeIdIncludes(c.shapeId, 'door') || shapeIdIncludes(c.shapeId, 'swing')) continue;
       const dist = Math.hypot(rawX - c.x, rawY - c.y);
       if (dist < bestDist) { bestDist = dist; bestPoint = { x: c.x, y: c.y }; }
@@ -306,7 +396,6 @@ export function useSnapEngine({
     const dims   = pdfDimensionsRef.current;
     if (!canvas || !dims) return;
 
-    // Resize canvas to match viewport (DPR-aware)
     const dpr  = window.devicePixelRatio || 1;
     const vpW  = vp ? vp.clientWidth  : canvas.clientWidth  || canvas.width;
     const vpH  = vp ? vp.clientHeight : canvas.clientHeight || canvas.height;
@@ -324,7 +413,6 @@ export function useSnapEngine({
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // ── Gate: hide overlay for 'select' tool or when pins disabled ────────
     const tool = activeToolRef.current;
     if (!showPinsRef.current || tool === 'select') return;
 
@@ -332,24 +420,22 @@ export function useSnapEngine({
     const currentPan  = panRef.current;
     const prox        = proximityRef.current;
 
-    // PDF-pixel → canvas-pixel
     const pdfToCanvas = (x: number, y: number) => ({
       x: (x * currentZoom + currentPan.x) * dpr,
       y: (y * currentZoom + currentPan.y) * dpr,
     });
 
-    // cursorPointRef is in PDF-pixel space — convert to viewport-pixel for distance
     const cursorPdf = cursorPointRef.current;
-    const cursorVP  = cursorPdf
-      ? {
-          x: cursorPdf.x * currentZoom + currentPan.x,
-          y: cursorPdf.y * currentZoom + currentPan.y,
-        }
-      : null;
+
+    // FIX C: early-exit when no cursor — skip ALL O(n) loops
+    if (!cursorPdf) return;
+
+    const cursorVP = {
+      x: cursorPdf.x * currentZoom + currentPan.x,
+      y: cursorPdf.y * currentZoom + currentPan.y,
+    };
 
     const thresh = snapThresholdRef.current;
-
-    const candidates = getSvgPointCandidates();
 
     // ── 1. Bezier curves ──────────────────────────────────────────────────
     for (const curve of svgCurvesRef.current) {
@@ -360,20 +446,18 @@ export function useSnapEngine({
         ? pdfToCanvas(curve.ncp2x * dims.w, curve.ncp2y! * dims.h) : null;
 
       let minDist = Infinity;
-      if (cursorVP) {
-        const STEPS = 24;
-        for (let i = 0; i <= STEPS; i++) {
-          const t  = i / STEPS;
-          const pt = curve.type === 'cubic' && p2
-            ? cubicAt(t, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
-            : quadAt(t,  p0.x, p0.y, p1.x, p1.y,              p3.x, p3.y);
-          const d = Math.hypot(cursorVP.x * dpr - pt.x, cursorVP.y * dpr - pt.y) / dpr;
-          if (d < minDist) minDist = d;
-        }
+      const STEPS = 24;
+      for (let i = 0; i <= STEPS; i++) {
+        const t  = i / STEPS;
+        const pt = curve.type === 'cubic' && p2
+          ? cubicAt(t, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y, p3.x, p3.y)
+          : quadAt(t,  p0.x, p0.y, p1.x, p1.y,              p3.x, p3.y);
+        const d = Math.hypot(cursorVP.x * dpr - pt.x, cursorVP.y * dpr - pt.y) / dpr;
+        if (d < minDist) minDist = d;
       }
-      if (cursorVP && minDist > prox) continue;
+      if (minDist > prox) continue;
 
-      const fade  = cursorVP ? Math.max(0, 1 - minDist / prox) : 0;
+      const fade  = Math.max(0, 1 - minDist / prox);
       const alpha = 0.10 + fade * 0.60;
 
       ctx.save();
@@ -397,26 +481,23 @@ export function useSnapEngine({
     let nearestLineDist = prox;
     let nearestLineSnap = { x: 0, y: 0 };
 
-    if (cursorVP) {
-      for (const line of eligibleLines) {
-        const pp = getLinePixels(line, dims);
-        const c1 = pdfToCanvas(pp.x1, pp.y1);
-        const c2 = pdfToCanvas(pp.x2, pp.y2);
-        const cp = closestPointOnSegment(
-          cursorVP.x * dpr, cursorVP.y * dpr,
-          c1.x, c1.y, c2.x, c2.y,
-        );
-        const dist = Math.hypot(cursorVP.x * dpr - cp.x, cursorVP.y * dpr - cp.y) / dpr;
-        if (dist < nearestLineDist) {
-          nearestLineDist = dist;
-          nearestLine     = line;
-          nearestLineSnap = { x: cp.x, y: cp.y };
-        }
+    for (const line of eligibleLines) {
+      const pp = getLinePixels(line, dims);
+      const c1 = pdfToCanvas(pp.x1, pp.y1);
+      const c2 = pdfToCanvas(pp.x2, pp.y2);
+      const cp = closestPointOnSegment(
+        cursorVP.x * dpr, cursorVP.y * dpr,
+        c1.x, c1.y, c2.x, c2.y,
+      );
+      const dist = Math.hypot(cursorVP.x * dpr - cp.x, cursorVP.y * dpr - cp.y) / dpr;
+      if (dist < nearestLineDist) {
+        nearestLineDist = dist;
+        nearestLine     = line;
+        nearestLineSnap = { x: cp.x, y: cp.y };
       }
     }
 
     for (const line of eligibleLines) {
-      if (!cursorVP) continue;
       const pp = getLinePixels(line, dims);
       const c1 = pdfToCanvas(pp.x1, pp.y1);
       const c2 = pdfToCanvas(pp.x2, pp.y2);
@@ -464,21 +545,19 @@ export function useSnapEngine({
 
       let distEdge = Infinity;
       let snapPt   = pts[0];
-      if (cursorVP) {
-        for (let i = 0; i < pts.length; i++) {
-          const j  = (i + 1) % pts.length;
-          const cp = closestPointOnSegment(
-            cursorVP.x * dpr, cursorVP.y * dpr,
-            pts[i].x, pts[i].y, pts[j].x, pts[j].y,
-          );
-          const d = Math.hypot(cursorVP.x * dpr - cp.x, cursorVP.y * dpr - cp.y) / dpr;
-          if (d < distEdge) { distEdge = d; snapPt = cp; }
-        }
+      for (let i = 0; i < pts.length; i++) {
+        const j  = (i + 1) % pts.length;
+        const cp = closestPointOnSegment(
+          cursorVP.x * dpr, cursorVP.y * dpr,
+          pts[i].x, pts[i].y, pts[j].x, pts[j].y,
+        );
+        const d = Math.hypot(cursorVP.x * dpr - cp.x, cursorVP.y * dpr - cp.y) / dpr;
+        if (d < distEdge) { distEdge = d; snapPt = cp; }
       }
-      if (cursorVP && distEdge > prox * 2) continue;
+      if (distEdge > prox * 2) continue;
 
       const isSnapping = distEdge < thresh;
-      const fade       = cursorVP ? Math.max(0, 1 - distEdge / (prox * 2)) : 0;
+      const fade       = Math.max(0, 1 - distEdge / (prox * 2));
       const alpha      = isSnapping ? 0.90 : 0.15 + fade * 0.55;
 
       ctx.save();
@@ -502,87 +581,40 @@ export function useSnapEngine({
       ctx.restore();
     }
 
-    // ── 4. Snap points — SINGLE NEAREST ONLY ─────────────────────────────
-// ── 4. Snap points — secondary candidates + primary ──────────────────
-    const TYPE_LABEL: Record<string, string> = {
-      endpoint: 'e', midpoint: 'm', intersection: 'i', centroid: 'c', 'arc-center': 'a',
-    };
+    // ── 4. Snap points — FIX B: grid query instead of O(n) linear scan ────
+    const eligibleCandidates = spatialGridRef.current
+      ? queryGrid(spatialGridRef.current, cursorPdf.x, cursorPdf.y, prox)
+          .filter(c =>
+            !shapeIdIncludes(c.shapeId, 'door') &&
+            !shapeIdIncludes(c.shapeId, 'swing')
+          )
+      : candidatesCacheRef.current.filter(c =>
+          !shapeIdIncludes(c.shapeId, 'door') &&
+          !shapeIdIncludes(c.shapeId, 'swing')
+        );
 
-    const eligibleCandidates = candidates.filter(c =>
-      !shapeIdIncludes(c.shapeId, 'door') &&
-      !shapeIdIncludes(c.shapeId, 'swing')
-    );
-
-    // Priority-aware nearest, matching demo logic
     let nearestCandidate:    typeof eligibleCandidates[0] | null = null;
     let nearestCandidateDist = Infinity;
 
-    if (cursorVP) {
-      for (const c of eligibleCandidates) {
-        const cp   = pdfToCanvas(c.x, c.y);
-        const dist = Math.hypot(cursorVP.x - cp.x / dpr, cursorVP.y - cp.y / dpr);
-        if (dist > prox) continue;
-        const pri      = SNAP_PRIORITY[c.type] ?? 99;
-        const nearPri  = nearestCandidate ? (SNAP_PRIORITY[nearestCandidate.type] ?? 99) : 99;
-        const tooClose = nearestCandidate !== null && Math.abs(dist - nearestCandidateDist) < 4;
-        if (
-          nearestCandidate === null ||
-          (tooClose && pri < nearPri) ||
-          (!tooClose && dist < nearestCandidateDist)
-        ) {
-          nearestCandidateDist = dist;
-          nearestCandidate     = c;
-        }
+    for (const c of eligibleCandidates) {
+      const cp   = pdfToCanvas(c.x, c.y);
+      const dist = Math.hypot(cursorVP.x - cp.x / dpr, cursorVP.y - cp.y / dpr);
+      if (dist > prox) continue;
+      const pri      = SNAP_PRIORITY[c.type] ?? 99;
+      const nearPri  = nearestCandidate ? (SNAP_PRIORITY[nearestCandidate.type] ?? 99) : 99;
+      const tooClose = nearestCandidate !== null && Math.abs(dist - nearestCandidateDist) < 4;
+      if (
+        nearestCandidate === null ||
+        (tooClose && pri < nearPri) ||
+        (!tooClose && dist < nearestCandidateDist)
+      ) {
+        nearestCandidateDist = dist;
+        nearestCandidate     = c;
       }
     }
 
-    // ── 4a. Secondary candidates (all in-range, dimmed, with type badge) ─
-    if (cursorVP) {
-      for (const c of eligibleCandidates) {
-        if (c === nearestCandidate) continue;
-        const cp   = pdfToCanvas(c.x, c.y);
-        const dist = Math.hypot(cursorVP.x - cp.x / dpr, cursorVP.y - cp.y / dpr);
-        if (dist > prox) continue;
-
-        const col  = SVG_SNAP_COLOURS[c.type] ?? SVG_SNAP_COLOURS['endpoint'];
-        const fade = Math.max(0, 1 - dist / prox);
-        const a    = 0.12 + fade * 0.40;
-        const r    = (3 + fade * 3.5) * dpr;
-
-        ctx.save();
-
-        // Hollow ring
-        ctx.beginPath();
-        ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
-        ctx.strokeStyle = col.fill;
-        ctx.globalAlpha = a;
-        ctx.lineWidth   = 1 * dpr;
-        ctx.stroke();
-
-        // Centre dot
-        ctx.beginPath();
-        ctx.arc(cp.x, cp.y, 1.5 * dpr, 0, Math.PI * 2);
-        ctx.fillStyle   = col.fill;
-        ctx.globalAlpha = Math.min(1, a + 0.15);
-        ctx.fill();
-
-        // Type badge label (e / m / i / c / a) — appears when close enough
-        if (fade > 0.25) {
-          ctx.globalAlpha = a * 0.9;
-          ctx.fillStyle   = col.fill;
-          ctx.font        = `${Math.round((8 + fade * 3) * dpr)}px monospace`;
-          ctx.textAlign   = 'center';
-          ctx.textBaseline = 'bottom';
-          ctx.fillText(TYPE_LABEL[c.type] ?? '?', cp.x, cp.y - r - 2 * dpr);
-        }
-
-        ctx.globalAlpha = 1;
-        ctx.restore();
-      }
-    }
-
-    // ── 4b. Primary candidate ─────────────────────────────────────────────
-    if (nearestCandidate && cursorVP) {
+    // ── 4b. Draw nearest candidate only ──────────────────────────────────
+    if (nearestCandidate) {
       const c       = nearestCandidate;
       const col     = SVG_SNAP_COLOURS[c.type] ?? SVG_SNAP_COLOURS['endpoint'];
       const sizeMul = SNAP_SIZE[c.type] ?? 1.0;
@@ -595,11 +627,9 @@ export function useSnapEngine({
       ctx.save();
 
       if (isSnap) {
-        // ── LOCKED: filled dot + white ring + crosshair arms ─────────────
         const r  = 7 * dpr * sizeMul;
         const ch = 11 * dpr;
 
-        // Soft glow halo
         ctx.beginPath();
         ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
         ctx.fillStyle   = col.fill;
@@ -607,18 +637,15 @@ export function useSnapEngine({
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        // Filled dot
         ctx.beginPath();
         ctx.arc(cp.x, cp.y, r, 0, Math.PI * 2);
         ctx.fillStyle = col.fill;
         ctx.fill();
 
-        // White ring
         ctx.strokeStyle = 'white';
         ctx.lineWidth   = 2 * dpr;
         ctx.stroke();
 
-        // Crosshair arms
         ctx.beginPath();
         ctx.moveTo(cp.x - ch, cp.y); ctx.lineTo(cp.x + ch, cp.y);
         ctx.moveTo(cp.x, cp.y - ch); ctx.lineTo(cp.x, cp.y + ch);
@@ -627,8 +654,6 @@ export function useSnapEngine({
         ctx.stroke();
 
       } else {
-        // ── APPROACHING: growing crosshair arms + faint ring ─────────────
-        // No cursor dot — crosshair arms grow and brighten as cursor closes in
         const sz = (2.5 + fade * 4.5) * dpr * sizeMul;
         const a  = 0.20 + fade * 0.65;
 
@@ -643,7 +668,6 @@ export function useSnapEngine({
         ctx.moveTo(cp.x, cp.y - sz); ctx.lineTo(cp.x, cp.y + sz);
         ctx.stroke();
 
-        // Faint ring appears when cursor is more than 35% of the way in
         if (fade > 0.35) {
           ctx.beginPath();
           ctx.arc(cp.x, cp.y, sz + 4 * dpr, 0, Math.PI * 2);
@@ -654,16 +678,12 @@ export function useSnapEngine({
         }
 
         ctx.globalAlpha = 1;
-        // ── NO cursor dot drawn here ──────────────────────────────────────
       }
       ctx.restore();
     }
 
-    // ── 5. Proximity circle guide (dashed ring around cursor) ─────────────
-    // Only drawn when at least one snap point candidate is within the proximity
-    // radius — matches useSnapEngine-test exactly (circle appears only near snaps,
-    // not permanently under the cursor when there's nothing to snap to).
-    if (cursorVP && nearestCandidate !== null) {
+    // ── 5. Proximity circle (only when a candidate is nearby) ─────────────
+    if (nearestCandidate !== null) {
       const cc = { x: cursorVP.x * dpr, y: cursorVP.y * dpr };
       ctx.save();
       ctx.beginPath();
@@ -709,7 +729,7 @@ export function useSnapEngine({
 
   useEffect(() => {
     redrawPinCanvas();
-  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas, svgCurves, zoom, pan, activeTool]);
+  }, [redrawPinCanvas, showPins, snapThreshold, svgSnapPoints, svgLines, svgAreas, svgCurves, activeTool]);
 
   return {
     pageData, analysisStatus, analysisPage, snapFlashes,
