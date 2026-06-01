@@ -1,13 +1,6 @@
 'use client';
 
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
-//
-// CHANGES vs previous:
-//   • svgUrl constant added at top — set this to your public SVG URL.
-//   • svgUrl prop passed to <Viewer> for snap layout.
-//   • onDeleteMeasurement={deleteMeasurement} passed to Viewer (unchanged).
-//   • No other changes.
-// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -37,13 +30,6 @@ import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
 
 // ─── SVG snap layout URL ──────────────────────────────────────────────────────
-// Set this to any publicly accessible SVG URL.
-// Examples:
-//   'https://your-cdn.com/drawings/floorplan.svg'
-//   'https://storage.googleapis.com/your-bucket/plans/building-a.svg'
-//   '/floorplan.svg'  ← still works if you have one in /public
-//
-// Set to undefined (or remove the prop from <Viewer>) to disable snapping.
 const SNAP_SVG_URL = '/floorplan.svg';
 
 // ─── Stable color palette for presets ────────────────────────────────────────
@@ -108,6 +94,7 @@ export default function Workspace() {
   // ── Toolbar state managed at workspace level ──────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(false);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
+  const [showPins,         setShowPins]         = useState(false);   // ← hoisted here
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -486,6 +473,8 @@ export default function Workspace() {
             handleUndo={() => api?.handleUndo?.()}
             handleRedo={() => api?.handleRedo?.()}
             tempPointsCount={0}
+            showPins={showPins}
+            setShowPins={setShowPins}
             snapEnabled={snapEnabled}
             setSnapEnabled={setSnapEnabled}
             showSnapSettings={showSnapSettings}
@@ -524,10 +513,9 @@ export default function Workspace() {
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}
-                // ── Snap layout SVG ──────────────────────────────────────────
-                // Change SNAP_SVG_URL at the top of this file to point at your SVG.
-                // Pass undefined to disable snapping entirely.
                 svgUrl={SNAP_SVG_URL}
+                showPins={showPins}
+                onShowPinsChange={setShowPins}
               />
             </div>
 
