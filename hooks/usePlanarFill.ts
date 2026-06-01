@@ -8,6 +8,7 @@
 //  ──────────────────
 //  1. Build planar graph
 //     • Every svgLine is a raw edge.
+
 //     • Each raw edge is split at every intersection point that lies on it
 //       (using the pre-computed intersection list from useSvgSnapPoints).
 //     • Result: a set of atomic half-edges where every node has degree ≥ 2
