@@ -1,29 +1,9 @@
 'use client';
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
-//
-// CHANGES vs previous version:
-//
-//  REFERENCE STABILIZATION FIX:
-//    • svgSnapPoints, svgCurves, svgLines are now pinned via useRef so their
-//      object identity only changes when the underlying data changes (i.e. when
-//      the SVG is first loaded or the PDF page changes).
-//    • Previously, destructuring useSvgSnapPoints() and useMemo() on every
-//      render created new local variable bindings each render tick, causing
-//      useSnapEngine's data effects to think the data had changed on every
-//      zoom tick — triggering a full 25-second structured-clone postMessage
-//      on every wheel event.
-//    • With ref pinning, zoom re-renders produce the same array references →
-//      useSnapEngine's unchanged check bails immediately → only the lightweight
-//      transform effect fires (3 numbers, ~0ms).
-//
-//  Everything else is identical to the previous version.
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
-import type * as pdfjsLibTypes from 'pdfjs-dist/legacy/build/pdf';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
@@ -56,125 +36,22 @@ import {
   stagedArcCount as calcStagedArcCount,
   stagedRadiusCount,
 } from '@/hooks/useMeasurements/useMeasurementCommit';
-import type { SvgLine } from '@/hooks/useSvgInteraction';
+import type { SvgLine } from '@/hooks/useSvgSnapPoints';
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
-// ─── extractSvgLines ──────────────────────────────────────────────────────────
-
-function numA(el: Element, n: string, fb = 0): number {
-  const v = parseFloat(el.getAttribute(n) ?? '');
-  return isNaN(v) ? fb : v;
-}
-function _identMat() { return { a:1, b:0, c:0, d:1, e:0, f:0 }; }
-function _mulMat(m1: any, m2: any) {
-  return {
-    a: m1.a*m2.a+m1.c*m2.b, b: m1.b*m2.a+m1.d*m2.b,
-    c: m1.a*m2.c+m1.c*m2.d, d: m1.b*m2.c+m1.d*m2.d,
-    e: m1.a*m2.e+m1.c*m2.f+m1.e, f: m1.b*m2.e+m1.d*m2.f+m1.f,
-  };
-}
-function _applyMat(m: any, x: number, y: number) {
-  return { x: m.a*x+m.c*y+m.e, y: m.b*x+m.d*y+m.f };
-}
-function _parseTfm(t: string | null): any {
-  if (!t) return _identMat();
-  const re = /(matrix|translate|scale|rotate)\(([^)]*)\)/g;
-  const mats: any[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(t)) !== null) {
-    const args = m[2].trim().split(/[\s,]+/).map(parseFloat);
-    let mat = _identMat();
-    if      (m[1]==='matrix')    mat={a:args[0],b:args[1],c:args[2],d:args[3],e:args[4],f:args[5]};
-    else if (m[1]==='translate') mat={..._identMat(),e:args[0]??0,f:args[1]??0};
-    else if (m[1]==='scale')     { const s=args[0]??1,sy=args[1]??s; mat={a:s,b:0,c:0,d:sy,e:0,f:0}; }
-    else if (m[1]==='rotate')    { const a=(args[0]??0)*Math.PI/180,cos=Math.cos(a),sin=Math.sin(a); mat={a:cos,b:sin,c:-sin,d:cos,e:0,f:0}; }
-    mats.push(mat);
+// ── PDF.js version helper ─────────────────────────────────────────────────────
+// Using a plain require() at runtime avoids TypeScript module-resolution errors
+// for the legacy CJS bundle while still giving us the version string.
+function getPdfLibVersion(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const lib = require('pdfjs-dist/legacy/build/pdf') as { version?: string };
+    return lib.version ?? '?';
+  } catch {
+    return '?';
   }
-  return mats.reduce((acc,mx) => _mulMat(acc,mx), _identMat());
 }
-function _getCTM(el: Element, root: Element): any {
-  const mats: any[] = [];
-  let node: Element|null = el;
-  while (node && node !== root.parentElement) {
-    const t = node.getAttribute('transform');
-    if (t) mats.unshift(_parseTfm(t));
-    node = node.parentElement;
-  }
-  return mats.reduce((acc,mx) => _mulMat(acc,mx), _identMat());
-}
-
-export function extractSvgLines(svgText: string, pdfW: number, pdfH: number): SvgLine[] {
-  if (typeof window === 'undefined') return [];
-  const parser = new DOMParser();
-  const doc    = parser.parseFromString(svgText, 'image/svg+xml');
-  if (doc.querySelector('parseerror')) return [];
-  const svgEl = doc.querySelector('svg');
-  if (!svgEl) return [];
-
-  let sx=1, sy=1, tx=0, ty=0;
-  const vb = svgEl.getAttribute('viewBox');
-  if (vb) {
-    const [minX,minY,vbW,vbH] = vb.trim().split(/[\s,]+/).map(parseFloat);
-    if (vbW>0 && vbH>0) { sx=pdfW/vbW; sy=pdfH/vbH; tx=-minX*sx; ty=-minY*sy; }
-  } else {
-    const wa = parseFloat(svgEl.getAttribute('width')??'0')  || pdfW;
-    const ha = parseFloat(svgEl.getAttribute('height')??'0') || pdfH;
-    sx=pdfW/wa; sy=pdfH/ha;
-  }
-
-  const toCanvas = (x: number, y: number, ctm: any) => {
-    const p = _applyMat(ctm, x, y);
-    return { x: p.x*sx+tx, y: p.y*sy+ty };
-  };
-
-  const lines: SvgLine[] = [];
-
-  const pushLine = (ax: number, ay: number, bx: number, by: number, ctm: any, shapeId: string) => {
-    const a = toCanvas(ax, ay, ctm);
-    const b = toCanvas(bx, by, ctm);
-    if (Math.hypot(a.x-b.x, a.y-b.y) < 0.5) return;
-    lines.push({
-      nx1: a.x/pdfW, ny1: a.y/pdfH,
-      nx2: b.x/pdfW, ny2: b.y/pdfH,
-      shapeId,
-    } as unknown as SvgLine);
-  };
-
-  svgEl.querySelectorAll('line,polyline,polygon,rect').forEach(el => {
-    const tag     = el.tagName.toLowerCase();
-    const ctm     = _getCTM(el, svgEl);
-    const shapeId = el.getAttribute('id') || el.getAttribute('class') || tag;
-
-    if (tag === 'line') {
-      pushLine(numA(el,'x1'), numA(el,'y1'), numA(el,'x2'), numA(el,'y2'), ctm, shapeId);
-    } else if (tag === 'polyline' || tag === 'polygon') {
-      const raw  = el.getAttribute('points') ?? '';
-      const nums = raw.trim().split(/[\s,]+/).map(parseFloat).filter(n => !isNaN(n));
-      for (let i = 0; i+3 < nums.length; i+=2)
-        pushLine(nums[i], nums[i+1], nums[i+2], nums[i+3], ctm, shapeId);
-      if (tag === 'polygon' && nums.length >= 4)
-        pushLine(nums[nums.length-2], nums[nums.length-1], nums[0], nums[1], ctm, shapeId);
-    } else if (tag === 'rect') {
-      const x=numA(el,'x'), y=numA(el,'y'), w=numA(el,'width'), h=numA(el,'height');
-      if (w>0 && h>0) {
-        pushLine(x,   y,   x+w, y,   ctm, shapeId);
-        pushLine(x+w, y,   x+w, y+h, ctm, shapeId);
-        pushLine(x+w, y+h, x,   y+h, ctm, shapeId);
-        pushLine(x,   y+h, x,   y,   ctm, shapeId);
-      }
-    }
-  });
-
-  return lines;
-}
-
-function getPdfLib(): typeof pdfjsLibTypes {
-  if (typeof window === 'undefined') throw new Error('pdfjs not available on server');
-  return require('pdfjs-dist/legacy/build/pdf');
-}
-
-// ─── Internal types ───────────────────────────────────────────────────────────
 
 interface PendingMeasurementData {
   id: string;
@@ -186,11 +63,7 @@ interface UndoRedoRefValue {
   setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
 }
 
-// ─── SVG fetch cache ──────────────────────────────────────────────────────────
-
 const svgFetchCache = new Map<string, string>();
-
-// ─── Component ────────────────────────────────────────────────────────────────
 
 export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const {
@@ -205,11 +78,10 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onAppendComplete,
     onToolbarReady,
     svgUrl,
-  } = props as any;
-
-  const onDeleteMeasurementProp = (props as any).onDeleteMeasurement as
-    | ((...args: any[]) => any)
-    | undefined;
+    showPins: externalShowPins,
+    onShowPinsChange: externalOnShowPinsChange,
+    onDeleteMeasurement: onDeleteMeasurementProp,
+  } = props;
 
   // ── Canvas refs ───────────────────────────────────────────────────────────
   const pdfCanvasRef     = useRef<HTMLCanvasElement>(null!);
@@ -224,10 +96,14 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(true);
-  const [showPins,         setShowPins]         = useState(true);
+  const [internalShowPins, setInternalShowPins] = useState(true);
   const [snapThreshold,    setSnapThreshold]    = useState(14);
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
+
+  // Resolved values — external prop wins when provided
+  const showPins    = externalShowPins    !== undefined ? externalShowPins    : internalShowPins;
+  const setShowPins = externalOnShowPinsChange !== undefined ? externalOnShowPinsChange : setInternalShowPins;
 
   // ── Dialog state ──────────────────────────────────────────────────────────
   const [showCalibrationDialog,  setShowCalibrationDialog]  = useState(false);
@@ -274,7 +150,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     activeDrawingId,
     activeDrawingUrl,
     activeDrawingFile: activeDrawing?.file,
-    onPdfLoaded: (doc, file) => startExtractionRef.current?.(doc, file),
+    onPdfLoaded: (doc: any, file: any) => startExtractionRef.current?.(doc, file),
     onScaleSet,
     shouldPreserveFillCanvas: isMagicFillActiveRef,
   });
@@ -299,7 +175,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         if (cancelled) return;
         svgFetchCache.set(svgUrl, text);
         setSvgContent(text);
-        console.log(`[Viewer] SVG loaded from ${svgUrl}, length: ${text.length}`);
+        console.log(`[Viewer] SVG loaded — ${text.length} chars`);
       })
       .catch(err => {
         if (cancelled) return;
@@ -310,62 +186,49 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     return () => { cancelled = true; };
   }, [svgUrl]);
 
-  // FIX 1: Stable pdfDimensions reference
-  const stablePdfDimensions = useMemo(
-    () => pdfDimensions,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pdfDimensions?.w, pdfDimensions?.h],
-  );
+  // ── Stable PDF dimensions ─────────────────────────────────────────────────
+  const stablePdfDimRef = useRef<{ w: number; h: number } | null>(null);
+  const stablePdfDimensions = useMemo(() => {
+    if (!pdfDimensions) return null;
+    if (
+      stablePdfDimRef.current &&
+      stablePdfDimRef.current.w === pdfDimensions.w &&
+      stablePdfDimRef.current.h === pdfDimensions.h
+    ) {
+      return stablePdfDimRef.current;
+    }
+    stablePdfDimRef.current = { w: pdfDimensions.w, h: pdfDimensions.h };
+    return stablePdfDimRef.current;
+  }, [pdfDimensions?.w, pdfDimensions?.h]);
 
-  // FIX 6: Stable pan reference — prevents new object identity on every wheel
-  // tick from cascading into useSnapEngine's transform effect unnecessarily.
+  // ── Stable pan ────────────────────────────────────────────────────────────
   const stablePan = useMemo(
     () => pan ?? { x: 0, y: 0 },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pan?.x, pan?.y],
   );
 
-  // ── Snap points from SVG ──────────────────────────────────────────────────
-  const { snapPoints: _svgSnapPoints, svgCurves: _svgCurves } = useSvgSnapPoints(
-    svgContent,
-    stablePdfDimensions,
-  );
+  // ── Snap points, curves, and lines from SVG ───────────────────────────────
+  const {
+    snapPoints: _svgSnapPoints,
+    svgCurves:  _svgCurves,
+    svgLines:   _svgLines,
+  } = useSvgSnapPoints(svgContent, stablePdfDimensions, snapEnabled);
 
-  // ── REFERENCE STABILIZATION ───────────────────────────────────────────────
-  // useSvgSnapPoints internally memos the arrays so their references only
-  // change when svgContent or pdfDimensions changes. However, destructuring
-  // the hook return value creates new local variable bindings on every render,
-  // which React's useEffect dep comparison treats as potentially new references.
-  //
-  // We pin to refs so that zoom-induced re-renders (which don't change the
-  // underlying data) produce the exact same array identity downstream.
-  // This prevents useSnapEngine's data effects from firing on every zoom tick.
-  const svgSnapPointsStableRef = useRef(_svgSnapPoints);
-  const svgCurvesStableRef     = useRef(_svgCurves);
-  if (_svgSnapPoints !== svgSnapPointsStableRef.current) {
-    svgSnapPointsStableRef.current = _svgSnapPoints;
-  }
-  if (_svgCurves !== svgCurvesStableRef.current) {
-    svgCurvesStableRef.current = _svgCurves;
-  }
-  const svgSnapPoints = svgSnapPointsStableRef.current;
-  const svgCurves     = svgCurvesStableRef.current;
+  // ── Reference stabilization ───────────────────────────────────────────────
+  const svgSnapPointsRef = useRef(_svgSnapPoints);
+  const svgCurvesRef     = useRef(_svgCurves);
+  const svgLinesRef      = useRef(_svgLines);
 
-  // ── SVG lines ─────────────────────────────────────────────────────────────
-  // useMemo already ensures _svgLines only recomputes when svgContent or
-  // stablePdfDimensions changes. Pin to ref for the same identity guarantee.
-  const _svgLines = useMemo((): SvgLine[] => {
-    if (!svgContent || !stablePdfDimensions) return [];
-    return extractSvgLines(svgContent, stablePdfDimensions.w, stablePdfDimensions.h);
-  }, [svgContent, stablePdfDimensions]);
+  if (_svgSnapPoints !== svgSnapPointsRef.current) svgSnapPointsRef.current = _svgSnapPoints;
+  if (_svgCurves     !== svgCurvesRef.current)     svgCurvesRef.current     = _svgCurves;
+  if (_svgLines      !== svgLinesRef.current)       svgLinesRef.current      = _svgLines;
 
-  const svgLinesStableRef = useRef(_svgLines);
-  if (_svgLines !== svgLinesStableRef.current) {
-    svgLinesStableRef.current = _svgLines;
-  }
-  const svgLines = svgLinesStableRef.current;
+  const svgSnapPoints = svgSnapPointsRef.current;
+  const svgCurves     = svgCurvesRef.current;
+  const svgLines      = svgLinesRef.current;
 
-  // ── Snap candidates in PDF-pixel space for drawing canvas proximity visuals
+  // ── Snap candidates in PDF-pixel space ───────────────────────────────────
   const snapCandidates = useMemo(() => {
     if (!stablePdfDimensions) return [];
     return svgSnapPoints.map(p => ({
@@ -394,7 +257,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     svgSnapPoints,
     svgLines,
     svgCurves,
-    svgAreas: [],
     activeTool,
     proximityRadius: 80,
     viewportRef: containerRef as React.RefObject<HTMLDivElement>,
@@ -453,8 +315,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
-  // FIX 2: wrappedPointerMove reads rect from e.currentTarget
-  // redrawPinCanvas() is now O(1) postMessage to worker — safe to call here.
   const wrappedPointerMove = useCallback(
     (e: React.PointerEvent<HTMLCanvasElement>) => {
       const dims = pdfDimensionsRef.current;
@@ -481,10 +341,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const handleGridCountCommit = useCallback((
     count: number, spacingMm: number, cols: number, rows: number,
   ) => {
-    const id    = crypto.randomUUID();
-    const color = '#4ADE80';
     commitMeasurement({
-      id,
+      id:          crypto.randomUUID(),
       drawingId:   activeDrawingId || '',
       description: `Grid Count (${cols}×${rows})`,
       label:       'Grid Count',
@@ -495,7 +353,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       notes:       `Grid spacing: ${spacingMm}mm  |  ${cols} cols × ${rows} rows`,
       points:      [],
       isOverridden: true,
-      color,
+      color:       '#4ADE80',
       isVisible:   true,
       childIds:    [],
       gridSpacing: spacingMm,
@@ -607,12 +465,10 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     if (!selectedId) return;
     const row = projectState?.measurements?.find((m: TakeoffRow) => m.id === selectedId);
     if (!row || (row as any).isGroupHeader || row.type !== 'Length') return;
-    const newQty = +(row.quantity * factor).toFixed(4);
     updateMeasurement(row.id, {
-      quantity:     newQty,
+      quantity:     +(row.quantity * factor).toFixed(4),
       isOverridden: true,
-      notes: [(row as any).notes, `Pitch ×${factor.toFixed(4)} applied`]
-        .filter(Boolean).join(' | '),
+      notes: [(row as any).notes, `Pitch ×${factor.toFixed(4)} applied`].filter(Boolean).join(' | '),
     });
   }, [selectedId, projectState, updateMeasurement]);
 
@@ -621,7 +477,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
-    showPins, setShowPins, snapThreshold, setSnapThreshold,
+    showPins, setShowPins,
+    snapThreshold, setSnapThreshold,
     confidenceFilter, setConfidenceFilter, analysisStatus,
     analysisPage: analysisPage ?? null,
     currentPageCorners: pageData.get(pageNumber - 1)?.corners.length ?? 0,
@@ -631,7 +488,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     canUndo, canRedo, handleUndo, handleRedo,
   }), [
     activeTool, setActiveTool, scale, scaleFactor,
-    snapEnabled, showSnapSettings, showPins, snapThreshold, confidenceFilter,
+    snapEnabled, showSnapSettings,
+    showPins, setShowPins,
+    snapThreshold, confidenceFilter,
     analysisStatus, analysisPage, pageData, pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
   ]);
@@ -649,9 +508,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       const tag = (e.target as HTMLElement).tagName;
       if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
         const map: Record<string, ToolType> = {
-          v: 'select',    l: 'linear',   r: 'rectangle',
-          p: 'polygon',   n: 'count',    t: 'point',
-          b: 'arc',       g: 'grid-count',
+          v:'select', l:'linear', r:'rectangle',
+          p:'polygon', n:'count', t:'point',
+          b:'arc', g:'grid-count',
         };
         if (map[e.key.toLowerCase()]) {
           e.preventDefault();
@@ -660,11 +519,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         }
       }
       const cm = e.ctrlKey || e.metaKey;
-      if (cm && (e.key === '+' || e.key === '=')) { e.preventDefault(); setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key === '-')                     { e.preventDefault(); setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key === '0')                     { e.preventDefault(); fitToScreen(); return; }
-      if (cm && e.key === 'z' && !e.shiftKey)      { e.preventDefault(); handleUndo(); return; }
-      if (cm && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); handleRedo(); return; }
+      if (cm && (e.key==='+'||e.key==='='))               { e.preventDefault(); setScale(s=>Math.min(MAX_ZOOM,s+ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key==='-')                               { e.preventDefault(); setScale(s=>Math.max(MIN_ZOOM,s-ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key==='0')                               { e.preventDefault(); fitToScreen(); return; }
+      if (cm && e.key==='z' && !e.shiftKey)                { e.preventDefault(); handleUndo(); return; }
+      if (cm && (e.key==='y'||(e.key==='z'&&e.shiftKey))) { e.preventDefault(); handleRedo(); return; }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -701,10 +560,15 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     if (svgLoading)               return 'Loading snap layout…';
     if (!svgUrl)                  return 'No snap layout — pass svgUrl prop to enable snapping';
     if (!svgContent)              return 'Snap layout failed to load';
-    if (svgSnapPoints.length > 0)
-      return `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`;
+    if (!snapEnabled)             return 'Snap disabled';
+    if (svgSnapPoints.length > 0) return `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`;
     return 'Parsing snap data…';
-  }, [svgLoading, svgUrl, svgContent, svgSnapPoints.length, svgLines.length]);
+  }, [svgLoading, svgUrl, svgContent, snapEnabled, svgSnapPoints.length, svgLines.length]);
+
+  // ── PDF.js version (lazy, client-only) ───────────────────────────────────
+  const [pdfLibVersion] = useState<string>(() =>
+    typeof window !== 'undefined' ? getPdfLibVersion() : '?'
+  );
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -717,6 +581,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             tempPointsCount={tempPoints.length}
             snapEnabled={snapEnabled} setSnapEnabled={setSnapEnabled}
             showSnapSettings={showSnapSettings} setShowSnapSettings={setShowSnapSettings}
+            showPins={showPins} setShowPins={setShowPins}
             scaleFactor={scaleFactor} handleManualScale={handleManualScale}
             analysisStatus={analysisStatus} analysisPage={analysisPage ?? null}
             currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
@@ -746,7 +611,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
           />
         )}
 
-        {/* Scrollable viewport */}
         <div
           ref={containerRef}
           className="flex-1 overflow-auto custom-scrollbar relative outline-none select-none"
@@ -873,23 +737,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
           />
         </div>
-
-        {/* pinCanvas rendered as sibling to the scrollable container,
-            positioned absolute over the entire flex row — screen-space overlay.
-            The worker owns this canvas after transferControlToOffscreen().
-            Do NOT set width/height here — the worker manages its own size. */}
-        <canvas
-          ref={pinCanvasRef}
-          style={{
-            position:      'absolute',
-            top:           0,
-            left:          0,
-            pointerEvents: 'none',
-            zIndex:        50,
-            opacity:       showPins ? 1 : 0,
-            transition:    'opacity 0.2s',
-          }}
-        />
       </div>
 
       {pdf && pdfDimensions && (
@@ -939,17 +786,14 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 {magicFills.length > 0 && mfStagedCount === 0 && (
                   <>
                     <div className="w-px h-3 bg-industrial-border" />
-                    <span>
-                      Total: {fmtArea(magicFills.reduce((s, f) => s + f.areaPx, 0), mfMetersPerPixel)}
-                    </span>
+                    <span>Total: {fmtArea(magicFills.reduce((s,f) => s+f.areaPx, 0), mfMetersPerPixel)}</span>
                   </>
                 )}
                 <div className="w-px h-3 bg-industrial-border" />
-                {mfStagedCount > 0 ? (
-                  <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
-                ) : (
-                  <span>Click: fill · Drag: batch fill</span>
-                )}
+                {mfStagedCount > 0
+                  ? <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
+                  : <span>Click: fill · Drag: batch fill</span>
+                }
               </>
             ) : isGridCountTool ? (
               <span className="text-green-400">
@@ -966,7 +810,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               <span className="text-purple-400">
                 {stagedRadiusCount(tempPoints) > 0
                   ? `Radius — ${stagedRadiusCount(tempPoints)} staged · click to add more · Finish or Enter to commit · Right-click cancels current`
-                  : `Radius — click ${tempPoints.filter(p => p.segmentId !== '__radius_break__').length === 0 ? 'centre' : 'edge'} point · Right-click to cancel`
+                  : `Radius — click ${tempPoints.filter((p: any) => p.segmentId !== '__radius_break__').length === 0 ? 'centre' : 'edge'} point · Right-click to cancel`
                 }
               </span>
             ) : (
@@ -974,7 +818,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 {snapStatusText}
               </span>
             )}
-            <span>RENDER_ENGINE: PDF.JS V{getPdfLib().version}</span>
+            <span>RENDER_ENGINE: PDF.JS V{pdfLibVersion}</span>
           </div>
         </div>
       )}
@@ -990,7 +834,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       />
       <MeasurementDetailsWired
         show={showMfNameDialog} pendingMeasurementData={pendingMfData}
-        onConfirm={(name) => handleMfNameConfirm(name)}
+        onConfirm={(name: string) => handleMfNameConfirm(name)}
         onSkip={handleMfNameSkip}
       />
       <PresetDrawerWired

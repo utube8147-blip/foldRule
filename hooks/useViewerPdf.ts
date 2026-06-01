@@ -2,29 +2,27 @@
 
 // ─── hooks/useViewerPdf.ts ────────────────────────────────────────────────────
 //
-//  FIX A: pan is now properly tracked and returned.
-//    Previously pan was not in the return interface at all, so Viewer.tsx
-//    was destructuring undefined. stablePan in Viewer.tsx was memoizing
-//    undefined?.x which is always undefined — meaning the snap overlay
-//    never tracked scroll position and always drew at { x:0, y:0 }.
+//  FIX — InvalidStateError: Cannot resize canvas after transferControlToOffscreen
 //
-//    pan is now derived from a scroll listener on containerRef. On every
-//    scroll event it computes the PDF origin in viewport-space:
-//      x = pdfLeft - scrollLeft
-//      y = pdfTop  - scrollTop
-//    This matches the coordinate system used by useSnapEngine._actualRedraw
-//    when projecting PDF coords → screen coords for the pin canvas.
+//  pinCanvasRef is transferred to the OffscreenCanvas worker by useSnapEngine
+//  via transferControlToOffscreen(). After that call the main thread can no
+//  longer write canvas.width, canvas.height, or canvas.style.width/height on
+//  that element — the worker owns the canvas entirely.
 //
-//  FIX B: onZoom callback added to options interface.
-//    Viewer.tsx previously added its own separate wheel listener on the
-//    same container element just to call markZoomStart. That was a
-//    duplicate listener. onZoom is now called inside the existing wheel
-//    handler here, and the redundant listener in Viewer.tsx can be removed.
+//  Two places were doing exactly that:
 //
-//  FIX C: pan and onZoom added to UseViewerPdfReturn interface.
+//   1. The PDF render useEffect loops over [drawingCanvasRef, pinCanvasRef,
+//      vectorCanvasRef, fillCanvasRef] and sets c.width / c.height on each.
+//      Fix: skip pinCanvasRef in that loop — the worker handles its own resize
+//      via the 'resize' postMessage.
 //
-//  FIX D (carried over): shouldPreserveFillCanvas guard prevents stale
-//    paint bleeding through after calibration / tool switches.
+//   2. The CSS-only scale useEffect (live zoom) also loops over the same four
+//      refs and sets c.style.width / c.style.height. Setting style on a
+//      transferred canvas is technically allowed by the spec but it is a no-op
+//      (the worker's OffscreenCanvas ignores it) and confuses Chrome into
+//      sometimes throwing. Fix: skip pinCanvasRef there too.
+//
+//  All other logic is unchanged from the previous version.
 
 import {
   useState, useEffect, useRef, useCallback, useMemo,
@@ -142,7 +140,7 @@ export function useViewerPdf({
   const [pdfDimensions,  setPdfDimensions]  = useState<PdfDimensions | null>(null);
   const [pdfRenderCount, setPdfRenderCount] = useState(0);
 
-  // FIX A: pan state — PDF origin in viewport-space pixels.
+  // pan state — PDF origin in viewport-space pixels.
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   // ── Stable refs ────────────────────────────────────────────────────────────
@@ -213,11 +211,8 @@ export function useViewerPdf({
     }
   }, []);
 
-  // ── FIX A: Scroll → pan ───────────────────────────────────────────────────
+  // ── Scroll → pan ──────────────────────────────────────────────────────────
   // Tracks the PDF origin in viewport-space on every scroll event.
-  // Formula: pan.x = pdfLeft - scrollLeft, pan.y = pdfTop - scrollTop
-  // where pdfLeft/pdfTop is the pixel offset of the PDF inside the wrap div
-  // (which is centred inside the large wrapStyle div).
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -238,7 +233,6 @@ export function useViewerPdf({
     };
 
     el.addEventListener('scroll', compute, { passive: true });
-    // Initialise immediately and also after the first render settles
     compute();
     const t = setTimeout(compute, 200);
     return () => {
@@ -362,7 +356,19 @@ export function useViewerPdf({
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
-        for (const ref of [drawingCanvasRef, pinCanvasRef, vectorCanvasRef, fillCanvasRef]) {
+        // FIX: pinCanvasRef is intentionally excluded from this loop.
+        //
+        // Once useSnapEngine calls transferControlToOffscreen() on pinCanvasRef,
+        // the main thread loses ownership of that canvas. Any attempt to write
+        // canvas.width or canvas.height on it throws:
+        //   InvalidStateError: Cannot resize canvas after transferControlToOffscreen()
+        //
+        // The snap worker receives a 'resize' postMessage and manages its own
+        // OffscreenCanvas dimensions — we must not touch them from here.
+        //
+        // drawingCanvasRef, vectorCanvasRef, fillCanvasRef are normal canvases
+        // (never transferred) so they are safe to resize as before.
+        for (const ref of [drawingCanvasRef, vectorCanvasRef, fillCanvasRef]) {
           const c = ref.current;
           if (!c) continue;
 
@@ -416,12 +422,23 @@ export function useViewerPdf({
   }, [pdf, pageNumber, committedScale]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── CSS-only scale during live zoom ───────────────────────────────────────
+  // FIX: pinCanvasRef is intentionally excluded from this loop.
+  //
+  // The pin canvas is an OffscreenCanvas controlled by the snap worker after
+  // transferControlToOffscreen(). The worker positions itself as a full-viewport
+  // screen-space overlay (position:absolute, top:0, left:0 in Viewer.tsx) and
+  // redraws at the correct scale on every 'transform' postMessage — it does not
+  // need CSS scaling from the main thread.
+  //
+  // Touching style.width / style.height on a transferred canvas is a no-op at
+  // best and occasionally throws in some browsers. Skip it entirely.
   useEffect(() => {
     if (scale === committedScale || !pdfDimensions) return;
     const ratio = scale / committedScale;
     const newW  = pdfDimensions.w * ratio;
     const newH  = pdfDimensions.h * ratio;
-    for (const ref of [drawingCanvasRef, pinCanvasRef, vectorCanvasRef, fillCanvasRef]) {
+    // pinCanvasRef intentionally omitted — see comment above
+    for (const ref of [drawingCanvasRef, vectorCanvasRef, fillCanvasRef]) {
       const c = ref.current;
       if (!c) continue;
       c.style.width  = `${newW}px`;
@@ -435,7 +452,7 @@ export function useViewerPdf({
   }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
   // ── Wheel zoom ─────────────────────────────────────────────────────────────
-  // FIX B: onZoom (markZoomStart) is called here so Viewer.tsx does not need
+  // onZoom (markZoomStart) is called here so Viewer.tsx does not need
   // a duplicate wheel listener on the same container element.
   useEffect(() => {
     const el = containerRef.current;
@@ -443,7 +460,6 @@ export function useViewerPdf({
     const onWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      // Notify caller that a zoom gesture is in progress
       onZoomRef.current?.();
       const delta =
         (e.deltaY > 0 ? -1 : 1) *
@@ -579,6 +595,6 @@ export function useViewerPdf({
     scaleRef,
     pdfDimensionsRef,
     onScaleSetRef,
-    pan,  // FIX A: properly returned
+    pan,
   };
 }

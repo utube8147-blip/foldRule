@@ -24,6 +24,8 @@ interface ViewerToolbarProps {
   handleUndo:      () => void;
   handleRedo:      () => void;
   tempPointsCount: number;
+  showPins:            boolean;        // Add this
+  setShowPins:         (v: boolean) => void;  // Add this
   snapEnabled:         boolean;
   setSnapEnabled:      (v: boolean) => void;
   showSnapSettings:    boolean;
@@ -266,6 +268,7 @@ export function ViewerToolbar({
   canUndo, canRedo, handleUndo, handleRedo, tempPointsCount,
   snapEnabled, setSnapEnabled,
   showSnapSettings, setShowSnapSettings,
+  showPins, setShowPins,  // Add these
   scaleFactor, handleManualScale,
   analysisStatus, analysisPage, currentPageCorners,
   scale, setScale, fitToScreen,
@@ -387,20 +390,20 @@ export function ViewerToolbar({
         )}
 
         <button
-          onClick={() => setSnapEnabled(!snapEnabled)}
+          onClick={() => setShowPins(!showPins)}
           className={cn(
             'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
-            snapEnabled
-              ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
-              : 'bg-amber-500/10 border-amber-500/50 text-amber-400 hover:bg-amber-500/20',
+            showPins
+              ? 'bg-blue-500/10 border-blue-500/50 text-blue-400 hover:bg-blue-500/20'
+              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
           )}
-          title={snapEnabled ? 'Snap is ON' : 'Snap is OFF'}
+          title={showPins ? 'Pins are visible' : 'Pins are hidden'}
         >
           <Target className="w-3 h-3" />
-          {snapEnabled ? 'SNAP ACTIVE' : 'SNAP INACTIVE'}
+          {showPins ? 'PINS ON' : 'PINS OFF'}
         </button>
 
-        {snapEnabled && isAnalysisDone && (
+        {/* {snapEnabled && isAnalysisDone && (
           <button
             onClick={() => setShowSnapSettings(!showSnapSettings)}
             className={cn(
@@ -414,7 +417,7 @@ export function ViewerToolbar({
             <Settings2 className="w-3 h-3" />
             SNAP SETTINGS
           </button>
-        )}
+        )} */}
 
         <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
 
