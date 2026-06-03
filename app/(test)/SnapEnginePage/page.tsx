@@ -4,30 +4,30 @@ import React, {
   useState, useEffect, useRef, useCallback,
 } from 'react';
 
-import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/useSvgSnapPoints-test';
-import { useSnapEngine }                        from '@/hooks/useSnapEngine-test';
-import type { SvgLine }                         from '@/hooks/useSvgInteraction';
+import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/snapEngine/useSvgSnapPoints-test';
+import { useSnapEngine }                        from '@/hooks/snapEngine/useSnapEngine-test';
+import type { SvgLine }                         from '@/hooks/snapEngine/useSvgSnapPoints';
 import type { PdfDimensions }                   from '@/types/viewerTypes';
 
 // ── CV Matcher (single-template) ──────────────────────────────────────────────
-import { useOpenCVMatcher }  from '@/hooks/useOpenCVMatcher';
+import { useOpenCVMatcher }  from '@/hooks/detection/useOpenCVMatcher';
 import {
   CVMatchOverlay,
   CVWorkerBanner,
   CVRubberBand,
   CVSamplerSidebar,
   useCVRubberBand,
-} from '@/components/CVMatchOverlay';
+} from '@/components/features/overlays/CVMatchOverlay';
 
 // ── Pattern Painter (multi-pattern) ───────────────────────────────────────────
-import { usePatternPainter } from '@/hooks/usePatternPainter';
+import { usePatternPainter } from '@/hooks/canvas/usePatternPainter';
 import {
   PatternPainterOverlay,
   PatternPainterSidebar,
   PatternRubberBand,
   PatternWorkerBanner,
   usePatternRubberBand,
-} from '@/components/PatternPainter';
+} from '@/components/features/tools/PatternPainter';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -896,7 +896,7 @@ export default function SnapEnginePage() {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* ── Toolbar ── */}
+      {/* ��─ Toolbar ── */}
       <div style={S.toolbar}>
         <span style={{ fontSize:9,fontWeight:700,color:'#555',textTransform:'uppercase',letterSpacing:'.1em',marginRight:4,flexShrink:0 }}>⊕ Snap Engine</span>
         <div style={S.sep} />

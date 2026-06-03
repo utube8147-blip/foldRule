@@ -1,6 +1,6 @@
 // app/api/export/route.ts
 import { NextRequest, NextResponse } from 'next/server';
-import { BOQData, buildWorkbook } from '@/lib/excelExport';
+import { BOQData, buildWorkbook } from '@/lib/export/excelExport';
 
 function toNodeBuffer(ab: ArrayBuffer | Buffer): Buffer {
   return Buffer.isBuffer(ab) ? ab : Buffer.from(ab);

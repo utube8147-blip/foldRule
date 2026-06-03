@@ -4,7 +4,7 @@
 
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Check, X, Loader2, Wand2 } from 'lucide-react';
-import { UseSamSegmentationReturn } from '@/hooks/useSamSegmentation';
+import { UseSamSegmentationReturn } from '@/hooks/detection/useSamSegmentation';
 
 export interface Point { x: number; y: number }
 

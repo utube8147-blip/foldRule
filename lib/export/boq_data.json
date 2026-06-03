@@ -1,0 +1,66 @@
+{
+  "categories": [
+    {
+      "id": "doors",
+      "name": "Doors",
+      "unit": "ea",
+      "unitName": "each"
+    },
+    {
+      "id": "windows",
+      "name": "Windows",
+      "unit": "ea",
+      "unitName": "each"
+    },
+    {
+      "id": "walls",
+      "name": "Wall Area",
+      "unit": "sf",
+      "unitName": "square feet"
+    },
+    {
+      "id": "flooring",
+      "name": "Flooring",
+      "unit": "sf",
+      "unitName": "square feet"
+    },
+    {
+      "id": "ceilings",
+      "name": "Ceiling Area",
+      "unit": "sf",
+      "unitName": "square feet"
+    }
+  ],
+  "defaultMaterials": [
+    {
+      "categoryId": "doors",
+      "name": "Standard Door",
+      "cost": 250,
+      "unit": "ea"
+    },
+    {
+      "categoryId": "windows",
+      "name": "Standard Window",
+      "cost": 150,
+      "unit": "ea"
+    },
+    {
+      "categoryId": "walls",
+      "name": "Paint",
+      "cost": 2,
+      "unit": "sf"
+    },
+    {
+      "categoryId": "flooring",
+      "name": "Wood Flooring",
+      "cost": 8,
+      "unit": "sf"
+    },
+    {
+      "categoryId": "ceilings",
+      "name": "Drywall",
+      "cost": 3,
+      "unit": "sf"
+    }
+  ]
+}

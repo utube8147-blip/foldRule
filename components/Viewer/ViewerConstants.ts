@@ -6,7 +6,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
-import pdfjsLib from "@/lib/pdfClient";
+import pdfjsLib from "@/lib/pdf/pdfClient";
 
 import {
   MousePointer2,

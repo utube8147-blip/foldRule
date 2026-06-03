@@ -11,7 +11,7 @@
 
 import React, { useRef, useEffect, useCallback } from 'react';
 import type { PdfDimensions } from '@/types/viewerTypes';
-import type { MagicFill } from '@/hooks/useMagicFill';
+import type { MagicFill } from '@/hooks/fill/useMagicFill';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
 

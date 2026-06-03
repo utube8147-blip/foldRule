@@ -13,8 +13,8 @@ import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
 import { VIEWER_TOOLS } from './ViewerConstants';
 import { useTakeoffContext } from '@/context/TakeoffContext';
-import { UNIT_OPTIONS } from '@/hooks/useMeasurements/unitConversion';
-import type { DisplayUnit } from '@/hooks/useMeasurements/unitConversion';
+import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
+import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 interface ViewerToolbarProps {
   activeTool:      ToolType;

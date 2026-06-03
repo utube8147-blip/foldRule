@@ -22,7 +22,7 @@
 import React, { useEffect, useState } from 'react';
 import { Eye, EyeOff, Trash2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { MagicFill } from '@/hooks/useMagicFill';
+import type { MagicFill } from '@/hooks/fill/useMagicFill';
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
 //
