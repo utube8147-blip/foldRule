@@ -1,3 +1,4 @@
+// hooks/fill/magicFill/usePdfFill.ts
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
@@ -182,28 +183,35 @@ export function usePdfFill() {
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
       ctx.setLineDash([]); ctx.stroke();
 
-      // Draw polygon corner points (vertices) with strong visibility
+      // ── Corner dots ──────────────────────────────────────────────────────
+      // PDF fills never have svgCornerIndices, so all RDP polygon vertices
+      // are shown. RDP already reduces the count to meaningful corners only.
+      const cornersToShow: [number, number][] = f.svgCornerIndices
+        ? pts.filter((_, i) => f.svgCornerIndices!.has(i))
+        : pts;
+
       const dotR = isSelected ? 6 : 5;
       const dotA = isSelected ? 1 : isInGroup ? 0.95 : 0.85;
-      pts.forEach(([px, py]) => {
-        // Outer white/contrast ring for visibility
-        ctx.beginPath(); 
+
+      cornersToShow.forEach(([px, py]) => {
+        // Outer white contrast ring
+        ctx.beginPath();
         ctx.arc(px, py, dotR + 1.5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; 
-        ctx.lineWidth = 2.5; 
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 2.5;
         ctx.stroke();
-        
-        // Fill circle with color
-        ctx.beginPath(); 
+
+        // Filled dot in fill colour
+        ctx.beginPath();
         ctx.arc(px, py, dotR, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},${dotA})`; 
+        ctx.fillStyle = `rgba(${r},${g},${b},${dotA})`;
         ctx.fill();
-        
-        // Inner bright outline for contrast
+
+        // Inner bright outline
         ctx.strokeStyle = isSelected
           ? 'rgba(255,255,255,1)'
-          : `rgba(${Math.min(r + 80, 255)},${Math.min(g + 80, 255)},${Math.min(b + 80, 255)},0.8)`;
-        ctx.lineWidth = isSelected ? 2 : 1.5; 
+          : `rgba(${Math.min(r+80,255)},${Math.min(g+80,255)},${Math.min(b+80,255)},0.8)`;
+        ctx.lineWidth = isSelected ? 2 : 1.5;
         ctx.stroke();
       });
     });
@@ -312,6 +320,7 @@ export function usePdfFill() {
       id: Date.now(), label: `Fill ${fillCountRef.current}`,
       color: activeColor, opacity: fillOpacity,
       areaPx, perimPx, polygon, svgMode: false,
+      // No svgCornerIndices — RDP polygon already has only meaningful vertices
     };
     fillPixelMaps.current.set(newFill.id, closed);
     setFills(prev => {
@@ -646,7 +655,7 @@ export function usePdfFill() {
     setHiddenIds(prev => { const s = new Set(prev); s.has(fId) ? s.delete(fId) : s.add(fId); return s; });
   }, []);
 
-  // ── Derived ────────────────��─────���─────────────────────────────────────────
+  // ── Derived ────────────────────────────────────────────────────────────────
   const selectedFill = fills.find(f => f.id === selectedId) ?? null;
   const hoveredFill  = fills.find(f => f.id === hoveredId)  ?? null;
   const groupFills   = selectedGroup != null ? fills.filter(f => f.groupId === selectedGroup) : [];

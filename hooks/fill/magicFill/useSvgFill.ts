@@ -195,28 +195,31 @@ export function useSvgFill() {
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
       ctx.setLineDash([]); ctx.stroke();
 
-      // Draw polygon corner points (vertices) with strong visibility
+      // Corner dots — SVG fills use cornerIndices to skip curve intermediates;
+      // raster fills show all RDP polygon vertices.
+      const cornersToShow: [number, number][] = f.svgCornerIndices
+        ? pts.filter((_, i) => f.svgCornerIndices!.has(i))
+        : pts;
+
       const dotR = isSelected ? 6 : 5;
       const dotA = isSelected ? 1 : isInGroup ? 0.95 : 0.85;
-      pts.forEach(([px, py]) => {
-        // Outer white/contrast ring for visibility
-        ctx.beginPath(); 
+
+      cornersToShow.forEach(([px, py]) => {
+        ctx.beginPath();
         ctx.arc(px, py, dotR + 1.5, 0, Math.PI * 2);
-        ctx.strokeStyle = 'rgba(255,255,255,0.6)'; 
-        ctx.lineWidth = 2.5; 
+        ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+        ctx.lineWidth = 2.5;
         ctx.stroke();
-        
-        // Fill circle with color
-        ctx.beginPath(); 
+
+        ctx.beginPath();
         ctx.arc(px, py, dotR, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},${dotA})`; 
+        ctx.fillStyle = `rgba(${r},${g},${b},${dotA})`;
         ctx.fill();
-        
-        // Inner bright outline for contrast
+
         ctx.strokeStyle = isSelected
           ? 'rgba(255,255,255,1)'
-          : `rgba(${Math.min(r + 80, 255)},${Math.min(g + 80, 255)},${Math.min(b + 80, 255)},0.8)`;
-        ctx.lineWidth = isSelected ? 2 : 1.5; 
+          : `rgba(${Math.min(r+80,255)},${Math.min(g+80,255)},${Math.min(b+80,255)},0.8)`;
+        ctx.lineWidth = isSelected ? 2 : 1.5;
         ctx.stroke();
       });
     });
@@ -305,7 +308,6 @@ export function useSvgFill() {
     ensureHitCanvas(bc.width, bc.height);
     const hc = hitCanvasRef.current!;
 
-    // Ascending by area — smallest enclosing shape wins
     const sorted = [...shapes].sort((a, b) => a.area - b.area);
     let hit: SvgShape | null = null;
     for (const shape of sorted) {
@@ -319,6 +321,16 @@ export function useSvgFill() {
     await yieldFrame();
 
     const { areaPx, perimPx, polygon } = measureSvgPathVector(hit.pathD, bc.width, bc.height);
+    const cornerIndices = new Set<number>(polygon.map((_, i) => i));
+
+    // Skip if fill covers 80%+ of canvas — leaked background shape
+    const canvasArea = bc.width * bc.height;
+    if (areaPx > canvasArea * 0.80) {
+      setIsFilling(false); setFillMsg('');
+      setStatus('Fill rejected — region covers >80% of canvas');
+      return true; // prevent raster fallback from also firing
+    }
+
     fillCountRef.current += 1;
     const newFill: Fill = {
       id: Date.now(), label: `Fill ${fillCountRef.current}`,
@@ -326,6 +338,7 @@ export function useSvgFill() {
       areaPx, perimPx, polygon,
       svgMode: true, svgPathD: hit.pathD,
       svgBBox: { x: hit.bbox.x, y: hit.bbox.y, w: hit.bbox.width, h: hit.bbox.height },
+      svgCornerIndices: cornerIndices,
     };
     setFills(prev => {
       const next = [...prev, newFill];
@@ -334,11 +347,11 @@ export function useSvgFill() {
     });
     setSelectedId(newFill.id); setSelectedGroup(null);
     setIsFilling(false); setFillMsg('');
-    setStatus(`Vector fill · ${polygon.length} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
+    setStatus(`Vector fill · ${cornerIndices.size} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
     cycleColor();
     return true;
   }, [activeColor, fillOpacity, pxPerM, ensureHitCanvas, hiddenIds, redrawPolygons, cycleColor]);
-
+  
   // ── Raster fill (fallback when click misses all vector shapes) ─────────────
   const doRasterFill = useCallback(async (canvasX: number, canvasY: number) => {
     if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current) return;
@@ -390,7 +403,7 @@ export function useSvgFill() {
     cycleColor();
   }, [activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, cycleColor]);
 
-  // ── Unified click fill — tries SVG first, falls back to raster ────────────
+  // ── Unified click fill ─────────────────────────────────────────────────────
   const doFill = useCallback(async (clientX: number, clientY: number) => {
     if (mode !== 'fill' || isFilling || loadStage !== 'ready') return;
     if (spaceHeldRef.current) return;
@@ -437,6 +450,10 @@ export function useSvgFill() {
         const shape = hits[i];
         const batchColor = COLORS[batchColorIdx % COLORS.length];
         const { areaPx, perimPx, polygon } = measureSvgPathVector(shape.pathD, bc.width, bc.height);
+        
+        // Skip leaked shapes in batch
+        if (areaPx > bc.width * bc.height * 0.80) continue;
+        
         fillCountRef.current += 1;
         newFills.push({
           id: Date.now() + Math.random(), label: `Fill ${fillCountRef.current}`,
@@ -450,7 +467,11 @@ export function useSvgFill() {
       }
 
       setFillProgress({ done: hits.length, total: hits.length });
-      setFills(prev => [...prev, ...newFills]);
+      setFills(prev => {
+        const next = [...prev, ...newFills];
+        setTimeout(() => redrawPolygons(next, hiddenIds, null, gId), 0);
+        return next;
+      });
       setSelectedId(null); setSelectedGroup(gId);
       setIsFilling(false); setFillMsg(''); setFillProgress(null);
       setActiveColorIdx(batchColorIdx % COLORS.length);
@@ -574,7 +595,6 @@ export function useSvgFill() {
       const cf = fillsRef.current;
       const hc = hitCanvasRef.current;
 
-      // Check SVG fills first
       if (hc) {
         for (let i = cf.length - 1; i >= 0; i--) {
           const f = cf[i];
@@ -582,7 +602,6 @@ export function useSvgFill() {
           if (pointInPath2D(f.svgPathD, px, py, hc)) { found = f.id; break; }
         }
       }
-      // Fall back to raster pixel maps
       if (found === null) {
         const idx = py * bc.width + px;
         for (let i = cf.length - 1; i >= 0; i--) {
@@ -842,7 +861,6 @@ export function useSvgFill() {
     : 'crosshair';
 
   return {
-    // state
     activeColor, setActiveColor, activeColorIdx,
     fillOpacity, setFillOpacity,
     zoom, setZoom, pan, setPan,
@@ -861,13 +879,10 @@ export function useSvgFill() {
     svgCanvasSize,
     selectRect, isSelecting, spaceHeld,
     batchMode, setBatchMode, batchModeRef,
-    // derived
     selectedFill, hoveredFill, groupFills,
     svgFillsList, svgOverlayFills, hasSelection, cursor,
-    // refs
     viewportRef, wrapRef, baseCanvasRef, fillCanvasRef, polyCanvasRef,
     fileInputRef, svgShapesRef, fillPixelMaps, fillDataRef,
-    // handlers
     handleUpload, handleUndo, handleClearAll, handleFillHoles,
     handleExport, handleSvgExport,
     handleDeleteFill, toggleHidden,

@@ -1,3 +1,4 @@
+// components/magicFill/FillSidebar.tsx
 'use client';
 
 import React from 'react';
@@ -30,6 +31,13 @@ function FillMeasRow({ icon, label, value }: { icon: string; label: string; valu
 const sectionLabel: React.CSSProperties = {
   fontSize:8, color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'.1em', marginBottom:8,
 };
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** True corner count: uses svgCornerIndices for SVG fills, polygon.length for raster. */
+function cornerCount(f: Fill): number {
+  return f.svgCornerIndices ? f.svgCornerIndices.size : f.polygon.length;
+}
 
 // ── Props ─────────────────────────────────────────────────────────────────────
 
@@ -168,10 +176,12 @@ export function FillSidebar({
               <div style={{ paddingLeft:16, display:'flex', flexDirection:'column', gap:2 }}>
                 <FillMeasRow icon="▣" label="Area"    value={fmtArea(f.areaPx,   pxPerM)}/>
                 <FillMeasRow icon="◻" label="Perim"   value={fmtPerim(f.perimPx, pxPerM)}/>
-                <FillMeasRow icon="⬡" label="Corners" value={String(f.polygon.length)}/>
+                {/* Use svgCornerIndices.size for SVG fills so curve intermediates
+                    are not counted — falls back to polygon.length for raster fills */}
+                <FillMeasRow icon="⬡" label="Corners" value={String(cornerCount(f))}/>
               </div>
 
-              {/* Close holes button */}
+              {/* Close holes button — raster fills only */}
               {!f.svgMode && (
                 <div style={{ paddingLeft:16, marginTop:4 }}>
                   <button

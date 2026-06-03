@@ -8,7 +8,7 @@ export const COLORS = [
 ];
 
 export const WALL_LUMA           = 120;
-export const STROKE_NEIGHBOR_MIN = 2;
+export const STROKE_NEIGHBOR_MIN = 0.4;
 export const DILATE_R            = 2;
 export const ERODE_R             = 1;
 export const FILL_GROW           = 3;
@@ -29,6 +29,7 @@ export interface Fill {
   svgMode?: boolean;
   svgPathD?: string;
   svgBBox?: { x: number; y: number; w: number; h: number };
+  svgCornerIndices?: Set<number>;
 }
 
 export type LoadStage = 'idle' | 'loading' | 'ready';
@@ -184,6 +185,8 @@ export function scanlineFill(mask: Uint8Array, w: number, h: number, sx: number,
   }
   let count = 0;
   for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
+  // Leak guard — reject if fill covers 80%+ of canvas
+  if (count / (w * h) > 0.80) return null;
   return count > 4 ? filled : null;
 }
 
@@ -209,6 +212,12 @@ export function multiSeedFill(mask: Uint8Array, w: number, h: number, cx: number
         mergedDilated = dilateMaskFast(merged, w, h, FILL_GROW + 2);
       }
     }
+  }
+  // Final merged leak guard
+  if (merged) {
+    let mergedCount = 0;
+    for (let i = 0; i < merged.length; i++) if (merged[i]) mergedCount++;
+    if (mergedCount / (w * h) > 0.80) return null;
   }
   return merged;
 }
@@ -339,7 +348,6 @@ export function adaptiveRdp(pts: [number,number][]): [number,number][] {
     const j = (i + 1) % pts.length;
     perim += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
   }
-  // Lower epsilon = more corner points preserved. Reduced from [1.5, 6] to [0.5, 3] for better corner visibility
   const eps = Math.max(0.5, Math.min(3, perim / 400));
   return rdpSimplify(pts, eps);
 }
@@ -456,25 +464,88 @@ export function svgElToAbsPath(el: SVGGraphicsElement, svgScale: number): string
   return null;
 }
 
-export function extractSvgShapes(svgDoc: Document, scale: number): SvgShape[] {
+// ── extractSvgShapes ──────────────────────────────────────────────────────────
+//
+// Returns both the filtered shape list AND the raw SVG area (in unscaled SVG
+// coordinate units). The caller stores svgArea and uses it in doSvgFill to
+// compare the shoelace areaPx (which is in scale² canvas pixels) against
+// svgArea * scale² — keeping both sides of the comparison in the same space.
+//
+// Why not compare against canvas area (bc.width * bc.height)?
+//   canvas area = svgArea * scale²  so they're equivalent IF scale is correct.
+//   But previously the code used bbox.width * bbox.height (already scaled) vs
+//   canvasArea (also scaled) — which accidentally cancelled and was fine — BUT
+//   the raw-attribute pre-filter used rawW * rawH (unscaled) vs canvasArea
+//   (scaled by scale²), making the threshold 9× too large and never firing.
+//
+// The fix: keep ONE canonical unscaled area (svgArea) and always multiply by
+// scale² when comparing against scaled values (areaPx, bbox sizes).
+
+export function extractSvgShapes(
+  svgDoc: Document,
+  scale: number,
+): { shapes: SvgShape[]; svgArea: number } {
   const SHAPE_TAGS = ['path','rect','polygon','polyline','circle','ellipse','line'];
   const shapes: SvgShape[] = [];
   const svgEl = svgDoc.querySelector('svg');
-  if (!svgEl) return shapes;
+  if (!svgEl) return { shapes, svgArea: 0 };
+
+  // Resolve SVG document dimensions in unscaled SVG units
+  const vb   = svgEl.viewBox?.baseVal;
+  const svgW = (vb?.width  && vb.width  > 0) ? vb.width
+    : (parseFloat(svgEl.getAttribute('width')  || '0') || 800);
+  const svgH = (vb?.height && vb.height > 0) ? vb.height
+    : (parseFloat(svgEl.getAttribute('height') || '0') || 600);
+
+  // Unscaled SVG coordinate area — the canonical reference for 80% guard
+  const svgArea = svgW * svgH;
+
   svgDoc.querySelectorAll(SHAPE_TAGS.join(',')).forEach(el => {
     const gEl = el as SVGGraphicsElement;
+    const tag = gEl.tagName.toLowerCase();
+
+    // ── Pre-filter via raw attributes (getBBox returns 0 in detached docs) ──
+    // Read element dimensions in raw SVG units and compare against svgArea.
+    // This catches background <rect> elements before we even build a path.
+    let rawW = 0, rawH = 0;
+    if (tag === 'rect') {
+      rawW = parseFloat(gEl.getAttribute('width')  || '0');
+      rawH = parseFloat(gEl.getAttribute('height') || '0');
+    } else if (tag === 'circle') {
+      const r = parseFloat(gEl.getAttribute('r') || '0');
+      rawW = rawH = r * 2;
+    } else if (tag === 'ellipse') {
+      rawW = parseFloat(gEl.getAttribute('rx') || '0') * 2;
+      rawH = parseFloat(gEl.getAttribute('ry') || '0') * 2;
+    }
+    // Both rawW*rawH and svgArea are in unscaled SVG units — correct comparison
+    if (rawW > 0 && rawH > 0 && rawW * rawH > svgArea * 0.80) return;
+
     const pathD = svgElToAbsPath(gEl, scale);
     if (!pathD) return;
+
     let bbox: DOMRect;
     try {
       const raw = gEl.getBBox();
-      bbox = new DOMRect(raw.x * scale, raw.y * scale, raw.width * scale, raw.height * scale);
+      // getBBox() returns 0 in detached DOMParser docs — fall back to attributes
+      const bw = raw.width  > 0 ? raw.width  * scale : rawW * scale;
+      const bh = raw.height > 0 ? raw.height * scale : rawH * scale;
+      const bx = raw.x * scale;
+      const by = raw.y * scale;
+      bbox = new DOMRect(bx, by, bw, bh);
     } catch { return; }
+
     if (bbox.width < 2 || bbox.height < 2) return;
-    shapes.push({ el: gEl, pathD, bbox, transform: new DOMMatrix(), area: bbox.width * bbox.height });
+
+    shapes.push({
+      el: gEl, pathD, bbox,
+      transform: new DOMMatrix(),
+      area: bbox.width * bbox.height,
+    });
   });
+
   shapes.sort((a, b) => a.area - b.area);
-  return shapes;
+  return { shapes, svgArea };
 }
 
 export function pointInPath2D(pathD: string, px: number, py: number, canvas: HTMLCanvasElement): boolean {
