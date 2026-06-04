@@ -1,7 +1,7 @@
 // hooks/magicFill/useSvgFill.ts
 'use client';
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import {
   COLORS, SVG_SCALE, FILL_GROW,
   Fill, LoadStage, SelectRect, SvgShape, SvgOverlayFill,
@@ -14,9 +14,47 @@ import {
   extractSvgShapes, pointInPath2D, measureSvgPath,
 } from './fillCore';
 import { measureSvgPathVector } from './parseSvgPath';
+import {
+  PlanarGraph,
+  buildPlanarGraph,
+  hitTestPlanarFace,
+  svgCacheKey,
+  loadCachedGraph,
+  saveCachedGraph,
+} from './planarGraph';
 
 export type { Fill, LoadStage, SelectRect, SvgShape, SvgOverlayFill };
 export { fmtArea, fmtPerim, hexToRgb, COLORS };
+
+// ── Polygon utilities (minimal set still needed for vector fill) ──────────────
+
+function polygonToPathD(poly: [number, number][]): string {
+  return (
+    poly
+      .map((p, i) => `${i === 0 ? 'M' : 'L'}${p[0].toFixed(2)},${p[1].toFixed(2)}`)
+      .join(' ') + ' Z'
+  );
+}
+
+function polygonShoelaceArea(poly: [number, number][]): number {
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    area += poly[i][0] * poly[j][1] - poly[j][0] * poly[i][1];
+  }
+  return Math.abs(area) / 2;
+}
+
+function polygonPerimFromPts(poly: [number, number][]): number {
+  let p = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const j = (i + 1) % poly.length;
+    p += Math.hypot(poly[j][0] - poly[i][0], poly[j][1] - poly[i][1]);
+  }
+  return Math.round(p);
+}
+
+// ── useSvgFill hook ───────────────────────────────────────────────────────────
 
 export function useSvgFill() {
   // ── Color cycling ──────────────────────────────────────────────────────────
@@ -57,6 +95,9 @@ export function useSvgFill() {
   const [spaceHeld,     setSpaceHeld]     = useState(false);
   const [batchMode,     setBatchMode]     = useState(false);
 
+  // ── NEW: reactive flag so consumers re-render when graph is built ──────────
+  const [graphReady,    setGraphReady]    = useState(false);
+
   // ── Refs ───────────────────────────────────────────────────────────────────
   const isRectSelecting = useRef(false);
   const rectStart       = useRef<{ cx: number; cy: number; sx: number; sy: number } | null>(null);
@@ -65,6 +106,8 @@ export function useSvgFill() {
   const hasDraggedRef   = useRef(false);
   const lastClickTime   = useRef(0);
   const svgShapesRef    = useRef<SvgShape[]>([]);
+  const planarGraphRef  = useRef<PlanarGraph | null>(null);
+  const svgDocRef       = useRef<Document | null>(null);
   const viewportRef     = useRef<HTMLDivElement>(null);
   const wrapRef         = useRef<HTMLDivElement>(null);
   const baseCanvasRef   = useRef<HTMLCanvasElement>(null);
@@ -118,10 +161,10 @@ export function useSvgFill() {
       }
     };
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('keyup',   onKeyUp);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('keyup',   onKeyUp);
     };
   }, []);
 
@@ -195,8 +238,6 @@ export function useSvgFill() {
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
       ctx.setLineDash([]); ctx.stroke();
 
-      // Corner dots — SVG fills use cornerIndices to skip curve intermediates;
-      // raster fills show all RDP polygon vertices.
       const cornersToShow: [number, number][] = f.svgCornerIndices
         ? pts.filter((_, i) => f.svgCornerIndices!.has(i))
         : pts;
@@ -231,6 +272,7 @@ export function useSvgFill() {
 
   // ── SVG load ───────────────────────────────────────────────────────────────
   const loadSvg = useCallback(async (file: File) => {
+    setGraphReady(false);
     setLoadProgress('Reading SVG…'); await yieldMacro();
     const text   = await file.text();
     const parser = new DOMParser();
@@ -238,7 +280,8 @@ export function useSvgFill() {
     const svgEl  = svgDoc.querySelector('svg');
     if (!svgEl) throw new Error('Invalid SVG');
 
-    // Render a thickened version for the raster mask
+    svgDocRef.current = svgDoc;
+
     const thickDoc = parser.parseFromString(text, 'image/svg+xml');
     const thickSvg = thickDoc.querySelector('svg')!;
     const sw = Math.max(2, Math.ceil(SVG_SCALE * 1.2));
@@ -277,17 +320,39 @@ export function useSvgFill() {
       });
     });
 
+    // ── Build planar graph (cache-aware) ───────────────────────────────────
+    setLoadProgress('Building planar graph…'); await yieldMacro();
+    const cacheKey = svgCacheKey(text, SVG_SCALE);
+    let graph = loadCachedGraph(cacheKey);
+    if (graph) {
+      setLoadProgress('Planar graph loaded from cache ✓'); await yieldMacro();
+    } else {
+      graph = buildPlanarGraph(svgDoc, SVG_SCALE);
+      saveCachedGraph(cacheKey, graph);
+    }
+    planarGraphRef.current = graph;
+    // Signal to consumers that the graph ref is now populated
+    setGraphReady(true);
+
+    // ── Extract vector shapes (kept for batch fill hit-testing) ────────────
     setLoadProgress('Extracting vector shapes…'); await yieldMacro();
-    const shapes = extractSvgShapes(svgDoc, SVG_SCALE);
+    const { shapes } = extractSvgShapes(svgDoc, SVG_SCALE);
     svgShapesRef.current = shapes;
+
     setSvgCanvasSize({ w: cw, h: ch });
-    setStatus(`Loaded · ${shapes.length} vector shapes · ${cw}×${ch}px`);
+    const g = planarGraphRef.current;
+    setStatus(
+      `Loaded · ${g.nodes.length} nodes · ${g.edges.length} edges · ` +
+      `${shapes.length} shapes · ${cw}×${ch}px`,
+    );
   }, [ensureHitCanvas]);
 
   const handleUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     e.target.value = '';
     svgShapesRef.current = [];
+    planarGraphRef.current = null;
+    setGraphReady(false);
     setFileName(file.name); setLoadStage('loading'); setLoadProgress('Starting…');
     setZoom(1); setPan({ x: 0, y: 0 });
     try {
@@ -300,65 +365,85 @@ export function useSvgFill() {
     }
   }, [loadSvg, centerCanvas]);
 
-  // ── SVG vector fill ────────────────────────────────────────────────────────
+  // ── SVG planar-graph fill ──────────────────────────────────────────────────
   const doSvgFill = useCallback(async (canvasX: number, canvasY: number): Promise<boolean> => {
-    const shapes = svgShapesRef.current;
-    if (!shapes.length) return false;
+    const graph = planarGraphRef.current;
+    if (!graph || graph.edges.length === 0) return false;
+
     const bc = baseCanvasRef.current!;
-    ensureHitCanvas(bc.width, bc.height);
-    const hc = hitCanvasRef.current!;
 
-    const sorted = [...shapes].sort((a, b) => a.area - b.area);
-    let hit: SvgShape | null = null;
-    for (const shape of sorted) {
-      if (pointInPath2D(shape.pathD, canvasX, canvasY, hc)) {
-        hit = shape; break;
-      }
-    }
-    if (!hit) return false;
-
-    setIsFilling(true); setFillMsg('Measuring vector shape'); setFillSub(undefined); setFillProgress(null);
+    setIsFilling(true);
+    setFillMsg('Tracing planar face');
+    setFillSub(undefined);
+    setFillProgress(null);
     await yieldFrame();
 
-    const { areaPx, perimPx, polygon } = measureSvgPathVector(hit.pathD, bc.width, bc.height);
-    const cornerIndices = new Set<number>(polygon.map((_, i) => i));
+    const facePoly = hitTestPlanarFace(graph, canvasX, canvasY, bc.width, bc.height);
 
-    // Skip if fill covers 80%+ of canvas — leaked background shape
-    const canvasArea = bc.width * bc.height;
-    if (areaPx > canvasArea * 0.80) {
-      setIsFilling(false); setFillMsg('');
-      setStatus('Fill rejected — region covers >80% of canvas');
-      return true; // prevent raster fallback from also firing
+    if (!facePoly) {
+      setIsFilling(false);
+      setFillMsg('');
+      return false;
     }
+
+    const areaPx  = polygonShoelaceArea(facePoly);
+    const perimPx = polygonPerimFromPts(facePoly);
+
+    if (areaPx < 50) {
+      setIsFilling(false);
+      setFillMsg('');
+      setStatus('Region too small — try clicking near the room centre');
+      return true;
+    }
+
+    const pathD        = polygonToPathD(facePoly);
+    const cornerIndices = new Set<number>(facePoly.map((_, i) => i));
 
     fillCountRef.current += 1;
     const newFill: Fill = {
-      id: Date.now(), label: `Fill ${fillCountRef.current}`,
-      color: activeColor, opacity: fillOpacity,
-      areaPx, perimPx, polygon,
-      svgMode: true, svgPathD: hit.pathD,
-      svgBBox: { x: hit.bbox.x, y: hit.bbox.y, w: hit.bbox.width, h: hit.bbox.height },
+      id:      Date.now(),
+      label:   `Fill ${fillCountRef.current}`,
+      color:   activeColor,
+      opacity: fillOpacity,
+      areaPx,
+      perimPx,
+      polygon: facePoly,
+      svgMode: true,
+      svgPathD: pathD,
+      svgBBox: {
+        x: Math.min(...facePoly.map(p => p[0])),
+        y: Math.min(...facePoly.map(p => p[1])),
+        w: Math.max(...facePoly.map(p => p[0])) - Math.min(...facePoly.map(p => p[0])),
+        h: Math.max(...facePoly.map(p => p[1])) - Math.min(...facePoly.map(p => p[1])),
+      },
       svgCornerIndices: cornerIndices,
     };
+
     setFills(prev => {
       const next = [...prev, newFill];
       setTimeout(() => redrawPolygons(next, hiddenIds, newFill.id, null), 0);
       return next;
     });
-    setSelectedId(newFill.id); setSelectedGroup(null);
-    setIsFilling(false); setFillMsg('');
-    setStatus(`Vector fill · ${cornerIndices.size} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
+    setSelectedId(newFill.id);
+    setSelectedGroup(null);
+    setIsFilling(false);
+    setFillMsg('');
+    setStatus(
+      `Planar face fill · ${facePoly.length} vertices · ` +
+      `area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`,
+    );
     cycleColor();
     return true;
-  }, [activeColor, fillOpacity, pxPerM, ensureHitCanvas, hiddenIds, redrawPolygons, cycleColor]);
-  
-  // ── Raster fill (fallback when click misses all vector shapes) ─────────────
+  }, [activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, cycleColor]);
+
+  // ── Raster fill ────────────────────────────────────────────────────────────
   const doRasterFill = useCallback(async (canvasX: number, canvasY: number) => {
     if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current) return;
     const bc = baseCanvasRef.current!;
     snapshots.current.push(new ImageData(
       new Uint8ClampedArray(fillDataRef.current.data),
-      fillDataRef.current.width, fillDataRef.current.height,
+      fillDataRef.current.width,
+      fillDataRef.current.height,
     ));
 
     setFillMsg('Flood filling region'); await yieldMacro();
@@ -426,7 +511,6 @@ export function useSvgFill() {
     if (rw < 5 || rh < 5) return;
     const bc = baseCanvasRef.current!;
 
-    // ── SVG batch path ─────────────────────────────────────────────────────
     if (svgShapesRef.current.length > 0) {
       const rx1 = Math.min(x1, x2), ry1 = Math.min(y1, y2);
       const rx2 = Math.max(x1, x2), ry2 = Math.max(y1, y2);
@@ -438,22 +522,41 @@ export function useSvgFill() {
       if (hits.length === 0) { setStatus('No vector shapes found in selection'); return; }
 
       setIsFilling(true); setFillMsg(`Filling ${hits.length} vector shapes`);
-      setFillProgress({ done: 0, total: hits.length }); await yieldFrame();
+      setFillProgress({ done: 0, total: hits.length });
+      // One initial yield so the progress UI paints before the sync work starts
+      await yieldFrame();
+
       groupCountRef.current += 1;
       const gId = groupCountRef.current;
       const newFills: Fill[] = [];
       let batchColorIdx = COLORS.indexOf(activeColor);
 
+      // ── Time-based yielding ──────────────────────────────────────────────
+      // measureSvgPathVector is pure math (shoelace, no canvas rasterisation)
+      // so each shape is fast. We only yield when a full frame (~16ms) has
+      // elapsed, keeping the progress bar alive without adding unnecessary
+      // forced waits between every few shapes.
+      let lastYield = performance.now();
+
       for (let i = 0; i < hits.length; i++) {
         setFillProgress({ done: i, total: hits.length });
-        if (i % 3 === 0) await yieldFrame();
+
+        const now = performance.now();
+        if (now - lastYield > 32) {
+          // Cap yields to ~30fps so the progress bar updates visibly
+          await yieldFrame();
+          lastYield = performance.now();
+        }
+
         const shape = hits[i];
+        if (shape.bbox.width < 6 || shape.bbox.height < 6) continue;
+
         const batchColor = COLORS[batchColorIdx % COLORS.length];
         const { areaPx, perimPx, polygon } = measureSvgPathVector(shape.pathD, bc.width, bc.height);
-        
-        // Skip leaked shapes in batch
+
         if (areaPx > bc.width * bc.height * 0.80) continue;
-        
+        if (areaPx < 100) continue;
+
         fillCountRef.current += 1;
         newFills.push({
           id: Date.now() + Math.random(), label: `Fill ${fillCountRef.current}`,
@@ -479,7 +582,6 @@ export function useSvgFill() {
       return;
     }
 
-    // ── Raster batch path ──────────────────────────────────────────────────
     if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current || isFilling) return;
     setIsFilling(true); setFillMsg('Detecting regions'); setFillSub('Scanning selection…'); setFillProgress(null);
     await yieldFrame();
@@ -502,9 +604,21 @@ export function useSvgFill() {
     const newFills: Fill[] = [];
     let batchColorIdx = COLORS.indexOf(activeColor);
 
+    // ── Time-based yielding for raster batch ──────────────────────────────
+    // Raster fills are heavier (dilateMask + closeHoles + buildPolygon) so
+    // we yield more frequently, but still time-gated rather than every N steps.
+    let lastYield = performance.now();
+
     for (let i = 0; i < regions.length; i++) {
       setFillMsg(`Filling region ${i + 1} / ${regions.length}`);
-      setFillProgress({ done: i, total: regions.length }); await yieldFrame();
+      setFillProgress({ done: i, total: regions.length });
+
+      const now = performance.now();
+      if (now - lastYield > 16) {
+        await yieldFrame();
+        lastYield = performance.now();
+      }
+
       const { filled } = regions[i];
       const grown  = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
       const closed = closeHoles(grown, bc.width, bc.height);
@@ -769,11 +883,13 @@ export function useSvgFill() {
 
     const svgFills = fills.filter(f => f.svgMode && !hiddenIds.has(f.id));
     if (svgFills.length > 0) {
-      const svgStr = `<svg xmlns="http://www.w3.org/2000/svg" width="${bc.width}" height="${bc.height}" viewBox="0 0 ${bc.width} ${bc.height}">` +
+      const svgStr =
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${bc.width}" height="${bc.height}" viewBox="0 0 ${bc.width} ${bc.height}">` +
         svgFills.map(f => {
           const [r, g, b] = hexToRgb(f.color);
           return `<path d="${f.svgPathD}" fill="rgba(${r},${g},${b},${f.opacity / 100})" stroke="rgba(${r},${g},${b},0.8)" stroke-width="1.6"/>`;
-        }).join('') + '</svg>';
+        }).join('') +
+        '</svg>';
       const blob = new Blob([svgStr], { type: 'image/svg+xml' });
       const url  = URL.createObjectURL(blob);
       const img  = new Image();
@@ -848,13 +964,21 @@ export function useSvgFill() {
   const groupFills    = selectedGroup != null ? fills.filter(f => f.groupId === selectedGroup) : [];
   const svgFillsList  = fills.filter(f => f.svgMode);
   const hasSelection  = selectedId != null || selectedGroup != null;
-  const svgOverlayFills: SvgOverlayFill[] = svgFillsList.map(f => ({
-    id: f.id, pathD: f.svgPathD!,
-    color: f.color, opacity: f.opacity,
-    selected: f.id === selectedId,
-    inGroup: selectedGroup != null && f.groupId === selectedGroup,
-    hidden: hiddenIds.has(f.id),
-  }));
+  const svgOverlayFills = useMemo(
+    () =>
+      fills
+        .filter(f => f.svgMode && !!f.svgPathD)
+        .map(f => ({
+          id:      f.id,
+          pathD:   f.svgPathD!,
+          color:   f.color,
+          opacity: f.opacity,
+          selected: f.id === selectedId,
+          inGroup:  selectedGroup != null && f.groupId === selectedGroup,
+          hidden:   hiddenIds.has(f.id),
+        })),
+    [fills, selectedId, selectedGroup, hiddenIds],
+  );
   const cursor = spaceHeld || batchMode ? 'crosshair'
     : isDragging  ? 'grabbing'
     : isFilling   ? 'wait'
@@ -883,6 +1007,7 @@ export function useSvgFill() {
     svgFillsList, svgOverlayFills, hasSelection, cursor,
     viewportRef, wrapRef, baseCanvasRef, fillCanvasRef, polyCanvasRef,
     fileInputRef, svgShapesRef, fillPixelMaps, fillDataRef,
+    planarGraphRef, graphReady,
     handleUpload, handleUndo, handleClearAll, handleFillHoles,
     handleExport, handleSvgExport,
     handleDeleteFill, toggleHidden,
