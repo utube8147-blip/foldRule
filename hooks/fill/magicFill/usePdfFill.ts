@@ -8,12 +8,258 @@ import {
   hexToRgb, fmtArea, fmtPerim,
   dilateMaskFast, multiSeedFill, paintFill, closeHoles,
   maskArea, buildPolygonFromMask, polygonPerim,
-  findRegionsInRect,
   buildMaskAsync,
 } from './fillCore';
 
 export type { Fill, LoadStage, SelectRect };
 export { fmtArea, fmtPerim, hexToRgb, COLORS };
+
+// ── Inline worker source ──────────────────────────────────────────────────────
+//
+// Runs entirely off the main thread. Receives the wall mask + rect coords,
+// finds all fillable regions inside the rect, unions them, dilates, closes
+// holes, paints, and returns the result.
+//
+// findRegionsInRect (and all its dependencies) now live here — removing the
+// main-thread block that previously caused the browser to freeze for ~200ms
+// before the spinner even appeared.
+//
+// All large ArrayBuffers are TRANSFERRED (zero-copy), not copied.
+
+const WORKER_SOURCE = /* js */`
+// ── Morphology helpers ────────────────────────────────────────────────────────
+
+function dilateMaskFast(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let count = 0;
+    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) count++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && src[y * w + add]) count++;
+      if (count > 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && src[y * w + rem]) count--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let count = 0;
+    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) count++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && horiz[add * w + x]) count++;
+      if (count > 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && horiz[rem * w + x]) count--;
+    }
+  }
+  return out;
+}
+
+function closeHoles(filled, w, h) {
+  const outside = new Uint8Array(w * h);
+  const stack = [];
+  const push = (i) => {
+    if (i >= 0 && i < w * h && !filled[i] && !outside[i]) {
+      outside[i] = 1; stack.push(i);
+    }
+  };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 1; y < h - 1; y++) { push(y * w); push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0)   push(i - 1);
+    if (x < w-1) push(i + 1);
+    if (y > 0)   push(i - w);
+    if (y < h-1) push(i + w);
+  }
+  const closed = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) closed[i] = filled[i] || (!outside[i] ? 1 : 0);
+  return closed;
+}
+
+function bboxPolygon(mask, w) {
+  const h = (mask.length / w) | 0;
+  let minX = w, minY = h, maxX = 0, maxY = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    const x = i % w, y = (i / w) | 0;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+  }
+  return [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
+}
+
+function maskArea(mask) {
+  let c = 0;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) c++;
+  return c;
+}
+
+function polygonPerim(pts) {
+  let p = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    p += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+  }
+  return Math.round(p);
+}
+
+function paintFill(mask, d, r, g, b, opacity) {
+  const newA = opacity;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    const di = i * 4;
+    const existA = d[di + 3] / 255;
+    const outA = newA + existA * (1 - newA);
+    if (outA > 0) {
+      d[di]   = ((r * newA + d[di]   * existA * (1 - newA)) / outA) | 0;
+      d[di+1] = ((g * newA + d[di+1] * existA * (1 - newA)) / outA) | 0;
+      d[di+2] = ((b * newA + d[di+2] * existA * (1 - newA)) / outA) | 0;
+      d[di+3] = (outA * 255) | 0;
+    }
+  }
+}
+
+// ── Region finder (moved from main thread) ────────────────────────────────────
+
+function scanlineFill(mask, w, h, sx, sy) {
+  if (sx < 0 || sx >= w || sy < 0 || sy >= h || mask[sy * w + sx]) return null;
+  const filled  = new Uint8Array(w * h);
+  const visited = new Uint8Array(w * h);
+  const stack   = new Int32Array(w * h);
+  let top = 0;
+  stack[top++] = sy * w + sx;
+  visited[sy * w + sx] = 1;
+  while (top > 0) {
+    const idx = stack[--top];
+    const cy  = (idx / w) | 0;
+    const cx  = idx % w;
+    let left = cx;
+    while (left > 0 && !mask[cy * w + left - 1] && !visited[cy * w + left - 1]) left--;
+    let right = cx;
+    while (right < w - 1 && !mask[cy * w + right + 1] && !visited[cy * w + right + 1]) right++;
+    for (let x = left; x <= right; x++) { filled[cy * w + x] = 1; visited[cy * w + x] = 1; }
+    const up = (cy - 1) * w, dn = (cy + 1) * w;
+    for (let x = left; x <= right; x++) {
+      if (cy > 0   && !mask[up + x] && !visited[up + x]) { visited[up + x] = 1; stack[top++] = up + x; }
+      if (cy < h-1 && !mask[dn + x] && !visited[dn + x]) { visited[dn + x] = 1; stack[top++] = dn + x; }
+    }
+  }
+  let count = 0;
+  for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
+  if (count / (w * h) > 0.80) return null;
+  return count > 4 ? filled : null;
+}
+
+function multiSeedFill(mask, w, h, cx, cy) {
+  const OFFSETS = [
+    [0,0],[1,0],[-1,0],[0,1],[0,-1],
+    [2,0],[-2,0],[0,2],[0,-2],
+    [1,1],[-1,1],[1,-1],[-1,-1],
+  ];
+  let merged = null, mergedDilated = null;
+  for (const [dx, dy] of OFFSETS) {
+    const f = scanlineFill(mask, w, h, cx + dx, cy + dy);
+    if (!f) continue;
+    if (!merged) {
+      merged = f;
+      mergedDilated = dilateMaskFast(f, w, h, 5);
+    } else {
+      let overlaps = false;
+      for (let i = 0; i < f.length; i++) {
+        if (f[i] && mergedDilated[i]) { overlaps = true; break; }
+      }
+      if (overlaps) {
+        for (let i = 0; i < merged.length; i++) if (f[i]) merged[i] = 1;
+        mergedDilated = dilateMaskFast(merged, w, h, 5);
+      }
+    }
+  }
+  if (merged) {
+    let c = 0;
+    for (let i = 0; i < merged.length; i++) if (merged[i]) c++;
+    if (c / (w * h) > 0.80) return null;
+  }
+  return merged;
+}
+
+function findRegionsInRect(mask, w, h, x1, y1, x2, y2) {
+  const discovered = [];
+  const seen = new Uint8Array(w * h);
+  const step = Math.max(4, Math.round(Math.min(x2 - x1, y2 - y1) / 80));
+  for (let sy = y1; sy <= y2; sy += step) {
+    for (let sx = x1; sx <= x2; sx += step) {
+      if (mask[sy * w + sx] || seen[sy * w + sx]) continue;
+      const filled = multiSeedFill(mask, w, h, sx, sy);
+      if (!filled) continue;
+      let overlaps = false;
+      for (let ty = y1; ty <= y2 && !overlaps; ty++)
+        for (let tx = x1; tx <= x2 && !overlaps; tx++)
+          if (filled[ty * w + tx]) overlaps = true;
+      if (!overlaps) continue;
+      for (let i = 0; i < filled.length; i++) if (filled[i]) seen[i] = 1;
+      discovered.push(filled);
+    }
+  }
+  return discovered;
+}
+
+// ── Message handler ───────────────────────────────────────────────────────────
+
+self.onmessage = ({ data }) => {
+  const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, FILL_GROW, x1, y1, x2, y2 } = data;
+
+  const mask = new Uint8Array(maskBuffer);
+
+  // Step 1: find regions — was blocking the main thread before
+  const regions = findRegionsInRect(mask, w, h, x1, y1, x2, y2);
+
+  if (regions.length === 0) {
+    self.postMessage({ empty: true });
+    return;
+  }
+
+  // Step 2: union all region masks
+  const unioned = new Uint8Array(w * h);
+  for (const filled of regions) {
+    for (let i = 0; i < filled.length; i++) if (filled[i]) unioned[i] = 1;
+  }
+
+  // Step 3: dilate to bridge furniture-to-wall gaps before closing holes
+  const grown = dilateMaskFast(unioned, w, h, FILL_GROW);
+
+  // Step 4: close holes — furniture interiors are now enclosed islands
+  const closed = closeHoles(grown, w, h);
+
+  // Leak guard
+  const areaPx = maskArea(closed);
+  if (areaPx / (w * h) > 0.80) {
+    self.postMessage({ error: 'leak' });
+    return;
+  }
+
+  // Step 5: paint single color onto fillData
+  const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
+  paintFill(closed, fillDataArr, r, g, b, opacity);
+
+  // Step 6: bbox polygon — fast O(n), no marching squares needed for batch
+  const polygon = bboxPolygon(closed, w);
+  const perimPx = polygonPerim(polygon);
+
+  self.postMessage(
+    {
+      fillDataBuffer: fillDataArr.buffer,
+      closedBuffer:   closed.buffer,
+      polygon,
+      areaPx,
+      perimPx,
+      regionCount:    regions.length,
+    },
+    [fillDataArr.buffer, closed.buffer],
+  );
+};
+`;
+
+// ── usePdfFill ────────────────────────────────────────────────────────────────
 
 export function usePdfFill() {
   // ── Color cycling ──────────────────────────────────────────────────────────
@@ -78,17 +324,27 @@ export function usePdfFill() {
   const panRef          = useRef(pan);
   const zoomRef         = useRef(zoom);
   const showPolygonRef  = useRef(showPolygon);
+  const workerRef       = useRef<Worker | null>(null);
+  const workerUrlRef    = useRef<string | null>(null);
 
-  useEffect(() => { fillsRef.current      = fills;       }, [fills]);
-  useEffect(() => { panRef.current        = pan;         }, [pan]);
-  useEffect(() => { zoomRef.current       = zoom;        }, [zoom]);
-  useEffect(() => { batchModeRef.current  = batchMode;   }, [batchMode]);
+  useEffect(() => { fillsRef.current       = fills;       }, [fills]);
+  useEffect(() => { panRef.current         = pan;         }, [pan]);
+  useEffect(() => { zoomRef.current        = zoom;        }, [zoom]);
+  useEffect(() => { batchModeRef.current   = batchMode;   }, [batchMode]);
   useEffect(() => { showPolygonRef.current = showPolygon; }, [showPolygon]);
 
   useEffect(() => {
     if (wrapRef.current)
       wrapRef.current.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
   }, [pan, zoom]);
+
+  // Cleanup worker on unmount
+  useEffect(() => {
+    return () => {
+      workerRef.current?.terminate();
+      if (workerUrlRef.current) URL.revokeObjectURL(workerUrlRef.current);
+    };
+  }, []);
 
   // ── Space key ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -183,9 +439,6 @@ export function usePdfFill() {
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
       ctx.setLineDash([]); ctx.stroke();
 
-      // ── Corner dots ──────────────────────────────────────────────────────
-      // PDF fills never have svgCornerIndices, so all RDP polygon vertices
-      // are shown. RDP already reduces the count to meaningful corners only.
       const cornersToShow: [number, number][] = f.svgCornerIndices
         ? pts.filter((_, i) => f.svgCornerIndices!.has(i))
         : pts;
@@ -194,20 +447,17 @@ export function usePdfFill() {
       const dotA = isSelected ? 1 : isInGroup ? 0.95 : 0.85;
 
       cornersToShow.forEach(([px, py]) => {
-        // Outer white contrast ring
         ctx.beginPath();
         ctx.arc(px, py, dotR + 1.5, 0, Math.PI * 2);
         ctx.strokeStyle = 'rgba(255,255,255,0.6)';
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
-        // Filled dot in fill colour
         ctx.beginPath();
         ctx.arc(px, py, dotR, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(${r},${g},${b},${dotA})`;
         ctx.fill();
 
-        // Inner bright outline
         ctx.strokeStyle = isSelected
           ? 'rgba(255,255,255,1)'
           : `rgba(${Math.min(r+80,255)},${Math.min(g+80,255)},${Math.min(b+80,255)},0.8)`;
@@ -282,7 +532,7 @@ export function usePdfFill() {
     }
   }, [loadPdf, centerCanvas]);
 
-  // ── Raster fill ────────────────────────────────────────────────────────────
+  // ── Raster fill (single click) ─────────────────────────────────────────────
   const doRasterFill = useCallback(async (canvasX: number, canvasY: number) => {
     if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current) return;
     const bc = baseCanvasRef.current!;
@@ -320,7 +570,6 @@ export function usePdfFill() {
       id: Date.now(), label: `Fill ${fillCountRef.current}`,
       color: activeColor, opacity: fillOpacity,
       areaPx, perimPx, polygon, svgMode: false,
-      // No svgCornerIndices — RDP polygon already has only meaningful vertices
     };
     fillPixelMaps.current.set(newFill.id, closed);
     setFills(prev => {
@@ -349,70 +598,148 @@ export function usePdfFill() {
     await doRasterFill(cx, cy);
   }, [mode, isFilling, loadStage, pan, zoom, doRasterFill]);
 
-  // ── Batch rect-select fill ─────────────────────────────────────────────────
+  // ── Batch rect-select fill (fully off-thread) ──────────────────────────────
+  //
+  // The main thread now only:
+  //   1. Takes a snapshot for undo
+  //   2. Transfers mask + fillData buffers to the worker
+  //   3. Shows the spinner immediately via yieldFrame()
+  //
+  // The worker handles everything:
+  //   findRegionsInRect → union → dilate → closeHoles → paint
+  //
+  // This eliminates the ~200ms main-thread block that previously caused the
+  // browser to freeze before the spinner appeared on large PDFs.
+
   const commitRectSelect = useCallback(async (x1: number, y1: number, x2: number, y2: number) => {
     const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
     if (rw < 5 || rh < 5 || !maskRef.current || !fillDataRef.current || !basePixelsRef.current || isFilling) return;
+
     const bc = baseCanvasRef.current!;
-    setIsFilling(true); setFillMsg('Detecting regions'); setFillSub('Scanning selection…'); setFillProgress(null);
+    const w = bc.width, h = bc.height;
+
+    setIsFilling(true);
+    setFillMsg('Detecting regions');
+    setFillSub('Running off main thread…');
+    setFillProgress(null);
+
+    // Snapshot for undo BEFORE handing off to worker
+    snapshots.current.push(new ImageData(
+      new Uint8ClampedArray(fillDataRef.current.data), w, h,
+    ));
+
+    // Yield immediately so the spinner renders before any work starts
     await yieldFrame();
 
-    const regions = findRegionsInRect(
-      maskRef.current, bc.width, bc.height,
-      Math.min(x1, x2), Math.min(y1, y2), Math.max(x1, x2), Math.max(y1, y2),
+    // Terminate any previous worker still running
+    workerRef.current?.terminate();
+    if (workerUrlRef.current) URL.revokeObjectURL(workerUrlRef.current);
+
+    const blob = new Blob([WORKER_SOURCE], { type: 'application/javascript' });
+    const url  = URL.createObjectURL(blob);
+    workerUrlRef.current = url;
+    const worker = new Worker(url);
+    workerRef.current = worker;
+
+    const [r, g, b] = hexToRgb(activeColor);
+
+    // Transfer mask + fillData zero-copy. slice() gives a fresh transferable
+    // ArrayBuffer so maskRef.current stays valid on the main thread.
+    const maskCopy     = maskRef.current.slice().buffer;
+    const fillDataCopy = fillDataRef.current.data.slice().buffer;
+
+    worker.postMessage(
+      {
+        maskBuffer:     maskCopy,
+        fillDataBuffer: fillDataCopy,
+        w, h, r, g, b,
+        opacity: fillOpacity / 100,
+        FILL_GROW,
+        x1: Math.min(x1, x2),
+        y1: Math.min(y1, y2),
+        x2: Math.max(x1, x2),
+        y2: Math.max(y1, y2),
+      },
+      [maskCopy, fillDataCopy],
     );
-    if (regions.length === 0) {
-      setIsFilling(false); setFillMsg('');
-      setStatus('No fillable regions found in selection');
-      return;
-    }
 
-    setFillSub(`Found ${regions.length} region${regions.length > 1 ? 's' : ''}`);
-    setFillProgress({ done: 0, total: regions.length }); await yieldFrame();
-    snapshots.current.push(new ImageData(new Uint8ClampedArray(fillDataRef.current.data), bc.width, bc.height));
-    groupCountRef.current += 1;
-    const gId = groupCountRef.current;
-    const newFills: Fill[] = [];
-    let batchColorIdx = COLORS.indexOf(activeColor);
+    worker.onmessage = ({ data: result }) => {
+      worker.terminate();
+      workerRef.current = null;
+      URL.revokeObjectURL(url);
+      workerUrlRef.current = null;
 
-    for (let i = 0; i < regions.length; i++) {
-      setFillMsg(`Filling region ${i + 1} / ${regions.length}`);
-      setFillProgress({ done: i, total: regions.length }); await yieldFrame();
-      const { filled } = regions[i];
-      const grown  = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
-      const closed = closeHoles(grown, bc.width, bc.height);
-      const batchColor = COLORS[batchColorIdx % COLORS.length];
-      const [r, g, b] = hexToRgb(batchColor);
-      paintFill(closed, fillDataRef.current, r, g, b, fillOpacity / 100);
-      const areaPx  = maskArea(closed);
-      const polygon = buildPolygonFromMask(closed, bc.width, bc.height);
-      const perimPx = polygonPerim(polygon);
-      fillCountRef.current += 1;
-      const nf: Fill = {
-        id: Date.now() + Math.random(), label: `Fill ${fillCountRef.current}`,
-        color: batchColor, opacity: fillOpacity,
-        areaPx, perimPx, polygon, groupId: gId, svgMode: false,
+      if (result.empty) {
+        snapshots.current.pop();
+        setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
+        setStatus('No fillable regions found in selection');
+        return;
+      }
+
+      if (result.error === 'leak') {
+        snapshots.current.pop();
+        setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
+        setStatus('Fill leaked — try a smaller selection');
+        return;
+      }
+
+      const { fillDataBuffer, closedBuffer, polygon, areaPx, perimPx, regionCount } = result;
+
+      // Write painted pixels back
+      const painted = new Uint8ClampedArray(fillDataBuffer);
+      fillDataRef.current!.data.set(painted);
+      fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
+
+      const closed = new Uint8Array(closedBuffer);
+
+      groupCountRef.current += 1;
+      const gId = groupCountRef.current;
+      fillCountRef.current  += 1;
+
+      const newFill: Fill = {
+        id:      Date.now(),
+        label:   `Fill ${fillCountRef.current}`,
+        color:   activeColor,
+        opacity: fillOpacity,
+        areaPx,
+        perimPx,
+        polygon: polygon as [number, number][],
+        groupId: gId,
+        svgMode: false,
       };
-      fillPixelMaps.current.set(nf.id, closed);
-      newFills.push(nf);
-      batchColorIdx++;
-      if (i % 5 === 0 || i === regions.length - 1)
-        fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
-    }
 
-    setFillProgress({ done: regions.length, total: regions.length });
-    setFillMsg('Finalising'); await yieldFrame();
-    fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
-    setFills(prev => {
-      const next = [...prev, ...newFills];
-      setTimeout(() => redrawPolygons(next, hiddenIds, null, gId), 0);
-      return next;
-    });
-    setSelectedId(null); setSelectedGroup(gId);
-    setIsFilling(false); setFillMsg(''); setFillProgress(null);
-    setActiveColorIdx(batchColorIdx % COLORS.length);
-    setStatus(`Batch filled ${newFills.length} regions · total area ${fmtArea(newFills.reduce((s, f) => s + f.areaPx, 0), pxPerM)}`);
-  }, [isFilling, activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons]);
+      fillPixelMaps.current.set(newFill.id, closed);
+
+      setFills(prev => {
+        const next = [...prev, newFill];
+        setTimeout(() => redrawPolygons(next, hiddenIds, null, gId), 0);
+        return next;
+      });
+
+      setSelectedId(null);
+      setSelectedGroup(gId);
+      setIsFilling(false);
+      setFillMsg('');
+      setFillSub(undefined);
+      setFillProgress(null);
+      cycleColor();
+      setStatus(
+        `Batch filled · ${regionCount} region${regionCount !== 1 ? 's' : ''} merged · ` +
+        `area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`,
+      );
+    };
+
+    worker.onerror = (e) => {
+      worker.terminate();
+      workerRef.current = null;
+      URL.revokeObjectURL(url);
+      workerUrlRef.current = null;
+      snapshots.current.pop();
+      setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
+      setStatus(`Worker error: ${e.message}`);
+    };
+
+  }, [isFilling, activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, cycleColor]);
 
   // ── Pointer handlers ───────────────────────────────────────────────────────
   const handleContextMenu = useCallback((e: React.MouseEvent) => e.preventDefault(), []);
@@ -521,6 +848,11 @@ export function usePdfFill() {
 
   // ── Undo ───────────────────────────────────────────────────────────────────
   const handleUndo = useCallback(() => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    if (workerUrlRef.current) { URL.revokeObjectURL(workerUrlRef.current); workerUrlRef.current = null; }
+    setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
+
     setFills(f => {
       if (f.length === 0) return f;
       const last = f[f.length - 1];
@@ -548,6 +880,9 @@ export function usePdfFill() {
 
   // ── Clear all ──────────────────────────────────────────────────────────────
   const handleClearAll = useCallback(() => {
+    workerRef.current?.terminate();
+    workerRef.current = null;
+    if (workerUrlRef.current) { URL.revokeObjectURL(workerUrlRef.current); workerUrlRef.current = null; }
     if (fillDataRef.current) {
       fillDataRef.current.data.fill(0);
       fillCanvasRef.current!.getContext('2d')!.clearRect(
@@ -560,6 +895,7 @@ export function usePdfFill() {
     fillPixelMaps.current.clear();
     setFills([]); setHiddenIds(new Set()); setSelectedId(null); setSelectedGroup(null);
     setHoveredId(null); setHolesClosedIds(new Set()); setStatus('Cleared');
+    setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
     setActiveColorIdx(0);
   }, []);
 
@@ -666,7 +1002,6 @@ export function usePdfFill() {
     : 'crosshair';
 
   return {
-    // state
     activeColor, setActiveColor, activeColorIdx,
     fillOpacity, setFillOpacity,
     zoom, setZoom, pan, setPan,
@@ -684,12 +1019,9 @@ export function usePdfFill() {
     pxPerM, setPxPerM,
     selectRect, isSelecting, spaceHeld,
     batchMode, setBatchMode, batchModeRef,
-    // derived
     selectedFill, hoveredFill, groupFills, hasSelection, cursor,
-    // refs
     viewportRef, wrapRef, baseCanvasRef, fillCanvasRef, polyCanvasRef,
     fileInputRef, fillPixelMaps, fillDataRef,
-    // handlers
     handleUpload, handleUndo, handleClearAll, handleFillHoles,
     handleExport,
     handleDeleteFill, toggleHidden,
