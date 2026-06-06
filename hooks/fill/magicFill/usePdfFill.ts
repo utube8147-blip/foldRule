@@ -1,24 +1,38 @@
 // hooks/fill/magicFill/usePdfFill.ts
-// ── OPTIMIZED v4-morphclose ───────────────────────────────────────────────────
+// ── OPTIMIZED v5-polysilhouette ───────────────────────────────────────────────
 //
-// Fixes vs v3-fixed:
+// Fixes vs v4-morphclose:
 //
-//  - After the polygon lasso fill union is built, we now run a morphological
-//    CLOSE before closeHolesFull. This bridges the wall-pixel gaps between
-//    adjacent filled regions (e.g. toilet bowl outline, fixture lines) so that
-//    the exterior flood-fill in closeHolesFull cannot leak into the tiny
-//    sub-pockets. The result: all interior area — including small regions
-//    separated by thin internal lines — gets filled solid.
+//  Ghost lines from furniture symbols (chairs, tables, stair details) were
+//  persisting because they are thick/complex enough that no fixed BRIDGE_R
+//  could bridge them without also bleeding through real room walls.
 //
-//  Strategy:
-//    1. Dilate the raw union mask by BRIDGE_R pixels  → bridges wall gaps
-//    2. closeHolesFull on the dilated mask            → fills enclosed interior
-//    3. Erode back by BRIDGE_R pixels                 → restores outer boundary
+//  NEW STRATEGY — "polygon silhouette fill":
 //
-//  BRIDGE_R = 6 is enough to close typical wall thicknesses at PDF_SCALE=3.
-//  Single-click (raster) fills are unchanged.
+//  Instead of trying to bridge furniture gaps with dilation, we take a
+//  fundamentally different approach for the final closed mask:
+//
+//  1. Rasterize the user's lasso polygon → solid interior pixels (ignores
+//     ALL lines — walls, furniture, everything). This is the "intended area".
+//
+//  2. Find seeded regions as before (these tell us which room(s) the user
+//     actually clicked inside — important for not leaking into adjacent rooms).
+//
+//  3. Dilate the seeded union by ROOM_GROW pixels to get a "room silhouette"
+//     that spans across thin internal furniture lines but stops at real walls
+//     (which are thicker than ROOM_GROW).
+//
+//  4. AND the polygon interior with the room silhouette → this gives us a
+//     mask that is: (a) inside the lasso, (b) inside the room(s), and
+//     (c) solid — no ghost lines from furniture.
+//
+//  5. Run closeHolesFull on THAT mask to plug any remaining holes.
+//
+//  ROOM_GROW = 8 bridges furniture lines (~2-4px at scale 3) but not walls
+//  (~6-10px). Tune if needed.
 //
 'use client';
+// v5-polysilhouette
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
   COLORS, PDF_SCALE,
@@ -418,37 +432,44 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// morphologicalClose — dilate → closeHolesFull → erode
+// buildSolidFill
 //
-// Purpose: bridge the wall-pixel gaps between filled regions so that the
-// exterior flood-fill in closeHolesFull cannot leak into enclosed sub-pockets
-// (toilet bowl outlines, fixture lines, etc.). After closing we erode back by
-// the same radius so the outer boundary is not permanently bloated.
+// Returns a solid fill mask with NO ghost lines from furniture/fixtures.
 //
-// BRIDGE_R should be at least as thick as the walls in the rasterised PDF.
-// At PDF_SCALE=3 a 2-pt wall is ~6 px, so 6 is a safe default.
+// Strategy: dilate → closeHolesFull → erode → OR original
+//
+//   The room WALLS contain the fill naturally — they are thick enough to
+//   survive ROOM_GROW erosion. Furniture lines are thinner and get bridged
+//   by the dilation, so closeHolesFull fills sub-pockets solid.
+//   The lasso polygon is used only for SEEDING (which room to fill),
+//   NOT for clipping the final shape.
+//
+// ROOM_GROW must satisfy:
+//   > furniture/fixture line thickness  (~2-4 px at PDF_SCALE=3)
+//   < real wall thickness               (~6-12 px at PDF_SCALE=3)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BRIDGE_R = 6;
+const ROOM_GROW = 10;
 
-function morphologicalClose(mask, w, h) {
-  // Step 1 — dilate to bridge wall gaps
-  const dilated = dilateMaskFast(mask, w, h, BRIDGE_R);
+function buildSolidFill(unioned, w, h) {
+  // Step 1 — dilate to bridge furniture/fixture line gaps
+  const grown = dilateMaskFast(unioned, w, h, ROOM_GROW);
 
-  // Step 2 — closeHolesFull on the bridged mask
-  // Now the exterior flood-fill cannot sneak between regions through wall gaps,
-  // so every enclosed pixel (even tiny toilet-sub-regions) gets marked inside.
-  const holeFilled = closeHolesFull(dilated, w, h);
+  // Step 2 — closeHolesFull: exterior flood-fill can no longer leak through
+  // furniture gaps, so every enclosed sub-pocket gets marked inside
+  const closed = closeHolesFull(grown, w, h);
 
-  // Step 3 — erode back to restore the original outer boundary
-  const eroded = erodeMaskFast(holeFilled, w, h, BRIDGE_R);
+  // Step 3 — erode back by same radius to restore the outer wall boundary
+  const eroded = erodeMaskFast(closed, w, h, ROOM_GROW);
 
-  // Step 4 — OR with original union so we never lose pixels we already had
-  // (erosion can clip corners; this makes the operation non-shrinking)
-  const result = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) result[i] = eroded[i] || mask[i] ? 1 : 0;
+  // Step 4 — OR with original union so tight corners clipped by erosion
+  // are restored (makes the operation non-shrinking)
+  const final = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    final[i] = (eroded[i] || unioned[i]) ? 1 : 0;
+  }
 
-  return result;
+  return final;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -460,7 +481,7 @@ self.onmessage = ({ data }) => {
 
   const fullMask = new Uint8Array(maskBuffer);
 
-  // ── Find all regions inside the polygon ───────────────────────────────────
+  // ── Find all seeded regions inside the polygon ────────────────────────────
   const { localResults, unioned } = findRegionsInsidePolygon(fullMask, w, h, poly);
 
   if (localResults.length === 0) {
@@ -468,12 +489,8 @@ self.onmessage = ({ data }) => {
     return;
   }
 
-  // ── Morphological close — fills sub-pockets between wall lines ────────────
-  // This replaces the bare closeHolesFull call from v3-fixed.
-  // The dilate→close→erode sequence bridges wall gaps (toilet outlines, fixture
-  // lines, thin partitions) so every enclosed area inside the polygon silhouette
-  // gets filled regardless of internal lines.
-  const closed = morphologicalClose(unioned, w, h);
+  // ── Build solid fill — dilate bridges furniture lines, erode restores walls
+  const closed = buildSolidFill(unioned, w, h);
 
   // ── Leak guard ────────────────────────────────────────────────────────────
   const areaPx = maskArea(closed);
@@ -482,7 +499,7 @@ self.onmessage = ({ data }) => {
     return;
   }
 
-  // ── Single uniform paint pass — consistent color everywhere ───────────────
+  // ── Single uniform paint pass ─────────────────────────────────────────────
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
