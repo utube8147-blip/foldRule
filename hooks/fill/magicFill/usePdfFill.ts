@@ -1,15 +1,22 @@
 // hooks/fill/magicFill/usePdfFill.ts
-// ── OPTIMIZED v3-fixed ────────────────────────────────────────────────────────
+// ── OPTIMIZED v4-morphclose ───────────────────────────────────────────────────
 //
-// Fixes vs v3:
+// Fixes vs v3-fixed:
 //
-//  - NO dilation anywhere. Dilation caused double-paint → color inconsistency.
-//  - NO phase 2 boundary search. Removed unnecessary complexity.
-//  - closeHolesFull runs on the RAW union mask (not grown). This fills the
-//    slivers/gaps between regions that caused ghost lines, because the exterior
-//    flood-fill from the canvas border marks everything unreachable as "inside".
-//  - Single uniform paintFill pass → consistent color everywhere.
-//  - FILL_GROW removed from worker postMessage (no longer needed).
+//  - After the polygon lasso fill union is built, we now run a morphological
+//    CLOSE before closeHolesFull. This bridges the wall-pixel gaps between
+//    adjacent filled regions (e.g. toilet bowl outline, fixture lines) so that
+//    the exterior flood-fill in closeHolesFull cannot leak into the tiny
+//    sub-pockets. The result: all interior area — including small regions
+//    separated by thin internal lines — gets filled solid.
+//
+//  Strategy:
+//    1. Dilate the raw union mask by BRIDGE_R pixels  → bridges wall gaps
+//    2. closeHolesFull on the dilated mask            → fills enclosed interior
+//    3. Erode back by BRIDGE_R pixels                 → restores outer boundary
+//
+//  BRIDGE_R = 6 is enough to close typical wall thicknesses at PDF_SCALE=3.
+//  Single-click (raster) fills are unchanged.
 //
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -260,6 +267,59 @@ function closeHolesFull(filled, w, h) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// dilateMaskFast / erodeMaskFast — separable box morphology
+// Used for morphological close to bridge wall gaps before closeHolesFull.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function dilateMaskFast(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let count = 0;
+    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) count++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && src[y * w + add]) count++;
+      if (count > 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && src[y * w + rem]) count--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let count = 0;
+    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) count++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && horiz[add * w + x]) count++;
+      if (count > 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && horiz[rem * w + x]) count--;
+    }
+  }
+  return out;
+}
+
+function erodeMaskFast(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // maskArea, polygonPerim, bboxPolygon, paintFill
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -338,8 +398,6 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
   }
 
   // ── Pass 2: fine sweep — catch small corners/slivers missed by coarse step
-  // Walk every pixel inside the polygon at step=1. Any unseen, non-wall pixel
-  // is a region the coarse scan jumped over (small triangle, corner nook, etc.)
   for (let sy = y1; sy <= y2; sy++) {
     for (let sx = x1; sx <= x2; sx++) {
       if (!inside[sy * W + sx]) continue;
@@ -360,6 +418,40 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// morphologicalClose — dilate → closeHolesFull → erode
+//
+// Purpose: bridge the wall-pixel gaps between filled regions so that the
+// exterior flood-fill in closeHolesFull cannot leak into enclosed sub-pockets
+// (toilet bowl outlines, fixture lines, etc.). After closing we erode back by
+// the same radius so the outer boundary is not permanently bloated.
+//
+// BRIDGE_R should be at least as thick as the walls in the rasterised PDF.
+// At PDF_SCALE=3 a 2-pt wall is ~6 px, so 6 is a safe default.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const BRIDGE_R = 6;
+
+function morphologicalClose(mask, w, h) {
+  // Step 1 — dilate to bridge wall gaps
+  const dilated = dilateMaskFast(mask, w, h, BRIDGE_R);
+
+  // Step 2 — closeHolesFull on the bridged mask
+  // Now the exterior flood-fill cannot sneak between regions through wall gaps,
+  // so every enclosed pixel (even tiny toilet-sub-regions) gets marked inside.
+  const holeFilled = closeHolesFull(dilated, w, h);
+
+  // Step 3 — erode back to restore the original outer boundary
+  const eroded = erodeMaskFast(holeFilled, w, h, BRIDGE_R);
+
+  // Step 4 — OR with original union so we never lose pixels we already had
+  // (erosion can clip corners; this makes the operation non-shrinking)
+  const result = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) result[i] = eroded[i] || mask[i] ? 1 : 0;
+
+  return result;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Message handler
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -376,11 +468,12 @@ self.onmessage = ({ data }) => {
     return;
   }
 
-  // ── Close holes on raw union (no dilation) ────────────────────────────────
-  // The exterior flood-fill marks everything reachable from the canvas border
-  // as outside. Slivers and gaps between regions that are enclosed by walls
-  // become "inside" automatically — fixing ghost lines without any dilation.
-  const closed = closeHolesFull(unioned, w, h);
+  // ── Morphological close — fills sub-pockets between wall lines ────────────
+  // This replaces the bare closeHolesFull call from v3-fixed.
+  // The dilate→close→erode sequence bridges wall gaps (toilet outlines, fixture
+  // lines, thin partitions) so every enclosed area inside the polygon silhouette
+  // gets filled regardless of internal lines.
+  const closed = morphologicalClose(unioned, w, h);
 
   // ── Leak guard ────────────────────────────────────────────────────────────
   const areaPx = maskArea(closed);
@@ -791,7 +884,6 @@ export function usePdfFill() {
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
-    // Note: FILL_GROW removed — no dilation in worker
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
