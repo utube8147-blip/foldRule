@@ -1,32 +1,24 @@
 // hooks/fill/magicFill/usePdfFill.ts
-// ── OPTIMIZED v3 ──────────────────────────────────────────────────────────────
+// ── OPTIMIZED v3-fixed ────────────────────────────────────────────────────────
 //
-// All previous fixes (v1, v2) retained, plus:
+// Fixes vs v3:
 //
-//  FIX 8: Bbox-cropped subregion operations.
-//          Instead of allocating full W×H arrays for every flood fill,
-//          all scanlineFill / morphology / closeHoles work on a small
-//          cropped buffer sized to the room's bounding box.
-//          Full-canvas arrays are only touched when writing final results back.
-//
-//          Key helpers added:
-//            - cropMask(fullMask, W, H, x1,y1,x2,y2) → local Uint8Array
-//            - expandMask(local, W, H, x1,y1,x2,y2) → full Uint8Array
-//            - scanlineFillLocal — flood fill entirely in local coords
-//            - dilateMaskLocal / erodeMaskLocal / closeHolesLocal — same
-//            - multiSeedFillLocal — 13-offset seeding in local space
-//
-//          Result: most per-room ops go from O(W×H) to O(room_bbox_area),
-//          which is typically 50-200x smaller on a 3x-scaled PDF canvas.
+//  - NO dilation anywhere. Dilation caused double-paint → color inconsistency.
+//  - NO phase 2 boundary search. Removed unnecessary complexity.
+//  - closeHolesFull runs on the RAW union mask (not grown). This fills the
+//    slivers/gaps between regions that caused ghost lines, because the exterior
+//    flood-fill from the canvas border marks everything unreachable as "inside".
+//  - Single uniform paintFill pass → consistent color everywhere.
+//  - FILL_GROW removed from worker postMessage (no longer needed).
 //
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  COLORS, PDF_SCALE, FILL_GROW,
+  COLORS, PDF_SCALE,
   Fill, LoadStage,
   yieldFrame, yieldMacro,
   hexToRgb, fmtArea, fmtPerim,
-  dilateMaskFast, multiSeedFill, paintFill, closeHoles,
+  multiSeedFill, paintFill, closeHoles,
   maskArea, buildPolygonFromMask, polygonPerim,
   buildMaskAsync,
 } from './fillCore';
@@ -40,7 +32,7 @@ export interface LassoState {
   mousePos: [number, number] | null;
 }
 
-// ── Optimized inline worker ───────────────────────────────────────────────────
+// ── Inline worker ─────────────────────────────────────────────────────────────
 
 const WORKER_SOURCE = /* js */`
 
@@ -48,26 +40,6 @@ const WORKER_SOURCE = /* js */`
 // Bbox helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Compute the tight bounding box of all set pixels in a full-canvas mask.
- * Returns null if the mask is empty.
- */
-function maskBbox(mask, W) {
-  const H = (mask.length / W) | 0;
-  let x1 = W, y1 = H, x2 = -1, y2 = -1;
-  for (let i = 0; i < mask.length; i++) {
-    if (!mask[i]) continue;
-    const x = i % W, y = (i / W) | 0;
-    if (x < x1) x1 = x; if (x > x2) x2 = x;
-    if (y < y1) y1 = y; if (y > y2) y2 = y;
-  }
-  return x2 < 0 ? null : { x1, y1, x2, y2 };
-}
-
-/**
- * Copy a rectangular region from a full W×H mask into a small local buffer.
- * local coords: lx = x - x1, ly = y - y1, lw = x2-x1+1, lh = y2-y1+1
- */
 function cropMask(full, W, x1, y1, x2, y2) {
   const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
   const local = new Uint8Array(lw * lh);
@@ -78,246 +50,6 @@ function cropMask(full, W, x1, y1, x2, y2) {
   }
   return local;
 }
-
-/**
- * Write a local buffer back into a full W×H mask (OR merge).
- */
-function expandMask(local, full, W, x1, y1, x2, y2) {
-  const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
-  for (let ly = 0; ly < lh; ly++) {
-    const fy = (y1 + ly) * W + x1;
-    const lbase = ly * lw;
-    for (let lx = 0; lx < lw; lx++) {
-      if (local[lbase + lx]) full[fy + lx] = 1;
-    }
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Local (bbox-cropped) morphology
-// ─────────────────────────────────────────────────────────────────────────────
-
-function dilateMaskLocal(src, lw, lh, r) {
-  const horiz = new Uint8Array(lw * lh);
-  for (let y = 0; y < lh; y++) {
-    let count = 0;
-    for (let x = 0; x < r && x < lw; x++) if (src[y * lw + x]) count++;
-    for (let x = 0; x < lw; x++) {
-      const add = x + r; if (add < lw && src[y * lw + add]) count++;
-      if (count > 0) horiz[y * lw + x] = 1;
-      const rem = x - r; if (rem >= 0 && src[y * lw + rem]) count--;
-    }
-  }
-  const out = new Uint8Array(lw * lh);
-  for (let x = 0; x < lw; x++) {
-    let count = 0;
-    for (let y = 0; y < r && y < lh; y++) if (horiz[y * lw + x]) count++;
-    for (let y = 0; y < lh; y++) {
-      const add = y + r; if (add < lh && horiz[add * lw + x]) count++;
-      if (count > 0) out[y * lw + x] = 1;
-      const rem = y - r; if (rem >= 0 && horiz[rem * lw + x]) count--;
-    }
-  }
-  return out;
-}
-
-function closeHolesLocal(filled, lw, lh) {
-  const outside = new Uint8Array(lw * lh);
-  const stack = [];
-  const push = (i) => {
-    if (i >= 0 && i < lw * lh && !filled[i] && !outside[i]) {
-      outside[i] = 1; stack.push(i);
-    }
-  };
-  for (let x = 0; x < lw; x++) { push(x); push((lh - 1) * lw + x); }
-  for (let y = 1; y < lh - 1; y++) { push(y * lw); push(y * lw + lw - 1); }
-  while (stack.length) {
-    const i = stack.pop();
-    const x = i % lw, y = (i / lw) | 0;
-    if (x > 0)    push(i - 1);
-    if (x < lw-1) push(i + 1);
-    if (y > 0)    push(i - lw);
-    if (y < lh-1) push(i + lw);
-  }
-  const closed = new Uint8Array(lw * lh);
-  for (let i = 0; i < lw * lh; i++) closed[i] = filled[i] || (!outside[i] ? 1 : 0);
-  return closed;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Local scanline flood fill
-//
-// Operates entirely in local (cropped) coordinates.
-// localMask: wall mask cropped to [x1..x2, y1..y2]
-// lsx, lsy: seed in local coords
-// Returns a local-sized Uint8Array or null.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function scanlineFillLocal(localMask, lw, lh, W, H, x1, y1, lsx, lsy, globalLeakLimit) {
-  if (lsx < 0 || lsx >= lw || lsy < 0 || lsy >= lh) return null;
-  if (localMask[lsy * lw + lsx]) return null;
-
-  const filled  = new Uint8Array(lw * lh);
-  const visited = new Uint8Array(lw * lh);
-  const stack   = new Int32Array(lw * lh);
-  let top = 0;
-  stack[top++] = lsy * lw + lsx;
-  visited[lsy * lw + lsx] = 1;
-
-  // Track if fill reaches any local boundary — if it does, the room might
-  // extend outside the crop bbox so we fall back to a padded bbox.
-  let touchesBoundary = false;
-
-  while (top > 0) {
-    const idx = stack[--top];
-    const cy  = (idx / lw) | 0;
-    const cx  = idx % lw;
-
-    if (cy === 0 || cy === lh - 1 || cx === 0 || cx === lw - 1) touchesBoundary = true;
-
-    let left = cx;
-    while (left > 0 && !localMask[cy * lw + left - 1] && !visited[cy * lw + left - 1]) left--;
-    let right = cx;
-    while (right < lw - 1 && !localMask[cy * lw + right + 1] && !visited[cy * lw + right + 1]) right++;
-
-    for (let x = left; x <= right; x++) {
-      filled[cy * lw + x] = 1;
-      visited[cy * lw + x] = 1;
-    }
-    const up = (cy - 1) * lw, dn = (cy + 1) * lw;
-    for (let x = left; x <= right; x++) {
-      if (cy > 0    && !localMask[up + x] && !visited[up + x]) { visited[up + x] = 1; stack[top++] = up + x; }
-      if (cy < lh-1 && !localMask[dn + x] && !visited[dn + x]) { visited[dn + x] = 1; stack[top++] = dn + x; }
-    }
-  }
-
-  let count = 0;
-  for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
-
-  // Leak guard relative to full canvas size
-  if (count / (W * H) > 0.80) return null;
-  if (count <= 4) return null;
-
-  return { filled, lw, lh, x1, y1, x2: x1 + lw - 1, y2: y1 + lh - 1, touchesBoundary };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// FIX 8: multiSeedFillLocal
-//
-// For a given (cx, cy) in full-canvas coords:
-//   1. Quick probe at (cx,cy) in the full mask to get approximate room extent
-//   2. Crop the wall mask to that bbox (with generous padding)
-//   3. Run all 13 offset seeds in local coords
-//   4. Merge overlapping fills in local coords (cheap — small buffer)
-//   5. Return a descriptor { localFilled, lw, lh, x1, y1 } + global area check
-//
-// If the fill touches the crop boundary, we re-run with a 2× padded bbox.
-// ─────────────────────────────────────────────────────────────────────────────
-
-const OFFSETS = [
-  [0,0],[1,0],[-1,0],[0,1],[0,-1],
-  [2,0],[-2,0],[0,2],[0,-2],
-  [1,1],[-1,1],[1,-1],[-1,-1],
-];
-
-// Padding added around the first-probe bbox to ensure we don't clip the room.
-const BBOX_PAD = 32;
-
-function multiSeedFillLocal(fullMask, W, H, cx, cy) {
-  if (cx < 0 || cx >= W || cy < 0 || cy >= H) return null;
-  if (fullMask[cy * W + cx]) return null;
-
-  // ── Step 1: quick BFS from (cx,cy) to find approximate room bbox ──────────
-  // We do a lightweight BFS that stops early once we have enough points to
-  // estimate the bbox, then pad it generously.
-  // Actually: just do a small scanline fill of fixed max size to get the bbox.
-  // We use the full mask here but stop after MAX_PROBE pixels.
-
-  const MAX_PROBE = 4096; // enough to size the bbox for most rooms
-  const probeVisited = new Uint8Array(W * H); // only need a partial view but keep simple
-  const probeStack = [cy * W + cx];
-  probeVisited[cy * W + cx] = 1;
-  let probeCount = 0;
-  let bx1 = cx, by1 = cy, bx2 = cx, by2 = cy;
-
-  while (probeStack.length && probeCount < MAX_PROBE) {
-    const idx = probeStack.pop();
-    const py = (idx / W) | 0, px = idx % W;
-    probeCount++;
-    if (px < bx1) bx1 = px; if (px > bx2) bx2 = px;
-    if (py < by1) by1 = py; if (py > by2) by2 = py;
-    const DIRS = [-1, 1, -W, W];
-    for (const d of DIRS) {
-      const j = idx + d;
-      if (j < 0 || j >= W * H) continue;
-      if (fullMask[j] || probeVisited[j]) continue;
-      probeVisited[j] = 1;
-      probeStack.push(j);
-    }
-  }
-
-  // If probe ran out early the room is bigger — extend bbox to full remaining
-  // room by padding heavily. If probe finished the bbox is tight.
-  const hitLimit = probeCount >= MAX_PROBE;
-  const pad = hitLimit ? Math.max(BBOX_PAD, Math.max(bx2 - bx1, by2 - by1)) : BBOX_PAD;
-
-  const x1 = Math.max(0, bx1 - pad);
-  const y1 = Math.max(0, by1 - pad);
-  const x2 = Math.min(W - 1, bx2 + pad);
-  const y2 = Math.min(H - 1, by2 + pad);
-  const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
-
-  // ── Step 2: crop wall mask to bbox ────────────────────────────────────────
-  const localMask = cropMask(fullMask, W, x1, y1, x2, y2);
-
-  // ── Step 3 & 4: 13-offset seed fills, merged in local space ───────────────
-  let merged = null;
-
-  for (const [dx, dy] of OFFSETS) {
-    const lsx = (cx + dx) - x1;
-    const lsy = (cy + dy) - y1;
-    const result = scanlineFillLocal(localMask, lw, lh, W, H, x1, y1, lsx, lsy, W * H);
-    if (!result) continue;
-
-    if (!merged) {
-      merged = result.filled;
-    } else {
-      // Overlap check in local space — just a direct pixel scan, tiny buffer
-      let overlaps = false;
-      for (let i = 0; i < merged.length; i++) {
-        if (merged[i] && result.filled[i]) { overlaps = true; break; }
-      }
-      if (!overlaps) {
-        // Neighbor scan — 1px wall between two seeds of the same room
-        const LDIRS = [-1, 1, -lw, lw, -lw-1, -lw+1, lw-1, lw+1];
-        outer: for (let i = 0; i < result.filled.length; i++) {
-          if (!result.filled[i]) continue;
-          for (const d of LDIRS) {
-            const j = i + d;
-            if (j >= 0 && j < merged.length && merged[j]) { overlaps = true; break outer; }
-          }
-        }
-      }
-      if (overlaps) {
-        for (let i = 0; i < merged.length; i++) if (result.filled[i]) merged[i] = 1;
-      }
-    }
-  }
-
-  if (!merged) return null;
-
-  // Leak guard on local result vs full canvas
-  let count = 0;
-  for (let i = 0; i < merged.length; i++) if (merged[i]) count++;
-  if (count / (W * H) > 0.80) return null;
-  if (count <= 4) return null;
-
-  return { localFilled: merged, lw, lh, x1, y1, x2, y2 };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Expand a local fill result into the full seen/unioned arrays
-// ─────────────────────────────────────────────────────────────────────────────
 
 function expandLocalFill(result, seen, unioned, W) {
   const { localFilled, lw, lh, x1, y1 } = result;
@@ -334,7 +66,7 @@ function expandLocalFill(result, seen, unioned, W) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FIX 7: rasterizePolygon (retained from v2)
+// Rasterize polygon → inside mask
 // ─────────────────────────────────────────────────────────────────────────────
 
 function rasterizePolygon(poly, w, h) {
@@ -371,32 +103,138 @@ function rasterizePolygon(poly, w, h) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Full-canvas helpers (used only for final union operations)
+// Local scanline flood fill (bbox-cropped)
 // ─────────────────────────────────────────────────────────────────────────────
 
-function dilateMaskFull(src, w, h, r) {
-  const horiz = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let count = 0;
-    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) count++;
-    for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && src[y * w + add]) count++;
-      if (count > 0) horiz[y * w + x] = 1;
-      const rem = x - r; if (rem >= 0 && src[y * w + rem]) count--;
+function scanlineFillLocal(localMask, lw, lh, W, H, lsx, lsy) {
+  if (lsx < 0 || lsx >= lw || lsy < 0 || lsy >= lh) return null;
+  if (localMask[lsy * lw + lsx]) return null;
+
+  const filled  = new Uint8Array(lw * lh);
+  const visited = new Uint8Array(lw * lh);
+  const stack   = new Int32Array(lw * lh);
+  let top = 0;
+  stack[top++] = lsy * lw + lsx;
+  visited[lsy * lw + lsx] = 1;
+
+  while (top > 0) {
+    const idx = stack[--top];
+    const cy  = (idx / lw) | 0;
+    const cx  = idx % lw;
+
+    let left = cx;
+    while (left > 0 && !localMask[cy * lw + left - 1] && !visited[cy * lw + left - 1]) left--;
+    let right = cx;
+    while (right < lw - 1 && !localMask[cy * lw + right + 1] && !visited[cy * lw + right + 1]) right++;
+
+    for (let x = left; x <= right; x++) {
+      filled[cy * lw + x] = 1;
+      visited[cy * lw + x] = 1;
+    }
+    const up = (cy - 1) * lw, dn = (cy + 1) * lw;
+    for (let x = left; x <= right; x++) {
+      if (cy > 0    && !localMask[up + x] && !visited[up + x]) { visited[up + x] = 1; stack[top++] = up + x; }
+      if (cy < lh-1 && !localMask[dn + x] && !visited[dn + x]) { visited[dn + x] = 1; stack[top++] = dn + x; }
     }
   }
-  const out = new Uint8Array(w * h);
-  for (let x = 0; x < w; x++) {
-    let count = 0;
-    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) count++;
-    for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && horiz[add * w + x]) count++;
-      if (count > 0) out[y * w + x] = 1;
-      const rem = y - r; if (rem >= 0 && horiz[rem * w + x]) count--;
-    }
-  }
-  return out;
+
+  let count = 0;
+  for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
+  if (count / (W * H) > 0.80) return null;
+  if (count <= 4) return null;
+
+  return filled;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// multiSeedFillLocal — 13-offset seeding in bbox-cropped space
+// ─────────────────────────────────────────────────────────────────────────────
+
+const OFFSETS = [
+  [0,0],[1,0],[-1,0],[0,1],[0,-1],
+  [2,0],[-2,0],[0,2],[0,-2],
+  [1,1],[-1,1],[1,-1],[-1,-1],
+];
+const BBOX_PAD   = 32;
+const MAX_PROBE  = 4096;
+
+function multiSeedFillLocal(fullMask, W, H, cx, cy) {
+  if (cx < 0 || cx >= W || cy < 0 || cy >= H) return null;
+  if (fullMask[cy * W + cx]) return null;
+
+  const probeVisited = new Uint8Array(W * H);
+  const probeStack   = [cy * W + cx];
+  probeVisited[cy * W + cx] = 1;
+  let probeCount = 0;
+  let bx1 = cx, by1 = cy, bx2 = cx, by2 = cy;
+
+  while (probeStack.length && probeCount < MAX_PROBE) {
+    const idx = probeStack.pop();
+    const py = (idx / W) | 0, px = idx % W;
+    probeCount++;
+    if (px < bx1) bx1 = px; if (px > bx2) bx2 = px;
+    if (py < by1) by1 = py; if (py > by2) by2 = py;
+    const DIRS = [-1, 1, -W, W];
+    for (const d of DIRS) {
+      const j = idx + d;
+      if (j < 0 || j >= W * H) continue;
+      if (fullMask[j] || probeVisited[j]) continue;
+      probeVisited[j] = 1;
+      probeStack.push(j);
+    }
+  }
+
+  const hitLimit = probeCount >= MAX_PROBE;
+  const pad = hitLimit
+    ? Math.max(BBOX_PAD, Math.max(bx2 - bx1, by2 - by1))
+    : BBOX_PAD;
+
+  const x1 = Math.max(0, bx1 - pad);
+  const y1 = Math.max(0, by1 - pad);
+  const x2 = Math.min(W - 1, bx2 + pad);
+  const y2 = Math.min(H - 1, by2 + pad);
+  const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
+
+  const localMask = cropMask(fullMask, W, x1, y1, x2, y2);
+
+  let merged = null;
+
+  for (const [dx, dy] of OFFSETS) {
+    const lsx = (cx + dx) - x1;
+    const lsy = (cy + dy) - y1;
+    const f = scanlineFillLocal(localMask, lw, lh, W, H, lsx, lsy);
+    if (!f) continue;
+    if (!merged) {
+      merged = f;
+    } else {
+      let overlaps = false;
+      const LDIRS = [-1, 1, -lw, lw, -lw-1, -lw+1, lw-1, lw+1];
+      outer: for (let i = 0; i < f.length; i++) {
+        if (!f[i]) continue;
+        if (merged[i]) { overlaps = true; break; }
+        for (const d of LDIRS) {
+          const j = i + d;
+          if (j >= 0 && j < merged.length && merged[j]) { overlaps = true; break outer; }
+        }
+      }
+      if (overlaps) {
+        for (let i = 0; i < merged.length; i++) if (f[i]) merged[i] = 1;
+      }
+    }
+  }
+
+  if (!merged) return null;
+
+  let count = 0;
+  for (let i = 0; i < merged.length; i++) if (merged[i]) count++;
+  if (count / (W * H) > 0.80 || count <= 4) return null;
+
+  return { localFilled: merged, lw, lh, x1, y1, x2, y2 };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// closeHolesFull — flood fill from all 4 borders, mark unreachable as inside
+// ─────────────────────────────────────────────────────────────────────────────
 
 function closeHolesFull(filled, w, h) {
   const outside = new Uint8Array(w * h);
@@ -420,6 +258,10 @@ function closeHolesFull(filled, w, h) {
   for (let i = 0; i < w * h; i++) closed[i] = filled[i] || (!outside[i] ? 1 : 0);
   return closed;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// maskArea, polygonPerim, bboxPolygon, paintFill
+// ─────────────────────────────────────────────────────────────────────────────
 
 function maskArea(mask) {
   let c = 0;
@@ -465,7 +307,7 @@ function paintFill(mask, d, r, g, b, opacity) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 1: find regions inside the polygon (FIX 8 applied)
+// findRegionsInsidePolygon
 // ─────────────────────────────────────────────────────────────────────────────
 
 function findRegionsInsidePolygon(fullMask, W, H, poly) {
@@ -476,14 +318,13 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
   const localResults = [];
 
   const bboxSide = Math.min(x2 - x1, y2 - y1);
-  const step = Math.max(4, Math.min(8, Math.round(bboxSide / 80)));
+  const step = Math.max(2, Math.min(6, Math.round(bboxSide / 120)));
 
   for (let sy = y1; sy <= y2; sy += step) {
     for (let sx = x1; sx <= x2; sx += step) {
       if (!inside[sy * W + sx]) continue;
       if (fullMask[sy * W + sx] || seen[sy * W + sx]) continue;
 
-      // FIX 8: local fill — tiny buffer, not W×H
       const result = multiSeedFillLocal(fullMask, W, H, sx, sy);
       if (!result) {
         seen[sy * W + sx] = 1;
@@ -495,50 +336,7 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
     }
   }
 
-  return { localResults, unioned, seen };
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Phase 2: boundary rooms (FIX 8 applied)
-// ─────────────────────────────────────────────────────────────────────────────
-
-const MAX_BOUNDARY_ROOMS = 64;
-
-function findBoundaryRegions(fullMask, W, H, grownUnion, seen) {
-  const candidates = new Set();
-  const NEIGHBOR = [-1, 1, -W, W];
-
-  for (let i = 0; i < grownUnion.length; i++) {
-    if (!grownUnion[i]) continue;
-    for (const d of NEIGHBOR) {
-      const j = i + d;
-      if (j < 0 || j >= grownUnion.length) continue;
-      if (grownUnion[j] || fullMask[j] || seen[j]) continue;
-      candidates.add(j);
-    }
-  }
-
-  const extraLocalResults = [];
-
-  for (const j of candidates) {
-    if (seen[j]) continue;
-
-    const cx = j % W, cy = (j / W) | 0;
-
-    // FIX 8: local fill — tiny buffer
-    const result = multiSeedFillLocal(fullMask, W, H, cx, cy);
-    if (!result) {
-      seen[j] = 1;
-      continue;
-    }
-
-    expandLocalFill(result, seen, null, W);
-    extraLocalResults.push(result);
-
-    if (extraLocalResults.length >= MAX_BOUNDARY_ROOMS) break;
-  }
-
-  return extraLocalResults;
+  return { localResults, unioned };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,52 +344,38 @@ function findBoundaryRegions(fullMask, W, H, grownUnion, seen) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 self.onmessage = ({ data }) => {
-  const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, FILL_GROW, poly } = data;
+  const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, poly } = data;
 
   const fullMask = new Uint8Array(maskBuffer);
 
-  // ── Phase 1 ───────────────────────────────────────────────────────────────
-  const { localResults: phase1Results, unioned, seen } = findRegionsInsidePolygon(fullMask, w, h, poly);
+  // ── Find all regions inside the polygon ───────────────────────────────────
+  const { localResults, unioned } = findRegionsInsidePolygon(fullMask, w, h, poly);
 
-  if (phase1Results.length === 0) {
+  if (localResults.length === 0) {
     self.postMessage({ empty: true });
     return;
   }
 
-  // Dilate the full union (must be full-canvas — rooms from different areas merge)
-  const grown = dilateMaskFull(unioned, w, h, FILL_GROW);
+  // ── Close holes on raw union (no dilation) ────────────────────────────────
+  // The exterior flood-fill marks everything reachable from the canvas border
+  // as outside. Slivers and gaps between regions that are enclosed by walls
+  // become "inside" automatically — fixing ghost lines without any dilation.
+  const closed = closeHolesFull(unioned, w, h);
 
-  // Pre-populate seen from grown union
-  for (let i = 0; i < grown.length; i++) if (grown[i]) seen[i] = 1;
-
-  // ── Phase 2 ───────────────────────────────────────────────────────────────
-  const phase2Results = findBoundaryRegions(fullMask, w, h, grown, seen);
-
-  // Merge phase 2 back into unioned
-  for (const result of phase2Results) {
-    expandLocalFill(result, seen, unioned, w);
-  }
-
-  // Re-dilate after adding boundary rooms
-  const grownFinal = dilateMaskFull(unioned, w, h, FILL_GROW);
-
-  // Close interior holes — this is inherently full-canvas (exterior flood fill)
-  const closed = closeHolesFull(grownFinal, w, h);
-
-  // Leak guard
+  // ── Leak guard ────────────────────────────────────────────────────────────
   const areaPx = maskArea(closed);
   if (areaPx / (w * h) > 0.80) {
     self.postMessage({ error: 'leak' });
     return;
   }
 
-  // Paint
+  // ── Single uniform paint pass — consistent color everywhere ───────────────
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
   const polygon     = bboxPolygon(closed, w);
   const perimPx     = polygonPerim(polygon);
-  const regionCount = phase1Results.length + phase2Results.length;
+  const regionCount = localResults.length;
 
   self.postMessage(
     {
@@ -904,10 +688,8 @@ export function usePdfFill() {
       return;
     }
 
-    setFillMsg('Growing fill'); await yieldMacro();
-    const grown = dilateMaskFast(filled, bc.width, bc.height, FILL_GROW);
     setFillMsg('Closing holes'); await yieldMacro();
-    const closed = closeHoles(grown, bc.width, bc.height);
+    const closed = closeHoles(filled, bc.width, bc.height);
     setFillMsg('Painting'); await yieldMacro();
 
     const [r, g, b] = hexToRgb(activeColor);
@@ -989,13 +771,13 @@ export function usePdfFill() {
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
+    // Note: FILL_GROW removed — no dilation in worker
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
         fillDataBuffer: fillDataCopy,
         w, h, r, g, b,
         opacity: fillOpacity / 100,
-        FILL_GROW,
         poly,
       },
       [maskCopy, fillDataCopy],
