@@ -84,6 +84,70 @@ export function fmtPerim(px: number, pxPerM: number | null): string {
   return m >= 1 ? `${m.toFixed(2)} m` : `${(m * 100).toFixed(1)} cm`;
 }
 
+// ── Polygon utilities ─────────────────────────────────────────────────────────
+
+/** Ray-casting point-in-polygon test */
+export function pointInPolygon(px: number, py: number, poly: [number, number][]): boolean {
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const [xi, yi] = poly[i];
+    const [xj, yj] = poly[j];
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+/** Axis-aligned bounding box of a polygon */
+export function polygonBoundingBox(poly: [number, number][]): { x1: number; y1: number; x2: number; y2: number } {
+  let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+  for (const [x, y] of poly) {
+    if (x < x1) x1 = x; if (x > x2) x2 = x;
+    if (y < y1) y1 = y; if (y > y2) y2 = y;
+  }
+  return { x1: Math.floor(x1), y1: Math.floor(y1), x2: Math.ceil(x2), y2: Math.ceil(y2) };
+}
+
+/** Find fillable regions whose seeds fall inside the polygon */
+export function findRegionsInPolygon(
+  mask: Uint8Array, w: number, h: number,
+  poly: [number, number][],
+): Array<{ seed: [number, number]; filled: Uint8Array }> {
+  const bb = polygonBoundingBox(poly);
+  const x1 = Math.max(0, bb.x1);
+  const y1 = Math.max(0, bb.y1);
+  const x2 = Math.min(w - 1, bb.x2);
+  const y2 = Math.min(h - 1, bb.y2);
+
+  const discovered: Array<{ seed: [number, number]; filled: Uint8Array }> = [];
+  const seen = new Uint8Array(w * h);
+  const step = Math.max(4, Math.round(Math.min(x2 - x1, y2 - y1) / 40));
+
+  for (let sy = y1; sy <= y2; sy += step) {
+    for (let sx = x1; sx <= x2; sx += step) {
+      if (mask[sy * w + sx] || seen[sy * w + sx]) continue;
+      if (!pointInPolygon(sx, sy, poly)) continue;
+      const filled = multiSeedFill(mask, w, h, sx, sy);
+      if (!filled) continue;
+
+      // Accept if any pixel of this fill overlaps the polygon bounding box
+      // (the fill may extend outside the polygon — that's fine, we want
+      //  rooms that are only partially inside the lasso)
+      let overlaps = false;
+      for (let ty = y1; ty <= y2 && !overlaps; ty++)
+        for (let tx = x1; tx <= x2 && !overlaps; tx++)
+          if (filled[ty * w + tx]) overlaps = true;
+      if (!overlaps) continue;
+
+      for (let i = 0; i < filled.length; i++) if (filled[i]) seen[i] = 1;
+      discovered.push({ seed: [sx, sy], filled });
+    }
+  }
+  return discovered;
+}
+
 // ── Mask / morphology helpers ─────────────────────────────────────────────────
 
 export function buildWallMask(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
@@ -377,7 +441,7 @@ export function buildPolygonFromMask(mask: Uint8Array, w: number, h: number): [n
   return adaptiveRdp(raw);
 }
 
-// ── Rect-select region finder ─────────────────────────────────────────────────
+// ── Rect-select region finder (kept for SVG mode) ─────────────────────────────
 
 export function findRegionsInRect(
   mask: Uint8Array, w: number, h: number,
@@ -465,21 +529,6 @@ export function svgElToAbsPath(el: SVGGraphicsElement, svgScale: number): string
 }
 
 // ── extractSvgShapes ──────────────────────────────────────────────────────────
-//
-// Returns both the filtered shape list AND the raw SVG area (in unscaled SVG
-// coordinate units). The caller stores svgArea and uses it in doSvgFill to
-// compare the shoelace areaPx (which is in scale² canvas pixels) against
-// svgArea * scale² — keeping both sides of the comparison in the same space.
-//
-// Why not compare against canvas area (bc.width * bc.height)?
-//   canvas area = svgArea * scale²  so they're equivalent IF scale is correct.
-//   But previously the code used bbox.width * bbox.height (already scaled) vs
-//   canvasArea (also scaled) — which accidentally cancelled and was fine — BUT
-//   the raw-attribute pre-filter used rawW * rawH (unscaled) vs canvasArea
-//   (scaled by scale²), making the threshold 9× too large and never firing.
-//
-// The fix: keep ONE canonical unscaled area (svgArea) and always multiply by
-// scale² when comparing against scaled values (areaPx, bbox sizes).
 
 export function extractSvgShapes(
   svgDoc: Document,
@@ -490,23 +539,18 @@ export function extractSvgShapes(
   const svgEl = svgDoc.querySelector('svg');
   if (!svgEl) return { shapes, svgArea: 0 };
 
-  // Resolve SVG document dimensions in unscaled SVG units
   const vb   = svgEl.viewBox?.baseVal;
   const svgW = (vb?.width  && vb.width  > 0) ? vb.width
     : (parseFloat(svgEl.getAttribute('width')  || '0') || 800);
   const svgH = (vb?.height && vb.height > 0) ? vb.height
     : (parseFloat(svgEl.getAttribute('height') || '0') || 600);
 
-  // Unscaled SVG coordinate area — the canonical reference for 80% guard
   const svgArea = svgW * svgH;
 
   svgDoc.querySelectorAll(SHAPE_TAGS.join(',')).forEach(el => {
     const gEl = el as SVGGraphicsElement;
     const tag = gEl.tagName.toLowerCase();
 
-    // ── Pre-filter via raw attributes (getBBox returns 0 in detached docs) ──
-    // Read element dimensions in raw SVG units and compare against svgArea.
-    // This catches background <rect> elements before we even build a path.
     let rawW = 0, rawH = 0;
     if (tag === 'rect') {
       rawW = parseFloat(gEl.getAttribute('width')  || '0');
@@ -518,7 +562,6 @@ export function extractSvgShapes(
       rawW = parseFloat(gEl.getAttribute('rx') || '0') * 2;
       rawH = parseFloat(gEl.getAttribute('ry') || '0') * 2;
     }
-    // Both rawW*rawH and svgArea are in unscaled SVG units — correct comparison
     if (rawW > 0 && rawH > 0 && rawW * rawH > svgArea * 0.80) return;
 
     const pathD = svgElToAbsPath(gEl, scale);
@@ -527,7 +570,6 @@ export function extractSvgShapes(
     let bbox: DOMRect;
     try {
       const raw = gEl.getBBox();
-      // getBBox() returns 0 in detached DOMParser docs — fall back to attributes
       const bw = raw.width  > 0 ? raw.width  * scale : rawW * scale;
       const bh = raw.height > 0 ? raw.height * scale : rawH * scale;
       const bx = raw.x * scale;

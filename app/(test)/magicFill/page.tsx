@@ -52,7 +52,7 @@ function LoadingScreen({ stage, progress, fileName }: { stage: string; progress:
             <div style={{ display:'flex',gap:10,justifyContent:'center' }}>
               {['PDF','SVG'].map(t => <div key={t} style={{ border:'1px solid #1e1e1e',padding:'6px 18px',fontSize:9,color:'#2a2a2a',textTransform:'uppercase',letterSpacing:'.12em' }}>{t}</div>)}
             </div>
-            <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.08em',marginTop:20,lineHeight:2 }}>Left-click: fill · Drag: pan · Space+drag: select multiple</p>
+            <p style={{ fontSize:8,color:'#222',textTransform:'uppercase',letterSpacing:'.08em',marginTop:20,lineHeight:2 }}>Left-click: fill · Drag: pan · Space+click: polygon lasso</p>
           </>
         )}
         {stage === 'loading' && (
@@ -112,33 +112,150 @@ function FillProgressOverlay({ active, message, sub, progress }: { active: boole
   );
 }
 
-function SelectionOverlay({ rect, zoom, pan }: { rect: { x1:number;y1:number;x2:number;y2:number }|null; zoom:number; pan:{x:number;y:number} }) {
+// ── LassoOverlay — draws the polygon lasso preview ────────────────────────────
+//
+// Replaces SelectionOverlay (rect). Renders on a full-viewport canvas that sits
+// above the pan/zoom wrapper so coordinates are in screen space. Points are
+// converted from canvas-space → screen-space using zoom/pan before drawing.
+
+interface LassoOverlayProps {
+  points: [number, number][];
+  mousePos: [number, number] | null;
+  zoom: number;
+  pan: { x: number; y: number };
+  activeColor: string;
+}
+
+function LassoOverlay({ points, mousePos, zoom, pan, activeColor }: LassoOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const toScreen = useCallback((cx: number, cy: number) => ({
+    sx: cx * zoom + pan.x,
+    sy: cy * zoom + pan.y,
+  }), [zoom, pan]);
+
   useEffect(() => {
     const c = canvasRef.current; if (!c) return;
     const ctx = c.getContext('2d')!;
-    ctx.clearRect(0,0,c.width,c.height);
-    if (!rect) return;
-    const sx=rect.x1*zoom+pan.x, sy=rect.y1*zoom+pan.y, sw=(rect.x2-rect.x1)*zoom, sh=(rect.y2-rect.y1)*zoom;
-    ctx.fillStyle='rgba(96,165,250,0.08)'; ctx.fillRect(sx,sy,sw,sh);
-    ctx.strokeStyle='rgba(96,165,250,0.9)'; ctx.lineWidth=1.5; ctx.setLineDash([6,4]); ctx.strokeRect(sx,sy,sw,sh); ctx.setLineDash([]);
-    for (const [hx,hy] of [[sx,sy],[sx+sw,sy],[sx+sw,sy+sh],[sx,sy+sh]] as [number,number][]) {
-      ctx.fillStyle='#60a5fa'; ctx.fillRect(hx-4,hy-4,8,8);
-      ctx.strokeStyle='#0f172a'; ctx.lineWidth=1; ctx.strokeRect(hx-4,hy-4,8,8);
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (points.length === 0) return;
+
+    const screenPts = points.map(([cx, cy]) => toScreen(cx, cy));
+    const [r, g, b] = hexToRgb(activeColor);
+
+    // ── Filled polygon preview (semi-transparent) ─────────────────────────
+    if (screenPts.length >= 3) {
+      ctx.beginPath();
+      ctx.moveTo(screenPts[0].sx, screenPts[0].sy);
+      for (let i = 1; i < screenPts.length; i++) ctx.lineTo(screenPts[i].sx, screenPts[i].sy);
+      if (mousePos) {
+        const ms = toScreen(mousePos[0], mousePos[1]);
+        ctx.lineTo(ms.sx, ms.sy);
+      }
+      ctx.closePath();
+      ctx.fillStyle = `rgba(${r},${g},${b},0.10)`;
+      ctx.fill();
     }
-    ctx.font='10px "Courier New"'; ctx.fillStyle='rgba(96,165,250,0.85)';
-    ctx.fillText(`${Math.abs(rect.x2-rect.x1)}×${Math.abs(rect.y2-rect.y1)}px`,sx+6,sy+16);
-  }, [rect,zoom,pan]);
+
+    // ── Committed edges ───────────────────────────────────────────────────
+    ctx.beginPath();
+    ctx.moveTo(screenPts[0].sx, screenPts[0].sy);
+    for (let i = 1; i < screenPts.length; i++) ctx.lineTo(screenPts[i].sx, screenPts[i].sy);
+    ctx.strokeStyle = `rgba(${r},${g},${b},0.9)`;
+    ctx.lineWidth = 1.8;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // ── Rubber-band edge to mouse ─────────────────────────────────────────
+    if (mousePos && screenPts.length >= 1) {
+      const ms = toScreen(mousePos[0], mousePos[1]);
+      const last = screenPts[screenPts.length - 1];
+      ctx.beginPath();
+      ctx.moveTo(last.sx, last.sy);
+      ctx.lineTo(ms.sx, ms.sy);
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.5)`;
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([4, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Closing hint line back to first point (if ≥3 points)
+      if (screenPts.length >= 2) {
+        const closeDistScreen = Math.hypot(ms.sx - screenPts[0].sx, ms.sy - screenPts[0].sy);
+        const isNearClose = closeDistScreen < 20;
+        ctx.beginPath();
+        ctx.moveTo(ms.sx, ms.sy);
+        ctx.lineTo(screenPts[0].sx, screenPts[0].sy);
+        ctx.strokeStyle = isNearClose
+          ? `rgba(${r},${g},${b},0.8)`
+          : `rgba(${r},${g},${b},0.18)`;
+        ctx.lineWidth = isNearClose ? 1.8 : 1;
+        ctx.setLineDash([3, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // ── Vertex dots ───────────────────────────────────────────────────────
+    screenPts.forEach(({ sx, sy }, i) => {
+      const isFirst = i === 0;
+      const dotR = isFirst ? 7 : 4.5;
+
+      // White halo
+      ctx.beginPath();
+      ctx.arc(sx, sy, dotR + 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)';
+      ctx.fill();
+
+      // Filled dot
+      ctx.beginPath();
+      ctx.arc(sx, sy, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = isFirst ? `rgba(${r},${g},${b},1)` : `rgba(${r},${g},${b},0.85)`;
+      ctx.fill();
+
+      // Inner ring on first point (close indicator)
+      if (isFirst && screenPts.length >= 3) {
+        ctx.beginPath();
+        ctx.arc(sx, sy, dotR - 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+    });
+
+    // ── Point count badge ─────────────────────────────────────────────────
+    if (screenPts.length > 0) {
+      const last = screenPts[screenPts.length - 1];
+      ctx.fillStyle = 'rgba(10,10,10,0.85)';
+      ctx.fillRect(last.sx + 10, last.sy - 12, 36, 16);
+      ctx.font = '9px "Courier New"';
+      ctx.fillStyle = `rgba(${r},${g},${b},1)`;
+      ctx.fillText(`${screenPts.length}pts`, last.sx + 13, last.sy + 0);
+    }
+  }, [points, mousePos, zoom, pan, activeColor, toScreen]);
+
+  // Resize canvas to match viewport
   useEffect(() => {
-    const resize = () => { const c=canvasRef.current; if(!c) return; c.width=c.offsetWidth; c.height=c.offsetHeight; };
-    resize(); window.addEventListener('resize',resize); return ()=>window.removeEventListener('resize',resize);
+    const resize = () => {
+      const c = canvasRef.current; if (!c) return;
+      c.width  = c.offsetWidth;
+      c.height = c.offsetHeight;
+    };
+    resize();
+    window.addEventListener('resize', resize);
+    return () => window.removeEventListener('resize', resize);
   }, []);
-  return <canvas ref={canvasRef} style={{ position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:20 }}/>;
+
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ position:'absolute',inset:0,width:'100%',height:'100%',pointerEvents:'none',zIndex:20 }}
+    />
+  );
 }
 
-// ── SvgOverlay — wrapped in React.memo so it never re-renders during pan/zoom.
-// Pan and zoom are handled by the CSS transform on wrapRef; this component only
-// needs to re-render when fill data, selection, or visibility actually changes.
+// ── SvgOverlay — unchanged from original ─────────────────────────────────────
 interface SvgOverlayFillLocal { id:number;pathD:string;color:string;opacity:number;selected:boolean;inGroup:boolean;hidden:boolean }
 
 const SvgOverlay = React.memo(function SvgOverlay({ fills, canvasW, canvasH }: {
@@ -203,8 +320,6 @@ export default function FloodFillPage() {
   const [fileType, setFileType] = useState<'pdf'|'svg'>('pdf');
   const [showGraphDebug, setShowGraphDebug] = useState(true);
 
-  // rAF ref for throttling pointermove — prevents expensive redraws from firing
-  // at 120Hz; caps work to one frame (≈16ms) regardless of device polling rate.
   const rafRef = useRef<number | null>(null);
 
   const pdfState = usePdfFill();
@@ -242,7 +357,7 @@ export default function FloodFillPage() {
     showPolygon, setShowPolygon,
     status, fileName,
     pxPerM,
-    selectRect, isSelecting, spaceHeld,
+    isSelecting, spaceHeld,
     batchMode, setBatchMode, batchModeRef,
     selectedFill, hoveredFill, groupFills,
     hasSelection, cursor,
@@ -254,13 +369,15 @@ export default function FloodFillPage() {
     setActiveColor, setFillOpacity, setPxPerM, setFills,
   } = state;
 
-  // Throttled pointermove — the raw handler may trigger redrawPolygons, hover
-  // state, and cursor updates. Without rAF this fires at device polling rate
-  // (up to 120–240 Hz on modern screens), causing multiple expensive canvas
-  // redraws per display frame. We coalesce all events into one per frame.
+  const strokeCanvasRef = !isSvgMode ? pdfState.strokeCanvasRef : null;
+
+  // Lasso state is PDF-mode specific
+  const lassoPoints = !isSvgMode ? pdfState.lassoPoints : [];
+  const lassoMouse  = !isSvgMode ? pdfState.lassoMouse  : null;
+  const isLassoing  = !isSvgMode ? pdfState.isLassoing  : false;
+
   const handlePointerMoveFn = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (rafRef.current !== null) return;
-    // Persist the synthetic event before the rAF fires (React pools events).
     e.persist();
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
@@ -330,10 +447,9 @@ export default function FloodFillPage() {
           <div ref={wrapRef} style={{ position:'absolute',top:0,left:0,transformOrigin:'0 0',willChange:'transform' }}>
             <canvas ref={baseCanvasRef} style={{ display:'block',imageRendering:'auto' }}/>
             <canvas ref={fillCanvasRef} style={{ display:'block',position:'absolute',top:0,left:0,pointerEvents:'none',imageRendering:'auto' }}/>
+            <canvas ref={strokeCanvasRef} style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
+            <canvas ref={polyCanvasRef}   style={{ position: 'absolute', top: 0, left: 0, pointerEvents: 'none' }} />
 
-            {/* SvgOverlay lives here — same as before. It moves with wrapRef's
-                CSS transform for free. React.memo ensures it never re-renders
-                during pan/zoom; only re-renders when fill data changes. */}
             {isSvgMode && svgOverlayFills.length > 0 && (
               <SvgOverlay
                 fills={svgOverlayFills}
@@ -341,8 +457,6 @@ export default function FloodFillPage() {
                 canvasH={svgCanvasSize.h}
               />
             )}
-
-            <canvas ref={polyCanvasRef} style={{ display:'block',position:'absolute',top:0,left:0,pointerEvents:'none',imageRendering:'auto' }}/>
 
             {isSvgMode && (
               <PlanarGraphDebug
@@ -355,12 +469,33 @@ export default function FloodFillPage() {
             )}
           </div>
 
-          <SelectionOverlay rect={selectRect} zoom={zoom} pan={pan}/>
+          {/* Lasso overlay — lives OUTSIDE wrapRef so it stays in screen space */}
+          {!isSvgMode && (isLassoing || lassoPoints.length > 0) && (
+            <LassoOverlay
+              points={lassoPoints}
+              mousePos={lassoMouse}
+              zoom={zoom}
+              pan={pan}
+              activeColor={activeColor}
+            />
+          )}
+
           <FillProgressOverlay active={isFilling} message={fillMsg} sub={fillSub} progress={fillProgress}/>
 
-          {isSelecting && (
-            <div style={{ position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',background:'rgba(10,10,10,.85)',border:'1px solid #60a5fa',padding:'4px 12px',fontSize:8,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none',zIndex:30 }}>
-              {isSvgMode ? 'Release to fill all shapes in selection' : 'Release to fill all rooms in selection'}
+          {/* Lasso status banner */}
+          {!isSvgMode && isLassoing && (
+            <div style={{ position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',background:'rgba(10,10,10,.9)',border:`1px solid ${activeColor}`,padding:'5px 16px',fontSize:8,color:activeColor,textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none',zIndex:30,display:'flex',alignItems:'center',gap:8 }}>
+              <span style={{ fontSize:12,opacity:.7 }}>⬡</span>
+              {lassoPoints.length < 3
+                ? `Click to place vertices · ${lassoPoints.length} placed`
+                : `${lassoPoints.length} vertices · click near ① to close · Esc to cancel`}
+            </div>
+          )}
+
+          {/* Batch mode banner (when NOT lassoing — prompts user to start) */}
+          {!isSvgMode && batchMode && !isLassoing && loadStage === 'ready' && (
+            <div style={{ position:'absolute',top:10,left:'50%',transform:'translateX(-50%)',background:'rgba(10,10,10,.85)',border:'1px solid #60a5fa',padding:'4px 14px',fontSize:8,color:'#60a5fa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none',zIndex:30 }}>
+              Polygon lasso active — click to start placing vertices
             </div>
           )}
 
@@ -464,8 +599,10 @@ export default function FloodFillPage() {
       <div style={{ height:24,background:'#0a0a0a',borderTop:'1px solid #1a1a1a',display:'flex',alignItems:'center',padding:'0 10px',gap:12,flexShrink:0 }}>
         {[
           isSvgMode?'Click: fill shape':'Click: fill room',
-          'Drag: pan','Space+drag: select multiple','Ctrl+scroll: zoom','Colors auto-cycle per fill',
-          ...(isSvgMode?['Vec fills: crisp at any zoom']:[]),
+          'Drag: pan',
+          isSvgMode?'Space+drag: select multiple':'Space/double-click: polygon lasso',
+          'Ctrl+scroll: zoom',
+          isSvgMode?'Vec fills: crisp at any zoom':'Esc: cancel lasso',
         ].map((h,i) => (
           <React.Fragment key={h}>
             {i>0 && <div style={{ width:1,height:12,background:'#1e1e1e' }}/>}
