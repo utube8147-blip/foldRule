@@ -1,51 +1,36 @@
-// hooks/fill/magicFill/usePdfFill.ts
-// ── OPTIMIZED v5-polysilhouette ───────────────────────────────────────────────
-//
-// Fixes vs v4-morphclose:
-//
-//  Ghost lines from furniture symbols (chairs, tables, stair details) were
-//  persisting because they are thick/complex enough that no fixed BRIDGE_R
-//  could bridge them without also bleeding through real room walls.
-//
-//  NEW STRATEGY — "polygon silhouette fill":
-//
-//  Instead of trying to bridge furniture gaps with dilation, we take a
-//  fundamentally different approach for the final closed mask:
-//
-//  1. Rasterize the user's lasso polygon → solid interior pixels (ignores
-//     ALL lines — walls, furniture, everything). This is the "intended area".
-//
-//  2. Find seeded regions as before (these tell us which room(s) the user
-//     actually clicked inside — important for not leaking into adjacent rooms).
-//
-//  3. Dilate the seeded union by ROOM_GROW pixels to get a "room silhouette"
-//     that spans across thin internal furniture lines but stops at real walls
-//     (which are thicker than ROOM_GROW).
-//
-//  4. AND the polygon interior with the room silhouette → this gives us a
-//     mask that is: (a) inside the lasso, (b) inside the room(s), and
-//     (c) solid — no ghost lines from furniture.
-//
-//  5. Run closeHolesFull on THAT mask to plug any remaining holes.
-//
-//  ROOM_GROW = 8 bridges furniture lines (~2-4px at scale 3) but not walls
-//  (~6-10px). Tune if needed.
-//
 'use client';
-// v5-polysilhouette
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+export const COLORS = [
+  '#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa',
+  '#f472b6','#22d3ee','#a3e635','#fb923c','#818cf8',
+];
+
+// ── usePdfFill ────────────────────────────────────────────────────────────────
+// v7-offthread: all fill operations (single-click raster + polygon lasso) now
+// run entirely in Web Workers so the main thread / UI never freezes.
+//
+// v6-polyunion: fixes ghost lines stopping polygon lasso fill.
+// Root cause: findRegionsInsidePolygon seeds flood-fill from a coarse grid.
+// If a thin furniture/fixture line bisects the room, the seeder only reaches
+// one side, so `unioned` is incomplete before buildSolidFill runs.
+// Fix: union the polygon interior (non-wall pixels) into `unioned` before
+// buildSolidFill so dilation bridges every internal ghost line.
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  COLORS, PDF_SCALE,
+  PDF_SCALE,
   Fill, LoadStage,
   yieldFrame, yieldMacro,
   hexToRgb, fmtArea, fmtPerim,
-  multiSeedFill, paintFill, closeHoles,
+  closeHoles, paintFill,
   maskArea, buildPolygonFromMask, polygonPerim,
   buildMaskAsync,
 } from './fillCore';
 
 export type { Fill, LoadStage };
-export { fmtArea, fmtPerim, hexToRgb, COLORS };
+export { fmtArea, fmtPerim, hexToRgb };
 
 export interface LassoState {
   points: [number, number][];
@@ -53,7 +38,291 @@ export interface LassoState {
   mousePos: [number, number] | null;
 }
 
-// ── Inline worker ─────────────────────────────────────────────────────────────
+// ── Raster fill worker (single-click) ────────────────────────────────────────
+// Handles: multiSeedFill → closeHoles → paintFill → buildPolygonFromMask
+// Runs fully off the main thread. Receives maskBuffer + fillDataBuffer as
+// transferable ArrayBuffers; returns painted fillDataBuffer + closedBuffer.
+
+const RASTER_WORKER_SOURCE = /* js */`
+
+// ── Shared primitives (duplicated from fillCore — worker can't import) ────────
+
+const FILL_GROW = 3;
+
+const OFFSETS_R = [
+  [0,0],[1,0],[-1,0],[0,1],[0,-1],
+  [2,0],[-2,0],[0,2],[0,-2],
+  [1,1],[-1,1],[1,-1],[-1,-1],
+];
+
+function scanlineFill(mask, w, h, sx, sy) {
+  if (sx < 0 || sx >= w || sy < 0 || sy >= h || mask[sy * w + sx]) return null;
+  const filled  = new Uint8Array(w * h);
+  const visited = new Uint8Array(w * h);
+  const stack   = new Int32Array(w * h);
+  let top = 0;
+  stack[top++] = sy * w + sx;
+  visited[sy * w + sx] = 1;
+  while (top > 0) {
+    const idx = stack[--top];
+    const cy  = (idx / w) | 0;
+    const cx  = idx % w;
+    let left = cx;
+    while (left > 0 && !mask[cy * w + left - 1] && !visited[cy * w + left - 1]) left--;
+    let right = cx;
+    while (right < w - 1 && !mask[cy * w + right + 1] && !visited[cy * w + right + 1]) right++;
+    for (let x = left; x <= right; x++) { filled[cy * w + x] = 1; visited[cy * w + x] = 1; }
+    const up = (cy - 1) * w, dn = (cy + 1) * w;
+    for (let x = left; x <= right; x++) {
+      if (cy > 0   && !mask[up + x] && !visited[up + x]) { visited[up + x] = 1; stack[top++] = up + x; }
+      if (cy < h-1 && !mask[dn + x] && !visited[dn + x]) { visited[dn + x] = 1; stack[top++] = dn + x; }
+    }
+  }
+  let count = 0;
+  for (let i = 0; i < filled.length; i++) if (filled[i]) count++;
+  if (count / (w * h) > 0.80) return null;
+  return count > 4 ? filled : null;
+}
+
+function dilateMaskFast(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let count = 0;
+    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) count++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && src[y * w + add]) count++;
+      if (count > 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && src[y * w + rem]) count--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let count = 0;
+    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) count++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && horiz[add * w + x]) count++;
+      if (count > 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && horiz[rem * w + x]) count--;
+    }
+  }
+  return out;
+}
+
+function multiSeedFill(mask, w, h, cx, cy) {
+  let merged = null, mergedDilated = null;
+  for (const [dx, dy] of OFFSETS_R) {
+    const f = scanlineFill(mask, w, h, cx + dx, cy + dy);
+    if (!f) continue;
+    if (!merged) {
+      merged = f;
+      mergedDilated = dilateMaskFast(f, w, h, FILL_GROW + 2);
+    } else {
+      let overlaps = false;
+      for (let i = 0; i < f.length; i++) { if (f[i] && mergedDilated[i]) { overlaps = true; break; } }
+      if (overlaps) {
+        for (let i = 0; i < merged.length; i++) if (f[i]) merged[i] = 1;
+        mergedDilated = dilateMaskFast(merged, w, h, FILL_GROW + 2);
+      }
+    }
+  }
+  if (merged) {
+    let c = 0;
+    for (let i = 0; i < merged.length; i++) if (merged[i]) c++;
+    if (c / (w * h) > 0.80) return null;
+  }
+  return merged;
+}
+
+function closeHoles(filled, w, h) {
+  const outside = new Uint8Array(w * h);
+  const stack = [];
+  const push = (i) => {
+    if (i >= 0 && i < w * h && !filled[i] && !outside[i]) { outside[i] = 1; stack.push(i); }
+  };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 1; y < h - 1; y++) { push(y * w); push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0)   push(i - 1);
+    if (x < w-1) push(i + 1);
+    if (y > 0)   push(i - w);
+    if (y < h-1) push(i + w);
+  }
+  const closed = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) closed[i] = filled[i] || (!outside[i] ? 1 : 0);
+  return closed;
+}
+
+function paintFill(mask, d, r, g, b, opacity) {
+  const newA = opacity;
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue;
+    const di = i * 4;
+    const existA = d[di + 3] / 255;
+    const outA = newA + existA * (1 - newA);
+    if (outA > 0) {
+      d[di]   = ((r * newA + d[di]   * existA * (1 - newA)) / outA) | 0;
+      d[di+1] = ((g * newA + d[di+1] * existA * (1 - newA)) / outA) | 0;
+      d[di+2] = ((b * newA + d[di+2] * existA * (1 - newA)) / outA) | 0;
+      d[di+3] = (outA * 255) | 0;
+    }
+  }
+}
+
+// ── Marching squares + RDP for polygon outline ────────────────────────────────
+
+function erodeMaskFast(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+function marchingSquaresContour(mask, w, h) {
+  const W = w + 2, H = h + 2;
+  const field = new Uint8Array(W * H);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      if (mask[y * w + x]) field[(y + 1) * W + (x + 1)] = 1;
+  let startX = -1, startY = -1;
+  outer: for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++)
+      if (field[y * W + x]) { startX = x; startY = y; break outer; }
+  if (startX === -1) return [];
+  const dx8 = [ 1, 1, 0,-1,-1,-1, 0, 1];
+  const dy8 = [ 0, 1, 1, 1, 0,-1,-1,-1];
+  const contour = [];
+  let cx = startX, cy = startY;
+  let prevX = startX - 1, prevY = startY;
+  let steps = 0;
+  const maxSteps = W * H * 2;
+  do {
+    contour.push([cx - 1, cy - 1]);
+    const fromDx = cx - prevX, fromDy = cy - prevY;
+    let startDir = 0;
+    for (let d = 0; d < 8; d++)
+      if (dx8[d] === -fromDx && dy8[d] === -fromDy) { startDir = d; break; }
+    let moved = false;
+    for (let t = 0; t < 8; t++) {
+      const d = (startDir + t) % 8;
+      const nx = cx + dx8[d], ny = cy + dy8[d];
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H && field[ny * W + nx]) {
+        prevX = cx; prevY = cy; cx = nx; cy = ny; moved = true; break;
+      }
+    }
+    if (!moved) break;
+    if (++steps > maxSteps) break;
+  } while (!(cx === startX && cy === startY));
+  return contour;
+}
+
+function rdpSimplify(pts, eps) {
+  if (pts.length <= 3) return pts;
+  const distToLine = (p, a, b) => {
+    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
+    return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
+  };
+  const keep = new Set([0, pts.length - 1]);
+  const rec = (lo, hi) => {
+    if (hi - lo < 2) return;
+    let maxD = 0, idx = lo;
+    for (let i = lo + 1; i < hi; i++) {
+      const d = distToLine(pts[i], pts[lo], pts[hi]);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > eps) { keep.add(idx); rec(lo, idx); rec(idx, hi); }
+  };
+  rec(0, pts.length - 1);
+  return [...keep].sort((a, b) => a - b).map(i => pts[i]);
+}
+
+function buildPolygonFromMask(mask, w, h) {
+  // outer shape: erode then dilate to smooth
+  const eroded   = erodeMaskFast(mask, w, h, 2);
+  const restored = dilateMaskFast(eroded, w, h, 2);
+  const raw = marchingSquaresContour(restored, w, h);
+  if (raw.length === 0) {
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const x = i % w, y = (i / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
+  }
+  // adaptive RDP
+  let perim = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const j = (i + 1) % raw.length;
+    perim += Math.hypot(raw[j][0] - raw[i][0], raw[j][1] - raw[i][1]);
+  }
+  const eps = Math.max(0.5, Math.min(3, perim / 400));
+  return rdpSimplify(raw, eps);
+}
+
+function maskArea(mask) {
+  let c = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) c++; return c;
+}
+
+function polygonPerim(pts) {
+  let p = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    p += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+  }
+  return Math.round(p);
+}
+
+// ── Message handler ───────────────────────────────────────────────────────────
+
+self.onmessage = ({ data }) => {
+  const { maskBuffer, fillDataBuffer, w, h, cx, cy, r, g, b, opacity } = data;
+  const mask = new Uint8Array(maskBuffer);
+  const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
+
+  const filled = multiSeedFill(mask, w, h, cx, cy);
+  if (!filled) {
+    self.postMessage({ empty: true });
+    return;
+  }
+
+  const closed = closeHoles(filled, w, h);
+  paintFill(closed, fillDataArr, r, g, b, opacity);
+
+  const areaPx  = maskArea(closed);
+  const polygon = buildPolygonFromMask(closed, w, h);
+  const perimPx = polygonPerim(polygon);
+
+  self.postMessage(
+    { fillDataBuffer: fillDataArr.buffer, closedBuffer: closed.buffer, areaPx, perimPx, polygon },
+    [fillDataArr.buffer, closed.buffer],
+  );
+};
+`;
+
+// ── Polygon lasso worker ──────────────────────────────────────────────────────
 
 const WORKER_SOURCE = /* js */`
 
@@ -282,7 +551,6 @@ function closeHolesFull(filled, w, h) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // dilateMaskFast / erodeMaskFast — separable box morphology
-// Used for morphological close to bridge wall gaps before closeHolesFull.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function dilateMaskFast(src, w, h, r) {
@@ -428,21 +696,15 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
     }
   }
 
-  return { localResults, unioned };
+  return { localResults, unioned, inside };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // buildSolidFill
 //
-// Returns a solid fill mask with NO ghost lines from furniture/fixtures.
-//
-// Strategy: dilate → closeHolesFull → erode → OR original
-//
-//   The room WALLS contain the fill naturally — they are thick enough to
-//   survive ROOM_GROW erosion. Furniture lines are thinner and get bridged
-//   by the dilation, so closeHolesFull fills sub-pockets solid.
-//   The lasso polygon is used only for SEEDING (which room to fill),
-//   NOT for clipping the final shape.
+// v6-polyunion change: receives inside (polygon raster) so it can union
+// non-wall interior pixels BEFORE dilation. This ensures ghost lines that
+// blocked seeding cannot split the starting shape.
 //
 // ROOM_GROW must satisfy:
 //   > furniture/fixture line thickness  (~2-4 px at PDF_SCALE=3)
@@ -451,9 +713,18 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
 
 const ROOM_GROW = 10;
 
-function buildSolidFill(unioned, w, h) {
+function buildSolidFill(unioned, inside, fullMask, w, h) {
+  // ── NEW (v6): union polygon interior (non-wall pixels) into starting shape ─
+  // This guarantees that ghost furniture lines inside the lasso cannot leave
+  // "unseeded" gaps in unioned before dilation starts.
+  const seeded = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    // Accept polygon-interior pixels that are NOT wall pixels
+    seeded[i] = (unioned[i] || (inside[i] && !fullMask[i])) ? 1 : 0;
+  }
+
   // Step 1 — dilate to bridge furniture/fixture line gaps
-  const grown = dilateMaskFast(unioned, w, h, ROOM_GROW);
+  const grown = dilateMaskFast(seeded, w, h, ROOM_GROW);
 
   // Step 2 — closeHolesFull: exterior flood-fill can no longer leak through
   // furniture gaps, so every enclosed sub-pocket gets marked inside
@@ -462,11 +733,10 @@ function buildSolidFill(unioned, w, h) {
   // Step 3 — erode back by same radius to restore the outer wall boundary
   const eroded = erodeMaskFast(closed, w, h, ROOM_GROW);
 
-  // Step 4 — OR with original union so tight corners clipped by erosion
-  // are restored (makes the operation non-shrinking)
+  // Step 4 — OR with seeded so tight corners clipped by erosion are restored
   const final = new Uint8Array(w * h);
   for (let i = 0; i < w * h; i++) {
-    final[i] = (eroded[i] || unioned[i]) ? 1 : 0;
+    final[i] = (eroded[i] || seeded[i]) ? 1 : 0;
   }
 
   return final;
@@ -482,20 +752,38 @@ self.onmessage = ({ data }) => {
   const fullMask = new Uint8Array(maskBuffer);
 
   // ── Find all seeded regions inside the polygon ────────────────────────────
-  const { localResults, unioned } = findRegionsInsidePolygon(fullMask, w, h, poly);
+  const { localResults, unioned, inside } = findRegionsInsidePolygon(fullMask, w, h, poly);
 
   if (localResults.length === 0) {
-    self.postMessage({ empty: true });
-    return;
+    // ── v6 fallback: even if seeding found nothing, try polygon-interior only
+    // (handles edge case where the entire lasso interior is criss-crossed by
+    //  thin lines that blocked every seed point)
+    let anyInside = false;
+    for (let i = 0; i < w * h; i++) {
+      if (inside[i] && !fullMask[i]) { anyInside = true; break; }
+    }
+    if (!anyInside) {
+      self.postMessage({ empty: true });
+      return;
+    }
+    // Populate unioned from polygon interior so buildSolidFill has something
+    for (let i = 0; i < w * h; i++) {
+      if (inside[i] && !fullMask[i]) unioned[i] = 1;
+    }
   }
 
-  // ── Build solid fill — dilate bridges furniture lines, erode restores walls
-  const closed = buildSolidFill(unioned, w, h);
+  // ── Build solid fill — now using polygon interior to seed the starting shape
+  const closed = buildSolidFill(unioned, inside, fullMask, w, h);
 
   // ── Leak guard ────────────────────────────────────────────────────────────
   const areaPx = maskArea(closed);
   if (areaPx / (w * h) > 0.80) {
     self.postMessage({ error: 'leak' });
+    return;
+  }
+
+  if (areaPx === 0) {
+    self.postMessage({ empty: true });
     return;
   }
 
@@ -505,7 +793,7 @@ self.onmessage = ({ data }) => {
 
   const polygon     = bboxPolygon(closed, w);
   const perimPx     = polygonPerim(polygon);
-  const regionCount = localResults.length;
+  const regionCount = Math.max(1, localResults.length);
 
   self.postMessage(
     {
@@ -570,6 +858,7 @@ export function usePdfFill() {
   // ── Refs ───────────────────────────────────────────────────────────────────
   const spaceHeldRef    = useRef(false);
   const batchModeRef    = useRef(false);
+  const isFillingRef    = useRef(false);
   const hasDraggedRef   = useRef(false);
   const lastClickTime   = useRef(0);
   const viewportRef     = useRef<HTMLDivElement>(null);
@@ -598,6 +887,7 @@ export function usePdfFill() {
   useEffect(() => { panRef.current         = pan;         }, [pan]);
   useEffect(() => { zoomRef.current        = zoom;        }, [zoom]);
   useEffect(() => { batchModeRef.current   = batchMode;   }, [batchMode]);
+  useEffect(() => { isFillingRef.current   = isFilling;   }, [isFilling]);
   useEffect(() => { showPolygonRef.current = showPolygon; }, [showPolygon]);
   useEffect(() => { lassoPointsRef.current = lassoPoints; }, [lassoPoints]);
 
@@ -800,56 +1090,91 @@ export function usePdfFill() {
     }
   }, [loadPdf, centerCanvas]);
 
-  // ── Raster fill (single click) ─────────────────────────────────────────────
-  const doRasterFill = useCallback(async (canvasX: number, canvasY: number) => {
+  // ── Raster fill (single click) — runs off main thread ─────────────────────
+  const doRasterFill = useCallback((canvasX: number, canvasY: number) => {
     if (!maskRef.current || !fillDataRef.current || !basePixelsRef.current) return;
     const bc = baseCanvasRef.current!;
+    const w = bc.width, h = bc.height;
+
     snapshots.current.push(new ImageData(
-      new Uint8ClampedArray(fillDataRef.current.data),
-      fillDataRef.current.width, fillDataRef.current.height,
+      new Uint8ClampedArray(fillDataRef.current.data), w, h,
     ));
 
-    setFillMsg('Flood filling region'); await yieldMacro();
-    const filled = multiSeedFill(maskRef.current, bc.width, bc.height, canvasX, canvasY);
-    if (!filled) {
-      snapshots.current.pop();
-      setIsFilling(false); setFillMsg('');
-      setStatus('Clicked on a wall — try the room centre');
-      return;
-    }
+    setFillMsg('Flood filling region');
+    setFillSub('Running off main thread…');
 
-    setFillMsg('Closing holes'); await yieldMacro();
-    const closed = closeHoles(filled, bc.width, bc.height);
-    setFillMsg('Painting'); await yieldMacro();
+    // Spin up the raster worker
+    workerRef.current?.terminate();
+    if (workerUrlRef.current) URL.revokeObjectURL(workerUrlRef.current);
+
+    const blob = new Blob([RASTER_WORKER_SOURCE], { type: 'application/javascript' });
+    const url  = URL.createObjectURL(blob);
+    workerUrlRef.current = url;
+    const worker = new Worker(url);
+    workerRef.current = worker;
 
     const [r, g, b] = hexToRgb(activeColor);
-    paintFill(closed, fillDataRef.current, r, g, b, fillOpacity / 100);
-    fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
+    const maskCopy     = maskRef.current.slice().buffer;
+    const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
-    setFillMsg('Measuring'); await yieldMacro();
-    const areaPx  = maskArea(closed);
-    const polygon = buildPolygonFromMask(closed, bc.width, bc.height);
-    const perimPx = polygonPerim(polygon);
-    fillCountRef.current += 1;
+    worker.postMessage(
+      { maskBuffer: maskCopy, fillDataBuffer: fillDataCopy, w, h, cx: canvasX, cy: canvasY, r, g, b, opacity: fillOpacity / 100 },
+      [maskCopy, fillDataCopy],
+    );
 
-    const newFill: Fill = {
-      id: Date.now(), label: `Fill ${fillCountRef.current}`,
-      color: activeColor, opacity: fillOpacity,
-      areaPx, perimPx, polygon, svgMode: false,
+    worker.onmessage = ({ data: result }) => {
+      worker.terminate();
+      workerRef.current = null;
+      URL.revokeObjectURL(url);
+      workerUrlRef.current = null;
+
+      if (result.empty) {
+        snapshots.current.pop();
+        setIsFilling(false); setFillMsg(''); setFillSub(undefined);
+        setStatus('Clicked on a wall — try the room centre');
+        return;
+      }
+
+      const { fillDataBuffer, closedBuffer, areaPx, perimPx, polygon } = result;
+
+      const painted = new Uint8ClampedArray(fillDataBuffer);
+      fillDataRef.current!.data.set(painted);
+      fillCanvasRef.current!.getContext('2d')!.putImageData(fillDataRef.current!, 0, 0);
+
+      const closed = new Uint8Array(closedBuffer);
+      fillCountRef.current += 1;
+
+      const newFill: Fill = {
+        id: Date.now(), label: `Fill ${fillCountRef.current}`,
+        color: activeColor, opacity: fillOpacity,
+        areaPx, perimPx,
+        polygon: polygon as [number, number][],
+        svgMode: false,
+      };
+      fillPixelMaps.current.set(newFill.id, closed);
+      setFills(prev => {
+        const next = [...prev, newFill];
+        setTimeout(() => redrawPolygons(next, hiddenIds, newFill.id, null), 0);
+        return next;
+      });
+      setSelectedId(newFill.id); setSelectedGroup(null);
+      setIsFilling(false); setFillMsg(''); setFillSub(undefined);
+      setStatus(`Raster fill · ${(polygon as [number,number][]).length} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
+      cycleColor();
     };
-    fillPixelMaps.current.set(newFill.id, closed);
-    setFills(prev => {
-      const next = [...prev, newFill];
-      setTimeout(() => redrawPolygons(next, hiddenIds, newFill.id, null), 0);
-      return next;
-    });
-    setSelectedId(newFill.id); setSelectedGroup(null);
-    setIsFilling(false); setFillMsg('');
-    setStatus(`Raster fill · ${polygon.length} corners · area ${fmtArea(areaPx, pxPerM)} · perimeter ${fmtPerim(perimPx, pxPerM)}`);
-    cycleColor();
+
+    worker.onerror = (e) => {
+      worker.terminate();
+      workerRef.current = null;
+      URL.revokeObjectURL(url);
+      workerUrlRef.current = null;
+      snapshots.current.pop();
+      setIsFilling(false); setFillMsg(''); setFillSub(undefined);
+      setStatus(`Worker error: ${e.message}`);
+    };
   }, [activeColor, fillOpacity, pxPerM, hiddenIds, redrawPolygons, cycleColor]);
 
-  const doFill = useCallback(async (clientX: number, clientY: number) => {
+  const doFill = useCallback((clientX: number, clientY: number) => {
     if (mode !== 'fill' || isFilling || loadStage !== 'ready') return;
     if (spaceHeldRef.current || batchModeRef.current) return;
     const vp = viewportRef.current!;
@@ -860,8 +1185,7 @@ export function usePdfFill() {
     if (cx < 0 || cx >= bc.width || cy < 0 || cy >= bc.height) return;
     setIsFilling(true); setFillMsg('Computing fill'); setFillSub(undefined);
     setFillProgress(null); setSelectedGroup(null);
-    await yieldFrame();
-    await doRasterFill(cx, cy);
+    doRasterFill(cx, cy);
   }, [mode, isFilling, loadStage, pan, zoom, doRasterFill]);
 
   // ── Polygon lasso fill (off-thread) ───────────────────────────────────────
@@ -1024,6 +1348,8 @@ export function usePdfFill() {
 
     if (e.button === 0 && (spaceHeldRef.current || batchModeRef.current) && loadStage === 'ready') {
       e.preventDefault();
+      // Ignore clicks while a fill worker is running — same behaviour as single-click fill
+      if (isFillingRef.current) return;
       const { cx, cy } = screenToCanvas(e.clientX, e.clientY);
       const current = lassoPointsRef.current;
 
@@ -1280,11 +1606,11 @@ export function usePdfFill() {
   const hoveredFill  = fills.find(f => f.id === hoveredId)  ?? null;
   const groupFills   = selectedGroup != null ? fills.filter(f => f.groupId === selectedGroup) : [];
   const hasSelection = selectedId != null || selectedGroup != null;
-  const cursor = isLassoing ? 'crosshair'
+  const cursor = isFilling  ? 'wait'
+    : isLassoing ? 'crosshair'
     : batchMode ? 'crosshair'
     : spaceHeld ? 'crosshair'
     : isDragging ? 'grabbing'
-    : isFilling  ? 'wait'
     : 'crosshair';
 
   return {
