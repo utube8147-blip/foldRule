@@ -317,11 +317,31 @@ function findRegionsInsidePolygon(fullMask, W, H, poly) {
   const seen    = new Uint8Array(W * H);
   const localResults = [];
 
+  // ── Pass 1: coarse grid scan ──────────────────────────────────────────────
   const bboxSide = Math.min(x2 - x1, y2 - y1);
   const step = Math.max(2, Math.min(6, Math.round(bboxSide / 120)));
 
   for (let sy = y1; sy <= y2; sy += step) {
     for (let sx = x1; sx <= x2; sx += step) {
+      if (!inside[sy * W + sx]) continue;
+      if (fullMask[sy * W + sx] || seen[sy * W + sx]) continue;
+
+      const result = multiSeedFillLocal(fullMask, W, H, sx, sy);
+      if (!result) {
+        seen[sy * W + sx] = 1;
+        continue;
+      }
+
+      expandLocalFill(result, seen, unioned, W);
+      localResults.push(result);
+    }
+  }
+
+  // ── Pass 2: fine sweep — catch small corners/slivers missed by coarse step
+  // Walk every pixel inside the polygon at step=1. Any unseen, non-wall pixel
+  // is a region the coarse scan jumped over (small triangle, corner nook, etc.)
+  for (let sy = y1; sy <= y2; sy++) {
+    for (let sx = x1; sx <= x2; sx++) {
       if (!inside[sy * W + sx]) continue;
       if (fullMask[sy * W + sx] || seen[sy * W + sx]) continue;
 
