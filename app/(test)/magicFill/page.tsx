@@ -369,7 +369,7 @@ export default function FloodFillPage() {
     setActiveColor, setFillOpacity, setPxPerM, setFills,
   } = state;
 
-  const strokeCanvasRef = !isSvgMode ? pdfState.strokeCanvasRef : null;
+  const strokeCanvasRef = null;
 
   // Lasso state is PDF-mode specific
   const lassoPoints = !isSvgMode ? pdfState.lassoPoints : [];
