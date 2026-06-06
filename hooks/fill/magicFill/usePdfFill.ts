@@ -1,4 +1,15 @@
 // hooks/fill/magicFill/usePdfFill.ts
+// ── OPTIMIZED v2 ──────────────────────────────────────────────────────────────
+//
+// All previous fixes (v1) retained, plus:
+//
+//  FIX 7: rasterizePolygon — replaces pointInPolygon in the seed-scan loop.
+//          Instead of calling O(V) ray-cast per grid point, we scanline-rasterize
+//          the lasso polygon ONCE into a Uint8Array (O(bbox_area)), then every
+//          inside check is a single array lookup O(1).
+//          Old cost: O(N_seeds × V).  New cost: O(bbox_area) + O(N_seeds).
+//          pointInPolygon is removed from the worker entirely.
+//
 'use client';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
@@ -14,22 +25,19 @@ import {
 export type { Fill, LoadStage };
 export { fmtArea, fmtPerim, hexToRgb, COLORS };
 
-// ── Lasso polygon state ───────────────────────────────────────────────────────
 export interface LassoState {
-  points: [number, number][];   // canvas-space vertices placed so far
-  isOpen: boolean;              // true while placing points
-  mousePos: [number, number] | null; // current mouse for preview line
+  points: [number, number][];
+  isOpen: boolean;
+  mousePos: [number, number] | null;
 }
 
-// ── Inline worker source ──────────────────────────────────────────────────────
-//
-// Polygon-based batch fill. The worker receives the lasso polygon vertices,
-// finds all fillable regions whose seed points are inside the polygon,
-// then also finds adjacent regions that are partially touched by dilating
-// the unioned mask and re-scanning from the boundary.
+// ── Optimized inline worker ───────────────────────────────────────────────────
 
 const WORKER_SOURCE = /* js */`
-// ── Morphology helpers ────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Morphology helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 function dilateMaskFast(src, w, h, r) {
   const horiz = new Uint8Array(w * h);
@@ -121,22 +129,51 @@ function paintFill(mask, d, r, g, b, opacity) {
   }
 }
 
-// ── Point-in-polygon (ray casting) ────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 7: rasterizePolygon
+// Scanline-fills the lasso polygon into a Uint8Array once — O(bbox_area).
+// Replaces the O(V) pointInPolygon ray-cast called per grid seed.
+// Returns the mask plus the tight bounding box for the scan loop.
+// ─────────────────────────────────────────────────────────────────────────────
 
-function pointInPolygon(px, py, poly) {
-  let inside = false;
-  const n = poly.length;
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const [xi, yi] = poly[i];
-    const [xj, yj] = poly[j];
-    const intersect = ((yi > py) !== (yj > py)) &&
-      (px < (xj - xi) * (py - yi) / (yj - yi) + xi);
-    if (intersect) inside = !inside;
+function rasterizePolygon(poly, w, h) {
+  let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity;
+  for (const [px, py] of poly) {
+    if (px < bx1) bx1 = px; if (px > bx2) bx2 = px;
+    if (py < by1) by1 = py; if (py > by2) by2 = py;
   }
-  return inside;
+  const x1 = Math.max(0, Math.floor(bx1));
+  const y1 = Math.max(0, Math.floor(by1));
+  const x2 = Math.min(w - 1, Math.ceil(bx2));
+  const y2 = Math.min(h - 1, Math.ceil(by2));
+
+  const inside = new Uint8Array(w * h);
+  const n = poly.length;
+
+  for (let y = y1; y <= y2; y++) {
+    // Collect X crossings for this scanline
+    const xs = [];
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const [xi, yi] = poly[i];
+      const [xj, yj] = poly[j];
+      if ((yi <= y && yj > y) || (yj <= y && yi > y)) {
+        xs.push(xi + (y - yi) / (yj - yi) * (xj - xi));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    // Fill between even/odd crossing pairs
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      const lx = Math.max(x1, Math.ceil(xs[k]));
+      const rx = Math.min(x2, Math.floor(xs[k + 1]));
+      for (let x = lx; x <= rx; x++) inside[y * w + x] = 1;
+    }
+  }
+  return { inside, x1, y1, x2, y2 };
 }
 
-// ── Scanline / seed fill ──────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Scanline flood fill
+// ─────────────────────────────────────────────────────────────────────────────
 
 function scanlineFill(mask, w, h, sx, sy) {
   if (sx < 0 || sx >= w || sy < 0 || sy >= h || mask[sy * w + sx]) return null;
@@ -167,27 +204,42 @@ function scanlineFill(mask, w, h, sx, sy) {
   return count > 4 ? filled : null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// FIX 4: multiSeedFill — cheap overlap check, no inner dilateMaskFast
+// ─────────────────────────────────────────────────────────────────────────────
+
+function masksOverlap(a, b, w) {
+  // Direct pixel check first — no allocation
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] && b[i]) return true;
+  }
+  // One-step neighbor scan — catches rooms separated by a 1px wall
+  const DIRS = [-1, 1, -w, w, -w-1, -w+1, w-1, w+1];
+  for (let i = 0; i < b.length; i++) {
+    if (!b[i]) continue;
+    for (const d of DIRS) {
+      const j = i + d;
+      if (j >= 0 && j < a.length && a[j]) return true;
+    }
+  }
+  return false;
+}
+
 function multiSeedFill(mask, w, h, cx, cy) {
   const OFFSETS = [
     [0,0],[1,0],[-1,0],[0,1],[0,-1],
     [2,0],[-2,0],[0,2],[0,-2],
     [1,1],[-1,1],[1,-1],[-1,-1],
   ];
-  let merged = null, mergedDilated = null;
+  let merged = null;
   for (const [dx, dy] of OFFSETS) {
     const f = scanlineFill(mask, w, h, cx + dx, cy + dy);
     if (!f) continue;
     if (!merged) {
       merged = f;
-      mergedDilated = dilateMaskFast(f, w, h, 5);
     } else {
-      let overlaps = false;
-      for (let i = 0; i < f.length; i++) {
-        if (f[i] && mergedDilated[i]) { overlaps = true; break; }
-      }
-      if (overlaps) {
+      if (masksOverlap(merged, f, w)) {
         for (let i = 0; i < merged.length; i++) if (f[i]) merged[i] = 1;
-        mergedDilated = dilateMaskFast(merged, w, h, 5);
       }
     }
   }
@@ -199,74 +251,100 @@ function multiSeedFill(mask, w, h, cx, cy) {
   return merged;
 }
 
-// ── Phase 1: find regions whose seeds are inside the polygon ──────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 1: find regions inside the polygon
+//
+// FIX 6: adaptive step size — min(bbox_side/80, 8) clamped to [4,8]
+// FIX 7: inside check is insideMask[sy*w+sx] — O(1), not O(V) ray cast
+// FIX 3: dead-seed marking on null fills
+// ─────────────────────────────────────────────────────────────────────────────
 
 function findRegionsInsidePolygon(mask, w, h, poly) {
-  // Bounding box of polygon
-  let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity;
-  for (const [px, py] of poly) {
-    if (px < bx1) bx1 = px; if (px > bx2) bx2 = px;
-    if (py < by1) by1 = py; if (py > by2) by2 = py;
-  }
-  const x1 = Math.max(0, Math.floor(bx1));
-  const y1 = Math.max(0, Math.floor(by1));
-  const x2 = Math.min(w - 1, Math.ceil(bx2));
-  const y2 = Math.min(h - 1, Math.ceil(by2));
+  // ONE polygon rasterization replaces all pointInPolygon ray-cast calls
+  const { inside, x1, y1, x2, y2 } = rasterizePolygon(poly, w, h);
 
   const discovered = [];
   const seen = new Uint8Array(w * h);
-  const step = Math.max(4, Math.round(Math.min(x2 - x1, y2 - y1) / 60));
+
+  // FIX 6: adaptive step
+  const bboxSide = Math.min(x2 - x1, y2 - y1);
+  const step = Math.max(4, Math.min(8, Math.round(bboxSide / 80)));
 
   for (let sy = y1; sy <= y2; sy += step) {
     for (let sx = x1; sx <= x2; sx += step) {
+      // FIX 7: O(1) array lookup instead of O(V) ray cast
+      if (!inside[sy * w + sx]) continue;
       if (mask[sy * w + sx] || seen[sy * w + sx]) continue;
-      if (!pointInPolygon(sx, sy, poly)) continue;
+
       const filled = multiSeedFill(mask, w, h, sx, sy);
-      if (!filled) continue;
+      if (!filled) {
+        seen[sy * w + sx] = 1; // FIX 3: mark dead seeds
+        continue;
+      }
       for (let i = 0; i < filled.length; i++) if (filled[i]) seen[i] = 1;
       discovered.push(filled);
     }
   }
-  return discovered;
+  return { discovered, seen };
 }
 
-// ── Phase 2: find partially-touched regions along the perimeter ───────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 2: partially-touched boundary rooms
 //
-// After the primary fill is dilated, any room it now overlaps on the outer edge
-// is "partially touched". We scan pixels on the boundary of the dilated union
-// and try fills from the outside to collect those rooms.
+// FIX 1: seen pre-populated from DILATED union before this runs
+// FIX 2: candidates deduped into a Set before any fill is fired
+// FIX 3: dead-seed marking on null fills
+// FIX 5: MAX_BOUNDARY_ROOMS cap
+// ─────────────────────────────────────────────────────────────────────────────
 
-function findBoundaryRegions(mask, w, h, unionMask, seen) {
-  const extra = [];
-  // Walk the edges of the union mask — when we find a transition from
-  // union→non-union near a non-wall, try a fill from there.
+const MAX_BOUNDARY_ROOMS = 64;
+
+function findBoundaryRegions(mask, w, h, grownUnion, seen) {
+  // FIX 2: collect unique candidates first — no duplicate fills
+  const candidates = new Set();
   const NEIGHBOR = [-1, 1, -w, w];
-  for (let i = 0; i < unionMask.length; i++) {
-    if (!unionMask[i]) continue;
+
+  for (let i = 0; i < grownUnion.length; i++) {
+    if (!grownUnion[i]) continue;
     for (const d of NEIGHBOR) {
       const j = i + d;
-      if (j < 0 || j >= unionMask.length) continue;
-      if (unionMask[j] || mask[j] || seen[j]) continue;
-      // j is an unfilled, non-wall pixel adjacent to our union
-      const filled = multiSeedFill(mask, w, h, j % w, (j / w) | 0);
-      if (!filled) continue;
-      // Only include if area < 80% (leak guard already in multiSeedFill)
-      for (let k = 0; k < filled.length; k++) if (filled[k]) seen[k] = 1;
-      extra.push(filled);
+      if (j < 0 || j >= grownUnion.length) continue;
+      // FIX 1: seen already covers grown pixels
+      if (grownUnion[j] || mask[j] || seen[j]) continue;
+      candidates.add(j);
     }
   }
+
+  const extra = [];
+  for (const j of candidates) {
+    if (seen[j]) continue; // may have been filled by a previous iteration
+
+    const filled = multiSeedFill(mask, w, h, j % w, (j / w) | 0);
+    if (!filled) {
+      seen[j] = 1; // FIX 3: dead-seed
+      continue;
+    }
+
+    for (let k = 0; k < filled.length; k++) if (filled[k]) seen[k] = 1;
+    extra.push(filled);
+
+    if (extra.length >= MAX_BOUNDARY_ROOMS) break; // FIX 5
+  }
+
   return extra;
 }
 
-// ── Message handler ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Message handler
+// ─────────────────────────────────────────────────────────────────────────────
 
 self.onmessage = ({ data }) => {
   const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, FILL_GROW, poly } = data;
 
   const mask = new Uint8Array(maskBuffer);
 
-  // Phase 1 — regions with seeds inside the polygon
-  const regions = findRegionsInsidePolygon(mask, w, h, poly);
+  // ── Phase 1 ───────────────────────────────────────────────────────────────
+  const { discovered: regions, seen } = findRegionsInsidePolygon(mask, w, h, poly);
 
   if (regions.length === 0) {
     self.postMessage({ empty: true });
@@ -279,15 +357,15 @@ self.onmessage = ({ data }) => {
     for (let i = 0; i < filled.length; i++) if (filled[i]) unioned[i] = 1;
   }
 
-  // Dilate to bridge gaps & expose perimeter
+  // Dilate to bridge gaps and expose the perimeter
   const grown = dilateMaskFast(unioned, w, h, FILL_GROW);
 
-  // Build seen map from unioned so boundary scanner won't re-find them
-  const seen = new Uint8Array(w * h);
-  for (let i = 0; i < unioned.length; i++) if (unioned[i]) seen[i] = 1;
+  // FIX 1: pre-populate seen from GROWN union — boundary scan skips all of it
+  for (let i = 0; i < grown.length; i++) if (grown[i]) seen[i] = 1;
 
-  // Phase 2 — partially-touched rooms along the perimeter
+  // ── Phase 2 ───────────────────────────────────────────────────────────────
   const boundary = findBoundaryRegions(mask, w, h, grown, seen);
+
   for (const filled of boundary) {
     for (let i = 0; i < filled.length; i++) if (filled[i]) unioned[i] = 1;
   }
@@ -295,7 +373,7 @@ self.onmessage = ({ data }) => {
   // Re-dilate after adding boundary rooms
   const grownFinal = dilateMaskFast(unioned, w, h, FILL_GROW);
 
-  // Close holes — furniture interiors become enclosed islands
+  // Close interior holes (furniture islands, etc.)
   const closed = closeHoles(grownFinal, w, h);
 
   // Leak guard
@@ -309,9 +387,8 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  // bbox polygon (fast)
-  const polygon = bboxPolygon(closed, w);
-  const perimPx = polygonPerim(polygon);
+  const polygon     = bboxPolygon(closed, w);
+  const perimPx     = polygonPerim(polygon);
   const regionCount = regions.length + boundary.length;
 
   self.postMessage(
@@ -328,8 +405,8 @@ self.onmessage = ({ data }) => {
 };
 `;
 
-// ── CLOSE_SNAP_RADIUS — pixels from first point to auto-close the lasso ───────
-const CLOSE_SNAP_RADIUS = 14; // screen pixels
+// ── CLOSE_SNAP_RADIUS ─────────────────────────────────────────────────────────
+const CLOSE_SNAP_RADIUS = 14;
 
 // ── usePdfFill ────────────────────────────────────────────────────────────────
 
@@ -413,7 +490,6 @@ export function usePdfFill() {
       wrapRef.current.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
   }, [pan, zoom]);
 
-  // Cleanup worker on unmount
   useEffect(() => {
     return () => {
       workerRef.current?.terminate();
@@ -430,7 +506,6 @@ export function usePdfFill() {
         setSpaceHeld(true);
       }
       if (e.code === 'Escape') {
-        // Cancel lasso
         setIsLassoing(false);
         setLassoPoints([]);
         setLassoMouse(null);
@@ -692,14 +767,12 @@ export function usePdfFill() {
     setFillSub('Running off main thread…');
     setFillProgress(null);
 
-    // Snapshot for undo BEFORE handing off to worker
     snapshots.current.push(new ImageData(
       new Uint8ClampedArray(fillDataRef.current.data), w, h,
     ));
 
     await yieldFrame();
 
-    // Terminate any previous worker
     workerRef.current?.terminate();
     if (workerUrlRef.current) URL.revokeObjectURL(workerUrlRef.current);
 
@@ -810,7 +883,6 @@ export function usePdfFill() {
     const vp = e.currentTarget as HTMLElement;
     if (e.button !== 0 && e.button !== 2) return;
 
-    // Double-click toggles batch/lasso mode
     if (e.button === 0 && loadStage === 'ready') {
       const now = Date.now();
       if (now - lastClickTime.current < 300) {
@@ -818,7 +890,6 @@ export function usePdfFill() {
         batchModeRef.current = next;
         setBatchMode(next);
         if (!next) {
-          // Cancelling batch mode also cancels any open lasso
           setIsLassoing(false);
           setLassoPoints([]);
           setLassoMouse(null);
@@ -829,7 +900,6 @@ export function usePdfFill() {
       lastClickTime.current = now;
     }
 
-    // Right-click always pans
     if (e.button === 2) {
       e.preventDefault();
       hasDraggedRef.current = false;
@@ -839,14 +909,12 @@ export function usePdfFill() {
       return;
     }
 
-    // ── Lasso mode: space held OR batchMode ────────────────────────────────
     if (e.button === 0 && (spaceHeldRef.current || batchModeRef.current) && loadStage === 'ready') {
       e.preventDefault();
       const { cx, cy } = screenToCanvas(e.clientX, e.clientY);
       const current = lassoPointsRef.current;
 
       if (current.length === 0) {
-        // Start a new lasso
         const newPts: [number, number][] = [[cx, cy]];
         lassoPointsRef.current = newPts;
         setLassoPoints(newPts);
@@ -855,7 +923,6 @@ export function usePdfFill() {
         return;
       }
 
-      // Check if clicking near the first point → close & commit
       const [fx, fy] = current[0];
       const distScreen = Math.hypot(
         (cx - fx) * zoomRef.current,
@@ -866,7 +933,6 @@ export function usePdfFill() {
         return;
       }
 
-      // Add a new vertex
       const newPts: [number, number][] = [...current, [cx, cy]];
       lassoPointsRef.current = newPts;
       setLassoPoints(newPts);
@@ -874,7 +940,6 @@ export function usePdfFill() {
       return;
     }
 
-    // Regular pan drag (left button, no batch mode)
     if (e.button === 0) {
       hasDraggedRef.current = false;
       setIsDragging(true);
@@ -884,7 +949,6 @@ export function usePdfFill() {
   }, [loadStage, screenToCanvas, commitPolygonFill]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    // Update lasso rubber-band preview
     if (isLassoing && lassoPointsRef.current.length > 0) {
       const { cx, cy } = screenToCanvas(e.clientX, e.clientY);
       setLassoMouse([cx, cy]);
@@ -919,7 +983,6 @@ export function usePdfFill() {
     if (isDragging) {
       const wasDragging = hasDraggedRef.current;
       setIsDragging(false);
-      // Only fire single-room fill if not in any lasso/batch mode
       if (e.button === 0 && !wasDragging && !spaceHeldRef.current && !batchModeRef.current && !isLassoing && loadStage === 'ready')
         doFill(e.clientX, e.clientY);
     }
@@ -958,8 +1021,6 @@ export function usePdfFill() {
     workerRef.current = null;
     if (workerUrlRef.current) { URL.revokeObjectURL(workerUrlRef.current); workerUrlRef.current = null; }
     setIsFilling(false); setFillMsg(''); setFillSub(undefined); setFillProgress(null);
-
-    // Cancel open lasso too
     setIsLassoing(false); setLassoPoints([]); setLassoMouse(null); lassoPointsRef.current = [];
 
     setFills(f => {
@@ -1129,9 +1190,7 @@ export function usePdfFill() {
     showPolygon, setShowPolygon,
     status, fileName, loadStage, loadProgress,
     pxPerM, setPxPerM,
-    // lasso (replaces selectRect/isSelecting)
     lassoPoints, isLassoing, lassoMouse,
-    // kept for compat with SVG mode that may still use rect
     selectRect: null,
     isSelecting: isLassoing,
     spaceHeld,
