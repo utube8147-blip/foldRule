@@ -527,6 +527,8 @@ export default function SnapEnginePage() {
   const [cvRotations, setCVRotations] = useState<number[]>([0, 45, 90, 135, 180, 225, 270, 315]);
   const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
+  const [cvScales,      setCVScales]      = useState<number[]>([0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]);
+
 
   // ── Pattern Painter state ─────────────────────────────────────────────────────
   const [painterDrawState, setPainterDrawState] = useState<PainterDrawState>('idle');
@@ -588,13 +590,13 @@ export default function SnapEnginePage() {
   // ── CV Matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  const handleCVBoxCommit = useCallback(async (box: { x:number; y:number; w:number; h:number }) => {
+  const handleCVBoxCommit = useCallback(async (box) => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
     cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
     setCVSamplerMode('matched');
-    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText);
-  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText]);
+    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales);
+  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales]);
 
   const handleClearCV = useCallback(() => {
     cvMatcher.clearAll();
@@ -1147,20 +1149,22 @@ export default function SnapEnginePage() {
           {activeTool==='cv' && (
             <>
               <SidebarHeader icon="⊡" label="CV Match" color="#38bdf8" onClose={()=>setActiveTool(null)} />
-              <CVSamplerSidebar
-                matcher={cvMatcher}
-                samplerMode={cvSamplerMode}
-                onEnterDraw={handleEnterCVDraw}
-                onClear={handleClearCV}
-                threshold={cvThreshold}
-                onThreshold={setCVThreshold}
-                rotations={cvRotations}
-                onRotations={setCVRotations}
-                flips={cvFlips}
-                onFlips={setCVFlips}
-                removeText={cvRemoveText}
-                onRemoveText={setCVRemoveText}
-              />
+                <CVSamplerSidebar
+                  matcher={cvMatcher}
+                  samplerMode={cvSamplerMode}
+                  onEnterDraw={handleEnterCVDraw}
+                  onClear={handleClearCV}
+                  threshold={cvThreshold}
+                  onThreshold={setCVThreshold}
+                  rotations={cvRotations}
+                  onRotations={setCVRotations}
+                  flips={cvFlips}
+                  onFlips={setCVFlips}
+                  removeText={cvRemoveText}
+                  onRemoveText={setCVRemoveText}
+                  scales={cvScales}
+                  onScales={setCVScales}
+                />
             </>
           )}
 
