@@ -55,6 +55,13 @@ const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r())
 
 type ActiveTool = 'snap' | 'cv' | 'painter' | null;
 
+interface CVBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 // ── SVG line extractor ────────────────────────────────────────────────────────
 
 function numA(el: Element, n: string, fb = 0): number {
@@ -590,7 +597,7 @@ export default function SnapEnginePage() {
   // ── CV Matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  const handleCVBoxCommit = useCallback(async (box) => {
+  const handleCVBoxCommit = useCallback(async (box: CVBox): Promise<void> => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
     cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
