@@ -115,7 +115,6 @@ function IdleScreen({ pdfJsReady }: { pdfJsReady: boolean }) {
         <p style={{ fontSize:8,color:'#444',textTransform:'uppercase',letterSpacing:'.1em',margin:'12px 0 20px',lineHeight:2 }}>
           Load a floor plan PDF to begin<br />Quality increases automatically as you zoom in
         </p>
-        {/* PDF.js ready indicator */}
         <div style={{ display:'flex',alignItems:'center',justifyContent:'center',gap:6,marginBottom:16 }}>
           <div style={{ width:6,height:6,borderRadius:'50%',background:pdfJsReady?'#22c55e':'#f59e0b',flexShrink:0 }} />
           <span style={{ fontSize:7,color:pdfJsReady?'#22c55e':'#f59e0b',textTransform:'uppercase',letterSpacing:'.08em' }}>
@@ -152,7 +151,7 @@ function QualityBadge({ renderScale, isRerendering }: { renderScale: number; isR
   );
 }
 
-// ── Sidebar ───────────────────────────────────────────────────────────────────
+// ── Sidebar shell ─────────────────────────────────────────────────────────────
 
 function SidebarShell({ children }: { children: React.ReactNode }) {
   return (
@@ -192,13 +191,13 @@ export default function PdfCVMatchPage() {
   const [renderScale,   setRenderScale]   = useState(BASE_SCALE);
   const [isRerendering, setIsRerendering] = useState(false);
 
-  // ── CV state ──────────────────────────────────────────────────────────────────
+  // ── CV state — sane defaults for direct matchTemplate ─────────────────────────
   const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
-  const [cvThreshold,   setCVThreshold]   = useState(0.60);
+  const [cvThreshold,   setCVThreshold]   = useState(0.70);   // ↑ was 0.60
   const [cvRotations,   setCVRotations]   = useState<number[]>([0, 90, 180, 270]);
-  const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
+  const [cvFlips,       setCVFlips]       = useState<boolean[]>([false]);        // ↓ no flip by default
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
-  const [cvScales,      setCVScales]      = useState<number[]>([1.0]);
+  const [cvScales,      setCVScales]      = useState<number[]>([1.0]);           // 1× only by default
 
   // ── Refs ──────────────────────────────────────────────────────────────────────
   const viewportRef    = useRef<HTMLDivElement>(null);
@@ -213,7 +212,7 @@ export default function PdfCVMatchPage() {
   const renderScaleRef = useRef(renderScale);
   const pdfDocRef      = useRef<any>(null);
   const rerenderTimer  = useRef<ReturnType<typeof setTimeout>|null>(null);
-  const renderTaskRef  = useRef<any>(null);  // tracks active PDF render task
+  const renderTaskRef  = useRef<any>(null);
 
   useEffect(() => { panRef.current         = pan;         }, [pan]);
   useEffect(() => { zoomRef.current        = zoom;        }, [zoom]);
@@ -222,7 +221,7 @@ export default function PdfCVMatchPage() {
   // ── CV matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  // ── Get pdfjsLib from window (set by CDN Script) ──────────────────────────────
+  // ── Get pdfjsLib ─────────────────────────────────────────────────────────────
   const getPdfJs = useCallback(() => {
     const lib = (window as any).pdfjsLib;
     if (!lib) throw new Error('PDF.js not loaded yet — please wait a moment and try again');
@@ -231,11 +230,9 @@ export default function PdfCVMatchPage() {
 
   // ── Render page at given scale ────────────────────────────────────────────────
   const renderPage = useCallback(async (pdfDoc: any, scale: number) => {
-    // Cancel any in-progress render before touching the canvas
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch (_) {}
       renderTaskRef.current = null;
-      // Give the browser one frame to finish cleanup
       await new Promise<void>(r => requestAnimationFrame(() => r()));
     }
 
@@ -253,7 +250,6 @@ export default function PdfCVMatchPage() {
     try {
       await task.promise;
     } catch (err: any) {
-      // RenderingCancelledException is expected — ignore it
       if (err?.name === 'RenderingCancelledException') return { w: canvas.width, h: canvas.height };
       throw err;
     } finally {
@@ -307,7 +303,6 @@ export default function PdfCVMatchPage() {
     await yieldFrame();
     try {
       const pdfjsLib = getPdfJs();
-      // Point worker at same CDN version — no local file needed
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN_WORKER;
 
       const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
@@ -357,8 +352,8 @@ export default function PdfCVMatchPage() {
     await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales);
   }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales]);
 
-  const handleClearCV    = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('idle');    }, [cvMatcher]);
-  const handleEnterCVDraw= useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('drawing'); }, [cvMatcher]);
+  const handleClearCV     = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('idle');    }, [cvMatcher]);
+  const handleEnterCVDraw = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('drawing'); }, [cvMatcher]);
 
   const isCVDrawMode = cvSamplerMode === 'drawing';
 
@@ -422,7 +417,7 @@ export default function PdfCVMatchPage() {
   // ── Status on CV done ─────────────────────────────────────────────────────────
   useEffect(() => {
     if (!cvMatcher.isSearching && cvMatcher.matches.length > 0)
-      setStatus(`${cvMatcher.matches.length} match${cvMatcher.matches.length !== 1 ? 'es' : ''} · ${Math.round(renderScaleRef.current * 72)} DPI`);
+      setStatus(`${cvMatcher.matches.length} match${cvMatcher.matches.length !== 1 ? 'es' : ''} · direct · ${Math.round(renderScaleRef.current * 72)} DPI`);
   }, [cvMatcher.isSearching, cvMatcher.matches.length]);
 
   const cursor = isCVDrawMode ? 'crosshair' : (pdfDocRef.current ? 'grab' : 'default');
@@ -431,12 +426,7 @@ export default function PdfCVMatchPage() {
   return (
     <div style={S.root}>
 
-      {/* ── PDF.js from CDN — same as magicFill page ── */}
-      <Script
-        src={PDFJS_CDN_JS}
-        strategy="lazyOnload"
-        onLoad={() => setPdfJsReady(true)}
-      />
+      <Script src={PDFJS_CDN_JS} strategy="lazyOnload" onLoad={() => setPdfJsReady(true)} />
 
       {/* ── Toolbar ── */}
       <div style={S.toolbar}>
@@ -539,12 +529,12 @@ export default function PdfCVMatchPage() {
           )}
           {cvSamplerMode === 'drawing' && (
             <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {tooLarge ? '⚠ Zoom in more — box too large' : 'CV Match · drag tight box around ONE symbol'}
+              {tooLarge ? '⚠ Zoom in more — box too large' : 'Direct CV Match · drag tight box around ONE symbol'}
             </div>
           )}
           {cvSamplerMode === 'matched' && cvMatcher.matches.length > 0 && !cvMatcher.isSearching && (
             <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.3)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {cvMatcher.matches.length} CV match{cvMatcher.matches.length !== 1 ? 'es' : ''} · pixel-accurate
+              {cvMatcher.matches.length} match{cvMatcher.matches.length !== 1 ? 'es' : ''} · direct · pixel-precise
             </div>
           )}
         </div>
