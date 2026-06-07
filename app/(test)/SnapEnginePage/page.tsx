@@ -524,7 +524,7 @@ export default function SnapEnginePage() {
   // ── CV Sampler state ─────────────────────────────────────────────────────────
   const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
   const [cvThreshold,   setCVThreshold]   = useState(0.60);
-  const [cvRotations,   setCVRotations]   = useState<number[]>([0, 90, 180, 270]);
+  const [cvRotations, setCVRotations] = useState<number[]>([0, 45, 90, 135, 180, 225, 270, 315]);
   const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
 
