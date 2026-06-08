@@ -1,4 +1,4 @@
-// app/(test)/PdfCVMatchPage/page.tsx
+// app/(test)/PdfCVMatchPage/page.tsx  v3.0  — lasso sampling
 'use client';
 
 import React, {
@@ -10,10 +10,16 @@ import { useOpenCVMatcher }  from '@/hooks/detection/useOpenCVMatcher';
 import {
   CVMatchOverlay,
   CVWorkerBanner,
-  CVRubberBand,
   CVSamplerSidebar,
-  useCVRubberBand,
 } from '@/components/features/overlays/CVMatchOverlay';
+import { templateColor } from '@/hooks/detection/useOpenCVMatcher';
+import {
+  useCVLasso,
+  CVLassoOverlay,
+  vpLassoToCanvas,
+  lassoToImageData,
+  type LassoCommitPayload,
+} from '@/components/features/overlays/CVLasso';   // adjust path as needed
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -35,6 +41,10 @@ const LOAD_LINES = [
 ];
 
 const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r()));
+
+// ── Sampler mode ──────────────────────────────────────────────────────────────
+
+type CVSamplerMode = 'idle' | 'drawing' | 'adding' | 'matched';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
@@ -113,7 +123,7 @@ function IdleScreen({ pdfJsReady }: { pdfJsReady: boolean }) {
         <div style={{ fontSize:28,color:'#f59e0b',marginBottom:18 }}>⊕</div>
         <div style={{ fontSize:10,fontWeight:700,color:'#f59e0b',textTransform:'uppercase',letterSpacing:'.18em',marginBottom:6 }}>PDF CV Match</div>
         <p style={{ fontSize:8,color:'#444',textTransform:'uppercase',letterSpacing:'.1em',margin:'12px 0 20px',lineHeight:2 }}>
-          Load a floor plan PDF to begin<br />Quality increases automatically as you zoom in
+          Load a floor plan PDF · Draw a lasso around any symbol<br />Add variations for tilted / rotated instances
         </p>
         <div style={{ display:'flex',alignItems:'center',justifyContent:'center',gap:6,marginBottom:16 }}>
           <div style={{ width:6,height:6,borderRadius:'50%',background:pdfJsReady?'#22c55e':'#f59e0b',flexShrink:0 }} />
@@ -173,14 +183,12 @@ function SidebarHeader({ onClose }: { onClose: () => void }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type CVSamplerMode = 'idle' | 'drawing' | 'matched';
-
 export default function PdfCVMatchPage() {
 
-  // ── PDF.js script state ───────────────────────────────────────────────────────
+  // ── PDF.js script state ────────────────────────────────────────────────────
   const [pdfJsReady, setPdfJsReady] = useState(false);
 
-  // ── Core state ────────────────────────────────────────────────────────────────
+  // ── Core state ─────────────────────────────────────────────────────────────
   const [fileName,      setFileName]      = useState('');
   const [isLoading,     setIsLoading]     = useState(false);
   const [isIdle,        setIsIdle]        = useState(true);
@@ -191,15 +199,16 @@ export default function PdfCVMatchPage() {
   const [renderScale,   setRenderScale]   = useState(BASE_SCALE);
   const [isRerendering, setIsRerendering] = useState(false);
 
-  // ── CV state — sane defaults for direct matchTemplate ─────────────────────────
+  // ── CV state ───────────────────────────────────────────────────────────────
   const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
-  const [cvThreshold,   setCVThreshold]   = useState(0.70);   // ↑ was 0.60
+  const [cvThreshold,   setCVThreshold]   = useState(0.70);
   const [cvRotations,   setCVRotations]   = useState<number[]>([0, 90, 180, 270]);
-  const [cvFlips,       setCVFlips]       = useState<boolean[]>([false]);        // ↓ no flip by default
+  const [cvFlips,       setCVFlips]       = useState<boolean[]>([false]);
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
-  const [cvScales,      setCVScales]      = useState<number[]>([1.0]);           // 1× only by default
+  const [cvScales,      setCVScales]      = useState<number[]>([1.0]);
+  const [cvFineStep,    setCVFineStep]    = useState(3);
 
-  // ── Refs ──────────────────────────────────────────────────────────────────────
+  // ── Refs ───────────────────────────────────────────────────────────────────
   const viewportRef    = useRef<HTMLDivElement>(null);
   const wrapRef        = useRef<HTMLDivElement>(null);
   const baseCanvasRef  = useRef<HTMLCanvasElement>(null);
@@ -218,24 +227,22 @@ export default function PdfCVMatchPage() {
   useEffect(() => { zoomRef.current        = zoom;        }, [zoom]);
   useEffect(() => { renderScaleRef.current = renderScale; }, [renderScale]);
 
-  // ── CV matcher ────────────────────────────────────────────────────────────────
+  // ── CV matcher ─────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  // ── Get pdfjsLib ─────────────────────────────────────────────────────────────
+  // ── PDF helpers ────────────────────────────────────────────────────────────
   const getPdfJs = useCallback(() => {
     const lib = (window as any).pdfjsLib;
     if (!lib) throw new Error('PDF.js not loaded yet — please wait a moment and try again');
     return lib;
   }, []);
 
-  // ── Render page at given scale ────────────────────────────────────────────────
   const renderPage = useCallback(async (pdfDoc: any, scale: number) => {
     if (renderTaskRef.current) {
       try { renderTaskRef.current.cancel(); } catch (_) {}
       renderTaskRef.current = null;
       await new Promise<void>(r => requestAnimationFrame(() => r()));
     }
-
     const page     = await pdfDoc.getPage(1);
     const viewport = page.getViewport({ scale });
     const canvas   = baseCanvasRef.current!;
@@ -244,7 +251,6 @@ export default function PdfCVMatchPage() {
     const ctx      = canvas.getContext('2d')!;
     ctx.fillStyle  = '#ffffff';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-
     const task = page.render({ canvasContext: ctx, viewport });
     renderTaskRef.current = task;
     try {
@@ -255,11 +261,9 @@ export default function PdfCVMatchPage() {
     } finally {
       renderTaskRef.current = null;
     }
-
     return { w: canvas.width, h: canvas.height };
   }, []);
 
-  // ── Fit to viewport ───────────────────────────────────────────────────────────
   const fitCanvas = useCallback(() => {
     const vp = viewportRef.current, bc = baseCanvasRef.current;
     if (!vp || !bc) return;
@@ -269,7 +273,6 @@ export default function PdfCVMatchPage() {
     setPan({ x: (vr.width - bc.width * fz) / 2, y: (vr.height - bc.height * fz) / 2 });
   }, []);
 
-  // ── Adaptive re-render on zoom ────────────────────────────────────────────────
   const scheduleRerender = useCallback((newZoom: number) => {
     if (!pdfDocRef.current) return;
     if (rerenderTimer.current) clearTimeout(rerenderTimer.current);
@@ -277,7 +280,6 @@ export default function PdfCVMatchPage() {
       const cur    = renderScaleRef.current;
       const needed = Math.min(newZoom * BASE_SCALE, MAX_RENDER_SCALE);
       if (needed <= cur * ZOOM_RENDER_RATIO) return;
-
       setIsRerendering(true);
       try {
         const { w, h } = await renderPage(pdfDocRef.current, needed);
@@ -296,7 +298,6 @@ export default function PdfCVMatchPage() {
     }, 600);
   }, [renderPage]);
 
-  // ── Load PDF ──────────────────────────────────────────────────────────────────
   const loadPdf = useCallback(async (arrayBuffer: ArrayBuffer, name: string) => {
     setFileName(name); setIsLoading(true); setIsIdle(false);
     cvMatcher.clearAll(); setCVSamplerMode('idle');
@@ -304,10 +305,8 @@ export default function PdfCVMatchPage() {
     try {
       const pdfjsLib = getPdfJs();
       pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_CDN_WORKER;
-
       const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       pdfDocRef.current = pdfDoc;
-
       const { w, h } = await renderPage(pdfDoc, BASE_SCALE);
       setRenderScale(BASE_SCALE);
       setIsLoading(false);
@@ -319,7 +318,6 @@ export default function PdfCVMatchPage() {
     }
   }, [getPdfJs, renderPage, fitCanvas, cvMatcher]);
 
-  // ── File input ────────────────────────────────────────────────────────────────
   const handleUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     e.target.value = '';
@@ -328,7 +326,6 @@ export default function PdfCVMatchPage() {
     reader.readAsArrayBuffer(file);
   }, [loadPdf]);
 
-  // ── Drag and drop ─────────────────────────────────────────────────────────────
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     const file = e.dataTransfer.files?.[0];
@@ -338,55 +335,91 @@ export default function PdfCVMatchPage() {
     reader.readAsArrayBuffer(file);
   }, [loadPdf]);
 
-  // ── Canvas transform ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (wrapRef.current)
       wrapRef.current.style.transform = `translate(${pan.x}px,${pan.y}px) scale(${zoom})`;
   }, [pan, zoom]);
 
-  // ── CV handlers ───────────────────────────────────────────────────────────────
-  const handleCVBoxCommit = useCallback(async (box: { x:number;y:number;w:number;h:number }) => {
+  // ── CV: commit a lasso ─────────────────────────────────────────────────────
+
+  const handleLassoCommit = useCallback(async (payload: LassoCommitPayload) => {
     const canvas = baseCanvasRef.current; if (!canvas) return;
-    cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
+
+    const isPrimary = cvSamplerMode === 'drawing';
+    if (isPrimary) cvMatcher.clearAll();
+
+    // Convert viewport lasso → canvas-space → masked ImageData
+    const canvasPts = vpLassoToCanvas(payload.points, zoomRef.current, panRef.current);
+    const result    = lassoToImageData(canvas, canvasPts);
+    if (!result) return;
+
+    const label = isPrimary
+      ? 'Primary'
+      : `Variation ${cvMatcher.templates.length + 1}`;
+
+    // Pass the masked imageData directly; vpBox is used only for legacy fallback
+    cvMatcher.buildTemplate(
+      canvas,
+      payload.vpBbox,
+      zoomRef.current,
+      panRef.current,
+      label,
+      result.imageData,   // ← lasso-masked ImageData
+    );
     setCVSamplerMode('matched');
-    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales);
-  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales]);
+
+    await cvMatcher.findMatches(
+      canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep,
+    );
+  }, [cvSamplerMode, cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep]);
 
   const handleClearCV     = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('idle');    }, [cvMatcher]);
   const handleEnterCVDraw = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('drawing'); }, [cvMatcher]);
+  const handleEnterCVAdd  = useCallback(() => { setCVSamplerMode('adding'); }, []);
 
-  const isCVDrawMode = cvSamplerMode === 'drawing';
+  const handleRemoveTemplate = useCallback((index: number) => {
+    cvMatcher.removeTemplate(index);
+    if (cvMatcher.templates.length <= 1) setCVSamplerMode('idle');
+  }, [cvMatcher]);
 
-  const { drawBox, isDrawing, tooLarge, startDraw } = useCVRubberBand(
+  // ── Lasso ─────────────────────────────────────────────────────────────────
+
+  const isLassoActive = cvSamplerMode === 'drawing' || cvSamplerMode === 'adding';
+  const lassoColor    = cvSamplerMode === 'adding'
+    ? templateColor(cvMatcher.templates.length)
+    : '#38bdf8';
+
+  const { points, isDrawing, nearClose, tooSmall, startLasso } = useCVLasso(
     viewportRef as React.RefObject<HTMLDivElement>,
-    isCVDrawMode,
-    handleCVBoxCommit,
+    isLassoActive,
+    handleLassoCommit,
   );
 
-  // ── Pointer ───────────────────────────────────────────────────────────────────
+  // ── Pointer (pan / lasso fork) ─────────────────────────────────────────────
+
   const handlePointerDown = useCallback((e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    if (isCVDrawMode) { startDraw(e); return; }
+    if (isLassoActive) { startLasso(e); return; }
     pointerDownRef.current = true;
     isDraggingRef.current  = false;
     dragRef.current = { mx:e.clientX,my:e.clientY,px:panRef.current.x,py:panRef.current.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [isCVDrawMode, startDraw]);
+  }, [isLassoActive, startLasso]);
 
   const handlePointerMove = useCallback((e: React.PointerEvent) => {
-    if (isCVDrawMode) return;
+    if (isLassoActive) return;
     if (pointerDownRef.current && !isDraggingRef.current) {
       if (Math.hypot(e.clientX - dragRef.current.mx, e.clientY - dragRef.current.my) > DRAG_THRESHOLD)
         isDraggingRef.current = true;
     }
     if (isDraggingRef.current)
       setPan({ x: dragRef.current.px + (e.clientX - dragRef.current.mx), y: dragRef.current.py + (e.clientY - dragRef.current.my) });
-  }, [isCVDrawMode]);
+  }, [isLassoActive]);
 
   const handlePointerUp    = useCallback(() => { pointerDownRef.current = false; isDraggingRef.current = false; }, []);
   const handlePointerLeave = useCallback(() => { pointerDownRef.current = false; isDraggingRef.current = false; }, []);
 
-  // ── Wheel ─────────────────────────────────────────────────────────────────────
+  // ── Wheel ──────────────────────────────────────────────────────────────────
   const wheelRef = useRef<(e: WheelEvent) => void>(() => {});
   useEffect(() => {
     wheelRef.current = (e: WheelEvent) => {
@@ -414,15 +447,20 @@ export default function PdfCVMatchPage() {
     return () => vp.removeEventListener('wheel', h);
   }, []);
 
-  // ── Status on CV done ─────────────────────────────────────────────────────────
+  // ── Status on CV done ──────────────────────────────────────────────────────
   useEffect(() => {
-    if (!cvMatcher.isSearching && cvMatcher.matches.length > 0)
-      setStatus(`${cvMatcher.matches.length} match${cvMatcher.matches.length !== 1 ? 'es' : ''} · direct · ${Math.round(renderScaleRef.current * 72)} DPI`);
-  }, [cvMatcher.isSearching, cvMatcher.matches.length]);
+    if (!cvMatcher.isSearching && cvMatcher.matches.length > 0) {
+      const tmplSummary = cvMatcher.templates.map((_, ti) => {
+        const c = cvMatcher.matches.filter(m => m.templateIndex === ti).length;
+        return `T${ti+1}:${c}`;
+      }).join(' ');
+      setStatus(`${cvMatcher.matches.length} match${cvMatcher.matches.length !== 1 ? 'es' : ''} · ${tmplSummary} · ${Math.round(renderScaleRef.current * 72)} DPI`);
+    }
+  }, [cvMatcher.isSearching, cvMatcher.matches, cvMatcher.templates]);
 
-  const cursor = isCVDrawMode ? 'crosshair' : (pdfDocRef.current ? 'grab' : 'default');
+  const cursor = isLassoActive ? 'crosshair' : (pdfDocRef.current ? 'grab' : 'default');
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
 
@@ -439,7 +477,6 @@ export default function PdfCVMatchPage() {
         </label>
         <div style={S.sep} />
 
-        {/* PDF.js status dot */}
         <div style={{ display:'flex',alignItems:'center',gap:4,flexShrink:0 }}>
           <div style={{ width:5,height:5,borderRadius:'50%',background: pdfJsReady ? '#22c55e' : '#f59e0b' }} />
           <span style={{ fontSize:7,color: pdfJsReady ? '#22c55e' : '#f59e0b',textTransform:'uppercase',letterSpacing:'.06em' }}>
@@ -448,21 +485,35 @@ export default function PdfCVMatchPage() {
         </div>
         <div style={S.sep} />
 
-        {/* CV controls */}
+        {/* Lasso mode controls in toolbar */}
         {cvSamplerMode === 'idle' && pdfDocRef.current && (
-          <button onClick={handleEnterCVDraw} style={tbBtn(false, '#38bdf8')}>⊡ Draw Box</button>
+          <button onClick={handleEnterCVDraw} style={tbBtn(false, '#38bdf8')}>
+            ✏ Lasso Symbol
+          </button>
         )}
-        {cvSamplerMode === 'drawing' && (
-          <span style={{ fontSize:8,color: tooLarge ? '#f43f5e' : '#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
-            {tooLarge ? '⚠ Zoom in more' : 'Drag tight box around ONE symbol'}
+        {(cvSamplerMode === 'drawing' || cvSamplerMode === 'adding') && (
+          <span style={{ fontSize:8,color: lassoColor,textTransform:'uppercase',letterSpacing:'.07em' }}>
+            {cvSamplerMode === 'adding'
+              ? `Lasso Variation ${cvMatcher.templates.length + 1} — freehand around missed symbol`
+              : 'Lasso tightly around ONE symbol · release or return to start'}
           </span>
         )}
         {cvSamplerMode === 'matched' && (
           <>
             <span style={{ fontSize:8,border:'1px solid #38bdf844',padding:'2px 6px',color:'#38bdf8',flexShrink:0 }}>
               {cvMatcher.matches.length} match{cvMatcher.matches.length !== 1 ? 'es' : ''}
+              {cvMatcher.templates.length > 1 && ` · ${cvMatcher.templates.length} templates`}
             </span>
-            <button onClick={handleEnterCVDraw} style={tbBtn(false,'#38bdf8')}>⊡ New</button>
+            {!cvMatcher.isSearching && (
+              <button
+                onClick={handleEnterCVAdd}
+                style={tbBtn(false, templateColor(cvMatcher.templates.length))}
+                title="Lasso a variation sample for missed instances"
+              >
+                + Variation
+              </button>
+            )}
+            <button onClick={handleEnterCVDraw} style={tbBtn(false,'#38bdf8')}>✏ New</button>
             <button onClick={handleClearCV}     style={tbBtn(false)}>✕ Clear</button>
           </>
         )}
@@ -504,19 +555,21 @@ export default function PdfCVMatchPage() {
           </div>
 
           {/* CV overlays */}
-          <CVWorkerBanner isSearching={cvMatcher.isSearching} workerPhase={cvMatcher.workerPhase} workerDetail={cvMatcher.workerDetail} />
-          <CVRubberBand
-            isDrawing={isDrawing} drawBox={tooLarge ? null : drawBox} tooLarge={tooLarge}
-            isSearching={cvMatcher.isSearching} workerPhase={cvMatcher.workerPhase} workerDetail={cvMatcher.workerDetail}
+          <CVWorkerBanner
+            isSearching={cvMatcher.isSearching}
+            workerPhase={cvMatcher.workerPhase}
+            workerDetail={cvMatcher.workerDetail}
           />
-          {isDrawing && tooLarge && drawBox && (
-            <svg style={{ position:'absolute',inset:0,pointerEvents:'none',zIndex:36,overflow:'visible' }} width="100%" height="100%">
-              <rect x={drawBox.x} y={drawBox.y} width={drawBox.w} height={drawBox.h} fill="rgba(244,63,94,0.06)" stroke="#f43f5e" strokeWidth={1.5} strokeDasharray="6 3" />
-              <text x={drawBox.x+drawBox.w/2} y={drawBox.y+drawBox.h/2} textAnchor="middle" fontSize={9} fill="#f43f5e" fontFamily="'Courier New',monospace">
-                Zoom in — box covers too much of viewport
-              </text>
-            </svg>
-          )}
+
+          {/* Lasso overlay (replaces CVRubberBand) */}
+          <CVLassoOverlay
+            points={points}
+            isDrawing={isDrawing}
+            nearClose={nearClose}
+            tooSmall={tooSmall}
+            color={lassoColor}
+          />
+
           <CVMatchOverlay matches={cvMatcher.matches} zoom={zoom} pan={pan} />
 
           {/* Badges */}
@@ -527,14 +580,22 @@ export default function PdfCVMatchPage() {
               {fileName}
             </div>
           )}
-          {cvSamplerMode === 'drawing' && (
-            <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.4)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {tooLarge ? '⚠ Zoom in more — box too large' : 'Direct CV Match · drag tight box around ONE symbol'}
+
+          {/* Lasso mode hint banner */}
+          {isLassoActive && (
+            <div style={{ position:'absolute',top:10,left:10,background:`${lassoColor}18`,border:`1px solid ${lassoColor}55`,padding:'3px 8px',fontSize:8,color:lassoColor,textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+              {nearClose
+                ? '↩ Release or return to close'
+                : cvSamplerMode === 'adding'
+                  ? `Lasso Variation ${cvMatcher.templates.length + 1} — draw around the missed symbol`
+                  : 'Lasso tightly around ONE symbol — release or loop back to close'}
             </div>
           )}
+
+          {/* Result count hint */}
           {cvSamplerMode === 'matched' && cvMatcher.matches.length > 0 && !cvMatcher.isSearching && (
             <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.3)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
-              {cvMatcher.matches.length} match{cvMatcher.matches.length !== 1 ? 'es' : ''} · direct · pixel-precise
+              {cvMatcher.matches.length} match{cvMatcher.matches.length !== 1 ? 'es' : ''} across {cvMatcher.templates.length} template{cvMatcher.templates.length !== 1 ? 's' : ''}
             </div>
           )}
         </div>
@@ -547,12 +608,15 @@ export default function PdfCVMatchPage() {
               matcher={cvMatcher}
               samplerMode={cvSamplerMode}
               onEnterDraw={handleEnterCVDraw}
+              onEnterAdd={handleEnterCVAdd}
               onClear={handleClearCV}
+              onRemoveTemplate={handleRemoveTemplate}
               threshold={cvThreshold}   onThreshold={setCVThreshold}
               rotations={cvRotations}   onRotations={setCVRotations}
               flips={cvFlips}           onFlips={setCVFlips}
               removeText={cvRemoveText} onRemoveText={setCVRemoveText}
               scales={cvScales}         onScales={setCVScales}
+              fineStep={cvFineStep}     onFineStep={setCVFineStep}
             />
           </SidebarShell>
         )}
@@ -560,12 +624,16 @@ export default function PdfCVMatchPage() {
 
       {/* ── Status bar ── */}
       <div style={S.statusbar}>
-        {cvSamplerMode === 'drawing' ? (
-          <span style={{ fontSize:8,color:tooLarge?'#f43f5e':'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
-            {tooLarge ? '⚠ Zoom in more' : 'Drag tight box around ONE symbol'}
+        {isLassoActive ? (
+          <span style={{ fontSize:8,color:nearClose?'#22c55e':lassoColor,textTransform:'uppercase',letterSpacing:'.07em' }}>
+            {nearClose
+              ? '↩ Release or return to start to close'
+              : cvSamplerMode === 'adding'
+                ? `Lasso Variation ${cvMatcher.templates.length + 1}`
+                : 'Lasso symbol · release or loop back to close'}
           </span>
         ) : (
-          ['Draw box to sample','Find all matches','Ctrl+scroll: zoom','Drag: pan'].map((h, i) => (
+          ['Lasso symbol to sample','Add variations for misses','Ctrl+scroll: zoom','Drag: pan'].map((h, i) => (
             <React.Fragment key={h}>
               {i > 0 && <div style={S.barSep} />}
               <span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>

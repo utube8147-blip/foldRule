@@ -1,25 +1,23 @@
 /**
- * useOpenCVMatcher.ts  v9.0
+ * useOpenCVMatcher.ts  v10.1
  * ──────────────────────────
- * Two-stage coarse→fine rotation matching via cv.matchTemplate.
+ * Identical to v10.0 except buildTemplate now accepts an optional
+ * `lassoImageData` parameter.
  *
- * STAGE 1 — Coarse sweep (caller-supplied rotation list, e.g. every 45°)
- *   For each coarse angle: rotate template (same-size), matchTemplate on full source.
- *   Collect ALL candidate regions above a LOWERED coarse threshold (threshold - 0.15).
- *   Each candidate carries its best coarse angle and a small ROI rect.
+ * When the caller supplies a pre-masked ImageData (produced by
+ * CVLasso.lassoToImageData), buildTemplate uses it directly instead of
+ * cropping a plain rectangle from the canvas.  Everything downstream
+ * (worker, matching, NMS) is completely unchanged.
  *
- * STAGE 2 — Fine sweep (per candidate ROI, ±coarseStep/2 in fineStep increments)
- *   For each coarse candidate: extract a padded ROI from the source.
- *   Sweep fine angles around the coarse hit (e.g. ±22° in 3° steps).
- *   matchTemplate on the tiny ROI — very fast.
- *   Keep the best fine angle that beats the real threshold.
- *
- * Result: arbitrary-angle detection with cost proportional to
- *   (coarse passes × full image) + (candidates × fine passes × small ROI)
- *   instead of (360 passes × full image).
- *
- * Typical floor plan (3000×2000 px, 8 coarse angles, 15 fine angles per candidate):
- *   ~8 full passes + ~N×15 tiny ROI passes  →  well under 5 s even with 20 candidates.
+ * CHANGED SIGNATURE:
+ *   buildTemplate(
+ *     canvas,
+ *     vpBox,          ← still required (used as fallback / label size)
+ *     zoom,
+ *     pan,
+ *     label?,
+ *     lassoImageData? ← NEW — pass the masked ImageData from lassoToImageData()
+ *   ): number
  */
 
 import { useState, useCallback, useRef, useEffect } from 'react';
@@ -29,14 +27,27 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 export interface CVMatchResult {
   id:               string;
   score:            number;
-  rotation:         number;       // final fine rotation in degrees
+  rotation:         number;
   flipped:          boolean;
   scale:            number;
   orientationLabel: string;
+  templateIndex:    number;
+
+  cx: number;
+  cy: number;
+  tmplW: number;
+  tmplH: number;
+
   bbox: { x: number; y: number; w: number; h: number };
-  rotatedW:         number;
-  rotatedH:         number;
+
   snapPoints: Array<{ x: number; y: number; type: 'endpoint' | 'midpoint' | 'centroid' }>;
+}
+
+export interface TemplateEntry {
+  imageData: ImageData;
+  label:     string;
+  /** true when the template was created from a lasso (masked) selection */
+  isLasso?:  boolean;
 }
 
 export interface UseOpenCVMatcherReturn {
@@ -45,33 +56,42 @@ export interface UseOpenCVMatcherReturn {
   workerPhase:     string;
   workerDetail:    string;
   matches:         CVMatchResult[];
-  rawTemplateCrop: ImageData | null;
-  templateCrop:    ImageData | null;
+  templates:       TemplateEntry[];
   buildTemplate: (
-    canvas: HTMLCanvasElement,
-    vpBox:  { x: number; y: number; w: number; h: number },
-    zoom:   number,
-    pan:    { x: number; y: number },
-  ) => void;
+    canvas:          HTMLCanvasElement,
+    vpBox:           { x: number; y: number; w: number; h: number },
+    zoom:            number,
+    pan:             { x: number; y: number },
+    label?:          string,
+    lassoImageData?: ImageData,   // ← NEW
+  ) => number;
+  removeTemplate:  (index: number) => void;
   findMatches: (
-    canvas:       HTMLCanvasElement,
-    threshold?:   number,
-    rotations?:   number[],
-    flips?:       boolean[],
-    removeText?:  boolean,
-    scales?:      number[],
-    fineStep?:    number,    // NEW: fine-sweep angular step in degrees (default 3)
+    canvas:      HTMLCanvasElement,
+    threshold?:  number,
+    rotations?:  number[],
+    flips?:      boolean[],
+    removeText?: boolean,
+    scales?:     number[],
+    fineStep?:   number,
   ) => Promise<void>;
   clearAll: () => void;
+  refindMatches: (
+    canvas:      HTMLCanvasElement,
+    threshold:   number,
+    rotations:   number[],
+    flips:       boolean[],
+    removeText:  boolean,
+    scales:      number[],
+    fineStep:    number,
+  ) => Promise<void>;
 }
 
-// ─── Worker source ────────────────────────────────────────────────────────────
+// ─── Worker source (unchanged from v10.0) ────────────────────────────────────
 
 function getWorkerSource(): string {
   return `
 'use strict';
-
-// ── OpenCV loader ─────────────────────────────────────────────────────────────
 
 const OPENCV_URL = 'https://docs.opencv.org/4.x/opencv.js';
 let cvReady = false;
@@ -96,23 +116,26 @@ function loadCV() {
   return cvLoadPromise;
 }
 
-// ── Snap points ───────────────────────────────────────────────────────────────
-
-function snapPointsForBBox(x, y, w, h) {
+function snapPointsForRotatedBBox(cx, cy, w, h, angleDeg) {
+  var rad = angleDeg * Math.PI / 180;
+  var cos = Math.cos(rad), sin = Math.sin(rad);
+  function rot(dx, dy) {
+    return { x: cx + dx * cos - dy * sin,
+             y: cy + dx * sin + dy * cos };
+  }
+  var hw = w / 2, hh = h / 2;
   return [
-    { x: x + w/2, y: y + h/2, type: 'centroid' },
-    { x: x,       y: y,       type: 'endpoint' },
-    { x: x + w,   y: y,       type: 'endpoint' },
-    { x: x + w,   y: y + h,   type: 'endpoint' },
-    { x: x,       y: y + h,   type: 'endpoint' },
-    { x: x + w/2, y: y,       type: 'midpoint' },
-    { x: x + w/2, y: y + h,   type: 'midpoint' },
-    { x: x,       y: y + h/2, type: 'midpoint' },
-    { x: x + w,   y: y + h/2, type: 'midpoint' },
+    Object.assign(rot(  0,   0), { type: 'centroid'  }),
+    Object.assign(rot(-hw, -hh), { type: 'endpoint'  }),
+    Object.assign(rot( hw, -hh), { type: 'endpoint'  }),
+    Object.assign(rot( hw,  hh), { type: 'endpoint'  }),
+    Object.assign(rot(-hw,  hh), { type: 'endpoint'  }),
+    Object.assign(rot(  0, -hh), { type: 'midpoint'  }),
+    Object.assign(rot(  0,  hh), { type: 'midpoint'  }),
+    Object.assign(rot(-hw,   0), { type: 'midpoint'  }),
+    Object.assign(rot( hw,   0), { type: 'midpoint'  }),
   ];
 }
-
-// ── IoU / NMS ─────────────────────────────────────────────────────────────────
 
 function iou(a, b) {
   var ix    = Math.max(0, Math.min(a.x+a.w, b.x+b.w) - Math.max(a.x, b.x));
@@ -133,8 +156,6 @@ function nms(results, iouThresh) {
   return kept;
 }
 
-// ── Mat helpers ───────────────────────────────────────────────────────────────
-
 function imageDataToMat(cv, imgData) {
   var mat = new cv.Mat(imgData.height, imgData.width, cv.CV_8UC4);
   mat.data.set(imgData.data);
@@ -152,8 +173,6 @@ function grayToRGBA(mat) {
   }
   return out;
 }
-
-// ── Text removal ──────────────────────────────────────────────────────────────
 
 function matWithoutText(cv, gray) {
   var binary    = new cv.Mat();
@@ -180,12 +199,6 @@ function matWithoutText(cv, gray) {
   return out;
 }
 
-// ── Rotate Mat — SAME SIZE output (white-fill corners) ───────────────────────
-//
-//  Critical: output is always src.cols × src.rows so the rotated template
-//  has identical dimensions to the original, enabling pixel-accurate matching
-//  against same-size regions in the source image.
-
 function rotateMat(cv, src, angleDeg) {
   if (angleDeg === 0) return src.clone();
   var cx = src.cols / 2.0;
@@ -203,22 +216,9 @@ function rotateMat(cv, src, angleDeg) {
   return dst;
 }
 
-// ── Single matchTemplate pass returning best score in a result mat ────────────
-
-function bestScoreInResult(resultMat) {
-  var data  = resultMat.data32F;
-  var best  = -Infinity;
-  for (var i = 0; i < data.length; i++)
-    if (data[i] > best) best = data[i];
-  return best;
-}
-
-// ── Collect peaks above threshold from a matchTemplate result ─────────────────
-//
-//  offsetX/offsetY: add to rx/ry when the result came from an ROI crop
-//  (so coordinates are always in full-source space).
-
-function collectPeaks(resultMat, tmplW, tmplH, threshold, rotation, flipped, scale, offsetX, offsetY) {
+function collectPeaks(resultMat, origW, origH, bboxW, bboxH, threshold,
+                       rotation, flipped, scale, templateIndex,
+                       offsetX, offsetY) {
   if (offsetX === undefined) offsetX = 0;
   if (offsetY === undefined) offsetY = 0;
 
@@ -227,8 +227,8 @@ function collectPeaks(resultMat, tmplW, tmplH, threshold, rotation, flipped, sca
   var rRows = resultMat.rows;
   var hits  = [];
 
-  var supW = Math.max(1, Math.floor(tmplW * 0.5));
-  var supH = Math.max(1, Math.floor(tmplH * 0.5));
+  var supW = Math.max(1, Math.floor(bboxW * 0.5));
+  var supH = Math.max(1, Math.floor(bboxH * 0.5));
   var buf  = new Float32Array(data);
 
   for (var ry = 0; ry < rRows; ry++) {
@@ -240,20 +240,28 @@ function collectPeaks(resultMat, tmplW, tmplH, threshold, rotation, flipped, sca
       var sx = rx + offsetX;
       var sy = ry + offsetY;
 
+      var matchCx = sx + bboxW / 2;
+      var matchCy = sy + bboxH / 2;
+
+      var snap = snapPointsForRotatedBBox(matchCx, matchCy, origW * scale, origH * scale, rotation);
+
       hits.push({
-        id:               'cv-' + rotation.toFixed(1) + '-' + (flipped?'f':'n') + '-' + sx + '-' + sy,
+        id:               'cv-' + templateIndex + '-' + rotation.toFixed(1) +
+                          '-' + (flipped?'f':'n') + '-' + sx + '-' + sy,
         score:            score,
         rotation:         rotation,
         flipped:          flipped,
         scale:            scale,
-        orientationLabel: rotation.toFixed(1) + (flipped ? '°↔' : '°'),
-        bbox:             { x: sx, y: sy, w: tmplW, h: tmplH },
-        rotatedW:         tmplW,
-        rotatedH:         tmplH,
-        snapPoints:       snapPointsForBBox(sx, sy, tmplW, tmplH),
+        templateIndex:    templateIndex,
+        orientationLabel: rotation.toFixed(1) + (flipped ? 'deg flip' : 'deg'),
+        cx:               matchCx,
+        cy:               matchCy,
+        tmplW:            origW,
+        tmplH:            origH,
+        bbox:             { x: sx, y: sy, w: bboxW, h: bboxH },
+        snapPoints:       snap,
       });
 
-      // Suppress neighbourhood
       var x0 = Math.max(0, rx - supW), x1 = Math.min(rCols-1, rx + supW);
       var y0 = Math.max(0, ry - supH), y1 = Math.min(rRows-1, ry + supH);
       for (var ny = y0; ny <= y1; ny++)
@@ -264,14 +272,11 @@ function collectPeaks(resultMat, tmplW, tmplH, threshold, rotation, flipped, sca
   return hits;
 }
 
-// ── STAGE 1: Coarse full-image pass ──────────────────────────────────────────
-//
-//  Runs matchTemplate on the FULL source at a single coarse rotation.
-//  Uses a LOWERED threshold (coarseThresh) to catch all plausible regions.
-//  Returns raw candidate list (will be refined in stage 2).
+function coarsePass(cv, srcGray, tmplBase, angleDeg, doFlip, scale,
+                     coarseThresh, origW, origH, templateIndex) {
+  var bboxW = Math.round(origW * scale);
+  var bboxH = Math.round(origH * scale);
 
-function coarsePass(cv, srcGray, tmplBase, angleDeg, doFlip, scale, coarseThresh, origW, origH) {
-  // Scale
   var tmplScaled;
   if (Math.abs(scale - 1.0) > 0.01) {
     tmplScaled = new cv.Mat();
@@ -282,11 +287,9 @@ function coarsePass(cv, srcGray, tmplBase, angleDeg, doFlip, scale, coarseThresh
     tmplScaled = tmplBase.clone();
   }
 
-  // Rotate (same-size)
   var tmplRot = rotateMat(cv, tmplScaled, angleDeg);
   tmplScaled.delete();
 
-  // Flip
   var tmplFinal;
   if (doFlip) {
     tmplFinal = new cv.Mat();
@@ -303,27 +306,16 @@ function coarsePass(cv, srcGray, tmplBase, angleDeg, doFlip, scale, coarseThresh
   var result = new cv.Mat();
   cv.matchTemplate(srcGray, tmplFinal, result, cv.TM_CCOEFF_NORMED);
 
-  var bboxW = Math.round(origW * scale);
-  var bboxH = Math.round(origH * scale);
-  var hits  = collectPeaks(result, bboxW, bboxH, coarseThresh, angleDeg, doFlip, scale, 0, 0);
-
+  var hits = collectPeaks(result, origW, origH, bboxW, bboxH,
+                           coarseThresh, angleDeg, doFlip, scale,
+                           templateIndex, 0, 0);
   result.delete();
   tmplFinal.delete();
   return hits;
 }
 
-// ── STAGE 2: Fine ROI pass ────────────────────────────────────────────────────
-//
-//  Given a coarse candidate (cx, cy, w, h) in source space:
-//    1. Extract a padded ROI from srcGray.
-//    2. Sweep fine angles in range [coarseAngle - halfRange, coarseAngle + halfRange].
-//    3. Run matchTemplate on the tiny ROI for each fine angle.
-//    4. Return the best hit that beats the real threshold.
-//
-//  ROI padding = half template size on each side so the template can slide
-//  across the candidate area even at the extremes of the fine range.
-
-function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange, threshold, origW, origH) {
+function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange,
+                   threshold, origW, origH) {
   var pad  = Math.round(Math.max(origW, origH) * 0.6);
   var rx0  = Math.max(0, candidate.bbox.x - pad);
   var ry0  = Math.max(0, candidate.bbox.y - pad);
@@ -339,23 +331,22 @@ function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange, thresho
   var coarseAngle = candidate.rotation;
   var doFlip      = candidate.flipped;
   var scale       = candidate.scale;
+  var tmplIdx     = candidate.templateIndex;
 
-  // Build fine angle list: coarseAngle ± halfRange in fineStep increments
-  // We skip the coarse angle itself since we already have it from stage 1.
   var fineAngles = [];
   for (var a = coarseAngle - halfRange; a <= coarseAngle + halfRange + 0.001; a += fineStep) {
     var norm = ((a % 360) + 360) % 360;
     fineAngles.push(parseFloat(norm.toFixed(2)));
   }
-  // Deduplicate
   fineAngles = fineAngles.filter(function(v, i, arr) { return arr.indexOf(v) === i; });
 
   var bestHit = null;
+  var bboxW   = Math.round(origW * scale);
+  var bboxH   = Math.round(origH * scale);
 
   for (var fi = 0; fi < fineAngles.length; fi++) {
     var angle = fineAngles[fi];
 
-    // Scale template
     var tmplScaled;
     if (Math.abs(scale - 1.0) > 0.01) {
       tmplScaled = new cv.Mat();
@@ -385,16 +376,12 @@ function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange, thresho
     var result = new cv.Mat();
     cv.matchTemplate(roiMat, tmplFinal, result, cv.TM_CCOEFF_NORMED);
 
-    var bboxW = Math.round(origW * scale);
-    var bboxH = Math.round(origH * scale);
-
-    // Only collect peak at threshold (not lowered coarse threshold)
-    var hits = collectPeaks(result, bboxW, bboxH, threshold, angle, doFlip, scale, rx0, ry0);
-
+    var hits = collectPeaks(result, origW, origH, bboxW, bboxH,
+                             threshold, angle, doFlip, scale,
+                             tmplIdx, rx0, ry0);
     result.delete();
     tmplFinal.delete();
 
-    // Keep best hit across all fine angles for this candidate
     for (var hi = 0; hi < hits.length; hi++) {
       if (!bestHit || hits[hi].score > bestHit.score)
         bestHit = hits[hi];
@@ -405,31 +392,110 @@ function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange, thresho
   return bestHit;
 }
 
-// ── Main match function ───────────────────────────────────────────────────────
-
-async function doFindMatches(msg) {
+async function doFindMatchesForTemplate(msg, tmplImageData, templateIndex, srcGray) {
   var cvLib      = self.cv;
   var threshold  = msg.threshold;
-  var rotations  = msg.rotations;   // coarse rotation list
+  var rotations  = msg.rotations;
   var flips      = msg.flips;
   var scales     = msg.scales;
   var removeText = msg.removeText;
-  var fineStep   = msg.fineStep || 3;   // fine sweep step in degrees
-  var origW      = msg.tmplImageData.width;
-  var origH      = msg.tmplImageData.height;
+  var fineStep   = msg.fineStep || 3;
+  var origW      = tmplImageData.width;
+  var origH      = tmplImageData.height;
 
-  // Coarse threshold is lower so we don't miss anything in stage 1
   var coarseThresh = Math.max(0.30, threshold - 0.18);
-
-  // Half-range for fine sweep = half the coarse angular step
-  // e.g. coarse every 45° → halfRange = 22.5°
   var coarseAngles = rotations.slice().sort(function(a,b){return a-b;});
-  var coarseStep   = coarseAngles.length > 1
-    ? (coarseAngles[1] - coarseAngles[0])
-    : 45;
-  var halfRange = coarseStep / 2;
+  var coarseStep   = coarseAngles.length > 1 ? (coarseAngles[1] - coarseAngles[0]) : 45;
+  var halfRange    = coarseStep / 2;
 
-  // ── Source → grayscale ────────────────────────────────────────────────────
+  self.postMessage({ type: 'PROGRESS',
+    phase: 'T' + (templateIndex+1) + ' Converting template' });
+  var tmplMat     = imageDataToMat(cvLib, tmplImageData);
+  var tmplGrayRaw = new cvLib.Mat();
+  cvLib.cvtColor(tmplMat, tmplGrayRaw, cvLib.COLOR_RGBA2GRAY);
+  tmplMat.delete();
+
+  var tmplBase;
+  if (removeText) {
+    self.postMessage({ type: 'PROGRESS',
+      phase: 'T' + (templateIndex+1) + ' Stripping text' });
+    tmplBase = matWithoutText(cvLib, tmplGrayRaw);
+    tmplGrayRaw.delete();
+    var rgba = grayToRGBA(tmplBase);
+    self.postMessage(
+      { type: 'TEMPLATE_CLEANED', templateIndex: templateIndex,
+        data: rgba, width: tmplBase.cols, height: tmplBase.rows },
+      [rgba.buffer]
+    );
+  } else {
+    tmplBase = tmplGrayRaw;
+  }
+
+  var coarsePasses = [];
+  for (var ri = 0; ri < rotations.length; ri++)
+    for (var fi2 = 0; fi2 < flips.length; fi2++)
+      for (var si = 0; si < scales.length; si++)
+        coarsePasses.push({ rot: rotations[ri], flip: flips[fi2], scale: scales[si] });
+
+  var totalCoarse      = coarsePasses.length;
+  var coarseCandidates = [];
+
+  self.postMessage({
+    type: 'PROGRESS',
+    phase: 'T' + (templateIndex+1) + ' Coarse sweep',
+    detail: totalCoarse + ' passes',
+  });
+
+  for (var pi = 0; pi < coarsePasses.length; pi++) {
+    var p = coarsePasses[pi];
+    self.postMessage({
+      type:   'PROGRESS',
+      phase:  'T' + (templateIndex+1) + ' Coarse ' + (pi+1) + '/' + totalCoarse,
+      detail: p.rot + 'deg' + (p.flip ? ' flip' : '') +
+              (Math.abs(p.scale-1)>0.01 ? ' x'+p.scale.toFixed(1) : ''),
+    });
+    var hits = coarsePass(cvLib, srcGray, tmplBase, p.rot, p.flip, p.scale,
+                           coarseThresh, origW, origH, templateIndex);
+    coarseCandidates = coarseCandidates.concat(hits);
+    await new Promise(function(r){ setTimeout(r, 0); });
+  }
+
+  var nmsCoarse    = nms(coarseCandidates, 0.20);
+  var finePerCand  = Math.round(halfRange * 2 / fineStep) + 1;
+
+  self.postMessage({
+    type:   'PROGRESS',
+    phase:  'T' + (templateIndex+1) + ' Fine sweep',
+    detail: nmsCoarse.length + ' candidates',
+  });
+
+  var finalHits = [];
+  for (var ci = 0; ci < nmsCoarse.length; ci++) {
+    var cand = nmsCoarse[ci];
+    self.postMessage({
+      type:   'PROGRESS',
+      phase:  'T' + (templateIndex+1) + ' Fine ' + (ci+1) + '/' + nmsCoarse.length,
+      detail: 'around ' + cand.rotation + 'deg',
+    });
+    var bestHit = finePass(cvLib, srcGray, tmplBase, cand, fineStep, halfRange,
+                            threshold, origW, origH);
+    if (bestHit) {
+      finalHits.push(bestHit);
+    } else if (cand.score >= threshold) {
+      finalHits.push(cand);
+    }
+    await new Promise(function(r){ setTimeout(r, 0); });
+  }
+
+  tmplBase.delete();
+
+  return nms(finalHits, 0.30);
+}
+
+async function doFindMatches(msg) {
+  var cvLib      = self.cv;
+  var removeText = msg.removeText;
+
   self.postMessage({ type: 'PROGRESS', phase: 'Converting source image' });
   var srcMat     = imageDataToMat(cvLib, msg.srcImageData);
   var srcGrayRaw = new cvLib.Mat();
@@ -445,122 +511,28 @@ async function doFindMatches(msg) {
     srcGray = srcGrayRaw;
   }
 
-  // ── Template → grayscale ──────────────────────────────────────────────────
-  self.postMessage({ type: 'PROGRESS', phase: 'Converting template' });
-  var tmplMat     = imageDataToMat(cvLib, msg.tmplImageData);
-  var tmplGrayRaw = new cvLib.Mat();
-  cvLib.cvtColor(tmplMat, tmplGrayRaw, cvLib.COLOR_RGBA2GRAY);
-  tmplMat.delete();
+  var allHits = [];
+  var templates = msg.templates;
 
-  var tmplBase;
-  if (removeText) {
-    self.postMessage({ type: 'PROGRESS', phase: 'Stripping text from template' });
-    tmplBase = matWithoutText(cvLib, tmplGrayRaw);
-    tmplGrayRaw.delete();
-    var rgba = grayToRGBA(tmplBase);
-    self.postMessage(
-      { type: 'TEMPLATE_CLEANED', data: rgba, width: tmplBase.cols, height: tmplBase.rows },
-      [rgba.buffer]
-    );
-  } else {
-    tmplBase = tmplGrayRaw;
-  }
-
-  // ── STAGE 1: Coarse sweep over full image ─────────────────────────────────
-
-  // Build coarse pass list
-  var coarsePasses = [];
-  for (var ri = 0; ri < rotations.length; ri++)
-    for (var fi = 0; fi < flips.length; fi++)
-      for (var si = 0; si < scales.length; si++)
-        coarsePasses.push({ rot: rotations[ri], flip: flips[fi], scale: scales[si] });
-
-  var totalCoarse  = coarsePasses.length;
-  var coarseCandidates = [];
-
-  self.postMessage({
-    type:   'PROGRESS',
-    phase:  'Stage 1 — Coarse sweep',
-    detail: totalCoarse + ' passes · thresh ' + (coarseThresh * 100).toFixed(0) + '%',
-  });
-
-  for (var pi = 0; pi < coarsePasses.length; pi++) {
-    var p = coarsePasses[pi];
-
+  for (var ti = 0; ti < templates.length; ti++) {
     self.postMessage({
       type:   'PROGRESS',
-      phase:  'Coarse ' + (pi+1) + '/' + totalCoarse,
-      detail: p.rot + '°' + (p.flip ? '↔' : '') +
-              (Math.abs(p.scale-1)>0.01 ? ' ×'+p.scale.toFixed(1) : ''),
+      phase:  'Template ' + (ti+1) + ' / ' + templates.length,
+      detail: templates[ti].width + 'x' + templates[ti].height,
     });
-
-    var hits = coarsePass(
-      cvLib, srcGray, tmplBase,
-      p.rot, p.flip, p.scale,
-      coarseThresh, origW, origH
-    );
-    coarseCandidates = coarseCandidates.concat(hits);
-
-    await new Promise(function(r){ setTimeout(r, 0); });
+    var tmplImageData = templates[ti];
+    var hits = await doFindMatchesForTemplate(msg, tmplImageData, ti, srcGray);
+    allHits = allHits.concat(hits);
   }
 
-  // NMS the coarse candidates so we don't fine-sweep duplicates
-  self.postMessage({
-    type:   'PROGRESS',
-    phase:  'Stage 1 done',
-    detail: coarseCandidates.length + ' raw candidates',
-  });
-  var nmsCoarse = nms(coarseCandidates, 0.20);
-
-  self.postMessage({
-    type:   'PROGRESS',
-    phase:  'Stage 2 — Fine sweep',
-    detail: nmsCoarse.length + ' candidates · ±' + halfRange + '° in ' + fineStep + '° steps',
-  });
-
-  // ── STAGE 2: Fine sweep per candidate ROI ─────────────────────────────────
-
-  var finalHits = [];
-  var fineAnglesPerCandidate = Math.round(halfRange * 2 / fineStep) + 1;
-
-  for (var ci = 0; ci < nmsCoarse.length; ci++) {
-    var cand = nmsCoarse[ci];
-
-    self.postMessage({
-      type:   'PROGRESS',
-      phase:  'Fine ' + (ci+1) + '/' + nmsCoarse.length,
-      detail: 'around ' + cand.rotation + '° · ' + fineAnglesPerCandidate + ' angles',
-    });
-
-    var bestHit = finePass(
-      cvLib, srcGray, tmplBase,
-      cand, fineStep, halfRange,
-      threshold, origW, origH
-    );
-
-    // If fine sweep found a good hit, use it; otherwise fall back to coarse
-    // hit only if it already beats the real threshold.
-    if (bestHit) {
-      finalHits.push(bestHit);
-    } else if (cand.score >= threshold) {
-      finalHits.push(cand);
-    }
-
-    await new Promise(function(r){ setTimeout(r, 0); });
-  }
-
-  tmplBase.delete();
   srcGray.delete();
 
-  // ── Global NMS on final hits ──────────────────────────────────────────────
-  self.postMessage({ type: 'PROGRESS', phase: 'NMS', detail: finalHits.length + ' hits' });
-  var deduped = nms(finalHits, 0.30);
+  self.postMessage({ type: 'PROGRESS', phase: 'Global NMS',
+    detail: allHits.length + ' total hits' });
+  var deduped = nms(allHits, 0.30);
   deduped.sort(function(a,b){ return b.score - a.score; });
-
   return deduped;
 }
-
-// ── Message handler ───────────────────────────────────────────────────────────
 
 self.onmessage = async function(e) {
   var msg = e.data;
@@ -579,7 +551,6 @@ self.onmessage = async function(e) {
   if (msg.type === 'FIND_MATCHES') {
     try {
       if (!cvReady) {
-        self.postMessage({ type: 'PROGRESS', phase: 'Waiting for OpenCV...' });
         await loadCV();
         self.postMessage({ type: 'READY' });
       }
@@ -594,22 +565,36 @@ self.onmessage = async function(e) {
 `;
 }
 
+// ─── Palette ──────────────────────────────────────────────────────────────────
+
+export const TEMPLATE_PALETTE = [
+  '#f43f5e',
+  '#38bdf8',
+  '#a78bfa',
+  '#34d399',
+  '#fb923c',
+  '#e879f9',
+];
+
+export function templateColor(index: number): string {
+  return TEMPLATE_PALETTE[index % TEMPLATE_PALETTE.length];
+}
+
 // ─── React hook ───────────────────────────────────────────────────────────────
 
 export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
-  const [isReady,         setIsReady]         = useState(false);
-  const [isSearching,     setIsSearching]     = useState(false);
-  const [workerPhase,     setWorkerPhase]     = useState('');
-  const [workerDetail,    setWorkerDetail]    = useState('');
-  const [matches,         setMatches]         = useState<CVMatchResult[]>([]);
-  const [rawTemplateCrop, setRawTemplateCrop] = useState<ImageData | null>(null);
-  const [templateCrop,    setTemplateCrop]    = useState<ImageData | null>(null);
+  const [isReady,      setIsReady]      = useState(false);
+  const [isSearching,  setIsSearching]  = useState(false);
+  const [workerPhase,  setWorkerPhase]  = useState('');
+  const [workerDetail, setWorkerDetail] = useState('');
+  const [matches,      setMatches]      = useState<CVMatchResult[]>([]);
+  const [templates,    setTemplates]    = useState<TemplateEntry[]>([]);
 
-  const workerRef   = useRef<Worker | null>(null);
-  const blobUrlRef  = useRef('');
-  const templateRef = useRef<ImageData | null>(null);
-  const resolveRef  = useRef<(() => void) | null>(null);
-  const rejectRef   = useRef<((e: Error) => void) | null>(null);
+  const workerRef    = useRef<Worker | null>(null);
+  const blobUrlRef   = useRef('');
+  const templatesRef = useRef<ImageData[]>([]);
+  const resolveRef   = useRef<(() => void) | null>(null);
+  const rejectRef    = useRef<((e: Error) => void) | null>(null);
 
   // ── Spin up worker ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -633,15 +618,8 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
           setWorkerPhase(msg.phase ?? '');
           setWorkerDetail(msg.detail ?? '');
           break;
-        case 'TEMPLATE_CLEANED': {
-          const cleaned = new ImageData(
-            msg.data as Uint8ClampedArray,
-            msg.width  as number,
-            msg.height as number,
-          );
-          setTemplateCrop(cleaned);
+        case 'TEMPLATE_CLEANED':
           break;
-        }
         case 'RESULTS':
           setMatches(msg.matches ?? []);
           setIsSearching(false);
@@ -683,41 +661,71 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
   }, []);
 
   // ── buildTemplate ───────────────────────────────────────────────────────────
+  //
+  //  When lassoImageData is supplied it is used directly (it has already been
+  //  masked by lassoToImageData in CVLasso.tsx).  Otherwise the plain rect
+  //  crop path is used — identical to v10.0.
+
   const buildTemplate = useCallback((
-    canvas: HTMLCanvasElement,
-    vpBox:  { x: number; y: number; w: number; h: number },
-    zoom:   number,
-    pan:    { x: number; y: number },
-  ) => {
-    const cx       = (vpBox.x - pan.x) / zoom;
-    const cy       = (vpBox.y - pan.y) / zoom;
-    const cw       = vpBox.w / zoom;
-    const ch       = vpBox.h / zoom;
-    const clampedX = Math.max(0, Math.round(cx));
-    const clampedY = Math.max(0, Math.round(cy));
-    const clampedW = Math.min(canvas.width  - clampedX, Math.round(cw));
-    const clampedH = Math.min(canvas.height - clampedY, Math.round(ch));
-    if (clampedW < 4 || clampedH < 4) return;
-    const crop = canvas.getContext('2d')!.getImageData(clampedX, clampedY, clampedW, clampedH);
-    templateRef.current = crop;
-    setRawTemplateCrop(crop);
-    setTemplateCrop(crop);
+    canvas:          HTMLCanvasElement,
+    vpBox:           { x: number; y: number; w: number; h: number },
+    zoom:            number,
+    pan:             { x: number; y: number },
+    label?:          string,
+    lassoImageData?: ImageData,
+  ): number => {
+    let crop: ImageData;
+
+    if (lassoImageData) {
+      // Caller already produced a masked ImageData — use it directly
+      crop = lassoImageData;
+    } else {
+      // Legacy rect crop
+      const cx       = (vpBox.x - pan.x) / zoom;
+      const cy       = (vpBox.y - pan.y) / zoom;
+      const cw       = vpBox.w / zoom;
+      const ch       = vpBox.h / zoom;
+      const clampedX = Math.max(0, Math.round(cx));
+      const clampedY = Math.max(0, Math.round(cy));
+      const clampedW = Math.min(canvas.width  - clampedX, Math.round(cw));
+      const clampedH = Math.min(canvas.height - clampedY, Math.round(ch));
+      if (clampedW < 4 || clampedH < 4) return -1;
+      crop = canvas.getContext('2d')!.getImageData(clampedX, clampedY, clampedW, clampedH);
+    }
+
+    const idx = templatesRef.current.length;
+    templatesRef.current = [...templatesRef.current, crop];
+
+    const entry: TemplateEntry = {
+      imageData: crop,
+      label:     label ?? (idx === 0 ? 'Primary' : `Variation ${idx}`),
+      isLasso:   !!lassoImageData,
+    };
+    setTemplates(prev => [...prev, entry]);
+    setMatches([]);
+    return idx;
+  }, []);
+
+  // ── removeTemplate ──────────────────────────────────────────────────────────
+  const removeTemplate = useCallback((index: number) => {
+    templatesRef.current = templatesRef.current.filter((_, i) => i !== index);
+    setTemplates(prev => prev.filter((_, i) => i !== index));
     setMatches([]);
   }, []);
 
-  // ── findMatches ─────────────────────────────────────────────────────────────
-  const findMatches = useCallback(async (
-    canvas:      HTMLCanvasElement,
-    threshold    = 0.70,
-    rotations    = [0],
-    flips        = [false],
-    removeText   = false,
-    scales       = [1.0],
-    fineStep     = 3,        // fine sweep step in degrees
+  // ── Internal findMatches ────────────────────────────────────────────────────
+  const _findMatches = useCallback(async (
+    canvas:     HTMLCanvasElement,
+    threshold   = 0.70,
+    rotations   = [0],
+    flips       = [false],
+    removeText  = false,
+    scales      = [1.0],
+    fineStep    = 3,
+    tmplList:   ImageData[],
   ): Promise<void> => {
-    const tmpl   = templateRef.current;
     const worker = workerRef.current;
-    if (!tmpl || !worker) return;
+    if (!worker || tmplList.length === 0) return;
 
     setIsSearching(true);
     setMatches([]);
@@ -727,19 +735,25 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
 
     const srcCtx       = canvas.getContext('2d')!;
     const srcImageData = srcCtx.getImageData(0, 0, canvas.width, canvas.height);
-    const tmplCopy     = new Uint8ClampedArray(tmpl.data);
+    const srcData      = { data: srcImageData.data, width: srcImageData.width, height: srcImageData.height };
 
-    const srcData  = { data: srcImageData.data, width: srcImageData.width,  height: srcImageData.height };
-    const tmplData = { data: tmplCopy,           width: tmpl.width,          height: tmpl.height         };
+    const serialisedTemplates = tmplList.map(t => ({
+      data:   new Uint8ClampedArray(t.data),
+      width:  t.width,
+      height: t.height,
+    }));
+
+    const transferables: Transferable[] = [srcData.data.buffer];
+    serialisedTemplates.forEach(t => transferables.push(t.data.buffer));
 
     return new Promise<void>((resolve, reject) => {
       resolveRef.current = resolve;
       rejectRef.current  = reject;
       worker.postMessage(
         {
-          type:          'FIND_MATCHES',
-          srcImageData:  srcData,
-          tmplImageData: tmplData,
+          type:         'FIND_MATCHES',
+          srcImageData: srcData,
+          templates:    serialisedTemplates,
           threshold,
           rotations,
           flips,
@@ -747,16 +761,38 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
           removeText,
           fineStep,
         },
-        [srcData.data.buffer, tmplCopy.buffer],
+        transferables,
       );
     });
   }, []);
 
-  // ── clearAll ────────────────────────────────────────────────────────────────
+  const findMatches = useCallback(async (
+    canvas:     HTMLCanvasElement,
+    threshold   = 0.70,
+    rotations   = [0],
+    flips       = [false],
+    removeText  = false,
+    scales      = [1.0],
+    fineStep    = 3,
+  ): Promise<void> => {
+    return _findMatches(canvas, threshold, rotations, flips, removeText, scales, fineStep, templatesRef.current);
+  }, [_findMatches]);
+
+  const refindMatches = useCallback(async (
+    canvas:     HTMLCanvasElement,
+    threshold:  number,
+    rotations:  number[],
+    flips:      boolean[],
+    removeText: boolean,
+    scales:     number[],
+    fineStep:   number,
+  ): Promise<void> => {
+    return _findMatches(canvas, threshold, rotations, flips, removeText, scales, fineStep, templatesRef.current);
+  }, [_findMatches]);
+
   const clearAll = useCallback(() => {
-    templateRef.current = null;
-    setRawTemplateCrop(null);
-    setTemplateCrop(null);
+    templatesRef.current = [];
+    setTemplates([]);
     setMatches([]);
     setWorkerPhase(isReady ? 'OpenCV ready' : 'Loading OpenCV.js…');
     setWorkerDetail('');
@@ -768,10 +804,11 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
     workerPhase,
     workerDetail,
     matches,
-    rawTemplateCrop,
-    templateCrop,
+    templates,
     buildTemplate,
+    removeTemplate,
     findMatches,
+    refindMatches,
     clearAll,
   };
 }
