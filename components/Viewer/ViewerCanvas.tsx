@@ -24,13 +24,13 @@ import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
-import { CountPinOverlay } from '../CountPinOverlay';
+import { CountPinOverlay } from '@/components/features/overlays/CountPinOverlay';
 import { GridCountOverlay } from './GridCountOverlay';
 
 import {
   splitArcPoints, isArcSentinel,
   splitRadiusPoints,
-} from '@/hooks/useMeasurements/useMeasurementCommit';
+} from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

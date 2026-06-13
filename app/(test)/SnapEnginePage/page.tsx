@@ -4,30 +4,30 @@ import React, {
   useState, useEffect, useRef, useCallback,
 } from 'react';
 
-import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/useSvgSnapPoints-test';
-import { useSnapEngine }                        from '@/hooks/useSnapEngine-test';
-import type { SvgLine }                         from '@/hooks/useSvgInteraction';
+import { useSvgSnapPoints, type SvgSnapPoint } from '@/hooks/snapEngine/useSvgSnapPoints-test';
+import { useSnapEngine }                        from '@/hooks/snapEngine/useSnapEngine-test';
+import type { SvgLine }                         from '@/hooks/snapEngine/useSvgSnapPoints';
 import type { PdfDimensions }                   from '@/types/viewerTypes';
 
 // ── CV Matcher (single-template) ──────────────────────────────────────────────
-import { useOpenCVMatcher }  from '@/hooks/useOpenCVMatcher';
+import { useOpenCVMatcher }  from '@/hooks/detection/useOpenCVMatcher';
 import {
   CVMatchOverlay,
   CVWorkerBanner,
   CVRubberBand,
   CVSamplerSidebar,
   useCVRubberBand,
-} from '@/components/CVMatchOverlay';
+} from '@/components/features/overlays/CVMatchOverlay';
 
 // ── Pattern Painter (multi-pattern) ───────────────────────────────────────────
-import { usePatternPainter } from '@/hooks/usePatternPainter';
+import { usePatternPainter } from '@/hooks/canvas/usePatternPainter';
 import {
   PatternPainterOverlay,
   PatternPainterSidebar,
   PatternRubberBand,
   PatternWorkerBanner,
   usePatternRubberBand,
-} from '@/components/PatternPainter';
+} from '@/components/features/tools/PatternPainter';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +54,13 @@ const yieldFrame = () => new Promise<void>(r => requestAnimationFrame(() => r())
 // ── Active tool type ──────────────────────────────────────────────────────────
 
 type ActiveTool = 'snap' | 'cv' | 'painter' | null;
+
+interface CVBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
 
 // ── SVG line extractor ────────────────────────────────────────────────────────
 
@@ -524,9 +531,11 @@ export default function SnapEnginePage() {
   // ── CV Sampler state ─────────────────────────────────────────────────────────
   const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
   const [cvThreshold,   setCVThreshold]   = useState(0.60);
-  const [cvRotations,   setCVRotations]   = useState<number[]>([0, 90, 180, 270]);
+  const [cvRotations, setCVRotations] = useState<number[]>([0, 45, 90, 135, 180, 225, 270, 315]);
   const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
+  const [cvScales,      setCVScales]      = useState<number[]>([0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]);
+
 
   // ── Pattern Painter state ─────────────────────────────────────────────────────
   const [painterDrawState, setPainterDrawState] = useState<PainterDrawState>('idle');
@@ -588,13 +597,13 @@ export default function SnapEnginePage() {
   // ── CV Matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
-  const handleCVBoxCommit = useCallback(async (box: { x:number; y:number; w:number; h:number }) => {
+  const handleCVBoxCommit = useCallback(async (box: CVBox): Promise<void> => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
     cvMatcher.buildTemplate(canvas, box, zoomRef.current, panRef.current);
     setCVSamplerMode('matched');
-    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText);
-  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText]);
+    await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales);
+  }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales]);
 
   const handleClearCV = useCallback(() => {
     cvMatcher.clearAll();
@@ -896,7 +905,7 @@ export default function SnapEnginePage() {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* ── Toolbar ── */}
+      {/* ��─ Toolbar ── */}
       <div style={S.toolbar}>
         <span style={{ fontSize:9,fontWeight:700,color:'#555',textTransform:'uppercase',letterSpacing:'.1em',marginRight:4,flexShrink:0 }}>⊕ Snap Engine</span>
         <div style={S.sep} />
@@ -1147,20 +1156,22 @@ export default function SnapEnginePage() {
           {activeTool==='cv' && (
             <>
               <SidebarHeader icon="⊡" label="CV Match" color="#38bdf8" onClose={()=>setActiveTool(null)} />
-              <CVSamplerSidebar
-                matcher={cvMatcher}
-                samplerMode={cvSamplerMode}
-                onEnterDraw={handleEnterCVDraw}
-                onClear={handleClearCV}
-                threshold={cvThreshold}
-                onThreshold={setCVThreshold}
-                rotations={cvRotations}
-                onRotations={setCVRotations}
-                flips={cvFlips}
-                onFlips={setCVFlips}
-                removeText={cvRemoveText}
-                onRemoveText={setCVRemoveText}
-              />
+                <CVSamplerSidebar
+                  matcher={cvMatcher}
+                  samplerMode={cvSamplerMode}
+                  onEnterDraw={handleEnterCVDraw}
+                  onClear={handleClearCV}
+                  threshold={cvThreshold}
+                  onThreshold={setCVThreshold}
+                  rotations={cvRotations}
+                  onRotations={setCVRotations}
+                  flips={cvFlips}
+                  onFlips={setCVFlips}
+                  removeText={cvRemoveText}
+                  onRemoveText={setCVRemoveText}
+                  scales={cvScales}
+                  onScales={setCVScales}
+                />
             </>
           )}
 

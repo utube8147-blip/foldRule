@@ -6,7 +6,7 @@
 // sides so casing never matters again.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { SvgArea } from '@/hooks/useSvgInteraction';
+import type { SvgArea } from '@/hooks/snapEngine/useSnapEngine';
 
 // ── Canonical names (lowercase) ───────────────────────────────────────────────
 
@@ -33,15 +33,15 @@ export function isSvgDoor(area: SvgArea): boolean {
 export function isSvgPillar(area: SvgArea): boolean {
   return (
     matchesLabel(area.label, SVG_LABEL.PILLAR) ||
-    area.attributes?.['data-face-type'] === 'pillar' ||
-    area.attributes?.['data-structural'] === 'true'
+    (area as any).attributes?.['data-face-type'] === 'pillar' ||
+    (area as any).attributes?.['data-structural'] === 'true'
   );
 }
 
 export function isSvgWindow(area: SvgArea): boolean {
   return (
     matchesLabel(area.label, SVG_LABEL.WINDOW) ||
-    area.attributes?.['data-face-type'] === 'window'
+    (area as any).attributes?.['data-face-type'] === 'window'
   );
 }
 

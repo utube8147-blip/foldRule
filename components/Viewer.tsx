@@ -7,14 +7,14 @@ import React, {
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
-import { Minimap }           from './Minimap';
-import { SnapSettingsPanel } from './SnapSettingsPanel';
-import { useSnapEngine }     from '@/hooks/useSnapEngine';
-import { useSvgSnapPoints }  from '@/hooks/useSvgSnapPoints';
-import { useMeasurements }   from '@/hooks/useMeasurements';
+import { Minimap }           from '@/components/features/overlays/Minimap';
+import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
+import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
+import { useSvgSnapPoints }  from '@/hooks/snapEngine/useSvgSnapPoints';
+import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
-import { useViewerPdf }      from '@/hooks/useViewerPdf';
-import { useMagicFillSession } from '@/hooks/useMagicFillSession';
+import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
+import { useMagicFillSession } from '@/hooks/fill/useMagicFillSession';
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
 import {
@@ -35,8 +35,8 @@ import {
 import {
   stagedArcCount as calcStagedArcCount,
   stagedRadiusCount,
-} from '@/hooks/useMeasurements/useMeasurementCommit';
-import type { SvgLine } from '@/hooks/useSvgSnapPoints';
+} from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
+import type { SvgLine } from '@/hooks/snapEngine/useSvgSnapPoints';
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 

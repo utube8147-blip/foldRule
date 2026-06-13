@@ -26,7 +26,7 @@ import React, {
   createContext, useCallback, useContext, useRef, useState,
 } from 'react';
 import { TakeoffRow, Drawing } from '@/types';
-import type { DisplayUnit } from '@/hooks/useMeasurements/unitConversion';
+import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
 export type Stakeholders = {

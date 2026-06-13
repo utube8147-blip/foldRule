@@ -4,8 +4,8 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import { Sidebar } from '@/components/Sidebar';
-import { Navbar } from '@/components/Navbar';
+import { Sidebar } from '@/components/layout/Sidebar';
+import { Navbar } from '@/components/layout/Navbar';
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
@@ -16,9 +16,9 @@ const Viewer = dynamic(
   { ssr: false }
 );
 
-import { TakeoffTable } from '@/components/TakeoffTable';
-import { MaterialLibrary } from '@/components/MaterialLibrary';
-import { ExportModal } from '@/components/ExportModal';
+import { TakeoffTable } from '@/components/features/takeoff/TakeoffTable';
+import { MaterialLibrary } from '@/components/features/takeoff/MaterialLibrary';
+import { ExportModal } from '@/components/features/dialogs/ExportModal';
 import { ToastContainer } from '@/components/Toast';
 import { PresetTemplate } from '@/components/presets/PresetTemplates';
 import { useTakeoffContext } from '@/context/TakeoffContext';

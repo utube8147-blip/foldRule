@@ -1,30 +1,14 @@
 'use client';
 
 // ─── components/Viewer/PlanarFillCanvas.tsx ───────────────────────────────────
-//
-//  Real-time area fill using the planar graph face traversal from usePlanarFill.
-//
-//  REPLACES svgAreas dependency:
-//    • No pre-computed area polygons needed
-//    • User clicks → findEnclosingPolygon → polygon rendered immediately
-//    • Lines + intersection snap points are the only inputs
-//
-//  ARCHITECTURE:
-//    Layer 38 (below fillCanvasRef at 39): renders committed fill polygons
-//    Layer 44 (above MagicFillCanvas interaction): hover preview polygon
-//
-//  COORDINATE SPACE:
-//    All coordinates are in PDF-pixel space (0..pdfDims.w × 0..pdfDims.h),
-//    matching the coordinate space of svgLines from useSvgSnapPoints.
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
   useRef, useEffect, useCallback, useState, useMemo,
 } from 'react';
 import type { PdfDimensions } from '@/types/viewerTypes';
-import type { PlanarGraph, PlanarFillResult } from '@/hooks/usePlanarFill';
-import { findEnclosingPolygon } from '@/hooks/usePlanarFill';
+import type { PlanarGraph, PlanarFillResult } from '@/hooks/fill/usePlanarFill';
+import { findEnclosingPolygon } from '@/hooks/fill/usePlanarFill';
+import type { SvgLine } from '@/hooks/snapEngine/useSvgSnapPoints';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -35,7 +19,6 @@ export interface PlanarFillRegion {
   perimPx: number;
   color:   string;
   label:   string;
-  /** click origin for repaint */
   originX: number;
   originY: number;
 }
@@ -44,6 +27,7 @@ interface PlanarFillCanvasProps {
   pdfDimensions:  PdfDimensions | null;
   active:         boolean;
   graph:          PlanarGraph | null;
+  svgLines:       SvgLine[];           // ← NEW: needed by raster fill path
   regions:        PlanarFillRegion[];
   selectedId:     number | null;
   hoveredId:      number | null;
@@ -97,6 +81,21 @@ function drawPolygon(
   ctx.restore();
 }
 
+// ── Point-in-polygon (ray casting) ───────────────────────────────────────────
+
+function pointInPolygon(x: number, y: number, poly: Array<[number, number]>): boolean {
+  let inside = false;
+  const n = poly.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = poly[i][0], yi = poly[i][1];
+    const xj = poly[j][0], yj = poly[j][1];
+    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 // ── Canvas layer: committed regions ──────────────────────────────────────────
 
 function useRegionCanvas(
@@ -123,10 +122,7 @@ function useRegionCanvas(
         hexToRgba(region.color, isSelected ? 0.32 : 0.18),
         hexToRgba(region.color, isSelected ? 1.0  : 0.75),
         isSelected ? 2.0 : 1.4,
-        isSelected ? undefined : undefined,
       );
-
-      // Selected: draw a subtle outer glow
       if (isSelected) {
         ctx.save();
         ctx.beginPath();
@@ -149,6 +145,7 @@ export function PlanarFillCanvas({
   pdfDimensions,
   active,
   graph,
+  svgLines,
   regions,
   selectedId,
   hoveredId,
@@ -156,7 +153,7 @@ export function PlanarFillCanvas({
   onHover,
   onHoverLeave,
   onSelect,
-  maxAreaPx = Infinity,
+  maxAreaPx,
 }: PlanarFillCanvasProps) {
 
   const regionCanvasRef  = useRef<HTMLCanvasElement>(null);
@@ -164,7 +161,20 @@ export function PlanarFillCanvas({
   const animRef          = useRef(0);
   const dashRef          = useRef(0);
   const hoverPolyRef     = useRef<Array<[number, number]> | null>(null);
-  const cursorRef        = useRef<{ x: number; y: number } | null>(null);
+
+  const effectiveMaxAreaPx = useMemo(() => {
+    if (maxAreaPx !== undefined) return maxAreaPx;
+    if (pdfDimensions) return pdfDimensions.w * pdfDimensions.h * 0.5;
+    return 5_000_000;
+  }, [maxAreaPx, pdfDimensions]);
+
+  // ── Fill options injected with svgLines + dims ────────────────────────────
+  const fillOpts = useMemo(() => ({
+    maxAreaPx:  effectiveMaxAreaPx,
+    _svgLines:  svgLines,
+    _pdfW:      pdfDimensions?.w,
+    _pdfH:      pdfDimensions?.h,
+  }), [svgLines, pdfDimensions, effectiveMaxAreaPx]);
 
   // ── Committed region layer ────────────────────────────────────────────────
   useRegionCanvas(regionCanvasRef, regions, selectedId, pdfDimensions);
@@ -183,15 +193,12 @@ export function PlanarFillCanvas({
   }, [pdfDimensions, active]);
 
   // ── Hover polygon: compute on cursor move ─────────────────────────────────
+  // Raster fill is fast enough to run on every mousemove at half-resolution.
   const computeHoverPoly = useCallback((x: number, y: number) => {
-    if (!graph) { hoverPolyRef.current = null; return; }
-    const result = findEnclosingPolygon(x, y, graph, {
-      searchRadius: 400,
-      maxIter:      2000,
-      maxAreaPx,
-    });
+    if (!graph || !pdfDimensions) { hoverPolyRef.current = null; return; }
+    const result = findEnclosingPolygon(x, y, graph, fillOpts);
     hoverPolyRef.current = result ? result.polygon : null;
-  }, [graph, maxAreaPx]);
+  }, [graph, fillOpts, pdfDimensions]);
 
   // ── Preview animation loop ────────────────────────────────────────────────
   useEffect(() => {
@@ -204,14 +211,12 @@ export function PlanarFillCanvas({
 
     const loop = () => {
       dashRef.current = (dashRef.current + 0.4) % 16;
-
       const ctx = pc.getContext('2d');
       if (!ctx) { animRef.current = requestAnimationFrame(loop); return; }
       ctx.clearRect(0, 0, pc.width, pc.height);
 
       const poly = hoverPolyRef.current;
       if (poly && poly.length >= 3) {
-        // Fill with translucent highlight
         ctx.save();
         ctx.beginPath();
         ctx.moveTo(poly[0][0], poly[0][1]);
@@ -219,8 +224,6 @@ export function PlanarFillCanvas({
         ctx.closePath();
         ctx.fillStyle = 'rgba(96,165,250,0.12)';
         ctx.fill();
-
-        // Animated dashed stroke
         ctx.strokeStyle    = 'rgba(96,165,250,0.85)';
         ctx.lineWidth      = 1.5;
         ctx.setLineDash([6, 4]);
@@ -229,7 +232,6 @@ export function PlanarFillCanvas({
         ctx.setLineDash([]);
         ctx.restore();
       }
-
       animRef.current = requestAnimationFrame(loop);
     };
 
@@ -238,8 +240,8 @@ export function PlanarFillCanvas({
   }, [active, pdfDimensions]);
 
   // ── Coordinate helper ─────────────────────────────────────────────────────
-  const getXY = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = e.currentTarget;
+  const getXY = useCallback((e: React.PointerEvent<HTMLCanvasElement> | React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = e.currentTarget as HTMLCanvasElement;
     const rect   = canvas.getBoundingClientRect();
     const scaleX = canvas.width  / rect.width;
     const scaleY = canvas.height / rect.height;
@@ -252,24 +254,18 @@ export function PlanarFillCanvas({
   // ── Pointer handlers ──────────────────────────────────────────────────────
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const { x, y } = getXY(e);
-    cursorRef.current = { x, y };
     onHover(x, y);
     computeHoverPoly(x, y);
   }, [getXY, onHover, computeHoverPoly]);
 
   const handlePointerLeave = useCallback(() => {
-    cursorRef.current  = null;
     hoverPolyRef.current = null;
     onHoverLeave();
   }, [onHoverLeave]);
 
   const handleClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!graph) return;
-    const rect   = e.currentTarget.getBoundingClientRect();
-    const scaleX = e.currentTarget.width  / rect.width;
-    const scaleY = e.currentTarget.height / rect.height;
-    const x = (e.clientX - rect.left) * scaleX;
-    const y = (e.clientY - rect.top)  * scaleY;
+    if (!graph || !pdfDimensions) return;
+    const { x, y } = getXY(e);
 
     // Check if clicking an existing region first
     for (const region of [...regions].reverse()) {
@@ -279,14 +275,11 @@ export function PlanarFillCanvas({
       }
     }
 
-    // Otherwise: fill new region
-    const result = findEnclosingPolygon(x, y, graph, {
-      searchRadius: 400,
-      maxIter:      2000,
-      maxAreaPx,
-    });
-    if (result) onFillClick(x, y, result);
-  }, [graph, regions, selectedId, onFillClick, onSelect, maxAreaPx]);
+    const result = findEnclosingPolygon(x, y, graph, fillOpts);
+    if (!result || result.polygon.length < 3) return;
+
+    onFillClick(x, y, result);
+  }, [graph, pdfDimensions, regions, selectedId, onFillClick, onSelect, getXY, fillOpts]);
 
   if (!active || !pdfDimensions) return null;
 
@@ -315,25 +308,7 @@ export function PlanarFillCanvas({
   );
 }
 
-// ── Point-in-polygon (ray casting) ───────────────────────────────────────────
-
-function pointInPolygon(x: number, y: number, poly: Array<[number, number]>): boolean {
-  let inside = false;
-  const n = poly.length;
-  for (let i = 0, j = n - 1; i < n; j = i++) {
-    const xi = poly[i][0], yi = poly[i][1];
-    const xj = poly[j][0], yj = poly[j][1];
-    if ((yi > y) !== (yj > y) && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) {
-      inside = !inside;
-    }
-  }
-  return inside;
-}
-
 // ── usePlanarFillRegions hook ─────────────────────────────────────────────────
-//
-//  Manages the list of committed fill regions for use in Viewer.tsx.
-//  Keeps a stable ref to avoid unnecessary re-renders.
 
 export interface UsePlanarFillRegionsReturn {
   regions:      PlanarFillRegion[];
@@ -346,7 +321,7 @@ export interface UsePlanarFillRegionsReturn {
   hoverRegion:  (id: number | null) => void;
 }
 
-let _regionIdCounter = 0;
+let _regionIdCounter  = 0;
 let _fillLabelCounter = 0;
 
 export function usePlanarFillRegions(): UsePlanarFillRegionsReturn {

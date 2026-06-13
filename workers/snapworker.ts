@@ -209,7 +209,7 @@ function quadAt(t: number,
   };
 }
 
-// ── Spatial grid ──────────────────────────────────────────────────────────────
+// ── Spatial grid ─────────────────────────────────────────────────���────────────
 
 function buildGrid(candidates: Candidate[], cellSize: number): SpatialGrid {
   const cells = new Map<string, Candidate[]>();
@@ -417,10 +417,10 @@ function draw() {
     const fade       = Math.max(0, 1 - distEdge / (prox * 2));
     const alpha      = isSnapping ? 0.90 : 0.15 + fade * 0.55;
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(pts[0].x, pts[0].y);
-    pts.slice(1).forEach(p => ctx.lineTo(p.x, p.y));
+    ctx!.save();
+    ctx!.beginPath();
+    ctx!.moveTo(pts[0].x, pts[0].y);
+    pts.slice(1).forEach(p => ctx!.lineTo(p.x, p.y));
     ctx.closePath();
     ctx.strokeStyle = withAlpha(AREA_COLOUR.stroke, alpha);
     ctx.lineWidth   = (isSnapping ? 2.0 : 0.5 + fade * 1.5) * dpr;
