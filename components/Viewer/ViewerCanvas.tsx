@@ -1,40 +1,32 @@
 'use client';
-
 // ─── components/Viewer/ViewerCanvas.tsx ───────────────────────────────────────
-//
-//  CHANGE vs previous:
-//
-//  Pin canvas (layer 50) — removed `w-full h-full` Tailwind classes and the
-//  inline width/height CSS. The canvas pixel dimensions are now set explicitly
-//  by Viewer.tsx via useLayoutEffect (canvas.width = dims.w / canvas.height =
-//  dims.h). Keeping CSS `width: 100%; height: 100%` alongside an explicit
-//  canvas.width causes the browser to stretch the pixel buffer, which makes
-//  snap dots draw in the wrong place. Instead we let the canvas render at its
-//  natural pixel size (matching pdfDimensions) and position it absolutely
-//  over the PDF. The `pointer-events-none` and z-index are unchanged.
-//
-//  All other logic (finish buttons, arc/radius helpers, pointer leave handler,
-//  onDrawingCanvasPointerLeave prop) is identical to the previous version.
-//
-// ─────────────────────────────────────────────────────────────────────────────
 
-import React from 'react';
+import React, { useId } from 'react';
 import { FolderOpen, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { InProgressPoint } from '@/context/TakeoffContext';
+import type { OffsetOutputType } from '@/hooks/perimeterOffset/usePerimeterOffset';
 import { CountPinOverlay } from '@/components/features/overlays/CountPinOverlay';
 import { GridCountOverlay } from './GridCountOverlay';
 
 import {
   splitArcPoints, isArcSentinel,
   splitRadiusPoints,
+  splitPolyarcSegments,
 } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface SnapFlash { id: string; x: number; y: number; }
+
+export interface OffsetEligibleShape {
+  id:            string;
+  pts:           Array<{ x: number; y: number }>;
+  isClosed:      boolean;
+  isPolygonType: boolean;
+}
 
 interface ViewerCanvasProps {
   pdfCanvasRef:     React.RefObject<HTMLCanvasElement | null>;
@@ -58,6 +50,23 @@ interface ViewerCanvasProps {
   readyToDraw?: boolean;
 
   stagedArcCount: number;
+
+  polyarcHasContent?: boolean;
+  polyarcMode?:       'line' | 'arc';
+
+  offsetEligiblePolygons?: OffsetEligibleShape[] | null;
+  offsetHoveredId?:        string | null;
+  offsetSelectedId?:       string | null;
+  offsetOutputType?:       OffsetOutputType;
+  offsetPreviewPolygons?:  Array<{ x: number; y: number }[]> | null;
+  offsetSourcePolygon?:    Array<{ x: number; y: number }> | null;
+  // FIX 2/4: offsetIsOpenPath is now true whenever the source is an open path,
+  // regardless of endStyle. The overlay uses openEndStyle to decide render mode.
+  offsetIsOpenPath?:       boolean;
+  // openEndStyle drives the rendering decision (open strokes vs closed polygon)
+  offsetOpenEndStyle?:     'square' | 'round' | 'butt' | 'none';
+  // openOutputType is now always passed when source is open (not gated on isOpenPath)
+  offsetOpenOutputType?:   string;
 
   toCanvas: (x: number, y: number) => { x: number; y: number };
 
@@ -92,6 +101,228 @@ function pdfPtToWrapPx(pt: InProgressPoint): { x: number; y: number } {
   return { x: pt.x, y: pt.y };
 }
 
+// ─── buildPathD ───────────────────────────────────────────────────────────────
+
+function buildPathD(
+  poly:  Array<{ x: number; y: number }>,
+  w:     number,
+  h:     number,
+  close: boolean = true,
+): string {
+  if (poly.length === 0) return '';
+  const d = poly
+    .map((p, j) =>
+      `${j === 0 ? 'M' : 'L'} ${(p.x * w).toFixed(2)} ${(p.y * h).toFixed(2)}`
+    )
+    .join(' ');
+  return close ? d + ' Z' : d;
+}
+
+// ─── OffsetEligibilityOverlay ─────────────────────────────────────────────────
+
+function OffsetEligibilityOverlay({
+  shapes,
+  hoveredId,
+  selectedId,
+  pdfDimensions,
+}: {
+  shapes:        OffsetEligibleShape[];
+  hoveredId:     string | null;
+  selectedId:    string | null;
+  pdfDimensions: PdfDimensions;
+}) {
+  const { w, h } = pdfDimensions;
+
+  return (
+    <svg
+      className="absolute inset-0 z-[61] pointer-events-none"
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ width: w, height: h }}
+    >
+      {shapes.map((shape) => {
+        const { id, pts, isClosed, isPolygonType } = shape;
+        if (pts.length < 2) return null;
+
+        const isSelected = id === selectedId;
+        const isHovered  = id === hoveredId && !isSelected;
+
+        const shouldClose = isSelected || isHovered ? true : isClosed;
+        const d = buildPathD(pts, w, h, shouldClose);
+        if (!d) return null;
+
+        if (isSelected) {
+          return (
+            <g key={id}>
+              {isPolygonType && (
+                <path d={d} fill="rgba(251,191,36,0.12)" stroke="none" />
+              )}
+              <path d={d} fill="none" stroke="#FBBF24" strokeWidth="2" strokeLinejoin="round" />
+            </g>
+          );
+        }
+
+        if (isHovered) {
+          return (
+            <g key={id}>
+              {isPolygonType && (
+                <path d={d} fill="rgba(45,212,191,0.14)" stroke="none" />
+              )}
+              <path d={d} fill="none" stroke="#2DD4BF" strokeWidth="2" strokeLinejoin="round" />
+            </g>
+          );
+        }
+
+        return (
+          <g key={id}>
+            {isPolygonType && (
+              <path d={d} fill="rgba(45,212,191,0.04)" stroke="none" />
+            )}
+            <path
+              d={d}
+              fill="none"
+              stroke="#2DD4BF"
+              strokeWidth="1.2"
+              strokeDasharray="5 4"
+              strokeLinejoin="round"
+              opacity="0.55"
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── OffsetPreviewOverlay ─────────────────────────────────────────────────────
+//
+//  FIX 4: renderOpen is now driven solely by openEndStyle === 'none'.
+//  Previously it was `isOpenPath && openEndStyle === 'none'`, which meant
+//  left/right with square/round/butt (isOpenPath=false at the time) never
+//  got fill. Now:
+//
+//  renderOpen = openEndStyle === 'none'
+//    → open strokes, no fill, no Z close
+//
+//  showFill logic for open paths:
+//    isOpenPath=true + renderOpen=false (square/round/butt caps) →
+//      fill when openOutputType is 'one-side-area' or 'buffer-area'
+//
+//  Donut rendering only applies to closed-path sources.
+
+function OffsetPreviewOverlay({
+  polygons,
+  pdfDimensions,
+  outputType,
+  sourcePolygon,
+  isOpenPath = false,
+  openEndStyle,
+  openOutputType,
+}: {
+  polygons:        Array<{ x: number; y: number }[]>;
+  pdfDimensions:   PdfDimensions;
+  outputType:      OffsetOutputType;
+  sourcePolygon:   Array<{ x: number; y: number }> | null | undefined;
+  isOpenPath?:     boolean;
+  openEndStyle?:   'square' | 'round' | 'butt' | 'none';
+  openOutputType?: string;
+}) {
+  const { w, h } = pdfDimensions;
+
+  // FIX 4: renderOpen is based purely on endStyle, not on isOpenPath.
+  // For square/round/butt the geometry is a closed polygon even for open sources.
+  const renderOpen = openEndStyle === 'none';
+
+  // Donut rendering only for closed path sources
+  const isDonut = !isOpenPath && (outputType === 'donut' || outputType === 'donut-both');
+
+  // showFill logic:
+  //   • renderOpen → never fill (raw open strokes)
+  //   • donut → always fill (with compound path)
+  //   • closed path area outputs → fill
+  //   • open path with caps (square/round/butt) → fill when area output type
+  const showFill = (() => {
+    if (renderOpen) return false;
+    if (isDonut)    return true;
+    if (!isOpenPath) {
+      return outputType === 'area' || outputType === 'donut' || outputType === 'donut-both';
+    }
+    // Open path with caps: fill when measuring area
+    return openOutputType === 'one-side-area' || openOutputType === 'buffer-area';
+  })();
+
+  const sourcePd = (isDonut && sourcePolygon && sourcePolygon.length >= 3)
+    ? buildPathD(sourcePolygon, w, h, true)
+    : null;
+
+  return (
+    <svg
+      className="absolute inset-0 z-[62] pointer-events-none"
+      width={w}
+      height={h}
+      viewBox={`0 0 ${w} ${h}`}
+      style={{ width: w, height: h }}
+    >
+      {polygons.map((poly, i) => {
+        if (poly.length < 2) return null;
+
+        // FIX 4: close based on renderOpen, not isOpenPath
+        const shouldClose = !renderOpen;
+        const offsetD = buildPathD(poly, w, h, shouldClose);
+        if (!offsetD) return null;
+
+        if (isDonut && sourcePd) {
+          const compoundD = `${offsetD} ${sourcePd}`;
+          return (
+            <g key={i}>
+              <path
+                d={compoundD}
+                fill="rgba(251,191,36,0.18)"
+                stroke="none"
+                fillRule="evenodd"
+              />
+              <path
+                d={offsetD}
+                fill="none"
+                stroke="#FBBF24"
+                strokeWidth="1.5"
+                strokeDasharray="6 4"
+                strokeLinejoin="round"
+              />
+              <path
+                d={sourcePd}
+                fill="none"
+                stroke="#FBBF24"
+                strokeWidth="1"
+                strokeDasharray="3 4"
+                strokeLinejoin="round"
+                opacity="0.5"
+              />
+            </g>
+          );
+        }
+
+        return (
+          <g key={i}>
+            {showFill && (
+              <path d={offsetD} fill="rgba(251,191,36,0.12)" stroke="none" />
+            )}
+            <path
+              d={offsetD}
+              fill="none"
+              stroke="#FBBF24"
+              strokeWidth="1.5"
+              strokeDasharray="6 4"
+              strokeLinejoin="round"
+            />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ViewerCanvas({
@@ -103,6 +334,17 @@ export function ViewerCanvas({
   snapFlashes, toCanvas,
   readyToDraw = true,
   stagedArcCount,
+  polyarcHasContent = false,
+  polyarcMode,
+  offsetEligiblePolygons,
+  offsetHoveredId,
+  offsetSelectedId,
+  offsetOutputType = 'length',
+  offsetPreviewPolygons,
+  offsetSourcePolygon,
+  offsetIsOpenPath = false,
+  offsetOpenEndStyle,
+  offsetOpenOutputType,
   handleCanvasClick, handleContextMenu,
   handleCanvasPointerMove, handleCanvasPointerDown,
   handleCanvasPointerUp, handleDrawingCanvasPointerDown,
@@ -116,14 +358,16 @@ export function ViewerCanvas({
   children,
 }: ViewerCanvasProps) {
 
-  // ── Cursor class ──────────────────────────────────────────────────────────
+  const isOffsetTool = activeTool === 'perimeter-offset';
+
   const drawingCanvasCursor = spaceHeld
     ? isPanning ? 'cursor-grabbing' : 'cursor-grab'
+    : isOffsetTool
+    ? (offsetHoveredId ? 'cursor-pointer' : 'cursor-default')
     : activeTool !== 'select' && !isPanning
     ? 'cursor-crosshair'
     : isPanning ? 'cursor-grabbing' : 'cursor-grab';
 
-  // ── Canvas wrap positioning ───────────────────────────────────────────────
   const canvasWrapStyle: React.CSSProperties | undefined = pdfDimensions
     ? (() => {
         const vw    = containerRef.current?.clientWidth  ?? 0;
@@ -140,7 +384,6 @@ export function ViewerCanvas({
       })()
     : undefined;
 
-  // ── Arc/radius point helpers ──────────────────────────────────────────────
   const lastNonSentinelPoint = [...tempPoints]
     .reverse()
     .find(p => p.segmentId !== '__arc_break__' && p.segmentId !== '__radius_break__');
@@ -154,7 +397,6 @@ export function ViewerCanvas({
     return pts;
   })();
 
-  // ── Finish button position helpers ────────────────────────────────────────
   const lastPt = tempPoints.length > 0
     ? pdfPtToWrapPx(tempPoints[tempPoints.length - 1])
     : null;
@@ -163,23 +405,34 @@ export function ViewerCanvas({
     ? pdfPtToWrapPx(lastNonSentinelPoint)
     : lastPt;
 
-  // ── Pointer leave handler ─────────────────────────────────────────────────
+  const polyarcSegments  = activeTool === 'polyarc' ? splitPolyarcSegments(tempPoints) : [];
+  const polyarcLineCount = polyarcSegments.filter(s => s.type === 'line').length;
+  const polyarcArcCount  = polyarcSegments.filter(s => s.type === 'arc').length;
+
   const handlePointerLeave = onDrawingCanvasPointerLeave ?? (() => {
     setCursorPoint(null);
     cursorPointRef.current = null;
     redrawPinCanvas();
   });
 
-  // ── Pin canvas visibility ─────────────────────────────────────────────────
-  // showPins hides the canvas via opacity so it doesn't intercept any events
-  // (pointer-events-none is always set). The canvas pixel dimensions are
-  // managed externally by Viewer.tsx useLayoutEffect — do not set w-full /
-  // h-full here as that creates a CSS-vs-pixel size mismatch.
   const pinCanvasVisible = showPins && readyToDraw;
+
+  const showEligibilityOverlay =
+    readyToDraw &&
+    isOffsetTool &&
+    !!offsetEligiblePolygons &&
+    offsetEligiblePolygons.length > 0 &&
+    !!pdfDimensions;
+
+  const showOffsetPreview =
+    readyToDraw &&
+    isOffsetTool &&
+    !!offsetPreviewPolygons &&
+    offsetPreviewPolygons.length > 0 &&
+    !!pdfDimensions;
 
   return (
     <>
-      {/* ── Empty state ── */}
       {!pdf && !loading && (
         <div className="flex flex-col items-center gap-6 p-12 border-2 border-dashed border-industrial-border bg-industrial-panel/50 backdrop-blur-sm max-w-xl w-full text-center">
           <FolderOpen className="w-12 h-12 text-zinc-700" />
@@ -202,7 +455,6 @@ export function ViewerCanvas({
         </div>
       )}
 
-      {/* ── Loading ── */}
       {loading && (
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
@@ -212,29 +464,24 @@ export function ViewerCanvas({
         </div>
       )}
 
-      {/* ── Canvas stack ── */}
       {pdf && (
         <div
           className="relative shadow-2xl border border-industrial-border bg-white"
           style={canvasWrapStyle}
         >
-          {/* Layer 0: PDF raster */}
           <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
-          {/* Layer 10: Vector overlay */}
           <canvas
             ref={vectorCanvasRef}
             className="absolute inset-0 z-10 pointer-events-none"
           />
 
-          {/* Layer 39: Magic Fill paint canvas */}
           <canvas
             ref={fillCanvasRef}
             className="absolute inset-0 z-[39] pointer-events-none"
             style={{ width: pdfDimensions?.w, height: pdfDimensions?.h }}
           />
 
-          {/* Layer 40: Drawing canvas */}
           <canvas
             ref={drawingCanvasRef}
             onClick={handleCanvasClick}
@@ -247,7 +494,7 @@ export function ViewerCanvas({
             onPointerUp={handleCanvasPointerUp}
             onPointerLeave={handlePointerLeave}
             className={cn(
-              'absolute inset-0 z-40 w-full h-full mix-blend-multiply',
+              'absolute inset-0 z-40 w-full h-full',
               drawingCanvasCursor,
             )}
             style={{
@@ -257,24 +504,15 @@ export function ViewerCanvas({
             }}
           />
 
-          {/* Layer 50: Snap pin canvas
-              NOTE: No w-full/h-full here. The canvas.width/height pixel
-              dimensions are set by Viewer.tsx useLayoutEffect to match
-              pdfDimensions exactly. CSS width/height are left at their
-              natural size (= pixel dimensions) so there is no stretch.
-              position:absolute + inset-0 keeps it aligned with the PDF. */}
           <canvas
             ref={pinCanvasRef}
             className="absolute inset-0 z-50 pointer-events-none"
             style={{
               opacity:    pinCanvasVisible ? 1 : 0,
               transition: 'opacity 0.2s',
-              // width/height intentionally omitted — driven by canvas.width/height
-              // set in Viewer.tsx. Do not add w-full/h-full or explicit px sizes.
             }}
           />
 
-          {/* Layer 55: Grid-count overlay */}
           <GridCountOverlay
             active={isGridCountActive}
             pdfDimensions={pdfDimensions}
@@ -282,7 +520,6 @@ export function ViewerCanvas({
             onCommit={onGridCountCommit}
           />
 
-          {/* Layer 60: Count pin overlay */}
           <div
             className="absolute inset-0 z-[60] pointer-events-none"
             style={{ opacity: readyToDraw ? 1 : 0, transition: readyToDraw ? 'opacity 0.15s' : 'none' }}
@@ -296,7 +533,28 @@ export function ViewerCanvas({
             />
           </div>
 
-          {/* Layer 65: Snap flashes */}
+          {showEligibilityOverlay && (
+            <OffsetEligibilityOverlay
+              shapes={offsetEligiblePolygons!}
+              hoveredId={offsetHoveredId ?? null}
+              selectedId={offsetSelectedId ?? null}
+              pdfDimensions={pdfDimensions!}
+            />
+          )}
+
+          {showOffsetPreview && (
+            <OffsetPreviewOverlay
+              polygons={offsetPreviewPolygons!}
+              pdfDimensions={pdfDimensions!}
+              outputType={offsetOutputType}
+              sourcePolygon={offsetSourcePolygon ?? null}
+              isOpenPath={offsetIsOpenPath}
+              openEndStyle={offsetOpenEndStyle}
+              // FIX 3: always passed now (not gated behind offsetIsOpenPath)
+              openOutputType={offsetOpenOutputType}
+            />
+          )}
+
           {readyToDraw && snapFlashes.map(flash => (
             <div
               key={flash.id}
@@ -310,27 +568,21 @@ export function ViewerCanvas({
             </div>
           ))}
 
-          {/* Layer 70: Finish button — Count */}
-          {readyToDraw &&
-            activeTool === 'count' &&
-            tempPoints.length > 0 &&
-            lastPt && (
-              <button
-                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
-                style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
-                onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
-                onPointerDown={e => e.stopPropagation()}
-              >
-                <Check className="w-3 h-3" />
-                Finish ({tempPoints.length} counts)
-              </button>
-            )}
+          {readyToDraw && activeTool === 'count' && tempPoints.length > 0 && lastPt && (
+            <button
+              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+              style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
+              onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
+              onPointerDown={e => e.stopPropagation()}
+            >
+              <Check className="w-3 h-3" />
+              Finish ({tempPoints.length} counts)
+            </button>
+          )}
 
-          {/* Layer 70: Finish button — Polygon / Rectangle / Linear */}
           {readyToDraw &&
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
-            tempPoints.length > 1 &&
-            lastPt && (
+            tempPoints.length > 1 && lastPt && (
               <button
                 className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
                 style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
@@ -342,7 +594,37 @@ export function ViewerCanvas({
               </button>
             )}
 
-          {/* Layer 70: Arc tool UI */}
+          {readyToDraw && activeTool === 'polyarc' && polyarcHasContent && lastPt && (
+            <button
+              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-orange-500 text-white font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-orange-400 active:scale-95 transition-transform"
+              style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
+              onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
+              onPointerDown={e => e.stopPropagation()}
+            >
+              <Check className="w-3 h-3" />
+              Finish
+              {(polyarcLineCount > 0 || polyarcArcCount > 0) && (
+                <span className="ml-1 opacity-80 normal-case font-normal">
+                  ({polyarcLineCount > 0 ? `${polyarcLineCount}L` : ''}{polyarcLineCount > 0 && polyarcArcCount > 0 ? '+' : ''}{polyarcArcCount > 0 ? `${polyarcArcCount}A` : ''})
+                </span>
+              )}
+            </button>
+          )}
+
+          {readyToDraw && activeTool === 'polyarc' && !polyarcHasContent && tempPoints.length === 0 && polyarcMode && (
+            <div className="absolute z-[70] top-3 left-1/2 -translate-x-1/2 pointer-events-none">
+              <div className={cn(
+                'flex items-center gap-1.5 px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest border',
+                polyarcMode === 'arc'
+                  ? 'bg-teal-900/80 border-teal-500/50 text-teal-300'
+                  : 'bg-zinc-900/80 border-zinc-600/50 text-zinc-300',
+              )}>
+                {polyarcMode === 'arc' ? '⌒ ARC MODE' : '— LINE MODE'}
+                <span className="text-zinc-500 ml-1">· Press A to toggle · Drag for arc</span>
+              </div>
+            </div>
+          )}
+
           {readyToDraw && activeTool === 'arc' && (() => {
             if (stagedArcCount > 0 && arcBtnPos) {
               return (
@@ -355,14 +637,11 @@ export function ViewerCanvas({
                   <Check className="w-3 h-3" />
                   Finish ({stagedArcCount} arc{stagedArcCount !== 1 ? 's' : ''})
                   {inProgressArcPts.length > 0 && (
-                    <span className="ml-1 opacity-70">
-                      +{inProgressArcPts.length}pt
-                    </span>
+                    <span className="ml-1 opacity-70">+{inProgressArcPts.length}pt</span>
                   )}
                 </button>
               );
             }
-
             if (inProgressArcPts.length === 2 && arcBtnPos) {
               return (
                 <div
@@ -373,11 +652,9 @@ export function ViewerCanvas({
                 </div>
               );
             }
-
             return null;
           })()}
 
-          {/* Layer 70: Finish button — Radius */}
           {readyToDraw && activeTool === 'radius' && (() => {
             const staged = splitRadiusPoints(tempPoints).filter(g => g.length === 2);
             if (staged.length === 0 || !lastNonSentinelPoint) return null;
@@ -395,7 +672,6 @@ export function ViewerCanvas({
             );
           })()}
 
-          {/* Slot for MagicFillCanvas layers and overlays */}
           {children}
         </div>
       )}

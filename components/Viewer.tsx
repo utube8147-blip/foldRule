@@ -1,5 +1,20 @@
 'use client';
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
+//
+//  FIXES in this revision
+//  ──────────────────────
+//  1. offsetOpenEndStyle state added and forwarded to ViewerCanvas so the
+//     OffsetPreviewOverlay knows whether to render open strokes vs closed
+//     filled polygons.
+//  2. offsetOpenOutputType state added to carry the effective open output type
+//     string ('parallel-length', 'one-side-area', 'buffer-area') through to
+//     the preview overlay for fill decisions.
+//  3. onOutputTypeChange now also receives the open output type via a new
+//     onOpenOutputTypeChange callback from the panel.
+//  4. offsetIsOpenPath: only true when source is open AND endStyle === 'none'.
+//     For square/round/butt, the geometry result is a closed polygon.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
@@ -15,8 +30,21 @@ import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
 import { useMagicFillSession } from '@/hooks/fill/useMagicFillSession';
+<<<<<<< HEAD
+import { usePerimeterOffset, isEffectivelyClosed } from '@/hooks/perimeterOffset/usePerimeterOffset';
+import {
+  tessellatePoints,
+  getEffectivePoints,
+} from '@/hooks/perimeterOffset/perimeterOffsetGeometry';
+import {
+  hitTestMeasurement,
+  HIT_RADIUS,
+} from '@/hooks/perimeterOffset/perimeterOffsetHitTest';
+=======
+>>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
+import type { OffsetEligibleShape } from './Viewer/ViewerCanvas';
 import {
   CalibrationDialog, AppendGroupBanner,
   SnapCandidateWired, MeasurementDetailsWired, PresetDrawerWired,
@@ -32,20 +60,33 @@ import {
   MagicFillSelectedPanel,
   fmtArea,
 } from '@/components/Viewer/MagicFillUI';
+import { PerimeterOffsetPanel } from '@/components/Viewer/PerimeterOffsetPanel';
 import {
   stagedArcCount as calcStagedArcCount,
   stagedRadiusCount,
+<<<<<<< HEAD
+  splitPolyarcSegments,
+} from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
+import type {
+  CommitOffsetParams,
+  CommitOpenPathParams,
+  CommitOffsetResult,
+  OffsetOutputType,
+  OpenOutputType,
+  BatchCommitOptions,
+} from '@/hooks/perimeterOffset/usePerimeterOffset';
+import type { InProgressPoint } from '@/context/TakeoffContext';
+import type { OpenEndStyle } from '@/hooks/perimeterOffset/perimeterOffsetGeometry';
+=======
 } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type { SvgLine } from '@/hooks/snapEngine/useSvgSnapPoints';
+>>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
 // ── PDF.js version helper ─────────────────────────────────────────────────────
-// Using a plain require() at runtime avoids TypeScript module-resolution errors
-// for the legacy CJS bundle while still giving us the version string.
 function getPdfLibVersion(): string {
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
     const lib = require('pdfjs-dist/legacy/build/pdf') as { version?: string };
     return lib.version ?? '?';
   } catch {
@@ -101,7 +142,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
-  // Resolved values — external prop wins when provided
   const showPins    = externalShowPins    !== undefined ? externalShowPins    : internalShowPins;
   const setShowPins = externalOnShowPinsChange !== undefined ? externalOnShowPinsChange : setInternalShowPins;
 
@@ -115,8 +155,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   // ── Context ───────────────────────────────────────────────────────────────
   const {
     tempPoints, pushPoint, commitMeasurement, batchCommitMeasurements,
-    clearTempPoints, undo, redo, canUndo, canRedo,
-    selectedId, projectState, updateMeasurement,
+    clearTempPoints, retagTempPoints,
+    undo, redo, canUndo, canRedo,
+    selectedId, setSelectedId, projectState, updateMeasurement,
   } = useTakeoffContext();
 
   const undoRedoRef = useRef<UndoRedoRefValue>({ setCursorPoint: () => {} });
@@ -215,7 +256,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     svgLines:   _svgLines,
   } = useSvgSnapPoints(svgContent, stablePdfDimensions, snapEnabled);
 
-  // ── Reference stabilization ───────────────────────────────────────────────
   const svgSnapPointsRef = useRef(_svgSnapPoints);
   const svgCurvesRef     = useRef(_svgCurves);
   const svgLinesRef      = useRef(_svgLines);
@@ -267,10 +307,52 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const stagedArcs = calcStagedArcCount(tempPoints);
   useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
+  // ── setActiveTool — raw passthrough ───────────────────────────────────────
   const setActiveToolString = useCallback(
     (t: string) => setActiveTool(t as ToolType),
     [setActiveTool],
   );
+
+  // ── handleSetActiveTool — with linear↔arc→polyarc upgrade ────────────────
+  const pendingPolyarcModeRef = useRef<'line' | 'arc' | null>(null);
+  const [forcedPolyarcMode, setForcedPolyarcMode] = useState<'line' | 'arc' | null>(null);
+
+  const handleSetActiveTool = useCallback((newTool: ToolType) => {
+    const LINEAR_ARC = new Set<string>(['linear', 'arc']);
+
+    if (activeTool === 'polyarc' && LINEAR_ARC.has(newTool)) {
+      const nextMode: 'line' | 'arc' = newTool === 'linear' ? 'line' : 'arc';
+      pendingPolyarcModeRef.current = nextMode;
+      setForcedPolyarcMode(nextMode);
+      return;
+    }
+
+    if (
+      tempPoints.length > 0 &&
+      LINEAR_ARC.has(activeTool) &&
+      LINEAR_ARC.has(newTool) &&
+      activeTool !== newTool
+    ) {
+      const existingSegType: 'line' | 'arc' = activeTool === 'linear' ? 'line' : 'arc';
+      const nextMode: 'line' | 'arc'        = newTool === 'linear'    ? 'line' : 'arc';
+      pendingPolyarcModeRef.current = nextMode;
+      setForcedPolyarcMode(nextMode);
+      retagTempPoints(pts => pts.map(p => ({ ...p, segmentType: existingSegType })));
+      setActiveTool('polyarc' as ToolType);
+      return;
+    }
+
+    pendingPolyarcModeRef.current = null;
+    setForcedPolyarcMode(null);
+    setActiveTool(newTool);
+  }, [activeTool, tempPoints, retagTempPoints, setActiveTool]);
+
+  useEffect(() => {
+    if (activeTool !== 'polyarc') {
+      setForcedPolyarcMode(null);
+      pendingPolyarcModeRef.current = null;
+    }
+  }, [activeTool]);
 
   // ── Calibration ───────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
@@ -296,6 +378,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     finishMeasurement, handleCanvasClick, handleContextMenu,
     handleCanvasPointerMove, handleCanvasPointerDown,
     handleCanvasPointerUp, toCanvas, setCursorPoint,
+    polyarcMode, togglePolyarcMode,
   } = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
@@ -311,6 +394,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
     snapCandidates,
+    forcedPolyarcMode: forcedPolyarcMode ?? undefined,
   } as any);
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
@@ -335,6 +419,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     cursorPointRef.current = null;
     setCursorPoint(null);
     redrawPinCanvas();
+    setHoveredOffsetId(null);
   }, [cursorPointRef, setCursorPoint, redrawPinCanvas]);
 
   // ── Grid-count commit ─────────────────────────────────────────────────────
@@ -395,12 +480,219 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     batchCommitMeasurements,
   });
 
+  // ── Perimeter offset state ────────────────────────────────────────────────
+  const [offsetPreviewPolygons, setOffsetPreviewPolygons] =
+    useState<Array<{ x: number; y: number }[]> | null>(null);
+  const [offsetCommitError, setOffsetCommitError] = useState<string | null>(null);
+  const [offsetCommitWarn,  setOffsetCommitWarn]  = useState<string | null>(null);
+  const [hoveredOffsetId,   setHoveredOffsetId]   = useState<string | null>(null);
+  const [offsetOutputType,  setOffsetOutputType]  = useState<OffsetOutputType>('length');
+  // NEW: track the open path end style and output type for preview rendering
+  const [offsetOpenEndStyle,   setOffsetOpenEndStyle]   = useState<OpenEndStyle>('square');
+  const [offsetOpenOutputType, setOffsetOpenOutputType] = useState<OpenOutputType>('parallel-length');
+
+  const {
+    commitOffset,
+    batchCommitOffsets,
+    commitOpenPathOffset,
+    previewOffset,
+    previewOpenOffset,
+    isValidSource:     isValidOffsetSource,
+    isValidOpenSource: isValidOffsetOpenSource,
+    getCollapseRadius,
+  } = usePerimeterOffset({
+    measurements,
+    batchCommitMeasurements,
+    updateMeasurement: onUpdateMeasurement,
+    pdfDimensionsRef:  pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
+    scaleRef:          scaleRef         as React.RefObject<number>,
+    scaleFactor,
+    activeDrawingId,
+  });
+
+  // Currently selected measurement (if valid offset source)
+  const offsetSourceMeasurement = useMemo(() => {
+    if (activeTool !== 'perimeter-offset') return null;
+    if (!selectedId) return null;
+    return measurements.find(m => m.id === selectedId) ?? null;
+  }, [activeTool, selectedId, measurements]);
+
+  // Inscribed circle radius for collapse warning
+  const offsetCollapseRadius = useMemo(() => {
+    if (!offsetSourceMeasurement) return 0;
+    if (!isValidOffsetSource(offsetSourceMeasurement)) return 0;
+    return getCollapseRadius(offsetSourceMeasurement);
+  }, [offsetSourceMeasurement, isValidOffsetSource, getCollapseRadius]);
+
+  // ── offsetEligiblePolygons ────────────────────────────────────────────────
+  const offsetEligiblePolygons = useMemo((): OffsetEligibleShape[] | null => {
+    if (activeTool !== 'perimeter-offset') return null;
+    const result: OffsetEligibleShape[] = [];
+
+    const scaleW = stablePdfDimensions?.w ?? 1;
+    const scaleH = stablePdfDimensions?.h ?? 1;
+
+    for (const m of measurements) {
+      if (!isValidOffsetSource(m) && !isValidOffsetOpenSource(m))       continue;
+      if (activeDrawingId != null && m.drawingId !== activeDrawingId)   continue;
+      if (!(m.isVisible ?? true))                                       continue;
+
+      const isClosed =
+        m.type === 'Polygon'   ||
+        m.type === 'Rectangle' ||
+        m.type === 'Area'      ||
+        isEffectivelyClosed(m, measurements);
+
+      const isPolygonType =
+        m.type === 'Polygon'   ||
+        m.type === 'Rectangle' ||
+        m.type === 'Area';
+
+      const effectivePts = getEffectivePoints(m, measurements);
+      const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
+
+      if (pts.length >= 2) {
+        result.push({ id: m.id, pts, isClosed, isPolygonType });
+      }
+    }
+
+    return result.length > 0 ? result : null;
+  }, [
+    activeTool, measurements, isValidOffsetSource, isValidOffsetOpenSource,
+    activeDrawingId, stablePdfDimensions,
+  ]);
+
+  // Tessellated source polygon for donut ring clipping in ViewerCanvas
+  const offsetSourcePolygon = useMemo((): Array<{ x: number; y: number }> | null => {
+    if (!offsetSourceMeasurement) return null;
+    if (!offsetEligiblePolygons)  return null;
+    const shape = offsetEligiblePolygons.find(s => s.id === offsetSourceMeasurement.id);
+    return shape?.pts ?? null;
+  }, [offsetSourceMeasurement, offsetEligiblePolygons]);
+
+  // offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
+  // For square/round/butt caps the geometry is a closed polygon, so we should
+  // NOT tell the preview overlay to render it as open strokes.
+  const offsetIsOpenPath = useMemo(() => {
+    if (!offsetSourceMeasurement) return false;
+    if (!isValidOffsetOpenSource(offsetSourceMeasurement)) return false;
+    return offsetOpenEndStyle === 'none';
+  }, [offsetSourceMeasurement, isValidOffsetOpenSource, offsetOpenEndStyle]);
+
+  // ── Shared offset hit-finder ───────────────────────────────────────────────
+  const findOffsetHit = useCallback((nx: number, ny: number): TakeoffRow | undefined => {
+    const zoomAdjustedRadius = HIT_RADIUS / Math.max(0.25, scale);
+
+    const dim    = pdfDimensionsRef.current;
+    const scaleW = dim?.w ?? 1;
+    const scaleH = dim?.h ?? 1;
+
+    return [...measurements]
+      .reverse()
+      .find(m => {
+        if (!isValidOffsetSource(m) && !isValidOffsetOpenSource(m))     return false;
+        if (activeDrawingId != null && m.drawingId !== activeDrawingId) return false;
+        if (!(m.isVisible ?? true))                                     return false;
+
+        const isClosed =
+          m.type === 'Polygon'   ||
+          m.type === 'Rectangle' ||
+          m.type === 'Area'      ||
+          isEffectivelyClosed(m, measurements);
+
+        const effectivePts = getEffectivePoints(m, measurements);
+        const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
+        if (pts.length < 2) return false;
+
+        return hitTestMeasurement(nx, ny, pts, isClosed, zoomAdjustedRadius);
+      });
+  }, [measurements, isValidOffsetSource, isValidOffsetOpenSource, activeDrawingId, scale, pdfDimensionsRef]);
+
+  // ── Offset canvas click ────────────────────────────────────────────────────
+  const handleOffsetCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dim  = pdfDimensionsRef.current;
+    if (!dim) return;
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top)  / rect.height;
+    const hit = findOffsetHit(nx, ny);
+    if (hit) setSelectedId(hit.id);
+  }, [findOffsetHit, setSelectedId, pdfDimensionsRef]);
+
+  // ── Offset canvas hover ────────────────────────────────────────────────────
+  const handleOffsetCanvasPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    wrappedPointerMove(e);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const dim  = pdfDimensionsRef.current;
+    if (!dim) return;
+    const nx = (e.clientX - rect.left) / rect.width;
+    const ny = (e.clientY - rect.top)  / rect.height;
+    const hit = findOffsetHit(nx, ny);
+    setHoveredOffsetId(hit?.id ?? null);
+  }, [wrappedPointerMove, findOffsetHit, pdfDimensionsRef]);
+
+  // ── handleOffsetCommit ────────────────────────────────────────────────────
+  const handleOffsetCommit = useCallback((params: CommitOffsetParams): CommitOffsetResult => {
+    const result = commitOffset(params);
+    setOffsetCommitError(result.error);
+    setOffsetCommitWarn(result.warning);
+    if (!result.error) {
+      setOffsetPreviewPolygons(null);
+      setActiveTool('select' as ToolType);
+    }
+    return result;
+  }, [commitOffset, setActiveTool]);
+
+  // ── handleOffsetBatchCommit ───────────────────────────────────────────────
+  const handleOffsetBatchCommit = useCallback((
+    params:   CommitOffsetParams[],
+    options?: BatchCommitOptions,
+  ): CommitOffsetResult => {
+    const result = batchCommitOffsets(params, options);
+    setOffsetCommitError(result.error);
+    setOffsetCommitWarn(result.warning);
+    if (!result.error) {
+      setOffsetPreviewPolygons(null);
+      setActiveTool('select' as ToolType);
+    }
+    return result;
+  }, [batchCommitOffsets, setActiveTool]);
+
+  // ── handleOffsetOpenCommit ─────────────────────────────────────────────────
+  const handleOffsetOpenCommit = useCallback((params: CommitOpenPathParams): CommitOffsetResult => {
+    const result = commitOpenPathOffset(params);
+    setOffsetCommitError(result.error);
+    setOffsetCommitWarn(result.warning);
+    if (!result.error) {
+      setOffsetPreviewPolygons(null);
+      setActiveTool('select' as ToolType);
+    }
+    return result;
+  }, [commitOpenPathOffset, setActiveTool]);
+
+  const handleOffsetCancel = useCallback(() => {
+    setOffsetPreviewPolygons(null);
+    setOffsetCommitError(null);
+    setOffsetCommitWarn(null);
+    setActiveTool('select' as ToolType);
+  }, [setActiveTool]);
+
   // ── Tool-switch side effects ───────────────────────────────────────────────
   const prevToolRef = useRef(activeTool);
   useEffect(() => {
     const prev = prevToolRef.current;
     if (prev === activeTool) return;
     prevToolRef.current = activeTool;
+
+    if (prev === 'perimeter-offset') {
+      setOffsetPreviewPolygons(null);
+      setOffsetCommitError(null);
+      setOffsetCommitWarn(null);
+      setHoveredOffsetId(null);
+      setOffsetOutputType('length');
+      setOffsetOpenEndStyle('square');
+      setOffsetOpenOutputType('parallel-length');
+    }
 
     if (prev === 'magic-fill' && activeTool !== 'magic-fill') {
       handleMagicAbortSession();
@@ -442,6 +734,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       activeTool === 'linear'    ? 'Length' :
       activeTool === 'arc'       ? 'Length' :
       activeTool === 'radius'    ? 'Length' :
+      activeTool === 'polyarc'   ? 'Length' :
       activeTool === 'count'     ? 'Count'  : 'Point';
     setPendingMeasurementData({ id: `temp-${Date.now()}`, type, description: `New ${type}` });
     setShowMeasurementDialog(true);
@@ -475,7 +768,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   // ── Toolbar API ───────────────────────────────────────────────────────────
   const toolbarAPI = useMemo(() => ({
     tools: VIEWER_TOOLS as any,
-    activeTool, setActiveTool, scale, setScale, scaleFactor,
+    activeTool, setActiveTool: handleSetActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
     showPins, setShowPins,
     snapThreshold, setSnapThreshold,
@@ -486,13 +779,16 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     fitToScreen: () => fitToScreen(),
     handleManualScale,
     canUndo, canRedo, handleUndo, handleRedo,
+    polyarcMode, togglePolyarcMode,
+    tempPointsCount: tempPoints.length,
   }), [
-    activeTool, setActiveTool, scale, scaleFactor,
+    activeTool, handleSetActiveTool, scale, scaleFactor,
     snapEnabled, showSnapSettings,
     showPins, setShowPins,
     snapThreshold, confidenceFilter,
     analysisStatus, analysisPage, pageData, pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
+    polyarcMode, togglePolyarcMode, tempPoints,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -504,30 +800,47 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
         if (activeTool === 'magic-fill' && mfStagedCount > 0) {
           handleMagicAbortSession(); return;
         }
+        if (activeTool === 'perimeter-offset') {
+          handleOffsetCancel(); return;
+        }
       }
+      if (e.key === 'Enter' && activeTool === 'perimeter-offset') return;
+
       const tag = (e.target as HTMLElement).tagName;
       if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+        if (e.key.toLowerCase() === 'a' && activeTool === 'polyarc') {
+          e.preventDefault();
+          togglePolyarcMode();
+          return;
+        }
+
         const map: Record<string, ToolType> = {
-          v:'select', l:'linear', r:'rectangle',
-          p:'polygon', n:'count', t:'point',
-          b:'arc', g:'grid-count',
+          v: 'select',    l: 'linear',   r: 'rectangle',
+          p: 'polygon',   n: 'count',    t: 'point',
+          b: 'arc',       g: 'grid-count',
+          y: 'polyarc',
+          o: 'perimeter-offset',
         };
         if (map[e.key.toLowerCase()]) {
           e.preventDefault();
-          setActiveTool(map[e.key.toLowerCase()]);
+          handleSetActiveTool(map[e.key.toLowerCase()]);
           return;
         }
       }
       const cm = e.ctrlKey || e.metaKey;
-      if (cm && (e.key==='+'||e.key==='='))               { e.preventDefault(); setScale(s=>Math.min(MAX_ZOOM,s+ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key==='-')                               { e.preventDefault(); setScale(s=>Math.max(MIN_ZOOM,s-ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key==='0')                               { e.preventDefault(); fitToScreen(); return; }
-      if (cm && e.key==='z' && !e.shiftKey)                { e.preventDefault(); handleUndo(); return; }
-      if (cm && (e.key==='y'||(e.key==='z'&&e.shiftKey))) { e.preventDefault(); handleRedo(); return; }
+      if (cm && (e.key === '+' || e.key === '='))                   { e.preventDefault(); setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key === '-')                                       { e.preventDefault(); setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key === '0')                                       { e.preventDefault(); fitToScreen(); return; }
+      if (cm && e.key === 'z' && !e.shiftKey)                       { e.preventDefault(); handleUndo(); return; }
+      if (cm && (e.key === 'y' || (e.key === 'z' && e.shiftKey)))   { e.preventDefault(); handleRedo(); return; }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo, setActiveTool, handleMagicAbortSession, setScale]);
+  }, [
+    activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
+    handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
+    setScale, togglePolyarcMode,
+  ]);
 
   // ── Pan handler ───────────────────────────────────────────────────────────
   const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
@@ -549,11 +862,21 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   // ── Derived state ─────────────────────────────────────────────────────────
   const isMagicFillTool = activeTool === 'magic-fill';
   const isGridCountTool = activeTool === 'grid-count';
+  const isOffsetTool    = activeTool === 'perimeter-offset';
   const mfHoveredFill   = allVisibleFills.find(f => f.id === mfHoveredId)  ?? null;
   const mfSelectedFill  = allVisibleFills.find(f => f.id === mfSelectedId) ?? null;
   const mfGroupFills    = mfSelectedGroup != null
     ? magicFills.filter(f => f.groupId === mfSelectedGroup)
     : [];
+
+  // ── Polyarc status helpers ────────────────────────────────────────────────
+  const polyarcSegments   = activeTool === 'polyarc' ? splitPolyarcSegments(tempPoints) : [];
+  const polyarcHasContent = polyarcSegments.some(s =>
+    (s.type === 'line' && s.points.length >= 2) ||
+    (s.type === 'arc'  && s.points.length === 3),
+  );
+  const polyarcLineCount = polyarcSegments.filter(s => s.type === 'line').length;
+  const polyarcArcCount  = polyarcSegments.filter(s => s.type === 'arc').length;
 
   // ── Snap status text ──────────────────────────────────────────────────────
   const snapStatusText = useMemo(() => {
@@ -565,7 +888,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     return 'Parsing snap data…';
   }, [svgLoading, svgUrl, svgContent, snapEnabled, svgSnapPoints.length, svgLines.length]);
 
-  // ── PDF.js version (lazy, client-only) ───────────────────────────────────
+  // ── PDF.js version ────────────────────────────────────────────────────────
   const [pdfLibVersion] = useState<string>(() =>
     typeof window !== 'undefined' ? getPdfLibVersion() : '?'
   );
@@ -576,7 +899,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
       {!hideToolbar && (
         <div className="relative z-30 flex-shrink-0">
           <ViewerToolbar
-            activeTool={activeTool} setActiveTool={setActiveTool}
+            activeTool={activeTool} setActiveTool={handleSetActiveTool}
             canUndo={canUndo} canRedo={canRedo} handleUndo={handleUndo} handleRedo={handleRedo}
             tempPointsCount={tempPoints.length}
             snapEnabled={snapEnabled} setSnapEnabled={setSnapEnabled}
@@ -587,7 +910,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
             scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
             MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
-            onApplyPitchFactor={handleApplyPitchFactor}
+            polyarcMode={polyarcMode}
+            togglePolyarcMode={togglePolyarcMode}
           />
         </div>
       )}
@@ -619,6 +943,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             if (e.key === 'Escape') {
               if (activeTool === 'magic-fill' && mfStagedCount > 0) {
                 handleMagicAbortSession();
+              } else if (activeTool === 'perimeter-offset') {
+                handleOffsetCancel();
               } else if (tempPoints.length > 0) {
                 handleFinishMeasurement();
               } else {
@@ -655,9 +981,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
               snapFlashes={snapFlashes.map(f => ({ ...f, id: String(f.id) }))} toCanvas={toCanvas}
               readyToDraw={true}
-              handleCanvasClick={handleCanvasClick}
+              handleCanvasClick={isOffsetTool ? handleOffsetCanvasClick : handleCanvasClick}
               handleContextMenu={handleContextMenu}
-              handleCanvasPointerMove={wrappedPointerMove}
+              handleCanvasPointerMove={isOffsetTool ? handleOffsetCanvasPointerMove : wrappedPointerMove}
               handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
               handleCanvasPointerUp={handleCanvasPointerUp}
               handleDrawingCanvasPointerDown={handleDrawingCanvasPointerDown}
@@ -671,6 +997,16 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               scaleFactor={scaleFactor}
               onGridCountCommit={handleGridCountCommit}
               stagedArcCount={stagedArcs}
+              polyarcHasContent={polyarcHasContent}
+              polyarcMode={polyarcMode}
+              offsetEligiblePolygons={offsetEligiblePolygons}
+              offsetHoveredId={hoveredOffsetId}
+              offsetSelectedId={offsetSourceMeasurement?.id ?? null}
+              offsetOutputType={offsetOutputType}
+              offsetPreviewPolygons={offsetPreviewPolygons}
+              offsetSourcePolygon={offsetSourcePolygon}
+              offsetIsOpenPath={offsetIsOpenPath}
+              offsetOpenEndStyle={offsetOpenEndStyle}
             >
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
@@ -737,6 +1073,28 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             measurements={measurements} onUpdateMeasurement={onUpdateMeasurement}
           />
         </div>
+
+        {/* ── Perimeter Offset panel ── */}
+        {isOffsetTool && (
+          <PerimeterOffsetPanel
+            sourceMeasurement={offsetSourceMeasurement}
+            isValidSource={isValidOffsetSource}
+            isValidOpenSource={isValidOffsetOpenSource}
+            isEffectivelyClosed={row => isEffectivelyClosed(row, measurements)}
+            collapseRadius={offsetCollapseRadius}
+            onCommit={handleOffsetCommit}
+            onOpenCommit={handleOffsetOpenCommit}
+            onBatchCommit={handleOffsetBatchCommit}
+            onCancel={handleOffsetCancel}
+            onPreviewChange={setOffsetPreviewPolygons}
+            previewFn={previewOffset}
+            previewOpenFn={previewOpenOffset}
+            commitError={offsetCommitError}
+            onOutputTypeChange={setOffsetOutputType}
+            onOpenEndStyleChange={setOffsetOpenEndStyle}
+            onOpenOutputTypeChange={setOffsetOpenOutputType}
+          />
+        )}
       </div>
 
       {pdf && pdfDimensions && (
@@ -786,7 +1144,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 {magicFills.length > 0 && mfStagedCount === 0 && (
                   <>
                     <div className="w-px h-3 bg-industrial-border" />
-                    <span>Total: {fmtArea(magicFills.reduce((s,f) => s+f.areaPx, 0), mfMetersPerPixel)}</span>
+                    <span>Total: {fmtArea(magicFills.reduce((s, f) => s + f.areaPx, 0), mfMetersPerPixel)}</span>
                   </>
                 )}
                 <div className="w-px h-3 bg-industrial-border" />
@@ -798,6 +1156,16 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             ) : isGridCountTool ? (
               <span className="text-green-400">
                 Grid Count — drag to define area · Enter spacing · click Commit
+              </span>
+            ) : isOffsetTool ? (
+              <span className="text-teal-400">
+                Perimeter Offset
+                {offsetSourceMeasurement && (isValidOffsetSource(offsetSourceMeasurement) || isValidOffsetOpenSource(offsetSourceMeasurement))
+                  ? ` — "${offsetSourceMeasurement.label ?? offsetSourceMeasurement.description}" selected`
+                  : ' — click a highlighted shape to select it'
+                }
+                {offsetCommitWarn && ` · ⚠ ${offsetCommitWarn}`}
+                {' '}· Esc to cancel
               </span>
             ) : activeTool === 'arc' ? (
               <span className="text-teal-400">
@@ -812,6 +1180,16 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                   ? `Radius — ${stagedRadiusCount(tempPoints)} staged · click to add more · Finish or Enter to commit · Right-click cancels current`
                   : `Radius — click ${tempPoints.filter((p: any) => p.segmentId !== '__radius_break__').length === 0 ? 'centre' : 'edge'} point · Right-click to cancel`
                 }
+              </span>
+            ) : activeTool === 'polyarc' ? (
+              <span className="text-orange-400">
+                Polyarc
+                {polyarcHasContent
+                  ? ` — ${polyarcLineCount} line${polyarcLineCount !== 1 ? 's' : ''} · ${polyarcArcCount} arc${polyarcArcCount !== 1 ? 's' : ''}`
+                  : ''
+                }
+                {' '}· Mode: <span className="text-amber-300 font-bold">{polyarcMode.toUpperCase()}</span>
+                {' '}· Press A to toggle · Drag for arc · Double-click or Enter to finish
               </span>
             ) : (
               <span className={svgLoading ? 'text-amber-400' : !svgContent ? 'text-zinc-600' : ''}>

@@ -18,6 +18,16 @@
 //         Stored here so any consumer (sidebar, canvas labels, BOQ export)
 //         reads the same value without prop-drilling.
 //
+//  ADDED: retagTempPoints — atomic in-place retag of all temp points.
+//         Used by Viewer.tsx when upgrading linear↔arc → polyarc so points
+//         are never cleared and re-pushed (which caused RAF race conditions
+//         and visible canvas blanking).
+//
+//  CHANGE: InProgressPoint gains an optional `segmentType` field used by the
+//          new 'polyarc' tool to tag each point as belonging to a straight-line
+//          segment or a 3-point arc segment. All existing tools leave it
+//          undefined, so there is zero impact on anything that already works.
+//
 //  All new fields are optional — zero impact on existing consumers.
 //
 // ─────────────────────────────────────────────────────────────────────────────
@@ -78,7 +88,19 @@ export type ProjectState = {
   excludedItems?:        ExcludedItem[];
 };
 
-export type InProgressPoint = { x: number; y: number; snapped: boolean; segmentId?: string };
+// ─── InProgressPoint ──────────────────────────────────────────────────────────
+// segmentType — optional field used by the 'polyarc' tool only.
+//   'line' = this point belongs to a straight polyline segment (default).
+//   'arc'  = this point is one of a 3-point arc triplet; the drawing canvas
+//            and commit hook use this to decide how to render / measure.
+// All other tools leave this undefined (treated as 'line').
+export type InProgressPoint = {
+  x:            number;
+  y:            number;
+  snapped:      boolean;
+  segmentId?:   string;
+  segmentType?: 'line' | 'arc';
+};
 
 export type PendingMeasurement = {
   id: string;
@@ -130,6 +152,8 @@ interface TakeoffContextValue {
   commitMeasurement:       (m: TakeoffRow) => void;
   batchCommitMeasurements: (measurements: TakeoffRow[]) => void;
   clearTempPoints:         () => void;
+  // ── NEW: atomic retag without clear/repush cycle ──────────────────────────
+  retagTempPoints:         (updater: (pts: InProgressPoint[]) => InProgressPoint[]) => void;
 
   undo:    () => void;
   redo:    () => void;
@@ -143,7 +167,7 @@ interface TakeoffContextValue {
   getEffectiveQuantity: (measurement: TakeoffRow) => number;
   getEffectiveUnit:     (measurement: TakeoffRow) => string;
 
-  // ── NEW: unit conversion ──────────────────────────────────────────────────
+  // ── Unit conversion ───────────────────────────────────────────────────────
   displayUnit:    DisplayUnit;
   setDisplayUnit: (unit: DisplayUnit) => void;
 }
@@ -189,7 +213,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   const [tempPoints,          setTempPoints]          = useState<InProgressPoint[]>([]);
   const [pendingMeasurement,  setPendingMeasurement]  = useState<PendingMeasurement | null>(null);
 
-  // ── NEW: display unit state ───────────────────────────────────────────────
+  // ── Display unit state ────────────────────────────────────────────────────
   const [displayUnit, setDisplayUnit] = useState<DisplayUnit>('m');
 
   const [undoPast,   setUndoPast]   = useState<UndoEntry[]>([]);
@@ -364,6 +388,20 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       tempPointsAfter:    tAfter,
     });
   }, [pushEntry, syncedSetTempPoints]);
+
+  // ── retagTempPoints ────────────────────────────────────────────────────────
+  // Atomically retags all in-progress points without clearing and re-pushing.
+  // Used by Viewer.tsx during the linear↔arc → polyarc upgrade so that points
+  // are never absent from the canvas (eliminates the RAF race condition).
+  // Does NOT push an undo entry — the retag is a tool-switch side-effect, not
+  // a user action that should be undoable on its own.
+  const retagTempPoints = useCallback((updater: (pts: InProgressPoint[]) => InProgressPoint[]) => {
+    syncedSetTempPoints(prev => {
+      const next = updater(prev);
+      tempPointsRef.current = next;
+      return next;
+    });
+  }, [syncedSetTempPoints]);
 
   // ── commitMeasurement ──────────────────────────────────────────────────────
   const commitMeasurement = useCallback((m: TakeoffRow) => {
@@ -699,6 +737,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     commitMeasurement,
     batchCommitMeasurements,
     clearTempPoints,
+    retagTempPoints,
     undo,
     redo,
     canUndo:  undoPast.length   > 0,
@@ -706,7 +745,6 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     updateProjectMeta,
     getEffectiveQuantity,
     getEffectiveUnit,
-    // ── NEW ──────────────────────────────────────────────────────────────────
     displayUnit,
     setDisplayUnit,
   };

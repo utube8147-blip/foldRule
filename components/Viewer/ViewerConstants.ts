@@ -1,15 +1,33 @@
 // ─── ViewerConstants.ts ───────────────────────────────────────────────────────
 //
 // CHANGES:
-// - Added 'magic-fill' tool with Wand2 icon + shortcut M
-// - Removed SVG / room / wall / vector / cluster props from ViewerToolbarAPI
+//   VIEWER_TOOLS reorganised into logical groups with UX-rational ordering:
+//     Group 1 — Navigation/Selection: select, multi-select (disabled)
+//     Group 2 — Area tools: polygon, rectangle, magic-fill
+//     Group 3 — Linear tools: linear, arc, polyarc
+//     Group 4 — Point tools: count, point
+//
+//   Each tool now carries an optional `disabled` flag and `group` label so the
+//   toolbar can render dividers between groups and grey out unbuilt tools.
+//
+//   New tools added as disabled stubs (enable one by one as you build them):
+//     - multi-select   (group: selection)
+//     - point          (group: point — was missing from VIEWER_TOOLS before)
+//
+//   Shortcuts reassigned to avoid conflicts:
+//     - polygon:    was A (stolen by polyarc toggle), now G
+//     - multi-select: X  (easy to reach, not in use)
+//     - point:      O    (O for "one point")
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
 import pdfjsLib from "@/lib/pdf/pdfClient";
+import pdfjsLib from "@/lib/pdf/pdfClient";
 
 import {
   MousePointer2,
+  MousePointer,
   Pencil,
   Square,
   Pentagon,
@@ -17,7 +35,8 @@ import {
   MapPin,
   Ruler,
   Wand2,
-  CircleDot
+  CircleDot,
+  Spline,
 } from 'lucide-react';
 
 import type { ToolType, TakeoffRow } from '@/types';
@@ -32,8 +51,7 @@ export const MAX_ZOOM = 8;
 
 // ─── PDF worker ───────────────────────────────────────────────────────────────
 
-export const pdfWorkerUrl =
-  `/pdf.worker.min.js`;
+export const pdfWorkerUrl = `/pdf.worker.min.js`;
 
 export function initPdfWorker() {
   if (typeof window === "undefined") return;
@@ -41,19 +59,208 @@ export function initPdfWorker() {
   lib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 }
 
-// ─── Viewer tools ────────────────────────────────────────────────────────────
+// ─── Tool group labels (used for dividers in toolbar) ─────────────────────────
+
+export type ToolGroup = 'selection' | 'area' | 'linear' | 'point';
+
+// ─── Viewer tools ─────────────────────────────────────────────────────────────
+//
+// ORDER RATIONALE:
+//   1. select       — always first, the safe/neutral mode, shortcut V (industry standard)
+//   2. multi-select — right next to select, same family, shortcut X
+//      [divider]
+//   3. polygon      — primary area tool (most used), shortcut G
+//   4. rectangle    — fast area shortcut for rectangular rooms, shortcut R
+//   5. magic-fill   — AI area fill, same family as polygon/rectangle, shortcut M
+//      [divider]
+//   6. linear       — primary length tool, shortcut L
+//   7. arc          — arc variant of linear, shortcut B
+//   8. polyarc      — combined line+arc, upgrade from linear/arc, shortcut Y
+//      [divider]
+//   9. count        — point-based tool, shortcut N
+//  10. point        — single reference point, shortcut O
+//
+// UX REASONING:
+//   - Area tools cluster together so estimators doing room takeoff don't jump
+//     across the toolbar between polygon/rectangle/magic-fill.
+//   - Linear tools cluster together so pipe/wall runs stay in one zone.
+//   - Count and point are at the end — used less frequently and conceptually
+//     "smaller" than area or length tools.
+//   - select is always first (Escape / V) and multi-select is right beside it
+//     so the user's eye always finds "safe mode" at the far left.
 
 export const VIEWER_TOOLS = [
-  { id: 'select',     label: 'Select',     shortcut: 'V', icon: MousePointer2 },
-  { id: 'linear',     label: 'Linear',     shortcut: 'L', icon: Pencil },
-  { id: 'arc',        label: 'Arc',        shortcut: 'B', icon: CircleDot    }, // ← new
-  { id: 'rectangle',  label: 'Rectangle',  shortcut: 'R', icon: Square },
-  { id: 'polygon',    label: 'Polygon',    shortcut: 'P', icon: Pentagon },
-  { id: 'count',      label: 'Count',      shortcut: 'N', icon: Hash },
-  { id: 'magic-fill', label: 'Magic Fill', shortcut: 'M', icon: Wand2 },
+  // ── Group 1: Selection ────────────────────────────────────────────────────
+  {
+    id:       'select',
+    label:    'Select',
+    shortcut: 'V',
+    icon:     MousePointer2,
+    group:    'selection' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'multi-select',
+    label:    'Multi-select',
+    shortcut: 'X',
+    icon:     MousePointer,
+    group:    'selection' as ToolGroup,
+    disabled: true,   // TODO: implement — see todos.md
+  },
+
+  // ── Group 2: Area ─────────────────────────────────────────────────────────
+  {
+    id:       'polygon',
+    label:    'Polygon',
+    shortcut: 'G',    // was P, reassigned — P now free, A was stolen by polyarc
+    icon:     Pentagon,
+    group:    'area' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'rectangle',
+    label:    'Rectangle',
+    shortcut: 'R',
+    icon:     Square,
+    group:    'area' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'magic-fill',
+    label:    'Magic fill',
+    shortcut: 'M',
+    icon:     Wand2,
+    group:    'area' as ToolGroup,
+    disabled: false,
+  },
+
+  // ── Group 3: Linear ───────────────────────────────────────────────────────
+  {
+    id:       'linear',
+    label:    'Linear',
+    shortcut: 'L',
+    icon:     Pencil,
+    group:    'linear' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'arc',
+    label:    'Arc',
+    shortcut: 'B',
+    icon:     CircleDot,
+    group:    'linear' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'polyarc',
+    label:    'Polyarc',
+    shortcut: 'Y',
+    icon:     Spline,
+    group:    'linear' as ToolGroup,
+    disabled: false,
+  },
+
+  // ── Group 4: Point ────────────────────────────────────────────────────────
+  {
+    id:       'count',
+    label:    'Count',
+    shortcut: 'N',
+    icon:     Hash,
+    group:    'point' as ToolGroup,
+    disabled: false,
+  },
+  {
+    id:       'point',
+    label:    'Point',
+    shortcut: 'O',
+    icon:     MapPin,
+    group:    'point' as ToolGroup,
+    disabled: false,
+  },
 ] as const;
 
-// ─── Viewer props ────────────────────────────────────────────────────────────
+// ─── Advanced canvas tools ────────────────────────────────────────────────────
+//
+// ORDER RATIONALE:
+//   Pitch factor row is always first — it's the most-used advanced feature
+//   (roofing estimates). Below it, tools are ordered by how commonly needed:
+//
+//   1. radius/circle   — fairly common (columns, circular features)
+//   2. grid-count      — common for tiles, ceiling grids
+//   3. perimeter-offset — common for formwork, edge details  [disabled]
+//   4. volume          — less common, needs area first        [disabled]
+//   5. symbol-detect   — AI feature, powerful but occasional [disabled]
+//   6. polar-mode      — toggle, lives here rather than main bar to save space
+//                        [disabled]
+//   7. annotation      — markup layer, separate concern       [disabled]
+
+export type AdvancedToolMeta = {
+  id:       ToolType;
+  label:    string;
+  sub:      string;
+  shortcut: string;
+  disabled: boolean;
+  badge?:   string;
+};
+
+export const ADVANCED_CANVAS_TOOLS: AdvancedToolMeta[] = [
+  {
+    id:       'radius',
+    label:    'Radius / circle',
+    sub:      'Click centre then any edge point',
+    shortcut: 'R2',
+    disabled: false,
+  },
+  {
+    id:       'grid-count',
+    label:    'Grid count',
+    sub:      'Draw polygon, grid auto-counts tiles',
+    shortcut: 'G2',
+    disabled: false,
+  },
+  {
+    id:       'perimeter-offset',
+    label:    'Perimeter offset',
+    sub:      'Auto-offset line from any closed polygon',
+    shortcut: 'O2',
+    disabled: false,
+    // badge:    'Soon',
+  },
+  {
+    id:       'volume',
+    label:    'Volume',
+    sub:      'Polygon boundary + depth → cubic m³',
+    shortcut: 'V2',
+    disabled: true,
+    badge:    'Soon',
+  },
+  {
+    id:       'symbol-detect',
+    label:    'Symbol detect',
+    sub:      'Click one symbol — AI finds all matches',
+    shortcut: 'D',
+    disabled: true,
+    badge:    'Soon',
+  },
+  {
+    id:       'polar-mode' as ToolType,
+    label:    'Polar mode',
+    sub:      'Constrain lines to 0° / 45° / 90°',
+    shortcut: 'F8',
+    disabled: true,
+    badge:    'Soon',
+  },
+  {
+    id:       'annotation' as ToolType,
+    label:    'Annotation',
+    sub:      'Place text labels and callouts on drawing',
+    shortcut: 'T',
+    disabled: true,
+    badge:    'Soon',
+  },
+];
+
+// ─── Viewer props ─────────────────────────────────────────────────────────────
 
 export interface ViewerProps {
   activeTool: ToolType;
@@ -106,7 +313,7 @@ export interface ViewerProps {
   onToolbarReady?: (api: ViewerToolbarAPI) => void;
 }
 
-// ─── Toolbar API ─────────────────────────────────────────────────────────────
+// ─── Toolbar API ──────────────────────────────────────────────────────────────
 
 export interface ViewerToolbarAPI {
   tools: typeof VIEWER_TOOLS;
@@ -155,4 +362,11 @@ export interface ViewerToolbarAPI {
 
   handleUndo: () => void;
   handleRedo: () => void;
+
+  // Polyarc mode pill
+  polyarcMode?: 'line' | 'arc';
+  togglePolyarcMode?: () => void;
+
+  // Live in-progress point count (fixes hardcoded 0 bug)
+  tempPointsCount: number;
 }

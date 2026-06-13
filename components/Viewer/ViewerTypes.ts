@@ -6,7 +6,7 @@ import React from 'react';
 import type * as pdfjsLib from "pdfjs-dist";
 import {
   ZoomIn, ZoomOut, Maximize, Hash, Square, Minus,
-  Activity, MousePointer, Ruler, MapPin,
+  Activity, MousePointer, Ruler, MapPin, Spline,
 } from 'lucide-react';
 import { ToolType, TakeoffRow, Drawing } from '@/types';
 import { PresetTemplate } from '../presets/PresetTemplates';
@@ -15,13 +15,14 @@ import type { PdfDimensions } from '@/types/viewerTypes';
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
 export const VIEWER_TOOLS = [
-  { id: 'select',    icon: MousePointer, label: 'Select',    shortcut: 'V' },
-  { id: 'scale',     icon: Ruler,        label: 'Calibrate', shortcut: 'C' },
-  { id: 'linear',    icon: Minus,        label: 'Linear',    shortcut: 'L' },
-  { id: 'rectangle', icon: Square,       label: 'Rectangle', shortcut: 'R' },
-  { id: 'polygon',   icon: Activity,     label: 'Polygon',   shortcut: 'P' },
-  { id: 'count',     icon: Hash,         label: 'Count',     shortcut: 'N' },
-  { id: 'point',     icon: MapPin,       label: 'Point',     shortcut: 'T' },
+  { id: 'select',    icon: MousePointer, label: 'Select',   shortcut: 'V' },
+  { id: 'scale',     icon: Ruler,        label: 'Calibrate',shortcut: 'C' },
+  { id: 'linear',    icon: Minus,        label: 'Linear',   shortcut: 'L' },
+  { id: 'rectangle', icon: Square,       label: 'Rectangle',shortcut: 'R' },
+  { id: 'polygon',   icon: Activity,     label: 'Polygon',  shortcut: 'P' },
+  { id: 'polyarc',   icon: Spline,       label: 'Polyarc',  shortcut: 'A' },
+  { id: 'count',     icon: Hash,         label: 'Count',    shortcut: 'N' },
+  { id: 'point',     icon: MapPin,       label: 'Point',    shortcut: 'T' },
 ] as const;
 
 export type ViewerTool = typeof VIEWER_TOOLS[number];
@@ -41,7 +42,7 @@ export interface ViewerProps {
   measurements:         TakeoffRow[];
   onAddMeasurement:     (m: Omit<TakeoffRow, 'color' | 'isVisible' | 'drawingId'>) => void;
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
-  onDeleteMeasurement: (id: string) => void; // 👈 add this
+  onDeleteMeasurement:  (id: string) => void;
   scaleFactor:          number;
   onScaleSet:           (factor: number) => void;
   activeDrawing:        Drawing | null;
@@ -53,6 +54,9 @@ export interface ViewerProps {
   onToolbarReady?:      (api: ViewerToolbarAPI) => void;
   appendToGroupId?:     string | null;
   onAppendComplete?:    () => void;
+  svgUrl?:              string;
+  showPins?:            boolean;
+  onShowPinsChange?:    (v: boolean) => void;
 }
 
 // ── Toolbar API (exposed to parent) ──────────────────────────────────────────

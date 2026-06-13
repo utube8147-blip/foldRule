@@ -1,74 +1,63 @@
 // components/Viewer/AdvancedToolsDropdown.tsx
 'use client';
 
+// CHANGE: Removed the local ADVANCED_TOOLS array entirely.
+// The component now maps over ADVANCED_CANVAS_TOOLS from ViewerConstants,
+// which is the single source of truth for all advanced tool metadata.
+//
+// Icons live here (not in ViewerConstants) because ViewerConstants must stay
+// free of React/lucide imports so it can be used in non-React contexts.
+// The ICON_MAP below is the only place that needs updating when a new tool
+// is added to ADVANCED_CANVAS_TOOLS — add the tool there, add the icon here.
+
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  ChevronDown, Ruler, Circle, Grid3x3, Check, AlertTriangle,
-  Box, Spline, ScanSearch,
+  ChevronDown,
+  Ruler,
+  Circle,
+  Grid3x3,
+  Box,
+  Spline,
+  ScanSearch,
+  Crosshair,
+  Type,
+  AlertTriangle,
+  Check,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
+import { ADVANCED_CANVAS_TOOLS } from './ViewerConstants';
+import type { AdvancedToolMeta } from './ViewerConstants';
 import { useTakeoffContext } from '@/context/TakeoffContext';
+import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
+
+// ─── Icon map ──────────────────────────────────────────────────────────────────
+//
+// Keyed by AdvancedToolMeta.id. Add an entry here whenever a new tool is
+// added to ADVANCED_CANVAS_TOOLS in ViewerConstants.
+
+const ICON_MAP: Record<string, React.ElementType> = {
+  'radius':           Circle,
+  'grid-count':       Grid3x3,
+  'perimeter-offset': Spline,
+  'volume':           Box,
+  'symbol-detect':    ScanSearch,
+  'polar-mode':       Crosshair,
+  'annotation':       Type,
+};
+
+// Fallback icon for any tool added to ViewerConstants without a corresponding
+// entry in ICON_MAP — surfaces the gap visibly rather than crashing.
+const FallbackIcon = Ruler;
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
   activeTool:    ToolType;
   setActiveTool: (t: ToolType) => void;
 }
 
-const ADVANCED_TOOLS: Array<{
-  id:       ToolType;
-  label:    string;
-  sub:      string;
-  icon:     React.ElementType;
-  shortcut: string;
-  badge?:   string;
-}> = [
-  {
-    id:       'arc',
-    label:    'Arc',
-    sub:      'Click start · mid · end points',
-    icon:     Circle,
-    shortcut: 'B',
-  },
-  {
-    id:       'radius',
-    label:    'Radius / circle',
-    sub:      'Click centre then edge',
-    icon:     Circle,
-    shortcut: 'R2',
-  },
-  {
-    id:       'grid-count',
-    label:    'Grid count',
-    sub:      'Draw polygon area, grid auto-counts tiles',
-    icon:     Grid3x3,
-    shortcut: 'Soon',
-  },
-  {
-    id:       'volume',
-    label:    'Volume',
-    sub:      'Draw boundary then enter depth for cubic m³',
-    icon:     Box,
-    shortcut: 'V2',
-    badge:    'Soon',
-  },
-  {
-    id:       'perimeter-offset',
-    label:    'Perimeter offset',
-    sub:      'Auto-generate offset line from any polygon',
-    icon:     Spline,
-    shortcut: 'O',
-    badge:    'Soon',
-  },
-  {
-    id:       'symbol-detect',
-    label:    'Symbol detect',
-    sub:      'Click one symbol — AI finds all matches',
-    icon:     ScanSearch,
-    shortcut: 'D',
-    badge:    'Soon',
-  },
-];
+// ─── Component ────────────────────────────────────────────────────────────────
 
 export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
   const [open, setOpen] = useState(false);
@@ -82,7 +71,8 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
-  const isAdvancedActive = ADVANCED_TOOLS.some(t => t.id === activeTool);
+  // Highlight the trigger button when any advanced tool is active.
+  const isAdvancedActive = ADVANCED_CANVAS_TOOLS.some(t => t.id === activeTool);
 
   return (
     <div ref={ref} className="relative">
@@ -104,14 +94,16 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
       {open && (
         <div className="absolute top-10 left-0 z-[80] bg-industrial-panel border border-industrial-border shadow-xl min-w-[260px]">
 
-          {/* Pitch factor row */}
+          {/* Pitch factor row — always first */}
           <PitchFactorRow />
 
           <div className="h-px bg-industrial-border" />
 
-          {/* Canvas tools */}
-          {ADVANCED_TOOLS.map(tool => {
-            const isSoon = !!tool.badge;
+          {/* Tool rows — driven entirely from ADVANCED_CANVAS_TOOLS */}
+          {ADVANCED_CANVAS_TOOLS.map((tool: AdvancedToolMeta) => {
+            const Icon = ICON_MAP[tool.id] ?? FallbackIcon;
+            const isSoon = tool.disabled;
+
             return (
               <button
                 key={tool.id}
@@ -129,10 +121,11 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
                   activeTool === tool.id && !isSoon && 'bg-zinc-800',
                 )}
               >
-                <tool.icon className={cn(
+                <Icon className={cn(
                   'w-4 h-4 mt-0.5 flex-shrink-0',
                   activeTool === tool.id && !isSoon ? 'text-amber-400' : 'text-zinc-500',
                 )} />
+
                 <div className="flex-1 min-w-0">
                   <div className={cn(
                     'text-[10px] font-mono font-bold uppercase tracking-widest flex items-center gap-2',
@@ -157,7 +150,8 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
   );
 }
 
-// ── Pitch factor inline row ────────────────────────────────────────────────
+// ─── Pitch factor inline row ──────────────────────────────────────────────────
+// Unchanged from previous version — context-wired, no props needed.
 
 function PitchFactorRow() {
   const [rise, setRise] = useState('6');
@@ -189,7 +183,7 @@ function PitchFactorRow() {
     const newQty = +(selectedMeasurement.quantity * ratio).toFixed(4);
 
     updateMeasurement(selectedMeasurement.id, {
-      quantity:    newQty,
+      quantity:     newQty,
       isOverridden: true,
       notes: [
         selectedMeasurement.notes,

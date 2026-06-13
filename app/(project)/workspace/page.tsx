@@ -1,6 +1,27 @@
 'use client';
-
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
+//
+//  CHANGES vs previous version:
+//
+//  1. REMOVED 'a' KEY FROM WORKSPACE KEYBOARD HANDLER
+//     The workspace keydown handler mapped 'a' → setActiveTool('area').
+//     This fired before Viewer.tsx's handler and stole the key, making the
+//     polyarc mode toggle (and any future A-key use in canvas tools) impossible.
+//     Removed 'a' from the workspace handler entirely. Area tool can be
+//     reached via the toolbar button.
+//
+//  2. FIXED TOOLBAR WIRING — was using raw setActiveTool, now passes through
+//     the Viewer's handleSetActiveTool so the linear↔arc→polyarc upgrade
+//     logic runs when the user clicks toolbar buttons at workspace level.
+//     The toolbar in workspace now reads polyarcMode / togglePolyarcMode from
+//     toolbarAPI which Viewer exposes via onToolbarReady.
+//
+//  3. SHIFT+CLICK ARC MODE — polyarcMode / togglePolyarcMode props removed
+//     from the workspace-level ViewerToolbar render since the A-key toggle is
+//     gone and shift+click handles arc mode inline. The toolbar pill that
+//     showed LINE/ARC still lives inside Viewer's own ViewerToolbar render.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
@@ -94,7 +115,7 @@ export default function Workspace() {
   // ── Toolbar state managed at workspace level ──────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(false);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
-  const [showPins,         setShowPins]         = useState(false);   // ← hoisted here
+  const [showPins,         setShowPins]         = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -313,12 +334,16 @@ export default function Workspace() {
   const handleAppendComplete = useCallback(() => setAppendToGroupId(null), []);
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
+  // IMPORTANT: 'a' is intentionally NOT mapped here.
+  // The Viewer's internal keydown handler owns 'a' for the polyarc toggle.
+  // Mapping 'a' here caused the tool to switch away from polyarc the moment
+  // the user tried to change arc mode.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
       switch (e.key.toLowerCase()) {
         case 'l': setActiveTool('linear'      as ToolType); break;
-        case 'a': setActiveTool('area'        as ToolType); break;
+        // 'a' deliberately omitted — owned by Viewer for polyarc toggle
         case 'c': setActiveTool('count'       as ToolType); break;
         case 'p': setActiveTool('point'       as ToolType); break;
         case 'v': setActiveTool('select'      as ToolType); break;
@@ -465,9 +490,17 @@ export default function Workspace() {
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
           {/* ── Toolbar (hoisted to workspace) ── */}
+          {/* FIXED: setActiveTool now routes through api.setActiveTool which is
+              Viewer's handleSetActiveTool — so the polyarc upgrade logic runs
+              correctly when toolbar buttons are clicked at workspace level.
+              polyarcMode / togglePolyarcMode are read from toolbarAPI so the
+              toolbar pill stays in sync with Viewer's internal state. */}
           <ViewerToolbar
             activeTool={activeTool as ToolType}
-            setActiveTool={setActiveTool as (tool: ToolType) => void}
+            setActiveTool={(tool: ToolType) => api?.setActiveTool
+              ? api.setActiveTool(tool)
+              : setActiveTool(tool)
+            }
             canUndo={api?.canUndo ?? false}
             canRedo={api?.canRedo ?? false}
             handleUndo={() => api?.handleUndo?.()}
@@ -490,6 +523,8 @@ export default function Workspace() {
             MIN_ZOOM={0.1}
             MAX_ZOOM={5}
             ZOOM_SENSITIVITY={0.1}
+            polyarcMode={api?.polyarcMode}
+            togglePolyarcMode={api?.togglePolyarcMode}
           />
 
           <div className="flex flex-1 overflow-hidden relative min-h-0">

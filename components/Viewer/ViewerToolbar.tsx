@@ -1,20 +1,61 @@
 'use client';
 
 // ─── components/Viewer/ViewerToolbar.tsx ──────────────────────────────────────
+//
+// CHANGES vs previous version:
+//
+//   TOOL GROUPING WITH DIVIDERS
+//     VIEWER_TOOLS now carries a `group` field. The toolbar renders a thin
+//     vertical divider between each group (selection | area | linear | point)
+//     so the user can scan tools by category rather than reading every label.
+//
+//   DISABLED TOOL STATES
+//     Tools with `disabled: true` render at reduced opacity with a "Soon" pill
+//     on hover. Clicking them does nothing. This lets you ship the full intended
+//     toolbar layout now and enable tools one by one as they're built.
+//
+//   ADVANCED DROPDOWN — now imports ADVANCED_CANVAS_TOOLS from ViewerConstants
+//     The duplicate inline definition is removed. Icons are mapped from a local
+//     lookup table so ViewerConstants stays icon-free (no React imports needed
+//     there). Disabled tools show a "Soon" badge and cannot be clicked.
+//
+//   REMOVED onApplyPitchFactor PROP
+//     Pitch apply logic now lives entirely inside the standalone
+//     AdvancedToolsDropdown.tsx (context-wired). The prop variant is gone.
+//
+//   tempPointsCount FIXED
+//     Now read from toolbarAPI (not hardcoded 0). Polyarc upgrade hint and
+//     undo "pop point" label now work correctly.
+//
+//   KEYBOARD SHORTCUT LEGEND
+//     Each tool button tooltip now shows the correct shortcut, including the
+//     updated G for polygon.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize,
-  Undo2, Redo2, Target, Settings2,
+  Undo2, Redo2, Target,
   ChevronDown, Circle, Grid3x3, Ruler,
-  Box, Spline, ScanSearch,
+  Box, Spline, ScanSearch, Workflow,
+  TriangleRight, Type, Crosshair,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
-import { VIEWER_TOOLS } from './ViewerConstants';
+import { VIEWER_TOOLS, ADVANCED_CANVAS_TOOLS } from './ViewerConstants';
+import type { AdvancedToolMeta, ToolGroup } from './ViewerConstants';
 import { useTakeoffContext } from '@/context/TakeoffContext';
 import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
+<<<<<<< HEAD
+import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
+
+
+
+// ─── Props ────────────────────────────────────────────────────────────────────
+=======
+>>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 
 interface ViewerToolbarProps {
   activeTool:      ToolType;
@@ -23,17 +64,17 @@ interface ViewerToolbarProps {
   canRedo:         boolean;
   handleUndo:      () => void;
   handleRedo:      () => void;
-  tempPointsCount: number;
-  showPins:            boolean;        // Add this
-  setShowPins:         (v: boolean) => void;  // Add this
+  tempPointsCount: number;          // live value — no longer hardcoded 0
+  showPins:            boolean;
+  setShowPins:         (v: boolean) => void;
   snapEnabled:         boolean;
   setSnapEnabled:      (v: boolean) => void;
   showSnapSettings:    boolean;
   setShowSnapSettings: (v: boolean) => void;
   scaleFactor:       number;
   handleManualScale: () => void;
-  analysisStatus:     string;
-  analysisPage:       { current: number; total: number } | null;
+  analysisStatus:    string;
+  analysisPage:      { current: number; total: number } | null;
   currentPageCorners: number;
   scale:       number;
   setScale:    React.Dispatch<React.SetStateAction<number>>;
@@ -41,301 +82,162 @@ interface ViewerToolbarProps {
   MIN_ZOOM:         number;
   MAX_ZOOM:         number;
   ZOOM_SENSITIVITY: number;
-  onApplyPitchFactor?: (factor: number) => void;
-  onGridCountCommit?: (count: number, spacingMm: number, cols: number, rows: number) => void;
+  polyarcMode?:       'line' | 'arc';
+  togglePolyarcMode?: () => void;
 }
 
-const ADVANCED_CANVAS_TOOLS: Array<{
-  id: ToolType;
-  label: string;
-  sub: string;
-  icon: React.ElementType;
-  shortcut: string;
-  badge?: string;
-}> = [
-  {
-    id:       'radius',
-    label:    'Radius / circle',
-    sub:      'Click centre then any edge point',
-    icon:     Circle,
-    shortcut: 'R2',
-  },
-  {
-    id:       'grid-count',
-    label:    'Grid count',
-    sub:      'Draw polygon area, grid auto-counts tiles',
-    icon:     Grid3x3,
-    shortcut: 'G',
-  },
-  {
-    id:       'volume',
-    label:    'Volume',
-    sub:      'Draw boundary then enter depth for cubic m³',
-    icon:     Box,
-    shortcut: 'V2',
-    badge:    'Soon',
-  },
-  {
-    id:       'perimeter-offset',
-    label:    'Perimeter offset',
-    sub:      'Auto-generate offset line from any polygon',
-    icon:     Spline,
-    shortcut: 'O',
-    badge:    'Soon',
-  },
-  {
-    id:       'symbol-detect',
-    label:    'Symbol detect',
-    sub:      'Click one symbol — AI finds all matches',
-    icon:     ScanSearch,
-    shortcut: 'D',
-    badge:    'Soon',
-  },
-];
-
-interface AdvancedDropdownProps {
-  activeTool:          ToolType;
-  setActiveTool:       (t: ToolType) => void;
-  onApplyPitchFactor?: (factor: number) => void;
-}
-
-function AdvancedToolsDropdown({
-  activeTool,
-  setActiveTool,
-  onApplyPitchFactor,
-}: AdvancedDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const [rise, setRise] = useState('6');
-  const [run,  setRun]  = useState('12');
-  const ref             = useRef<HTMLDivElement>(null);
-
-  const runNum  = parseFloat(run)  || 12;
-  const riseNum = parseFloat(rise) || 6;
-  const ratio   = Math.sqrt(1 + (riseNum / runNum) ** 2);
-
-  const isAdvancedActive = ADVANCED_CANVAS_TOOLS.some(t => t.id === activeTool);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
-  const handleApplyPitch = useCallback(() => {
-    onApplyPitchFactor?.(ratio);
-    setOpen(false);
-  }, [ratio, onApplyPitchFactor]);
-
-  return (
-    <div ref={ref} className="relative">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className={cn(
-          'h-9 flex items-center gap-1 px-2 border transition-all relative group',
-          isAdvancedActive || open
-            ? 'bg-zinc-800 border-amber-400 text-amber-400'
-            : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
-        )}
-        title="Advanced tools"
-      >
-        <Ruler className="w-4 h-4" />
-        <span className="hidden xl:inline text-[9px] font-mono font-bold uppercase tracking-widest">
-          Advanced
-        </span>
-        <ChevronDown
-          className={cn('w-3 h-3 transition-transform duration-150', open && 'rotate-180')}
-        />
-        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50 xl:hidden">
-          Advanced tools
-        </div>
-      </button>
-
-      {open && (
-        <div className="absolute top-10 left-0 z-[80] bg-industrial-panel border border-industrial-border shadow-2xl min-w-[260px]">
-
-          {/* Pitch / slope factor */}
-          <div className="px-3 py-2.5 border-b border-industrial-border">
-            <div className="flex items-center gap-1.5 mb-2">
-              <Ruler className="w-3.5 h-3.5 text-zinc-500" />
-              <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-300">
-                Pitch / slope factor
-              </span>
-            </div>
-
-            <div className="flex items-center gap-2 mb-1.5">
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[8px] font-mono text-zinc-600 uppercase">Rise</span>
-                <input
-                  type="number"
-                  min="0" max="24" step="1"
-                  value={rise}
-                  onChange={e => setRise(e.target.value)}
-                  className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[10px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
-                />
-              </div>
-              <span className="text-zinc-600 text-[10px] font-mono mt-4">:</span>
-              <div className="flex flex-col gap-0.5">
-                <span className="text-[8px] font-mono text-zinc-600 uppercase">Run</span>
-                <input
-                  type="number"
-                  min="1" max="24" step="1"
-                  value={run}
-                  onChange={e => setRun(e.target.value)}
-                  className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[10px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
-                />
-              </div>
-              <div className="flex flex-col items-start mt-3 ml-1">
-                <span className="text-[8px] font-mono text-zinc-600 uppercase">Factor</span>
-                <span className="text-[11px] font-mono font-bold text-amber-400">
-                  ×{ratio.toFixed(4)}
-                </span>
-              </div>
-            </div>
-
-            <button
-              onClick={handleApplyPitch}
-              disabled={!onApplyPitchFactor}
-              className={cn(
-                'w-full text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1.5 border transition-all',
-                onApplyPitchFactor
-                  ? 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black'
-                  : 'border-zinc-700 text-zinc-600 cursor-not-allowed',
-              )}
-            >
-              Apply to selected row
-            </button>
-            <p className="text-[8px] text-zinc-600 font-mono mt-1">
-              Select a length row in table first
-            </p>
-          </div>
-
-          {/* Canvas tools */}
-          {ADVANCED_CANVAS_TOOLS.map(tool => {
-            const isSoon = !!tool.badge;
-            return (
-              <button
-                key={tool.id}
-                onClick={() => {
-                  if (isSoon) return;
-                  setActiveTool(tool.id);
-                  setOpen(false);
-                }}
-                disabled={isSoon}
-                className={cn(
-                  'w-full flex items-start gap-3 px-3 py-2.5 transition-colors text-left border-b border-industrial-border last:border-b-0',
-                  isSoon
-                    ? 'opacity-50 cursor-not-allowed'
-                    : 'hover:bg-zinc-800',
-                  activeTool === tool.id && !isSoon && 'bg-zinc-800',
-                )}
-              >
-                <tool.icon
-                  className={cn(
-                    'w-4 h-4 mt-0.5 flex-shrink-0',
-                    activeTool === tool.id && !isSoon ? 'text-amber-400' : 'text-zinc-500',
-                  )}
-                />
-                <div className="flex-1 min-w-0">
-                  <div className={cn(
-                    'text-[10px] font-mono font-bold uppercase tracking-widest flex items-center gap-2',
-                    activeTool === tool.id && !isSoon ? 'text-amber-400' : 'text-zinc-300',
-                  )}>
-                    {tool.label}
-                    <span className="text-zinc-600">[{tool.shortcut}]</span>
-                    {tool.badge && (
-                      <span className="ml-auto text-[8px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-500">
-                        {tool.badge}
-                      </span>
-                    )}
-                  </div>
-                  <div className="text-[9px] text-zinc-500 mt-0.5 font-mono">
-                    {tool.sub}
-                  </div>
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
+// ─── Toolbar component ────────────────────────────────────────────────────────
 
 export function ViewerToolbar({
   activeTool, setActiveTool,
   canUndo, canRedo, handleUndo, handleRedo, tempPointsCount,
   snapEnabled, setSnapEnabled,
   showSnapSettings, setShowSnapSettings,
-  showPins, setShowPins,  // Add these
+  showPins, setShowPins,
   scaleFactor, handleManualScale,
   analysisStatus, analysisPage, currentPageCorners,
   scale, setScale, fitToScreen,
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
-  onApplyPitchFactor,
+  polyarcMode,
+  togglePolyarcMode,
 }: ViewerToolbarProps) {
-  const isAnalyzing    = analysisStatus === 'analyzing';
-  const isAnalysisDone = analysisStatus === 'done';
-
+  const isAnalyzing = analysisStatus === 'analyzing';
   const { displayUnit, setDisplayUnit } = useTakeoffContext();
+
+  // Whether switching linear↔arc mid-draw would upgrade to polyarc
+  const canUpgradeToPolyarc =
+    tempPointsCount > 0 &&
+    (activeTool === 'linear' || activeTool === 'arc');
+
+  // Render a divider between tool groups
+  const divider = (key: string) => (
+    <div key={key} className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" />
+  );
+
+  // Build tool buttons with group dividers
+  const toolButtons: React.ReactNode[] = [];
+  let lastGroup: ToolGroup | null = null;
+
+  VIEWER_TOOLS.forEach((tool, idx) => {
+    // Insert divider when group changes (skip before first item)
+    if (lastGroup !== null && tool.group !== lastGroup) {
+      toolButtons.push(divider(`div-${tool.group}`));
+    }
+    lastGroup = tool.group;
+
+    const isActive   = activeTool === tool.id;
+    const isDisabled = tool.disabled;
+
+    // Tooltip upgrade hint for linear↔arc
+    const upgradeHint =
+      canUpgradeToPolyarc &&
+      ((activeTool === 'linear' && tool.id === 'arc') ||
+       (activeTool === 'arc'   && tool.id === 'linear'))
+        ? ' → upgrades to Polyarc'
+        : '';
+
+    // Active colour per tool family
+    const activeClass = isActive
+      ? tool.id === 'magic-fill'
+        ? 'bg-zinc-800 border-violet-400 text-violet-400'
+        : tool.id === 'arc' || tool.id === 'polyarc'
+        ? 'bg-zinc-800 border-teal-400 text-teal-400'
+        : 'bg-zinc-800 border-amber-400 text-amber-400'
+      : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200';
+
+    toolButtons.push(
+      <button
+        key={tool.id}
+        onClick={() => {
+          if (isDisabled) return;
+          setActiveTool(tool.id as ToolType);
+        }}
+        disabled={isDisabled}
+        className={cn(
+          'w-9 h-9 flex items-center justify-center transition-all relative group border',
+          isDisabled
+            ? 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed opacity-40'
+            : activeClass,
+        )}
+        title={`${tool.label} (${tool.shortcut})${upgradeHint}`}
+        aria-label={tool.label}
+      >
+        <tool.icon className="w-4 h-4" />
+
+        {/* Pulse ring for arc/magic-fill */}
+        {tool.id === 'arc' && isActive && (
+          <span className="absolute inset-0 rounded-sm animate-pulse bg-teal-400/10 pointer-events-none" />
+        )}
+        {tool.id === 'magic-fill' && isActive && (
+          <span className="absolute inset-0 rounded-sm animate-pulse bg-violet-400/10 pointer-events-none" />
+        )}
+
+        {/* Tooltip */}
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+          {tool.label} [{tool.shortcut}]{upgradeHint}
+          {tool.id === 'arc' && (
+            <span className="block text-teal-400 mt-0.5">
+              Click 3 points — start, mid, end
+            </span>
+          )}
+          {tool.id === 'magic-fill' && (
+            <span className="block text-violet-400 mt-0.5">
+              Click inside a closed area to fill
+            </span>
+          )}
+          {tool.id === 'polyarc' && (
+            <span className="block text-teal-400 mt-0.5">
+              Mixed line + arc segments · press A to toggle
+            </span>
+          )}
+          {upgradeHint && (
+            <span className="block text-orange-400 mt-0.5">
+              Mid-draw: switches to Polyarc
+            </span>
+          )}
+          {isDisabled && (
+            <span className="block text-zinc-500 mt-0.5">Coming soon</span>
+          )}
+        </div>
+      </button>
+    );
+  });
 
   return (
     <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-30 shadow-sm relative">
 
+      {/* ── Left: tool buttons ── */}
       <div className="flex gap-1 items-center">
 
-        {VIEWER_TOOLS.map(tool => (
+        {toolButtons}
+
+        {/* Polyarc mode pill — only when polyarc is active */}
+        {activeTool === 'polyarc' && polyarcMode && togglePolyarcMode && (
           <button
-            key={tool.id}
-            onClick={() => setActiveTool(tool.id as ToolType)}
+            onClick={togglePolyarcMode}
             className={cn(
-              'w-9 h-9 flex items-center justify-center transition-all relative group border',
-              activeTool === tool.id
-                ? tool.id === 'magic-fill'
-                  ? 'bg-zinc-800 border-violet-400 text-violet-400'
-                  : tool.id === 'arc'
-                  ? 'bg-zinc-800 border-teal-400 text-teal-400'
-                  : 'bg-zinc-800 border-amber-400 text-amber-400'
-                : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
+              'h-6 flex items-center gap-1 px-2 border text-[9px] font-mono font-bold uppercase tracking-widest transition-all ml-1',
+              polyarcMode === 'arc'
+                ? 'border-teal-400 text-teal-400 bg-teal-400/10 hover:bg-teal-400/20'
+                : 'border-zinc-500 text-zinc-300 bg-zinc-800 hover:bg-zinc-700',
             )}
-            title={`${tool.label} (${tool.shortcut})`}
+            title="Click or press A to toggle line / arc mode"
           >
-            <tool.icon className="w-4 h-4" />
-
-            {tool.id === 'arc' && activeTool === 'arc' && (
-              <span className="absolute inset-0 rounded-sm animate-pulse bg-teal-400/10 pointer-events-none" />
-            )}
-            {tool.id === 'magic-fill' && activeTool === 'magic-fill' && (
-              <span className="absolute inset-0 rounded-sm animate-pulse bg-violet-400/10 pointer-events-none" />
-            )}
-
-            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-              {tool.label} [{tool.shortcut}]
-              {tool.id === 'arc' && (
-                <span className="block text-teal-400 mt-0.5">
-                  Click 3 points — start, mid, end
-                </span>
-              )}
-              {tool.id === 'magic-fill' && (
-                <span className="block text-violet-400 mt-0.5">
-                  Click or drag to fill rooms
-                </span>
-              )}
-            </div>
+            {polyarcMode === 'arc' ? '⌒ ARC' : '— LINE'}
           </button>
-        ))}
+        )}
 
-        <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" />
+        {divider('div-before-advanced')}
 
+        {/* Advanced tools dropdown — uses standalone context-wired component */}
         <AdvancedToolsDropdown
           activeTool={activeTool}
           setActiveTool={setActiveTool}
-          onApplyPitchFactor={onApplyPitchFactor}
         />
 
-        <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" />
+        {divider('div-before-undo')}
 
+        {/* Undo */}
         <button
           onClick={handleUndo}
           disabled={!canUndo}
@@ -346,6 +248,7 @@ export function ViewerToolbar({
               : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
           )}
           title="Undo (Ctrl+Z)"
+          aria-label="Undo"
         >
           <Undo2 className="w-4 h-4" />
           {canUndo && (
@@ -358,6 +261,7 @@ export function ViewerToolbar({
           )}
         </button>
 
+        {/* Redo */}
         <button
           onClick={handleRedo}
           disabled={!canRedo}
@@ -368,6 +272,7 @@ export function ViewerToolbar({
               : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
           )}
           title="Redo (Ctrl+Y)"
+          aria-label="Redo"
         >
           <Redo2 className="w-4 h-4" />
           {canRedo && (
@@ -378,17 +283,33 @@ export function ViewerToolbar({
         </button>
       </div>
 
+      {/* ── Centre: status / config ── */}
       <div className="flex flex-row items-center gap-2 flex-1 justify-center">
 
         {snapEnabled && isAnalyzing && analysisPage && (
           <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
             <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
             <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
-              Analyzing plan… {analysisPage.current}/{analysisPage.total}
+              Analyzing… {analysisPage.current}/{analysisPage.total}
             </span>
           </div>
         )}
 
+        {/* Snap toggle */}
+        <button
+          onClick={() => setSnapEnabled(!snapEnabled)}
+          className={cn(
+            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+            snapEnabled
+              ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
+              : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+          )}
+          title={`${snapEnabled ? 'Snap on' : 'Snap off'} — toggle with S`}
+        >
+          {snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
+        </button>
+
+        {/* Pins toggle */}
         <button
           onClick={() => setShowPins(!showPins)}
           className={cn(
@@ -397,30 +318,15 @@ export function ViewerToolbar({
               ? 'bg-blue-500/10 border-blue-500/50 text-blue-400 hover:bg-blue-500/20'
               : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
           )}
-          title={showPins ? 'Pins are visible' : 'Pins are hidden'}
+          title={showPins ? 'Pins visible' : 'Pins hidden'}
         >
           <Target className="w-3 h-3" />
           {showPins ? 'PINS ON' : 'PINS OFF'}
         </button>
 
-        {/* {snapEnabled && isAnalysisDone && (
-          <button
-            onClick={() => setShowSnapSettings(!showSnapSettings)}
-            className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-2 py-1 border transition-all',
-              showSnapSettings
-                ? 'bg-zinc-800 border-zinc-500 text-zinc-200'
-                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
-            )}
-            title="Snap settings"
-          >
-            <Settings2 className="w-3 h-3" />
-            SNAP SETTINGS
-          </button>
-        )} */}
-
         <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
 
+        {/* Scale display */}
         <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
           <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
           <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
@@ -428,6 +334,7 @@ export function ViewerToolbar({
           </span>
         </div>
 
+        {/* Unit selector */}
         <div
           className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-1 py-0.5"
           title="Display unit"
@@ -446,6 +353,7 @@ export function ViewerToolbar({
           </select>
         </div>
 
+        {/* Calibration */}
         <button
           onClick={() => setActiveTool('scale')}
           className={cn(
@@ -455,15 +363,17 @@ export function ViewerToolbar({
               : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
           )}
         >
-          DRAW CALIBRATION
+          CALIBRATE
         </button>
       </div>
 
+      {/* ── Right: zoom controls ── */}
       <div className="flex items-center gap-2 flex-shrink-0">
         <button
           onClick={() => setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY))}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
-          title="Zoom Out (Ctrl/Cmd + -)"
+          title="Zoom out (Ctrl/Cmd –)"
+          aria-label="Zoom out"
         >
           <ZoomOut className="w-4 h-4" />
         </button>
@@ -473,7 +383,8 @@ export function ViewerToolbar({
         <button
           onClick={() => setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY))}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
-          title="Zoom In (Ctrl/Cmd + +)"
+          title="Zoom in (Ctrl/Cmd +)"
+          aria-label="Zoom in"
         >
           <ZoomIn className="w-4 h-4" />
         </button>
@@ -481,7 +392,8 @@ export function ViewerToolbar({
         <button
           onClick={fitToScreen}
           className="p-1.5 text-zinc-500 hover:text-zinc-200 transition-colors"
-          title="Fit to Screen (Ctrl/Cmd + 0)"
+          title="Fit to screen (Ctrl/Cmd 0)"
+          aria-label="Fit to screen"
         >
           <Maximize className="w-4 h-4" />
         </button>

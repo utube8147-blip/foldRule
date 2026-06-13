@@ -358,7 +358,7 @@ export default function PdfCVMatchPage() {
       : `Variation ${cvMatcher.templates.length + 1}`;
 
     // Pass the masked imageData directly; vpBox is used only for legacy fallback
-    cvMatcher.buildTemplate(
+    const newIndex = cvMatcher.buildTemplate(
       canvas,
       payload.vpBbox,
       zoomRef.current,
@@ -368,9 +368,17 @@ export default function PdfCVMatchPage() {
     );
     setCVSamplerMode('matched');
 
-    await cvMatcher.findMatches(
-      canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep,
-    );
+    if (isPrimary) {
+      // Full fresh search — all templates (just one right now)
+      await cvMatcher.findMatches(
+        canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep,
+      );
+    } else {
+      // Adding a variation — only search the NEW template and merge results
+      await cvMatcher.findMatchesForTemplate(
+        canvas, newIndex, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep,
+      );
+    }
   }, [cvSamplerMode, cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales, cvFineStep]);
 
   const handleClearCV     = useCallback(() => { cvMatcher.clearAll(); setCVSamplerMode('idle');    }, [cvMatcher]);

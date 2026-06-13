@@ -63,7 +63,7 @@ export interface UseOpenCVMatcherReturn {
     zoom:            number,
     pan:             { x: number; y: number },
     label?:          string,
-    lassoImageData?: ImageData,   // ← NEW
+    lassoImageData?: ImageData,
   ) => number;
   removeTemplate:  (index: number) => void;
   findMatches: (
@@ -74,6 +74,21 @@ export interface UseOpenCVMatcherReturn {
     removeText?: boolean,
     scales?:     number[],
     fineStep?:   number,
+  ) => Promise<void>;
+  /**
+   * Run matching for ONE template (by index) and MERGE the new hits with
+   * the existing matches from other templates — existing results are kept,
+   * only the new template is searched, then global NMS is applied.
+   */
+  findMatchesForTemplate: (
+    canvas:         HTMLCanvasElement,
+    templateIndex:  number,
+    threshold?:     number,
+    rotations?:     number[],
+    flips?:         boolean[],
+    removeText?:    boolean,
+    scales?:        number[],
+    fineStep?:      number,
   ) => Promise<void>;
   clearAll: () => void;
   refindMatches: (
@@ -580,6 +595,25 @@ export function templateColor(index: number): string {
   return TEMPLATE_PALETTE[index % TEMPLATE_PALETTE.length];
 }
 
+
+// ─── Client-side NMS (mirrors worker NMS for merge step) ─────────────────────
+
+function clientNMS(results: CVMatchResult[], iouThresh: number): CVMatchResult[] {
+  const sorted = results.slice().sort((a, b) => b.score - a.score);
+  const kept: CVMatchResult[] = [];
+  for (const r of sorted) {
+    const overlaps = kept.some(k => {
+      const ix = Math.max(0, Math.min(k.bbox.x+k.bbox.w, r.bbox.x+r.bbox.w) - Math.max(k.bbox.x, r.bbox.x));
+      const iy = Math.max(0, Math.min(k.bbox.y+k.bbox.h, r.bbox.y+r.bbox.h) - Math.max(k.bbox.y, r.bbox.y));
+      const inter = ix * iy;
+      if (!inter) return false;
+      return inter / (k.bbox.w*k.bbox.h + r.bbox.w*r.bbox.h - inter) > iouThresh;
+    });
+    if (!overlaps) kept.push(r);
+  }
+  return kept;
+}
+
 // ─── React hook ───────────────────────────────────────────────────────────────
 
 export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
@@ -595,6 +629,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
   const templatesRef = useRef<ImageData[]>([]);
   const resolveRef   = useRef<(() => void) | null>(null);
   const rejectRef    = useRef<((e: Error) => void) | null>(null);
+  const matchesRef   = useRef<CVMatchResult[]>([]);   // mirror of matches state — used for merge in findMatchesForTemplate
 
   // ── Spin up worker ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -621,6 +656,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
         case 'TEMPLATE_CLEANED':
           break;
         case 'RESULTS':
+          matchesRef.current = msg.matches ?? [];
           setMatches(msg.matches ?? []);
           setIsSearching(false);
           setWorkerPhase(`Done — ${msg.matches?.length ?? 0} match${msg.matches?.length !== 1 ? 'es' : ''}`);
@@ -766,6 +802,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
     });
   }, []);
 
+
   const findMatches = useCallback(async (
     canvas:     HTMLCanvasElement,
     threshold   = 0.70,
@@ -775,8 +812,118 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
     scales      = [1.0],
     fineStep    = 3,
   ): Promise<void> => {
-    return _findMatches(canvas, threshold, rotations, flips, removeText, scales, fineStep, templatesRef.current);
+    // Full run — clears and replaces ALL matches
+    const result = await _findMatches(
+      canvas, threshold, rotations, flips, removeText, scales, fineStep,
+      templatesRef.current,
+    );
+    matchesRef.current = [];   // will be repopulated via setMatches in _findMatches handler
+    return result;
   }, [_findMatches]);
+
+  // ── findMatchesForTemplate ──────────────────────────────────────────────────
+  //
+  //  Runs the worker for ONE template only, then MERGES the new hits with
+  //  existing results from all other templates. No re-running of old templates.
+
+  const findMatchesForTemplate = useCallback(async (
+    canvas:        HTMLCanvasElement,
+    templateIndex: number,
+    threshold      = 0.70,
+    rotations      = [0],
+    flips          = [false],
+    removeText     = false,
+    scales         = [1.0],
+    fineStep       = 3,
+  ): Promise<void> => {
+    const tmpl = templatesRef.current[templateIndex];
+    if (!tmpl) return;
+
+    const worker = workerRef.current;
+    if (!worker) return;
+
+    setIsSearching(true);
+    setWorkerDetail('');
+
+    await new Promise<void>(r => requestAnimationFrame(() => r()));
+
+    const srcCtx  = canvas.getContext('2d')!;
+    const srcData = srcCtx.getImageData(0, 0, canvas.width, canvas.height);
+    const srcMsg  = { data: srcData.data, width: srcData.width, height: srcData.height };
+
+    const tplMsg  = {
+      data:   new Uint8ClampedArray(tmpl.data),
+      width:  tmpl.width,
+      height: tmpl.height,
+    };
+
+    // Snapshot existing results from OTHER templates before worker runs
+    const existingOther = matchesRef.current.filter(
+      m => m.templateIndex !== templateIndex,
+    );
+
+    // Temporarily override onmessage for merge behaviour
+    const savedHandler = worker.onmessage;
+
+    return new Promise<void>((resolve, reject) => {
+      worker.onmessage = (e: MessageEvent) => {
+        const msg = e.data;
+
+        if (msg.type === 'PROGRESS') {
+          setWorkerPhase(msg.phase ?? '');
+          setWorkerDetail(msg.detail ?? '');
+          return;
+        }
+
+        if (msg.type === 'RESULTS') {
+          worker.onmessage = savedHandler;
+
+          // templateIndex in worker results is always 0 (single-template run)
+          // Re-stamp with the real index so overlay colours stay correct
+          const newHits: CVMatchResult[] = (msg.matches ?? []).map(
+            (m: CVMatchResult) => ({ ...m, templateIndex }),
+          );
+
+          const combined = clientNMS([...existingOther, ...newHits], 0.30);
+          combined.sort((a, b) => b.score - a.score);
+
+          matchesRef.current = combined;
+          setMatches(combined);
+          setIsSearching(false);
+          setWorkerPhase(
+            `Done — ${combined.length} match${combined.length !== 1 ? 'es' : ''}`,
+          );
+          setWorkerDetail('');
+          resolve();
+          return;
+        }
+
+        if (msg.type === 'ERROR') {
+          worker.onmessage = savedHandler;
+          setIsSearching(false);
+          setWorkerPhase(`Error: ${msg.message}`);
+          setWorkerDetail('');
+          reject(new Error(msg.message));
+          return;
+        }
+      };
+
+      worker.postMessage(
+        {
+          type:         'FIND_MATCHES',
+          srcImageData: srcMsg,
+          templates:    [tplMsg],
+          threshold,
+          rotations,
+          flips,
+          scales,
+          removeText,
+          fineStep,
+        },
+        [srcMsg.data.buffer, tplMsg.data.buffer],
+      );
+    });
+  }, []);   // no deps — uses refs only
 
   const refindMatches = useCallback(async (
     canvas:     HTMLCanvasElement,
@@ -792,6 +939,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
 
   const clearAll = useCallback(() => {
     templatesRef.current = [];
+    matchesRef.current   = [];
     setTemplates([]);
     setMatches([]);
     setWorkerPhase(isReady ? 'OpenCV ready' : 'Loading OpenCV.js…');
@@ -808,6 +956,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
     buildTemplate,
     removeTemplate,
     findMatches,
+    findMatchesForTemplate,
     refindMatches,
     clearAll,
   };

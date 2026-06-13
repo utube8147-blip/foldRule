@@ -1,10 +1,12 @@
-export type ToolType = 'select' | 'point' | 'linear' | 'area' | 'count' | 'scale' | 'polygon' | 'rectangle' | 'magic-fill' 
+export type ToolType = 'select' | 'point' | 'linear' | 'area' | 'count' | 'scale' | 'polygon' | 'rectangle' | 'magic-fill' | 'polyarc'                       // ← new: 2-click polyarc (auto-radius)
   | 'arc'                          // ← new: 3-point arc
   | 'radius'                       // ← new: centre + edge
   | 'grid-count'                  // ← new: grid overlay;
   | 'volume'
   | 'symbol-detect'
   | 'perimeter-offset'
+  | 'annotations'
+  | 'polar-mode'
 
 
 export interface Point {
