@@ -502,7 +502,8 @@ function SidebarHeader({ icon, label, color, onClose }: { icon: string; label: s
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-type CVSamplerMode = 'idle' | 'drawing' | 'matched';
+// Extended to include 'adding' mode for multi-template CV matching
+type CVSamplerMode = 'idle' | 'drawing' | 'adding' | 'matched';
 type PainterDrawState = 'idle' | 'drawing' | 'naming';
 
 export default function SnapEnginePage() {
@@ -531,11 +532,11 @@ export default function SnapEnginePage() {
   // ── CV Sampler state ─────────────────────────────────────────────────────────
   const [cvSamplerMode, setCVSamplerMode] = useState<CVSamplerMode>('idle');
   const [cvThreshold,   setCVThreshold]   = useState(0.60);
-  const [cvRotations, setCVRotations] = useState<number[]>([0, 45, 90, 135, 180, 225, 270, 315]);
+  const [cvRotations,   setCVRotations]   = useState<number[]>([0, 45, 90, 135, 180, 225, 270, 315]);
   const [cvFlips,       setCVFlips]       = useState<boolean[]>([false, true]);
   const [cvRemoveText,  setCVRemoveText]  = useState(false);
   const [cvScales,      setCVScales]      = useState<number[]>([0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.3]);
-
+  const [cvFineStep,    setCVFineStep]    = useState(3);   // ← NEW: fine rotation step (degrees)
 
   // ── Pattern Painter state ─────────────────────────────────────────────────────
   const [painterDrawState, setPainterDrawState] = useState<PainterDrawState>('idle');
@@ -597,6 +598,7 @@ export default function SnapEnginePage() {
   // ── CV Matcher ────────────────────────────────────────────────────────────────
   const cvMatcher = useOpenCVMatcher();
 
+  // Commit a rubber-band box as a CV template (primary or variation)
   const handleCVBoxCommit = useCallback(async (box: CVBox): Promise<void> => {
     const canvas = baseCanvasRef.current;
     if (!canvas) return;
@@ -605,17 +607,38 @@ export default function SnapEnginePage() {
     await cvMatcher.findMatches(canvas, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales);
   }, [cvMatcher, cvThreshold, cvRotations, cvFlips, cvRemoveText, cvScales]);
 
+  // Clear everything
   const handleClearCV = useCallback(() => {
     cvMatcher.clearAll();
     setCVSamplerMode('idle');
   }, [cvMatcher]);
 
+  // Enter primary-draw mode (clears existing templates first)
   const handleEnterCVDraw = useCallback(() => {
     cvMatcher.clearAll();
     setCVSamplerMode('drawing');
   }, [cvMatcher]);
 
-  const isCVDrawMode = activeTool === 'cv' && cvSamplerMode === 'drawing';
+  // Enter add-variation mode (keeps existing templates, draws a new one)
+  const handleEnterCVAdd = useCallback(() => {
+    setCVSamplerMode('adding');
+  }, []);
+
+  // Remove a single template by index
+  const handleRemoveCVTemplate = useCallback((index: number) => {
+    if (typeof cvMatcher.removeTemplate === 'function') {
+      cvMatcher.removeTemplate(index);
+    } else {
+      // Fallback: if hook doesn't expose removeTemplate yet, clear all
+      cvMatcher.clearAll();
+      setCVSamplerMode('idle');
+    }
+  }, [cvMatcher]);
+
+  // Drawing mode is active when either 'drawing' (primary) or 'adding' (variation)
+  const isCVDrawMode =
+    activeTool === 'cv' &&
+    (cvSamplerMode === 'drawing' || cvSamplerMode === 'adding');
 
   const {
     drawBox:   cvDrawBox,
@@ -761,7 +784,7 @@ export default function SnapEnginePage() {
   const handlePointerDown = useCallback((e: React.PointerEvent)=>{
     if(e.button!==0)return;
     const tool = activeToolRef.current;
-    if(tool==='cv' && cvSamplerMode==='drawing'){ cvStartDraw(e); return; }
+    if(tool==='cv' && (cvSamplerMode==='drawing'||cvSamplerMode==='adding')){ cvStartDraw(e); return; }
     if(tool==='painter' && painterDrawState==='drawing'){ painterStartDraw(e); return; }
     pointerDownRef.current=true;
     isDraggingRef.current=false;
@@ -772,7 +795,7 @@ export default function SnapEnginePage() {
 
   const handlePointerMove = useCallback((e: React.PointerEvent)=>{
     const tool = activeToolRef.current;
-    if((tool==='cv' && cvSamplerMode==='drawing')||(tool==='painter' && painterDrawState==='drawing'))return;
+    if((tool==='cv' && (cvSamplerMode==='drawing'||cvSamplerMode==='adding'))||(tool==='painter' && painterDrawState==='drawing'))return;
     if(pointerDownRef.current&&!isDraggingRef.current){
       const dx=e.clientX-dragRef.current.mx,dy=e.clientY-dragRef.current.my;
       if(Math.hypot(dx,dy)>DRAG_THRESHOLD)isDraggingRef.current=true;
@@ -790,7 +813,7 @@ export default function SnapEnginePage() {
 
   const handlePointerUp = useCallback((e: React.PointerEvent)=>{
     const tool = activeToolRef.current;
-    if((tool==='cv'&&cvSamplerMode==='drawing')||(tool==='painter'&&painterDrawState==='drawing'))return;
+    if((tool==='cv'&&(cvSamplerMode==='drawing'||cvSamplerMode==='adding'))||(tool==='painter'&&painterDrawState==='drawing'))return;
     const wasActualDrag=isDraggingRef.current;
     pointerDownRef.current=false;
     isDraggingRef.current=false;
@@ -886,7 +909,6 @@ export default function SnapEnginePage() {
   // ── Tool switching ────────────────────────────────────────────────────────────
   const switchTool = useCallback((tool: ActiveTool) => {
     setActiveTool(prev => prev === tool ? null : tool);
-    // Auto-enter draw mode when switching to CV or painter
     if (tool === 'cv') {
       setCVSamplerMode('idle');
     }
@@ -897,7 +919,7 @@ export default function SnapEnginePage() {
 
   // ── Cursor ────────────────────────────────────────────────────────────────────
   const isAnyDrawMode =
-    (activeTool === 'cv' && cvSamplerMode === 'drawing') ||
+    (activeTool === 'cv' && (cvSamplerMode === 'drawing' || cvSamplerMode === 'adding')) ||
     (activeTool === 'painter' && painterDrawState === 'drawing');
 
   const cursor = (pdfDims || isAnyDrawMode) ? 'crosshair' : 'default';
@@ -905,7 +927,7 @@ export default function SnapEnginePage() {
   // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div style={S.root}>
-      {/* ��─ Toolbar ── */}
+      {/* ── Toolbar ── */}
       <div style={S.toolbar}>
         <span style={{ fontSize:9,fontWeight:700,color:'#555',textTransform:'uppercase',letterSpacing:'.1em',marginRight:4,flexShrink:0 }}>⊕ Snap Engine</span>
         <div style={S.sep} />
@@ -961,9 +983,13 @@ export default function SnapEnginePage() {
             {cvSamplerMode==='idle' && (
               <button onClick={handleEnterCVDraw} style={tbBtn(false,'#38bdf8')}>⊡ Draw box</button>
             )}
-            {cvSamplerMode==='drawing' && (
-              <span style={{ fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
-                {cvTooLarge ? '⚠ Zoom in more' : 'Drag tight box around ONE symbol'}
+            {(cvSamplerMode==='drawing' || cvSamplerMode==='adding') && (
+              <span style={{ fontSize:8,color: cvSamplerMode==='adding' ? '#a78bfa' : '#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>
+                {cvTooLarge
+                  ? '⚠ Zoom in more'
+                  : cvSamplerMode==='adding'
+                  ? 'Drag box for new variation'
+                  : 'Drag tight box around ONE symbol'}
               </span>
             )}
             {cvSamplerMode==='matched' && (
@@ -1115,6 +1141,11 @@ export default function SnapEnginePage() {
               {cvTooLarge ? '⚠ Zoom in more — box too large' : 'CV Match · drag tight box around ONE symbol'}
             </div>
           )}
+          {activeTool==='cv'&&cvSamplerMode==='adding'&&(
+            <div style={{ position:'absolute',top:10,left:10,background:'rgba(167,139,250,.12)',border:'1px solid rgba(167,139,250,.4)',padding:'3px 8px',fontSize:8,color:'#a78bfa',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
+              {cvTooLarge ? '⚠ Zoom in more — box too large' : 'CV Match · drag box for new variation'}
+            </div>
+          )}
           {activeTool==='cv'&&cvSamplerMode==='matched'&&cvMatcher.matches.length>0&&!cvMatcher.isSearching&&(
             <div style={{ position:'absolute',top:10,left:10,background:'rgba(56,189,248,.12)',border:'1px solid rgba(56,189,248,.3)',padding:'3px 8px',fontSize:8,color:'#38bdf8',textTransform:'uppercase',letterSpacing:'.1em',pointerEvents:'none' }}>
               {cvMatcher.matches.length} CV match{cvMatcher.matches.length!==1?'es':''} · pixel-accurate
@@ -1156,22 +1187,26 @@ export default function SnapEnginePage() {
           {activeTool==='cv' && (
             <>
               <SidebarHeader icon="⊡" label="CV Match" color="#38bdf8" onClose={()=>setActiveTool(null)} />
-                <CVSamplerSidebar
-                  matcher={cvMatcher}
-                  samplerMode={cvSamplerMode}
-                  onEnterDraw={handleEnterCVDraw}
-                  onClear={handleClearCV}
-                  threshold={cvThreshold}
-                  onThreshold={setCVThreshold}
-                  rotations={cvRotations}
-                  onRotations={setCVRotations}
-                  flips={cvFlips}
-                  onFlips={setCVFlips}
-                  removeText={cvRemoveText}
-                  onRemoveText={setCVRemoveText}
-                  scales={cvScales}
-                  onScales={setCVScales}
-                />
+              <CVSamplerSidebar
+                matcher={cvMatcher}
+                samplerMode={cvSamplerMode}
+                onEnterDraw={handleEnterCVDraw}
+                onEnterAdd={handleEnterCVAdd}
+                onClear={handleClearCV}
+                onRemoveTemplate={handleRemoveCVTemplate}
+                threshold={cvThreshold}
+                onThreshold={setCVThreshold}
+                rotations={cvRotations}
+                onRotations={setCVRotations}
+                flips={cvFlips}
+                onFlips={setCVFlips}
+                removeText={cvRemoveText}
+                onRemoveText={setCVRemoveText}
+                scales={cvScales}
+                onScales={setCVScales}
+                fineStep={cvFineStep}
+                onFineStep={setCVFineStep}
+              />
             </>
           )}
 
@@ -1213,11 +1248,13 @@ export default function SnapEnginePage() {
         ) : activeTool==='cv' ? (
           (cvSamplerMode==='drawing'
             ? [cvTooLarge?'⚠ Zoom in more':'Drag tight box around ONE symbol']
+            : cvSamplerMode==='adding'
+            ? [cvTooLarge?'⚠ Zoom in more':'Drag box to add a variation template']
             : ['Draw box to sample','Find all matches','Ctrl+scroll: zoom','Drag: pan']
           ).map((h,i)=>(
             <React.Fragment key={h}>
               {i>0&&<div style={S.barSep} />}
-              <span style={{ fontSize:8,color:cvSamplerMode==='drawing'&&cvTooLarge?'#f43f5e':'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
+              <span style={{ fontSize:8,color:(cvSamplerMode==='drawing'||cvSamplerMode==='adding')&&cvTooLarge?'#f43f5e':'#38bdf8',textTransform:'uppercase',letterSpacing:'.07em' }}>{h}</span>
             </React.Fragment>
           ))
         ) : activeTool==='painter' ? (
