@@ -53,7 +53,8 @@ import {
   calculateSolidity,
   isConvexPolygon,
   doFacesShareEdge,
-  PILLAR_CONFIG
+  PILLAR_CONFIG,
+  dist
 } from './detectPillars';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
