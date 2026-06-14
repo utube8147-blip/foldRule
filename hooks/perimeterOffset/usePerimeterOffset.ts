@@ -1,37 +1,23 @@
 'use client';
 // ─── hooks/perimeterOffset/usePerimeterOffset.ts ──────────────────────────────
 //
-//  FIX (this revision)
-//  ────────────────────
-//  isValidOpenSource previously rejected ALL group-header rows outright:
+//  FIXES IN THIS REVISION
+//  ──────────────────────
+//  FIX 1 (previous): isValidOpenSource now handles group headers via
+//         getEffectivePoints() instead of row.points (always [] on headers).
 //
-//      if (row.isGroupHeader) return false;
+//  FIX 2 (this revision): CHILD ROWS EXCLUDED FROM OPEN/CLOSED SOURCE
+//         isValidOpenSource and isValidSource now immediately return false
+//         for any row that has a `parentId` set. Child rows are segments of
+//         a group; the group header (the full stitched path) is the correct
+//         unit to offset. Without this, each individual line/arc child of a
+//         polyarc group passes isValidOpenSource independently, appearing as
+//         separate eligible shapes in the canvas overlay and hit-testing —
+//         making it impossible to select the full compound path.
 //
-//  and then checked `row.points` directly — which is always `[]` for group
-//  headers (their geometry lives in their children via `childIds`).
-//
-//  Result: a multi-segment OPEN path (e.g. a polyarc or multi-click "linear"
-//  measurement committed as a group header + child segments) was NEVER
-//  offset-eligible as a whole. Meanwhile each CHILD row individually passed
-//  isValidOpenSource (type 'Length', has real points, not closed), so each
-//  segment became its OWN separate offset-eligible shape in
-//  offsetEligiblePolygons / findOffsetHit. Clicking near the path would only
-//  select whichever single segment was under the cursor — "the full path"
-//  was never selectable.
-//
-//  Fix: isValidOpenSource now mirrors isValidSource's group-header handling —
-//  for a group header, validity is determined via getEffectivePoints()
-//  (which already stitches childIds together, see perimeterOffsetGeometry.ts)
-//  rather than row.points. A group header is a valid OPEN source when:
-//    • it has childIds
-//    • its effective (stitched) points have >= 2 real points
-//    • it is NOT effectively closed (closed multi-segment paths remain the
-//      domain of isValidSource)
-//
-//  Combined with the Viewer.tsx change to skip rows with `parentId` when
-//  building offsetEligiblePolygons / findOffsetHit (so children of a group
-//  are never independently offset-eligible), multi-segment open paths now
-//  resolve to a single eligible shape — the full stitched path.
+//         Combined with Viewer.tsx also skipping parentId rows when building
+//         offsetEligiblePolygons / findOffsetHit, the full stitched group
+//         header is now the only eligible shape for multi-segment open paths.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -113,8 +99,6 @@ export interface UsePerimeterOffsetReturn {
   batchCommitOffsets:   (params: CommitOffsetParams[], options?: BatchCommitOptions) => CommitOffsetResult;
   commitOpenPathOffset: (params: CommitOpenPathParams) => CommitOffsetResult;
   previewOffset:        (source: TakeoffRow, offsetMetres: number, direction: OffsetDirection) => Array<{ x: number; y: number }>[] | null;
-  // FIX: previewOpenOffset now accepts optional joinStyle + endStyle so corner/end
-  // style changes correctly update the live preview geometry.
   previewOpenOffset:    (
     source:       TakeoffRow,
     offsetMetres: number,
@@ -155,9 +139,16 @@ export function usePerimeterOffset({
 }: UsePerimeterOffsetParams): UsePerimeterOffsetReturn {
 
   // ── isValidSource (closed shapes) ─────────────────────────────────────────
+  //
+  //  FIX 2: reject child rows immediately. Children are segments of a group;
+  //  only the group header (stitched via getEffectivePoints) should be
+  //  offset-eligible as a whole.
   const isValidSource = useCallback((row: TakeoffRow): boolean => {
     if (!row) return false;
     if (row.type === 'Count' || row.type === 'Point') return false;
+
+    // FIX 2: child rows are never independently eligible
+    if ((row as any).parentId) return false;
 
     if (row.type === 'Polygon' || row.type === 'Rectangle' || row.type === 'Area') {
       return (row.points?.length ?? 0) >= 3;
@@ -188,30 +179,28 @@ export function usePerimeterOffset({
 
   // ── isValidOpenSource (open linear paths) ─────────────────────────────────
   //
-  //  FIX: group headers are now handled the same way isValidSource handles
-  //  them — via getEffectivePoints() (which stitches childIds together),
-  //  not via row.points (always [] on a header).
+  //  FIX 2: reject child rows immediately — same reasoning as isValidSource.
+  //  Without this, each line/arc child of a polyarc group is independently
+  //  eligible, making the full compound path impossible to select as a unit.
   //
   //  A group header is a valid OPEN source when:
   //    • row.type === 'Length'
+  //    • no parentId (not a child segment)
   //    • it has childIds
   //    • its stitched effective points have >= 2 real points
   //    • it is NOT effectively closed
   //
-  //  A non-header row is a valid OPEN source when (unchanged):
+  //  A standalone (non-header, non-child) row is a valid OPEN source when:
   //    • row.type === 'Length'
+  //    • no parentId
   //    • it has >= 2 real points
   //    • it is NOT effectively closed
-  //
-  //  NOTE: child rows (rows with `parentId` set) still pass this check
-  //  individually if they happen to satisfy the conditions above. Viewer.tsx
-  //  is responsible for skipping rows with `parentId` when building the list
-  //  of offset-eligible shapes / hit-testing, so that only the group header
-  //  (representing the FULL stitched path) is considered — not each segment
-  //  independently.
   const isValidOpenSource = useCallback((row: TakeoffRow): boolean => {
     if (!row) return false;
     if (row.type !== 'Length') return false;
+
+    // FIX 2: child rows are never independently eligible
+    if ((row as any).parentId) return false;
 
     if (row.isGroupHeader) {
       if (!row.childIds?.length) return false;
@@ -221,7 +210,7 @@ export function usePerimeterOffset({
       return !isEffectivelyClosed(row, measurements);
     }
 
-    const rawPts = row.points ?? [];
+    const rawPts    = row.points ?? [];
     const realCount = countRealPoints(rawPts);
     if (realCount < 2) return false;
 
@@ -287,8 +276,6 @@ export function usePerimeterOffset({
   }, [isValidSource, _runOffset]);
 
   // ── previewOpenOffset ──────────────────────────────────────────────────────
-  // FIX: now accepts joinStyle + endStyle and threads them through to _runOpenOffset
-  // so the live preview reflects corner and end treatment changes immediately.
   const previewOpenOffset = useCallback((
     sourceMeasurement: TakeoffRow,
     offsetMetres:      number,
@@ -361,7 +348,6 @@ export function usePerimeterOffset({
         notes    = `Ring area ${direction} ${offsetMetres}m from "${srcLabel}" (donut)`;
 
       } else {
-        // 'length' and 'perimeter-both' both produce perimeter rows
         quantity = +polygonPerimeterMetres(offsetPolyRow, dim, scaleRef.current, scaleFactor, measurements).toFixed(4);
         unit     = 'm';
         type     = 'Length';
@@ -412,14 +398,14 @@ export function usePerimeterOffset({
       const suffix = resultPolygons.length > 1 ? ` ${i + 1}` : '';
       const desc   = `${label}${suffix}`;
 
-      const first        = poly[0];
-      const last         = poly[poly.length - 1];
+      const first           = poly[0];
+      const last            = poly[poly.length - 1];
       const isAlreadyClosed =
         poly.length >= 2 &&
         Math.abs(first.x - last.x) < 1e-9 &&
         Math.abs(first.y - last.y) < 1e-9;
-      const closedPoly   = isAlreadyClosed ? poly : [...poly, { x: first.x, y: first.y }];
-      const offsetPolyRow = { type: 'Polygon', points: poly, isGroupHeader: false };
+      const closedPoly      = isAlreadyClosed ? poly : [...poly, { x: first.x, y: first.y }];
+      const offsetPolyRow   = { type: 'Polygon', points: poly, isGroupHeader: false };
 
       let quantity: number;
       let unit:     string;
@@ -774,7 +760,7 @@ export function usePerimeterOffset({
     if (!resultPolygons || resultPolygons.length === 0)
       return { error: 'Could not compute open-path offset — try adjusting the distance.', warning: null };
 
-    const groupId    = sourceMeasurement.id;
+    const groupId      = sourceMeasurement.id;
     const rowsToCommit = _buildOpenPathChildren(
       sourceMeasurement, resultPolygons, outputType, label,
       offsetMetres, direction, groupId,
