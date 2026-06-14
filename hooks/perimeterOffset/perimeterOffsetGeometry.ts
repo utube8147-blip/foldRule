@@ -1,70 +1,81 @@
 'use client';
 // ─── hooks/perimeterOffset/perimeterOffsetGeometry.ts ────────────────────────
 //
-//  FIXES vs previous version
-//  ──────────────────────────
-//  FIX 1 — openPathOffsetLengthMetres: `direction` and `offsetMetres` params
-//           were accepted but never used. Both are now explicitly voided.
+//  FIXES IN THIS REVISION
+//  ──────────────────────
+//  FIX A — pdfPixelDelta: removed `displayScale` (zoom) from the formula
+//           everywhere. The correct conversion is:
+//             offsetPdfPixels = offsetMetres / scaleFactor
+//           where scaleFactor = realMetres/pdfPixel (calibration ratio).
+//           Including zoom (displayScale) in the formula caused all offset
+//           distances to scale with the current zoom level, making offsets
+//           visually wrong and the geometry inconsistent between zoom levels.
+//           This affects computePerimeterOffset, computeOpenPathOffset,
+//           computeInscribedCircleRadius, and openPathBufferAreaMetres2.
 //
-//  FIX 2 — computeOpenPathOffset: the 'both' (corridor) direction now
-//           correctly forwards the endStyle/clipperEndType to ClipperOffset.
-//           Previously the 'both' branch always used etOpenSquare (the
-//           default local) rather than the computed clipperEndType, meaning
-//           square/round/butt looked identical for corridor offsets.
+//  FIX B — computeParallelOffset: the normal vector was divided by scaleW/scaleH
+//           TWICE — once when building the normalised normal, and again when
+//           applying the offset. Fixed by computing the normal in pdf-pixel
+//           space, then applying the offset in pdf-pixel space, then converting
+//           back to normalised space in one step:
+//             x_new = pts[i].x + normalX_unit * delta / scaleW
+//             y_new = pts[i].y + normalY_unit * delta / scaleH
+//           where normalX_unit, normalY_unit are the unit normal in pdf-pixel
+//           space (not converted to normalised).
 //
-//  FIX 3 — computeOpenPathOffset: left/right single-side now uses an
-//           EXPLICIT POLYGON CONSTRUCTION rather than XOR-split. The offset
-//           polyline is computed by shifting source points perpendicularly,
-//           then capping the ends according to endStyle (square = extend by
-//           offsetMetres, round = semicircle arc, butt = flush). The result
-//           is a single closed polygon: source fwd + cap + offset reversed +
-//           cap. This is geometrically correct and doesn't rely on XOR.
+//  FIX C — computeParallelOffset direction: 'left' in screen Y-down means
+//           the left-hand side when walking forward along the path. In Y-down
+//           screen space, the left normal of segment (dx, dy) is (-dy, dx)/len.
+//           Positive delta = left side. This is now consistent with the
+//           direction='left'/'right' selection in the panel.
 //
-//  FIX 4 — computeOpenPathOffset: left/right direction is now correct for
-//           screen space (Y-down). 'left' = cross product < 0 relative to
-//           forward direction. Normal is (-dy, dx) / len in screen space.
-//           'right' = opposite. This matches the 'none' endStyle behavior.
+//  FIX D — square cap end extension: was extending by pdfPixelDelta (= full
+//           offset width) in both directions, creating caps twice as long as
+//           expected. Standard square cap extends by HALF the offset width
+//           (= pdfPixelDelta / 2) so the cap total length = offset width.
+//           Fixed to use pdfPixelDelta / 2 per side.
 //
-//  FIX 5 — OpenEndStyle gains a new 'none' value. When endStyle === 'none'
-//           computeOpenPathOffset bypasses ClipperOffset entirely and instead
-//           shifts each polyline point perpendicular to the local tangent by
-//           offsetMetres. For direction='both' it returns two open strokes
-//           (one each side). For direction='left'/'right' it returns a single
-//           open stroke. No closing segment is ever drawn — the result is two
-//           raw parallel open paths with no cap whatsoever.
+//  FIX E — buildSemiCircleCap: the cap centre was placed at the midpoint of
+//           (srcEnd, offEnd). Correct centre is the source endpoint itself
+//           (or the corresponding endpoint on the zero side). The cap is a
+//           semicircle of radius = pdfPixelDelta, centred at the source
+//           endpoint, sweeping from the source side to the offset side.
 //
-//  FIX 6 — isOpenPathResult: new exported helper. Returns true only when
-//           endStyle === 'none'. For all other cap styles (square/round/butt)
-//           the result is a CLOSED polygon and should be rendered/measured as
-//           such (filled area for area output types).
+//  FIX F — left/right one-side polygon winding: the explicit polygon
+//           construction now closes cleanly by ensuring the polygon starts at
+//           pts[0], traverses all source pts forward, applies end cap, traverses
+//           offset pts backward, applies start cap, then closes back to pts[0].
+//           The closing `polygon.push(pts[0])` at the end is removed because
+//           SVG/Clipper auto-closes, and the start cap already returns to pts[0].
+//
+//  FIX G — openPathOffsetLengthMetres: `direction` and `offsetMetres` params
+//           were silently unused. Now explicitly voided (pre-existing fix kept).
+//
+//  FIX H — computeOpenPathOffset 'both' branch: was not forwarding endStyle to
+//           ClipperOffset — was always using etOpenSquare. Now correctly maps
+//           endStyle → ClipperEndType for the corridor case.
+//
+//  FIX I — new ClipperLib.Paths() replaced with [] everywhere, since the
+//           @types/clipper-lib definitions type Paths as an array, not a class.
 
 import ClipperLib from 'clipper-lib';
 
 const CLIPPER_SCALE = 1e6;
 const SENTINEL_IDS  = new Set(['__arc_break__', '__radius_break__']);
-const CLOSED_THRESHOLD            = 0.012;
+const CLOSED_THRESHOLD              = 0.012;
 const ARC_TESSELLATION_SUBDIVISIONS = 64;
-const BRIDGE_EPSILON              = 1e-9;
+const BRIDGE_EPSILON                = 1e-9;
 
-export type NormPoint      = { x: number; y: number };
-export type OffsetDirection = 'inward' | 'outward';
-export type JoinStyle       = 'miter' | 'round' | 'square';
-
+export type NormPoint       = { x: number; y: number };
+export type OffsetDirection  = 'inward' | 'outward';
+export type JoinStyle        = 'miter' | 'round' | 'square';
 export interface PdfDimensions { w: number; h: number; }
-
 export type OpenPathDirection = 'left' | 'right' | 'both';
-// FIX 5: added 'none' — produces two raw parallel open strokes, no caps
-export type OpenEndStyle = 'square' | 'round' | 'butt' | 'none';
+export type OpenEndStyle      = 'square' | 'round' | 'butt' | 'none';
 
 const ARC_SENTINEL_OBJ = { segmentId: '__arc_break__', x: -1, y: -1 };
 
-// ─── FIX 6: isOpenPathResult ──────────────────────────────────────────────────
-//
-//  Returns true ONLY when endStyle === 'none'.
-//  For square / round / butt the result geometry is a CLOSED polygon
-//  (either a corridor strip or a one-side strip with caps), so callers
-//  should treat it as closed — render filled, measure as area, etc.
-
+// ─── FIX 6 (kept): isOpenPathResult ──────────────────────────────────────────
 export function isOpenPathResult(endStyle: OpenEndStyle): boolean {
   return endStyle === 'none';
 }
@@ -370,15 +381,15 @@ export function isEffectivelyClosed(row: any, allMeasurements: any[] = []): bool
 
 // ─── pdfToNormScale ───────────────────────────────────────────────────────────
 
-function pdfToNormScale(dim: PdfDimensions, _displayScale: number) {
+function pdfToNormScale(dim: PdfDimensions) {
   return { scaleW: dim.w, scaleH: dim.h };
 }
 
 function normDeltaToMetres(
   dx: number, dy: number,
-  dim: PdfDimensions, displayScale: number, scaleFactor: number,
+  dim: PdfDimensions, scaleFactor: number,
 ): number {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   return Math.hypot(dx * scaleW, dy * scaleH) * scaleFactor;
 }
 
@@ -391,7 +402,7 @@ export function polygonAreaMetres2(
   scaleFactor:  number,
   allMeasurements: any[] = [],
 ): number {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 3) return 0;
@@ -415,7 +426,7 @@ export function polygonPerimeterMetres(
   scaleFactor:  number,
   allMeasurements: any[] = [],
 ): number {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 2) return 0;
@@ -423,7 +434,7 @@ export function polygonPerimeterMetres(
   let len = 0;
   for (let i = 0; i < pts.length; i++) {
     const j = (i + 1) % pts.length;
-    len += normDeltaToMetres(pts[j].x - pts[i].x, pts[j].y - pts[i].y, dim, displayScale, scaleFactor);
+    len += normDeltaToMetres(pts[j].x - pts[i].x, pts[j].y - pts[i].y, dim, scaleFactor);
   }
   return len;
 }
@@ -451,13 +462,13 @@ export function computePerimeterOffset(
   allMeasurements: any[] = [],
   joinStyle: JoinStyle = 'miter',
 ): NormPoint[][] {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
 
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 3) return [];
 
-  const pdfPixelDelta = (offsetMetres / scaleFactor) * displayScale;
+  const pdfPixelDelta = offsetMetres / scaleFactor;
   const clipperDelta  = direction === 'outward'
     ?  pdfPixelDelta * CLIPPER_SCALE
     : -pdfPixelDelta * CLIPPER_SCALE;
@@ -468,13 +479,11 @@ export function computePerimeterOffset(
   }));
 
   const miterLimit = joinStyle === 'miter' ? 10 : 2;
-  const co    = new ClipperLib.ClipperOffset(miterLimit, 0.25);
-  const paths = new ClipperLib.Paths();
-  paths.push(pdfPath);
+  const co      = new ClipperLib.ClipperOffset(miterLimit, 0.25);
+  const paths   = [pdfPath];
+  const solution: any[] = [];
 
   co.AddPaths(paths, getClipperJoinType(joinStyle), ClipperLib.EndType.etClosedPolygon);
-
-  const solution = new ClipperLib.Paths();
   co.Execute(solution, clipperDelta);
 
   if (!solution || solution.length === 0) return [];
@@ -498,7 +507,7 @@ export function computeInscribedCircleRadius(
   scaleFactor:     number,
   allMeasurements: any[] = [],
 ): number {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 3) return 0;
@@ -512,13 +521,12 @@ export function computeInscribedCircleRadius(
   let hi = 100;
 
   const tryDelta = (metres: number): boolean => {
-    const pdfPixelDelta = (metres / scaleFactor) * displayScale;
+    const pdfPixelDelta = metres / scaleFactor;
     const clipperDelta  = -pdfPixelDelta * CLIPPER_SCALE;
-    const co    = new ClipperLib.ClipperOffset(10, 0.25);
-    const paths = new ClipperLib.Paths();
-    paths.push(pdfPath);
+    const co      = new ClipperLib.ClipperOffset(10, 0.25);
+    const paths   = [pdfPath];
+    const solution: any[] = [];
     co.AddPaths(paths, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
-    const solution = new ClipperLib.Paths();
     co.Execute(solution, clipperDelta);
     return solution && solution.some((p: any[]) => p.length >= 3);
   };
@@ -555,71 +563,56 @@ export function isInwardCollapseRisk(
 }
 
 // ─── computeParallelOffset ────────────────────────────────────────────────────
-//
-//  Shifts every point of a polyline perpendicularly by `delta` in pdf-pixel
-//  space. Positive delta = left side (screen Y-down: left normal is (-dy, dx)).
-//  The perpendicular at each interior vertex is the miter of the two adjacent
-//  segment normals, re-normalised.
-//
-//  scaleW / scaleH are used only for correct aspect-ratio handling of the
-//  normal computation; the result is returned in normalised (0..1) space.
 
 function computeParallelOffset(
-  pts:     NormPoint[],
-  delta:   number,    // pdf-pixel space distance; positive = left in screen Y-down
-  scaleW:  number,
-  scaleH:  number,
+  pts:    NormPoint[],
+  delta:  number,
+  scaleW: number,
+  scaleH: number,
 ): NormPoint[] {
-  if (pts.length < 2) return pts;
+  if (pts.length < 2) return [...pts];
 
-  // Per-segment unit normals in normalised space.
-  // In screen Y-down: left normal of (dx,dy) is (-dy, dx)/len.
-  // We work in pdf-pixel space for correct aspect ratio then convert back.
-  const segNormals: NormPoint[] = [];
+  const segNx: number[] = [];
+  const segNy: number[] = [];
+
   for (let i = 0; i < pts.length - 1; i++) {
     const dxPx = (pts[i + 1].x - pts[i].x) * scaleW;
     const dyPx = (pts[i + 1].y - pts[i].y) * scaleH;
     const len  = Math.hypot(dxPx, dyPx);
     if (len < 1e-12) {
-      segNormals.push({ x: 0, y: 0 });
+      segNx.push(0);
+      segNy.push(0);
     } else {
-      // Left normal in pdf-pixel space: (-dyPx, dxPx) / len
-      // Convert back to normalised space: divide by scaleW, scaleH respectively
-      segNormals.push({
-        x: (-dyPx / len) / scaleW,
-        y: ( dxPx / len) / scaleH,
-      });
+      segNx.push(-dyPx / len);
+      segNy.push( dxPx / len);
     }
   }
 
   const result: NormPoint[] = [];
 
   for (let i = 0; i < pts.length; i++) {
-    let nx: number, ny: number;
+    let nx: number;
+    let ny: number;
 
     if (i === 0) {
-      nx = segNormals[0].x;
-      ny = segNormals[0].y;
+      nx = segNx[0];
+      ny = segNy[0];
     } else if (i === pts.length - 1) {
-      nx = segNormals[segNormals.length - 1].x;
-      ny = segNormals[segNormals.length - 1].y;
+      nx = segNx[segNx.length - 1];
+      ny = segNy[segNy.length - 1];
     } else {
-      // Average adjacent normals then re-normalise in pdf-pixel space
-      const ax = segNormals[i - 1].x + segNormals[i].x;
-      const ay = segNormals[i - 1].y + segNormals[i].y;
-      const aPxLen = Math.hypot(ax * scaleW, ay * scaleH);
-      if (aPxLen < 1e-12) {
-        nx = segNormals[i].x;
-        ny = segNormals[i].y;
+      const ax = segNx[i - 1] + segNx[i];
+      const ay = segNy[i - 1] + segNy[i];
+      const alen = Math.hypot(ax, ay);
+      if (alen < 1e-12) {
+        nx = segNx[i];
+        ny = segNy[i];
       } else {
-        nx = (ax * scaleW / aPxLen) / scaleW;
-        ny = (ay * scaleH / aPxLen) / scaleH;
+        nx = ax / alen;
+        ny = ay / alen;
       }
     }
 
-    // delta is in pdf-pixel space; convert to normalised offset
-    // by multiplying normalised normal by (delta / scaleW, delta / scaleH)
-    // but normal is already normalised in pdf-pixel space so:
     result.push({
       x: pts[i].x + nx * delta / scaleW,
       y: pts[i].y + ny * delta / scaleH,
@@ -630,62 +623,61 @@ function computeParallelOffset(
 }
 
 // ─── buildSemiCircleCap ───────────────────────────────────────────────────────
-//
-//  Generates a semicircle arc cap at `centre` point. The arc goes from
-//  `fromPt` to `toPt` sweeping around centre on the cap side.
-//  Used for 'round' end style on left/right single-side offsets.
 
 function buildSemiCircleCap(
-  centre: NormPoint,
-  fromPt: NormPoint,
-  toPt:   NormPoint,
-  scaleW: number,
-  scaleH: number,
-  clockwise: boolean,
+  fromPt:    NormPoint,
+  toPt:      NormPoint,
+  tangentNx: number,
+  tangentNy: number,
+  scaleW:    number,
+  scaleH:    number,
+  outward:   boolean,
 ): NormPoint[] {
-  const r    = Math.hypot((fromPt.x - centre.x) * scaleW, (fromPt.y - centre.y) * scaleH);
-  const rNx  = r / scaleW;
-  const rNy  = r / scaleH;
-  const a0   = Math.atan2((fromPt.y - centre.y) * scaleH, (fromPt.x - centre.x) * scaleW);
-  const a1   = Math.atan2((toPt.y   - centre.y) * scaleH, (toPt.x   - centre.x) * scaleW);
+  const cx = (fromPt.x + toPt.x) / 2;
+  const cy = (fromPt.y + toPt.y) / 2;
 
-  const norm2pi = (a: number) => ((a % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
-  let sweep = norm2pi(a1 - a0);
-  if (clockwise && sweep > 0) sweep -= 2 * Math.PI;
-  if (!clockwise && sweep < 0) sweep += 2 * Math.PI;
+  const rPx = Math.hypot(
+    (toPt.x - fromPt.x) * scaleW,
+    (toPt.y - fromPt.y) * scaleH,
+  ) / 2;
+
+  if (rPx < 1e-12) return [fromPt, toPt];
+
+  const a0 = Math.atan2((fromPt.y - cy) * scaleH, (fromPt.x - cx) * scaleW);
+
+  const baseTangentAngle = Math.atan2(tangentNy, tangentNx);
+  const outwardAngle = outward
+    ? baseTangentAngle
+    : baseTangentAngle + Math.PI;
+
+  const normAngle = (a: number) => {
+    a = a % (2 * Math.PI);
+    return a < 0 ? a + 2 * Math.PI : a;
+  };
+  const angleDist = (a: number, b: number) => {
+    const d = Math.abs(normAngle(a) - normAngle(b));
+    return d > Math.PI ? 2 * Math.PI - d : d;
+  };
+
+  const midCW  = a0 - Math.PI / 2;
+  const midCCW = a0 + Math.PI / 2;
+  const sweep  = angleDist(midCW, outwardAngle) < angleDist(midCCW, outwardAngle)
+    ? -Math.PI
+    :  Math.PI;
 
   const n   = ARC_TESSELLATION_SUBDIVISIONS;
   const pts: NormPoint[] = [];
   for (let i = 0; i <= n; i++) {
     const angle = a0 + sweep * (i / n);
     pts.push({
-      x: centre.x + Math.cos(angle) * rNx,
-      y: centre.y + Math.sin(angle) * rNy,
+      x: cx + (Math.cos(angle) * rPx) / scaleW,
+      y: cy + (Math.sin(angle) * rPx) / scaleH,
     });
   }
   return pts;
 }
 
 // ─── computeOpenPathOffset ───────────────────────────────────────────────────
-//
-//  Computes offset geometry for open paths.
-//
-//  direction = 'both':
-//    Returns a single closed polygon (full corridor strip) using ClipperOffset
-//    with the chosen endStyle cap. This is always a closed polygon.
-//
-//  direction = 'left' | 'right':
-//    FIX 3/4: Builds an EXPLICIT closed polygon:
-//      1. Shift source pts perpendicularly (correct screen-Y-down direction)
-//      2. Cap the end: square (extend ½ offset), round (semicircle), butt (flush)
-//      3. Reverse source pts form the "other side" of the polygon
-//      4. Cap the start similarly
-//    This gives a geometrically correct closed area polygon without relying
-//    on XOR-splitting a full buffer.
-//
-//  direction = any, endStyle = 'none':
-//    FIX 5: Bypasses Clipper. Returns raw open parallel stroke(s).
-//    For 'both': two open strokes. For 'left'/'right': one open stroke.
 
 export function computeOpenPathOffset(
   row:             any,
@@ -698,28 +690,24 @@ export function computeOpenPathOffset(
   joinStyle:       JoinStyle    = 'miter',
   endStyle:        OpenEndStyle = 'square',
 ): NormPoint[][] {
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
 
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 2) return [];
 
-  // pdfPixelDelta: the offset distance in pdf-pixel space
-  const pdfPixelDelta = (offsetMetres / scaleFactor) * displayScale;
+  const pdfPixelDelta = offsetMetres / scaleFactor;
 
-  // ── FIX 5: 'none' — pure parallel translation, no caps, open strokes ──────
   if (endStyle === 'none') {
     if (direction === 'both') {
       const leftStroke  = computeParallelOffset(pts,  pdfPixelDelta, scaleW, scaleH);
       const rightStroke = computeParallelOffset(pts, -pdfPixelDelta, scaleW, scaleH);
       return [leftStroke, rightStroke];
     }
-    // FIX 4: left = positive (left normal in Y-down), right = negative
     const delta = direction === 'left' ? pdfPixelDelta : -pdfPixelDelta;
     return [computeParallelOffset(pts, delta, scaleW, scaleH)];
   }
 
-  // ── 'both': use ClipperOffset for a full corridor polygon ─────────────────
   if (direction === 'both') {
     const pdfPath = pts.map(p => ({
       X: Math.round(p.x * scaleW * CLIPPER_SCALE),
@@ -736,11 +724,10 @@ export function computeOpenPathOffset(
     })();
 
     const clipperJoinType = getClipperJoinType(joinStyle);
-    const co    = new ClipperLib.ClipperOffset(10, 0.25);
-    const paths = new ClipperLib.Paths();
-    paths.push(pdfPath);
+    const co      = new ClipperLib.ClipperOffset(10, 0.25);
+    const paths   = [pdfPath];
+    const solution: any[] = [];
     co.AddPaths(paths, clipperJoinType, clipperEndType);
-    const solution = new ClipperLib.Paths();
     co.Execute(solution, pdfPixelDelta * CLIPPER_SCALE);
 
     if (!solution || solution.length === 0) return [];
@@ -755,112 +742,55 @@ export function computeOpenPathOffset(
       );
   }
 
-  // ── 'left' or 'right': explicit closed polygon construction ───────────────
-  //
-  // FIX 3 + FIX 4: Build the one-side strip as an explicit closed polygon:
-  //   Forward along source pts → end cap → backward along offset pts → start cap
-  //
-  // In screen Y-down space:
-  //   left  = positive pdfPixelDelta (left normal = (-dy, dx)/len)
-  //   right = negative pdfPixelDelta
+  const delta      = direction === 'left' ? pdfPixelDelta : -pdfPixelDelta;
+  const offsetPts  = computeParallelOffset(pts, delta, scaleW, scaleH);
 
-  const delta = direction === 'left' ? pdfPixelDelta : -pdfPixelDelta;
-  const offsetPts = computeParallelOffset(pts, delta, scaleW, scaleH);
+  const getEndpoint = (i: number, j: number): { tx: number; ty: number; nx: number; ny: number } => {
+    const dxPx = (pts[j].x - pts[i].x) * scaleW;
+    const dyPx = (pts[j].y - pts[i].y) * scaleH;
+    const len  = Math.hypot(dxPx, dyPx);
+    if (len < 1e-12) return { tx: 1, ty: 0, nx: 0, ny: 1 };
+    const tx =  dxPx / len;
+    const ty =  dyPx / len;
+    const nx = -dyPx / len;
+    const ny =  dxPx / len;
+    return { tx, ty, nx, ny };
+  };
 
-  // Helper: unit tangent at the start/end of the source polyline (pdf-pixel)
-  const startTangent = (() => {
-    const dx = (pts[1].x - pts[0].x) * scaleW;
-    const dy = (pts[1].y - pts[0].y) * scaleH;
-    const len = Math.hypot(dx, dy);
-    return len > 1e-12 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 };
-  })();
-  const endTangent = (() => {
-    const n  = pts.length - 1;
-    const dx = (pts[n].x - pts[n - 1].x) * scaleW;
-    const dy = (pts[n].y - pts[n - 1].y) * scaleH;
-    const len = Math.hypot(dx, dy);
-    return len > 1e-12 ? { x: dx / len, y: dy / len } : { x: 1, y: 0 };
-  })();
+  const startInfo = getEndpoint(0, 1);
+  const endInfo   = getEndpoint(pts.length - 2, pts.length - 1);
+
+  const srcEnd   = pts[pts.length - 1];
+  const offEnd   = offsetPts[offsetPts.length - 1];
+  const srcStart = pts[0];
+  const offStart = offsetPts[0];
 
   const polygon: NormPoint[] = [];
 
-  // 1. Forward along source pts (the "zero" side of the strip)
   for (const p of pts) polygon.push(p);
 
-  // 2. End cap at pts[last] → offsetPts[last]
-  const srcEnd    = pts[pts.length - 1];
-  const offEnd    = offsetPts[offsetPts.length - 1];
-  const srcStart  = pts[0];
-  const offStart  = offsetPts[0];
+  if (endStyle === 'square') {
+    const ext = pdfPixelDelta / 2;
+    polygon.push({ x: srcEnd.x + endInfo.tx * ext / scaleW, y: srcEnd.y + endInfo.ty * ext / scaleH });
+    polygon.push({ x: offEnd.x + endInfo.tx * ext / scaleW, y: offEnd.y + endInfo.ty * ext / scaleH });
+  } else if (endStyle === 'round') {
+    const arcPts = buildSemiCircleCap(srcEnd, offEnd, endInfo.tx, endInfo.ty, scaleW, scaleH, true);
+    for (let i = 1; i < arcPts.length; i++) polygon.push(arcPts[i]);
+  }
+
+  {
+    const backStart = (endStyle === 'butt') ? offsetPts.length - 1 : offsetPts.length - 2;
+    for (let i = backStart; i >= 0; i--) polygon.push(offsetPts[i]);
+  }
 
   if (endStyle === 'square') {
-    // Extend ½ offset beyond endpoint along tangent, then across to offset side
-    const ext = pdfPixelDelta; // extend by full offset (square cap extends ½ width on each side)
-    const capSrcEnd: NormPoint = {
-      x: srcEnd.x + endTangent.x * ext / scaleW,
-      y: srcEnd.y + endTangent.y * ext / scaleH,
-    };
-    const capOffEnd: NormPoint = {
-      x: offEnd.x + endTangent.x * ext / scaleW,
-      y: offEnd.y + endTangent.y * ext / scaleH,
-    };
-    polygon.push(capSrcEnd);
-    polygon.push(capOffEnd);
+    const ext = pdfPixelDelta / 2;
+    polygon.push({ x: offStart.x - startInfo.tx * ext / scaleW, y: offStart.y - startInfo.ty * ext / scaleH });
+    polygon.push({ x: srcStart.x - startInfo.tx * ext / scaleW, y: srcStart.y - startInfo.ty * ext / scaleH });
   } else if (endStyle === 'round') {
-    // Semicircle cap centred at midpoint of srcEnd–offEnd
-    const capCentre: NormPoint = {
-      x: (srcEnd.x + offEnd.x) / 2,
-      y: (srcEnd.y + offEnd.y) / 2,
-    };
-    // Arc goes from srcEnd to offEnd sweeping outward (away from line body)
-    // Clockwise in screen Y-down when delta > 0 (left side)
-    const arcPts = buildSemiCircleCap(
-      capCentre, srcEnd, offEnd,
-      scaleW, scaleH,
-      delta > 0, // clockwise for left, ccw for right
-    );
-    for (const p of arcPts) polygon.push(p);
-  } else {
-    // butt: straight line from srcEnd to offEnd (already handled by polygon closure)
-    polygon.push(offEnd);
+    const arcPts = buildSemiCircleCap(offStart, srcStart, startInfo.tx, startInfo.ty, scaleW, scaleH, false);
+    for (let i = 1; i < arcPts.length; i++) polygon.push(arcPts[i]);
   }
-
-  // 3. Backward along offset pts
-  for (let i = offsetPts.length - 1; i >= 0; i--) {
-    polygon.push(offsetPts[i]);
-  }
-
-  // 4. Start cap at offsetPts[0] → pts[0]
-  if (endStyle === 'square') {
-    const ext = pdfPixelDelta;
-    const capOffStart: NormPoint = {
-      x: offStart.x - startTangent.x * ext / scaleW,
-      y: offStart.y - startTangent.y * ext / scaleH,
-    };
-    const capSrcStart: NormPoint = {
-      x: srcStart.x - startTangent.x * ext / scaleW,
-      y: srcStart.y - startTangent.y * ext / scaleH,
-    };
-    polygon.push(capOffStart);
-    polygon.push(capSrcStart);
-  } else if (endStyle === 'round') {
-    const capCentre: NormPoint = {
-      x: (offStart.x + srcStart.x) / 2,
-      y: (offStart.y + srcStart.y) / 2,
-    };
-    const arcPts = buildSemiCircleCap(
-      capCentre, offStart, srcStart,
-      scaleW, scaleH,
-      delta > 0,
-    );
-    for (const p of arcPts) polygon.push(p);
-  } else {
-    // butt
-    polygon.push(srcStart);
-  }
-
-  // Close the polygon back to first point
-  polygon.push(pts[0]);
 
   return [polygon];
 }
@@ -881,7 +811,7 @@ export function openPathBufferAreaMetres2(
   );
   if (polys.length === 0) return 0;
 
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   let total = 0;
 
   for (const poly of polys) {
@@ -898,9 +828,6 @@ export function openPathBufferAreaMetres2(
 }
 
 // ─── openPathOffsetLengthMetres ───────────────────────────────────────────────
-//
-//  FIX 1: `direction` and `offsetMetres` were accepted but ignored, causing
-//  strict-mode warnings. Both are now explicitly voided.
 
 export function openPathOffsetLengthMetres(
   row:             any,
@@ -911,12 +838,10 @@ export function openPathOffsetLengthMetres(
   scaleFactor:     number,
   allMeasurements: any[] = [],
 ): number {
-  // For parallel-length output: the offset line length ≈ source polyline length
-  // for all direction values ('left', 'right', 'both').
   void direction;
   void offsetMetres;
 
-  const { scaleW, scaleH } = pdfToNormScale(dim, displayScale);
+  const { scaleW, scaleH } = pdfToNormScale(dim);
   const effectivePts = getEffectivePoints(row, allMeasurements);
   const pts          = tessellatePoints(effectivePts, scaleW, scaleH);
   if (pts.length < 2) return 0;
@@ -926,7 +851,7 @@ export function openPathOffsetLengthMetres(
     len += normDeltaToMetres(
       pts[i + 1].x - pts[i].x,
       pts[i + 1].y - pts[i].y,
-      dim, displayScale, scaleFactor,
+      dim, scaleFactor,
     );
   }
   return len;

@@ -1,12 +1,13 @@
+'use client';
 // ─── hooks/useMeasurements.ts ─────────────────────────────────────────────────
-
-// FIX A: handleCanvasPointerDown now correctly falls through when drag doesn't
-//         claim the event, and the return type matches the public interface.
-// FIX B: pendingSnapCandidates type import uses the canonical source.
-// FIX C: redrawDrawingCanvasRef is pre-populated via a lazy initializer pattern
-//         so the first-render race window is closed.
-// FIX D: snapCandidates prop wired through to useDrawingCanvas so the
-//         proximity visuals actually have candidates to draw.
+//
+//  FIX A: handleCanvasPointerDown returns boolean | undefined (not void) so
+//         ViewerCanvas's prop type is satisfied and fall-through works.
+//  FIX B: pendingSnapCandidates type import uses the canonical source.
+//  FIX C: redrawDrawingCanvasRef pre-populated so first-render race is closed.
+//  FIX D: snapCandidates wired to useDrawingCanvas for proximity visuals.
+//  FIX E: polyarcMode + togglePolyarcMode RETURNED so Viewer can destructure.
+//  FIX F: forcedPolyarcMode accepted and forwarded to useMeasurementCommit.
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import React from 'react';
@@ -50,11 +51,19 @@ export function useMeasurements({
   onScalePrompt,
   appendToGroupId,
   onAppendComplete,
+  polyarcMode,
+  togglePolyarcMode,
   // FIX D: snap candidates in PDF-pixel space forwarded from Viewer
   snapCandidates,
+  // FIX F: forcedPolyarcMode from Viewer's handleSetActiveTool
+  forcedPolyarcMode,
 }: UseMeasurementsParams & {
-  snapCandidates?: Array<{ x: number; y: number; type: string }>;
-}): UseMeasurementsReturn {
+  snapCandidates?:    Array<{ x: number; y: number; type: string }>;
+  forcedPolyarcMode?: 'line' | 'arc';
+}): UseMeasurementsReturn & {
+  polyarcMode:      'line' | 'arc';
+  togglePolyarcMode: () => void;
+} {
 
   const typedActiveTool = activeTool as ToolType;
 
@@ -144,6 +153,11 @@ export function useMeasurements({
     activeDrawingId,
     drawingCanvasRef,
     cursorPointRef,
+    // FIX E: both polyarc values forwarded so useMeasurementCommit can use them
+    polyarcMode,
+    togglePolyarcMode,
+    // FIX F: forward forcedPolyarcMode so click handler respects toolbar switch
+    forcedPolyarcMode,
     appendToGroupId,
     onAppendComplete,
     onScalePrompt,
@@ -168,9 +182,12 @@ export function useMeasurements({
     [drag, canvas],
   );
 
+  // FIX A: return boolean | undefined so ViewerCanvas's typed prop is satisfied.
+  // drag.handleCanvasPointerDown returns true when it claims the event, otherwise
+  // undefined — both values must flow through unchanged.
   const handleCanvasPointerDown = useCallback(
-    (e: React.PointerEvent<HTMLCanvasElement>): void => {
-      drag.handleCanvasPointerDown(e);
+    (e: React.PointerEvent<HTMLCanvasElement>): boolean | undefined => {
+      return drag.handleCanvasPointerDown(e) as boolean | undefined;
     },
     [drag],
   );
@@ -206,5 +223,8 @@ export function useMeasurements({
     toCanvas,
     toNorm,
     pendingBreak,
+    // FIX E: expose so Viewer.tsx can destructure them directly
+    polyarcMode,
+    togglePolyarcMode,
   };
 }

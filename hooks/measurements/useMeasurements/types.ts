@@ -1,3 +1,4 @@
+// hooks/measurements/useMeasurements/types.ts
 import React from 'react';
 import { TakeoffRow } from '@/types';
 import { SnapResult, PendingSnapCandidate, PdfDimensions } from '@/types/viewerTypes';
@@ -31,7 +32,11 @@ export interface UseMeasurementsParams {
   redrawPinCanvas:      () => void;
   cursorPointRef:       React.MutableRefObject<{ x: number; y: number } | null>;
   activeDrawingId:      string | null;
-  appendToGroupId?: string | null;
+  appendToGroupId?:     string | null;
+  // polyarc
+  polyarcMode:          'line' | 'arc';
+  togglePolyarcMode:    () => void;
+  forcedPolyarcMode?:   'line' | 'arc';
 }
 
 // ─── Hook return ──────────────────────────────────────────────────────────────

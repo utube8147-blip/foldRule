@@ -148,7 +148,7 @@ function OffsetEligibilityOverlay({
         const isSelected = id === selectedId;
         const isHovered  = id === hoveredId && !isSelected;
 
-        const shouldClose = isSelected || isHovered ? true : isClosed;
+        const shouldClose = isClosed;
         const d = buildPathD(pts, w, h, shouldClose);
         if (!d) return null;
 

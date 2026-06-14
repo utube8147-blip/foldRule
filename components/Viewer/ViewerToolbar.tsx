@@ -48,14 +48,8 @@ import type { AdvancedToolMeta, ToolGroup } from './ViewerConstants';
 import { useTakeoffContext } from '@/context/TakeoffContext';
 import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
-<<<<<<< HEAD
 import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
 
-
-
-// ─── Props ────────────────────────────────────────────────────────────────────
-=======
->>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 
 interface ViewerToolbarProps {
   activeTool:      ToolType;

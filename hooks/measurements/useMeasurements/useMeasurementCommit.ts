@@ -200,6 +200,8 @@ interface UseMeasurementCommitParams {
   setPendingSnapCandidates:(c: PendingSnapCandidate[] | null) => void;
   resetBreakState:         () => void;
   polyarcMode:             'line' | 'arc';
+  togglePolyarcMode:       () => void;
+  forcedPolyarcMode?:      'line' | 'arc';
 }
 
 // ─── Group points by segment ID ───────────────────────────────────────────────

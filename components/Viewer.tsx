@@ -3,16 +3,15 @@
 //
 //  FIXES in this revision
 //  ──────────────────────
-//  1. offsetOpenEndStyle state added and forwarded to ViewerCanvas so the
-//     OffsetPreviewOverlay knows whether to render open strokes vs closed
-//     filled polygons.
-//  2. offsetOpenOutputType state added to carry the effective open output type
-//     string ('parallel-length', 'one-side-area', 'buffer-area') through to
-//     the preview overlay for fill decisions.
-//  3. onOutputTypeChange now also receives the open output type via a new
-//     onOpenOutputTypeChange callback from the panel.
-//  4. offsetIsOpenPath: only true when source is open AND endStyle === 'none'.
-//     For square/round/butt, the geometry result is a closed polygon.
+//  1. polyarcMode null-guarded everywhere it is used (?.toUpperCase() ?? 'LINE')
+//     so the status bar never crashes when polyarcMode is undefined on first render.
+//  2. offsetOpenOutputType now forwarded to ViewerCanvas as a prop — it was
+//     tracked in state but the JSX omitted it, so fill decisions in
+//     OffsetPreviewOverlay were always seeing undefined.
+//  3. offsetOpenEndStyle forwarded to ViewerCanvas (was already in state but
+//     confirmed to be in JSX).
+//  4. offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
+//     For square/round/butt, the geometry is a closed polygon.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -30,7 +29,6 @@ import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
 import { useMagicFillSession } from '@/hooks/fill/useMagicFillSession';
-<<<<<<< HEAD
 import { usePerimeterOffset, isEffectivelyClosed } from '@/hooks/perimeterOffset/usePerimeterOffset';
 import {
   tessellatePoints,
@@ -40,8 +38,6 @@ import {
   hitTestMeasurement,
   HIT_RADIUS,
 } from '@/hooks/perimeterOffset/perimeterOffsetHitTest';
-=======
->>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 import { ViewerToolbar }  from './Viewer/ViewerToolbar';
 import { ViewerCanvas }   from './Viewer/ViewerCanvas';
 import type { OffsetEligibleShape } from './Viewer/ViewerCanvas';
@@ -64,7 +60,6 @@ import { PerimeterOffsetPanel } from '@/components/Viewer/PerimeterOffsetPanel';
 import {
   stagedArcCount as calcStagedArcCount,
   stagedRadiusCount,
-<<<<<<< HEAD
   splitPolyarcSegments,
 } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type {
@@ -77,10 +72,6 @@ import type {
 } from '@/hooks/perimeterOffset/usePerimeterOffset';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 import type { OpenEndStyle } from '@/hooks/perimeterOffset/perimeterOffsetGeometry';
-=======
-} from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
-import type { SvgLine } from '@/hooks/snapEngine/useSvgSnapPoints';
->>>>>>> 0b35ce72bb13c007497a390589b9923066b804fe
 
 export type { ViewerProps, ViewerToolbarAPI } from './Viewer/ViewerConstants';
 
@@ -397,6 +388,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
   } as any);
 
+  // FIXED: safe fallback so status bar never crashes before polyarcMode is set
+  const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
+
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
 
   const wrappedPointerMove = useCallback(
@@ -487,7 +481,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const [offsetCommitWarn,  setOffsetCommitWarn]  = useState<string | null>(null);
   const [hoveredOffsetId,   setHoveredOffsetId]   = useState<string | null>(null);
   const [offsetOutputType,  setOffsetOutputType]  = useState<OffsetOutputType>('length');
-  // NEW: track the open path end style and output type for preview rendering
+  // open path end style and output type for preview overlay rendering
   const [offsetOpenEndStyle,   setOffsetOpenEndStyle]   = useState<OpenEndStyle>('square');
   const [offsetOpenOutputType, setOffsetOpenOutputType] = useState<OpenOutputType>('parallel-length');
 
@@ -571,8 +565,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   }, [offsetSourceMeasurement, offsetEligiblePolygons]);
 
   // offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
-  // For square/round/butt caps the geometry is a closed polygon, so we should
-  // NOT tell the preview overlay to render it as open strokes.
+  // For square/round/butt caps the geometry is a closed polygon.
   const offsetIsOpenPath = useMemo(() => {
     if (!offsetSourceMeasurement) return false;
     if (!isValidOffsetOpenSource(offsetSourceMeasurement)) return false;
@@ -779,7 +772,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     fitToScreen: () => fitToScreen(),
     handleManualScale,
     canUndo, canRedo, handleUndo, handleRedo,
-    polyarcMode, togglePolyarcMode,
+    polyarcMode: safePolyarcMode, togglePolyarcMode,
     tempPointsCount: tempPoints.length,
   }), [
     activeTool, handleSetActiveTool, scale, scaleFactor,
@@ -788,7 +781,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     snapThreshold, confidenceFilter,
     analysisStatus, analysisPage, pageData, pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
-    polyarcMode, togglePolyarcMode, tempPoints,
+    safePolyarcMode, togglePolyarcMode, tempPoints,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -910,7 +903,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
             currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
             scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
             MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
-            polyarcMode={polyarcMode}
+            polyarcMode={safePolyarcMode}
             togglePolyarcMode={togglePolyarcMode}
           />
         </div>
@@ -998,7 +991,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               onGridCountCommit={handleGridCountCommit}
               stagedArcCount={stagedArcs}
               polyarcHasContent={polyarcHasContent}
-              polyarcMode={polyarcMode}
+              polyarcMode={safePolyarcMode}
               offsetEligiblePolygons={offsetEligiblePolygons}
               offsetHoveredId={hoveredOffsetId}
               offsetSelectedId={offsetSourceMeasurement?.id ?? null}
@@ -1007,6 +1000,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               offsetSourcePolygon={offsetSourcePolygon}
               offsetIsOpenPath={offsetIsOpenPath}
               offsetOpenEndStyle={offsetOpenEndStyle}
+              offsetOpenOutputType={offsetOpenOutputType}   // FIXED: now forwarded
             >
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
@@ -1188,7 +1182,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                   ? ` — ${polyarcLineCount} line${polyarcLineCount !== 1 ? 's' : ''} · ${polyarcArcCount} arc${polyarcArcCount !== 1 ? 's' : ''}`
                   : ''
                 }
-                {' '}· Mode: <span className="text-amber-300 font-bold">{polyarcMode.toUpperCase()}</span>
+                {/* FIXED: safePolyarcMode can never be undefined */}
+                {' '}· Mode: <span className="text-amber-300 font-bold">{safePolyarcMode.toUpperCase()}</span>
                 {' '}· Press A to toggle · Drag for arc · Double-click or Enter to finish
               </span>
             ) : (
