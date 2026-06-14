@@ -4,46 +4,35 @@
 //  FIXES in this version:
 //
 //  FIX 1: AUTO-SEED ONLY ON LINE→ARC TRANSITION (not on every arc click)
-//    The previous auto-seed logic in handleCanvasClick ran whenever
-//    segmentType === 'arc' AND the last real point had segmentType !== 'arc'.
-//    This meant:
-//      Click 1 (arc, no prior points)  → no seed        → 1 arc pt
-//      Click 2 (arc, last was arc)     → no seed        → 2 arc pts
-//      Click 3 (arc, last was arc)     → no seed        → 3 arc pts ✓
-//    BUT if the user had drawn some line points first:
-//      Last line pt = P_L
-//      Click 1 (arc, last was line)    → SEED P_L as arc → 2 arc pts
-//      Click 2 (arc, last was arc)     → no seed        → 3 arc pts ✓
-//    The bug was that ANY transition from non-arc triggered a seed, so
-//    "arc mode from the start" with 3 clicks actually produced 3 pts — correct.
-//    BUT splitPolyarcSegments was counting incomplete arc groups, making the
-//    status bar say "2 arcs" instead of "1 arc".
-//
 //  FIX 2: splitPolyarcSegments — incomplete arc runs are NOT emitted as segments
-//    Previously the arc-run collector emitted whatever it had even if < 3 pts,
-//    causing the status-bar count and commit logic to see ghost partial arcs.
-//    Now: arc runs with < 3 points are silently dropped (they are in-progress,
-//    not committed segments). The drawing canvas still renders a rubber-band
-//    preview for them via useDrawingCanvas.
-//
 //  FIX 3: polyarcHasContent + status bar arc count use COMPLETE arcs only
-//    Both Viewer.tsx and ViewerCanvas.tsx derived polyarcLineCount/ArcCount
-//    from splitPolyarcSegments. Now that only complete segments are emitted,
-//    these counts are correct.
-//
 //  FIX 4: CORRECT SEEDING FOR ALL SEGMENT TRANSITIONS
-//    Previously seeding only happened on line→arc. Now ALL cross-boundary
-//    transitions carry the last endpoint forward as the first point of the
-//    new segment:
+//  FIX 5: CLOSE-SNAP CLICK — when nearStartPointRef is true, override the
+//          click coordinate to the exact first placed point and immediately
+//          finish the measurement, guaranteeing a perfectly closed path.
+//  FIX 6: CLOSE-SNAP COMMIT — finishMeasurement is called with a patched
+//          tempPoints array where the final point is the exact first point,
+//          so polyarc/linear/polygon paths close with zero gap even if the
+//          user didn't click exactly on the start vertex.
+//          Previously finishMeasurement() was called with no args, so it
+//          used the raw tempPoints closure which lacked the closing vertex —
+//          causing 0.00 quantity or a gap in the committed geometry.
+//  FIX 7: CLOSE-SNAP SEGMENT-TYPE FIX — the closing vertex now inherits the
+//          segmentType of the LAST placed real point (lastReal), not the
+//          first (firstReal). Previously, when the final in-progress run
+//          before closing was an 'arc' run, the closing point was tagged
+//          with firstReal.segmentType (typically 'line'/undefined). In
+//          splitPolyarcSegments, this caused the closing point to start a
+//          brand-new 1-point run immediately after an 'arc' run — and runs
+//          of length 1 are silently dropped (`if (run.length >= 2)`).
+//          Result: the final segment of the polyarc never got committed.
 //
-//      line → arc               seed last line pt as arc pt #1
-//      arc  → line (at triplet boundary)  seed last arc pt as line pt #1
-//      arc  → arc  (new triplet)          seed last arc pt as new arc pt #1
-//      mid-triplet (arcRunLen 1 or 2)     NO seed — normal click
-//
-//    The boundary is detected via arcRunLen (points in the current incomplete
-//    triplet). arcRunLen === 0 means a triplet just completed and we are at a
-//    natural seam; 1 or 2 means we are mid-triplet and must not seed.
+//          Additionally, if the in-progress arc run only has 1 point when
+//          closing (arcRunLen === 1), tagging the closing point as 'arc'
+//          would only bring the run to length 2 — still incomplete, and
+//          again silently dropped. In that case we fall back to 'line' so
+//          the closing edge is committed as a straight segment instead of
+//          vanishing entirely.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -107,17 +96,6 @@ export function stagedRadiusCount(pts: InProgressPoint[]): number {
 }
 
 // ─── Polyarc segment splitter ─────────────────────────────────────────────────
-//
-//  Rules:
-//   • Consecutive line-tagged points (segmentType !== 'arc') form one line segment
-//     if there are ≥ 2 of them.
-//   • Consecutive arc-tagged points form one arc segment only when there are
-//     EXACTLY 3 of them. Runs of 1 or 2 are in-progress previews — NOT emitted.
-//   • Runs longer than 3 arc points are processed in non-overlapping triplets
-//     (every 3rd arc click starts a new arc after the previous one commits).
-//     This handles the case where the user places arc after arc without switching
-//     back to line mode.
-//
 export type PolyarcSegment =
   | { type: 'line'; points: InProgressPoint[] }
   | { type: 'arc';  points: [InProgressPoint, InProgressPoint, InProgressPoint] };
@@ -132,20 +110,16 @@ export function splitPolyarcSegments(pts: InProgressPoint[]): PolyarcSegment[] {
     const p = clean[i];
 
     if (p.segmentType !== 'arc') {
-      // Collect consecutive line points
       const run: InProgressPoint[] = [p];
       while (i + 1 < clean.length && clean[i + 1].segmentType !== 'arc') {
         i++;
         run.push(clean[i]);
       }
-      // Only emit if we have ≥ 2 line points (a drawable segment)
       if (run.length >= 2) {
         result.push({ type: 'line', points: run });
       }
       i++;
     } else {
-      // Collect consecutive arc points in strict triplets.
-      // Each complete triplet becomes one arc segment; leftovers are in-progress.
       const arcRun: InProgressPoint[] = [p];
       while (i + 1 < clean.length && clean[i + 1].segmentType === 'arc') {
         i++;
@@ -153,15 +127,13 @@ export function splitPolyarcSegments(pts: InProgressPoint[]): PolyarcSegment[] {
       }
       i++;
 
-      // Emit complete triplets only
+      // Emit complete triplets only — leftover 1 or 2 are in-progress previews
       for (let j = 0; j + 2 < arcRun.length; j += 3) {
         result.push({
           type:   'arc',
           points: [arcRun[j], arcRun[j + 1], arcRun[j + 2]] as [InProgressPoint, InProgressPoint, InProgressPoint],
         });
       }
-      // The remaining 1 or 2 arc points are intentionally NOT emitted —
-      // they are the in-progress rubber-band preview drawn by useDrawingCanvas.
     }
   }
   return result;
@@ -202,6 +174,9 @@ interface UseMeasurementCommitParams {
   polyarcMode:             'line' | 'arc';
   togglePolyarcMode:       () => void;
   forcedPolyarcMode?:      'line' | 'arc';
+  // FIX 5 / FIX 6: close-snap refs from useDrawingCanvas
+  nearStartPointRef:       React.RefObject<boolean>;
+  startPointSnapRef:       React.RefObject<{ x: number; y: number } | null>;
 }
 
 // ─── Group points by segment ID ───────────────────────────────────────────────
@@ -380,6 +355,8 @@ export function useMeasurementCommit({
   pendingBreak, setPendingBreak, nextSegmentIdRef,
   setCursorPoint, setPendingSnapCandidates, resetBreakState,
   polyarcMode,
+  nearStartPointRef,
+  startPointSnapRef,
 }: UseMeasurementCommitParams) {
 
   const toCanvas = useCallback(
@@ -999,6 +976,101 @@ export function useMeasurementCommit({
     const rawX = (e.clientX - rect.left) * (canvas.width  / rect.width);
     const rawY = (e.clientY - rect.top)  * (canvas.height / rect.height);
 
+    // ── FIX 5 + FIX 6 + FIX 7: Close-snap override ───────────────────────────
+    //
+    //  When the drawing canvas flags nearStartPointRef = true, the cursor is
+    //  within CLOSE_SNAP_THRESHOLD of the first placed point.
+    //
+    //  FIX 5 (original): intercept the click and call finishMeasurement().
+    //
+    //  FIX 6: instead of calling finishMeasurement() with no args (which uses
+    //  the raw tempPoints closure — missing the closing vertex), we build a
+    //  patched points array that appends the exact start-point norm coordinate
+    //  as the final point, then pass that to finishMeasurement(). This
+    //  guarantees:
+    //    • polygon/linear/polyarc paths are geometrically closed (zero gap)
+    //    • quantity is non-zero (the closing segment is counted)
+    //    • the committed geometry matches the preview on screen
+    //
+    //  FIX 7: the closing vertex's segmentType/segmentId must match the LAST
+    //  placed point's segment (lastReal), NOT the first (firstReal).
+    //
+    //  Why: splitPolyarcSegments groups consecutive points by segmentType.
+    //  If the in-progress run before closing was a 'line' run and we tag the
+    //  closing point with firstReal.segmentType (which is also typically
+    //  'line'), the closing point correctly extends that run — fine.
+    //
+    //  BUT if the in-progress run before closing was an 'arc' run (the user
+    //  was mid-arc when they hovered back over the start point), tagging the
+    //  closing point with firstReal.segmentType ('line'/undefined) makes it
+    //  start a brand-new run of length 1 immediately after the arc run.
+    //  splitPolyarcSegments only emits line runs of length >= 2
+    //  (`if (run.length >= 2)`), so that trailing 1-point run is silently
+    //  dropped — the final segment never gets committed.
+    //
+    //  Fix: tag the closing point with lastReal.segmentType so it extends
+    //  whatever run was last in progress:
+    //    • lastReal.segmentType === 'line' (or undefined) → closing point is
+    //      'line', extends the line run to include the closing vertex.
+    //    • lastReal.segmentType === 'arc' AND the in-progress arc run already
+    //      has 2 points (arcRunLen === 2) → closing point is 'arc', completing
+    //      the triplet so the arc segment is emitted.
+    //    • lastReal.segmentType === 'arc' AND the in-progress arc run has only
+    //      1 point (arcRunLen === 1) → tagging as 'arc' would only bring the
+    //      run to length 2, still incomplete and dropped. Fall back to 'line'
+    //      so the closing edge is committed as a straight segment instead of
+    //      vanishing entirely.
+    //
+    const CLOSE_SNAP_TOOLS = new Set(['linear', 'polygon', 'polyarc']);
+    if (
+      nearStartPointRef.current &&
+      startPointSnapRef.current &&
+      CLOSE_SNAP_TOOLS.has(activeTool) &&
+      tempPoints.length >= 2
+    ) {
+      // startPointSnapRef holds the normalised coordinate of the first point
+      // (see useDrawingCanvas — already in 0-1 normalised space, matching
+      // every other InProgressPoint, so no toNorm() conversion needed).
+      const snapNorm = startPointSnapRef.current;
+
+      const realPts   = tempPoints.filter(p => !isArcSentinel(p) && !isRadiusSentinel(p));
+      const firstReal = realPts[0];
+      const lastReal  = realPts[realPts.length - 1];
+
+      let closingSegmentType: 'line' | 'arc' | undefined = lastReal?.segmentType;
+
+      if (activeTool === 'polyarc' && lastReal?.segmentType === 'arc') {
+        // Determine how many points are in the current in-progress arc run.
+        const completedArcCount = splitPolyarcSegments(tempPoints)
+          .filter(s => s.type === 'arc').length * 3;
+        const totalArcCount = realPts.filter(p => p.segmentType === 'arc').length;
+        const arcRunLen     = totalArcCount - completedArcCount;
+
+        if (arcRunLen >= 2) {
+          // Closing point completes the arc triplet.
+          closingSegmentType = 'arc';
+        } else {
+          // Only 1 point in the arc run — closing as 'arc' would leave an
+          // incomplete (length-2) run that gets dropped. Close with a
+          // straight segment instead so the edge isn't lost.
+          closingSegmentType = 'line';
+        }
+      }
+
+      const closingPoint: InProgressPoint = {
+        x:           snapNorm.x,
+        y:           snapNorm.y,
+        snapped:     true,
+        segmentId:   firstReal?.segmentId,
+        segmentType: closingSegmentType,
+      };
+
+      // Pass the patched list (existing points + closing vertex) directly to
+      // finishMeasurement so nothing is recalculated from the stale closure.
+      finishMeasurement([...tempPoints, closingPoint]);
+      return;
+    }
+
     const snap = snapToCorner(rawX, rawY);
     if (snap.snapped) triggerSnapFlash(snap.point.x, snap.point.y);
     const norm = toNorm(snap.point.x, snap.point.y);
@@ -1044,29 +1116,10 @@ export function useMeasurementCommit({
     }
 
     // ── POLYARC ───────────────────────────────────────────────────────────────
-    //
-    //  Seeding rules — the last endpoint is always carried forward as the first
-    //  point of the next segment, matching PlanSwift / Togal.ai behaviour:
-    //
-    //    line → arc  (lastType=line,  segmentType=arc,  arcRunLen=any)
-    //      Seed last line point as arc pt #1 so the arc connects seamlessly.
-    //
-    //    arc → line  (lastType=arc,   segmentType=line, arcRunLen=0)
-    //      Triplet just completed. Seed last arc point as line pt #1.
-    //      arcRunLen must be 0 — mid-triplet we never seed.
-    //
-    //    arc → arc   (lastType=arc,   segmentType=arc,  arcRunLen=0)
-    //      Triplet just completed. Seed last arc point as new arc pt #1 so the
-    //      next arc starts from where the previous one ended.
-    //      arcRunLen must be 0 — mid-triplet we never seed.
-    //
-    //    mid-triplet (arcRunLen 1 or 2)  → NO seed in any case.
-    //
     if (activeTool === 'polyarc') {
       const segmentType: 'line' | 'arc' = (e.shiftKey || polyarcMode === 'arc') ? 'arc' : 'line';
 
       if (tempPoints.length > 0) {
-        // All non-sentinel points
         const allReal = tempPoints.filter(
           p => !isArcSentinel(p) && !isRadiusSentinel(p),
         );
@@ -1075,27 +1128,17 @@ export function useMeasurementCommit({
         if (lastReal) {
           const lastType = lastReal.segmentType ?? 'line';
 
-          // How many arc points are "in progress" (not yet part of a complete triplet)?
-          // completedArcTriplets * 3 tells us how many arc-tagged points have been
-          // consumed into full segments. The remainder are the current in-progress run.
           const totalArcCount     = allReal.filter(p => p.segmentType === 'arc').length;
           const completedArcCount = splitPolyarcSegments(tempPoints)
             .filter(s => s.type === 'arc').length * 3;
           const arcRunLen = totalArcCount - completedArcCount;
 
-          // Seed when crossing a segment boundary:
-          //   • line → arc:  always seed (arcRunLen is 0 because no arc started yet)
-          //   • arc  → line: only at triplet boundary (arcRunLen === 0)
-          //   • arc  → arc:  only at triplet boundary (arcRunLen === 0), i.e. starting
-          //                  a new arc triplet right after the previous one completed
           const atSegmentBoundary =
             (lastType === 'line' && segmentType === 'arc') ||
             (lastType === 'arc'  && segmentType === 'line' && arcRunLen === 0) ||
             (lastType === 'arc'  && segmentType === 'arc'  && arcRunLen === 0);
 
           if (atSegmentBoundary) {
-            // Copy the last placed point, re-tagged with the destination segmentType,
-            // so it acts as the shared vertex / first point of the new segment.
             pushPoint({
               x:           lastReal.x,
               y:           lastReal.y,
@@ -1175,6 +1218,7 @@ export function useMeasurementCommit({
     setActiveTool, cursorPointRef, onScalePrompt, nextSegmentIdRef, setPendingBreak,
     setCursorPoint, finishMeasurement,
     polyarcMode,
+    nearStartPointRef, startPointSnapRef,
   ]);
 
   // ─── handleContextMenu ────────────────────────────────────────────────────

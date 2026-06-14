@@ -20,22 +20,19 @@
 //  ─────────────────────────────────────────
 //  When any path tool (linear, polygon, polyarc) has ≥ 2 points placed and
 //  the cursor moves within CLOSE_SNAP_THRESHOLD canvas-px of the first placed
-//  point, a visual "close path" hint is rendered:
+//  point, a visual "close path" hint is rendered.
 //
-//    • The start point grows a pulsing amber ring
-//    • The cursor snaps visually to the start point (dot appears ON it)
-//    • A dashed closing segment is drawn from the last point to the start
-//    • A "close path" label appears near the start point
-//    • The fade (0..1) drives all opacities so everything appears gradually
+//  startPointSnapRef — NORMALISED COORDS FIX
+//  ──────────────────────────────────────────
+//  Previously startPointSnapRef stored canvas-pixel coords (tPts[0]), which
+//  useMeasurementCommit then passed through toNorm(). This double-conversion
+//  broke when the canvas has DPR/CSS scaling because toCanvas() and toNorm()
+//  use dim.w/dim.h (logical PDF points), not physical canvas pixels.
 //
-//  Additionally, the hook now exports `nearStartPointRef` — a ref that
-//  useMeasurements reads on pointer-up / click to override the commit
-//  coordinate to the exact start point, ensuring perfect closure even if
-//  the cursor is a few pixels off centre.
-//
-//  ARC GHOST CIRCLE PREVIEW (unchanged from previous version)
-//    Ghost full-circle preview when arc tool has 2 pts and cursor is near
-//    the start point — same CLOSE_SNAP_THRESHOLD used for consistency.
+//  Fix: startPointSnapRef now stores the RAW NORMALISED COORDS of the first
+//  placed point (nonSentinelPoints[0].x / .y), which are already in the same
+//  space as every other InProgressPoint. useMeasurementCommit uses them
+//  directly — no toNorm() conversion needed.
 //
 //  All other fixes from previous versions are unchanged.
 //
@@ -78,11 +75,13 @@ interface UseDrawingCanvasReturn {
   setCursorPoint:      React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>;
   redrawDrawingCanvas: (pt?: { x: number; y: number }) => void;
   handleCanvasPointerMove: (e: React.PointerEvent<HTMLCanvasElement>) => void;
-  /** True when cursor is within CLOSE_SNAP_THRESHOLD of the first placed point.
-   *  useMeasurements reads this on click/pointerUp to snap the commit coordinate
-   *  exactly to the start point, guaranteeing a perfectly closed path. */
+  /** True when cursor is within CLOSE_SNAP_THRESHOLD of the first placed point. */
   nearStartPointRef:   React.RefObject<boolean>;
-  /** The exact canvas-pixel coords of the first placed point (when nearStartPointRef is true). */
+  /**
+   * NORMALISED coords { x, y } of the first placed point when nearStartPointRef
+   * is true. These are in the same 0-1 normalised space as every InProgressPoint
+   * — useMeasurementCommit uses them directly WITHOUT any toNorm() conversion.
+   */
   startPointSnapRef:   React.RefObject<{ x: number; y: number } | null>;
 }
 
@@ -560,8 +559,13 @@ export function useDrawingCanvas({
   const snapCandidatesRef = useRef(snapCandidates);
   const arcDragPreviewRef = useRef(arcDragPreview);
 
-  const nearStartPointRef  = useRef<boolean>(false);
-  const startPointSnapRef  = useRef<{ x: number; y: number } | null>(null);
+  const nearStartPointRef = useRef<boolean>(false);
+  /**
+   * Stores NORMALISED { x, y } of the first placed point when nearStartPointRef
+   * is true. Populated from nonSentinelPoints[0] (the raw InProgressPoint coords)
+   * so no toNorm() conversion is required in useMeasurementCommit.
+   */
+  const startPointSnapRef = useRef<{ x: number; y: number } | null>(null);
 
   useEffect(() => { snapCandidatesRef.current = snapCandidates; }, [snapCandidates]);
   useEffect(() => { arcDragPreviewRef.current = arcDragPreview ?? null; }, [arcDragPreview]);
@@ -677,20 +681,27 @@ export function useDrawingCanvas({
         CLOSE_SNAP_TOOLS.has(activeTool) &&
         tPts.length >= 2
       ) {
-        const startPt    = tPts[0];
-        const distToStart = Math.hypot(cursor.x - startPt.x, cursor.y - startPt.y);
-        closeSnapActive = distToStart < CLOSE_SNAP_THRESHOLD;
-        closeSnapFade   = closeSnapActive
+        const startPt      = tPts[0];
+        const distToStart  = Math.hypot(cursor.x - startPt.x, cursor.y - startPt.y);
+        closeSnapActive    = distToStart < CLOSE_SNAP_THRESHOLD;
+        closeSnapFade      = closeSnapActive
           ? Math.max(0, 1 - distToStart / CLOSE_SNAP_THRESHOLD)
           : 0;
 
         if (closeSnapActive) {
           effectiveCursor = startPt;
-          nearStartPointRef.current  = true;
-          startPointSnapRef.current  = startPt;
+          nearStartPointRef.current = true;
+          // ── KEY FIX: store NORMALISED coords, not canvas-pixel coords ──────
+          // nonSentinelPoints[0] holds the raw InProgressPoint whose .x/.y are
+          // already in normalised 0-1 space. useMeasurementCommit uses these
+          // directly as the closing vertex — no toNorm() conversion required.
+          startPointSnapRef.current = {
+            x: nonSentinelPoints[0].x,
+            y: nonSentinelPoints[0].y,
+          };
         } else {
-          nearStartPointRef.current  = false;
-          startPointSnapRef.current  = null;
+          nearStartPointRef.current = false;
+          startPointSnapRef.current = null;
         }
       } else {
         nearStartPointRef.current = false;
@@ -945,12 +956,9 @@ export function useDrawingCanvas({
         })();
 
         // ── PASS 1: Arc preview — always drawn when cursor exists ─────────────
-        // This runs unconditionally, even when closeSnapActive is true.
-        // The close-snap hover is drawn as a second pass on top.
         if (cursor && lastPlaced) {
           const dragPrev = arcDragPreviewRef.current;
           if (dragPrev) {
-            // Drag-arc preview
             const startC = dragPrev.start;
             const midC   = dragPrev.mid;
             const endC   = dragPrev.end;
@@ -974,7 +982,6 @@ export function useDrawingCanvas({
             }
             ctx.setLineDash([]);
           } else {
-            // Click-based preview rubber-band
             if (arcRunLen === 0) {
               const lastPtType = allArcPts.length > 0
                 ? (allArcPts[allArcPts.length - 1].segmentType ?? 'line')
@@ -985,8 +992,6 @@ export function useDrawingCanvas({
               ctx.setLineDash(DASH_ACTIVE);
               ctx.beginPath();
               ctx.moveTo(lastPlaced.x, lastPlaced.y);
-              // Use effectiveCursor so the rubber-band snaps visually to the start
-              // point when close-snap is active
               ctx.lineTo((effectiveCursor ?? cursor).x, (effectiveCursor ?? cursor).y);
               ctx.stroke();
               ctx.setLineDash([]);
@@ -1000,7 +1005,6 @@ export function useDrawingCanvas({
               ctx.stroke();
               ctx.setLineDash([]);
             } else if (arcRunLen === 2) {
-              // Two arc points placed — show circumscribed arc preview to cursor
               const inProgressArcPts: { x: number; y: number }[] = [];
               for (let i = allArcPts.length - 1; i >= 0 && inProgressArcPts.length < 2; i--) {
                 if (allArcPts[i].segmentType === 'arc') {

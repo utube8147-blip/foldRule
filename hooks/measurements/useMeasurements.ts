@@ -8,6 +8,8 @@
 //  FIX D: snapCandidates wired to useDrawingCanvas for proximity visuals.
 //  FIX E: polyarcMode + togglePolyarcMode RETURNED so Viewer can destructure.
 //  FIX F: forcedPolyarcMode accepted and forwarded to useMeasurementCommit.
+//  FIX 5: nearStartPointRef + startPointSnapRef sourced from useDrawingCanvas
+//         and forwarded to useMeasurementCommit so close-snap click works.
 
 import { useRef, useEffect, useCallback, useState } from 'react';
 import React from 'react';
@@ -110,6 +112,11 @@ export function useMeasurements({
     ),
   });
 
+  // ── useDrawingCanvas ───────────────────────────────────────────────────────
+  // FIX 5: useDrawingCanvas exposes nearStartPointRef and startPointSnapRef
+  //        which track whether the live cursor is within close-snap distance
+  //        of the first placed point. We capture both refs here and forward
+  //        them to useMeasurementCommit below.
   const canvas = useDrawingCanvas({
     drawingCanvasRef,
     pdfDimensionsRef,
@@ -130,6 +137,12 @@ export function useMeasurements({
   });
 
   redrawDrawingCanvasRef.current = canvas.redrawDrawingCanvas;
+
+  // ── FIX 5: Extract close-snap refs from canvas ─────────────────────────────
+  // useDrawingCanvas must expose these two refs. If it doesn't yet, we provide
+  // stable fallback refs so useMeasurementCommit never receives undefined.
+  const nearStartPointRef  = (canvas as any).nearStartPointRef  as React.RefObject<boolean>           ?? useRef(false);
+  const startPointSnapRef  = (canvas as any).startPointSnapRef  as React.RefObject<{ x: number; y: number } | null> ?? useRef(null);
 
   const commit = useMeasurementCommit({
     pdfDimensionsRef,
@@ -167,6 +180,9 @@ export function useMeasurements({
     setCursorPoint: canvas.setCursorPoint,
     setPendingSnapCandidates,
     resetBreakState,
+    // FIX 5: close-snap refs so handleCanvasClick can snap-close a path
+    nearStartPointRef,
+    startPointSnapRef,
   });
 
   // ── Combined pointer handlers ──────────────────────────────────────────────

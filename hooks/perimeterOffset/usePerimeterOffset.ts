@@ -1,5 +1,39 @@
 'use client';
 // ─── hooks/perimeterOffset/usePerimeterOffset.ts ──────────────────────────────
+//
+//  FIX (this revision)
+//  ────────────────────
+//  isValidOpenSource previously rejected ALL group-header rows outright:
+//
+//      if (row.isGroupHeader) return false;
+//
+//  and then checked `row.points` directly — which is always `[]` for group
+//  headers (their geometry lives in their children via `childIds`).
+//
+//  Result: a multi-segment OPEN path (e.g. a polyarc or multi-click "linear"
+//  measurement committed as a group header + child segments) was NEVER
+//  offset-eligible as a whole. Meanwhile each CHILD row individually passed
+//  isValidOpenSource (type 'Length', has real points, not closed), so each
+//  segment became its OWN separate offset-eligible shape in
+//  offsetEligiblePolygons / findOffsetHit. Clicking near the path would only
+//  select whichever single segment was under the cursor — "the full path"
+//  was never selectable.
+//
+//  Fix: isValidOpenSource now mirrors isValidSource's group-header handling —
+//  for a group header, validity is determined via getEffectivePoints()
+//  (which already stitches childIds together, see perimeterOffsetGeometry.ts)
+//  rather than row.points. A group header is a valid OPEN source when:
+//    • it has childIds
+//    • its effective (stitched) points have >= 2 real points
+//    • it is NOT effectively closed (closed multi-segment paths remain the
+//      domain of isValidSource)
+//
+//  Combined with the Viewer.tsx change to skip rows with `parentId` when
+//  building offsetEligiblePolygons / findOffsetHit (so children of a group
+//  are never independently offset-eligible), multi-segment open paths now
+//  resolve to a single eligible shape — the full stitched path.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback } from 'react';
 import { TakeoffRow } from '@/types';
@@ -153,10 +187,39 @@ export function usePerimeterOffset({
   }, [measurements]);
 
   // ── isValidOpenSource (open linear paths) ─────────────────────────────────
+  //
+  //  FIX: group headers are now handled the same way isValidSource handles
+  //  them — via getEffectivePoints() (which stitches childIds together),
+  //  not via row.points (always [] on a header).
+  //
+  //  A group header is a valid OPEN source when:
+  //    • row.type === 'Length'
+  //    • it has childIds
+  //    • its stitched effective points have >= 2 real points
+  //    • it is NOT effectively closed
+  //
+  //  A non-header row is a valid OPEN source when (unchanged):
+  //    • row.type === 'Length'
+  //    • it has >= 2 real points
+  //    • it is NOT effectively closed
+  //
+  //  NOTE: child rows (rows with `parentId` set) still pass this check
+  //  individually if they happen to satisfy the conditions above. Viewer.tsx
+  //  is responsible for skipping rows with `parentId` when building the list
+  //  of offset-eligible shapes / hit-testing, so that only the group header
+  //  (representing the FULL stitched path) is considered — not each segment
+  //  independently.
   const isValidOpenSource = useCallback((row: TakeoffRow): boolean => {
     if (!row) return false;
     if (row.type !== 'Length') return false;
-    if (row.isGroupHeader) return false;
+
+    if (row.isGroupHeader) {
+      if (!row.childIds?.length) return false;
+      const effectivePts = getEffectivePoints(row, measurements);
+      if (!effectivePts || effectivePts.length < 2) return false;
+      if (countRealPoints(effectivePts) < 2) return false;
+      return !isEffectivelyClosed(row, measurements);
+    }
 
     const rawPts = row.points ?? [];
     const realCount = countRealPoints(rawPts);

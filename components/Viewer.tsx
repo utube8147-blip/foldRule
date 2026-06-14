@@ -12,6 +12,8 @@
 //     confirmed to be in JSX).
 //  4. offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
 //     For square/round/butt, the geometry is a closed polygon.
+//  5. polyarcMode + togglePolyarcMode now owned locally in Viewer so
+//     togglePolyarcMode is never undefined on first render.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -345,6 +347,12 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     }
   }, [activeTool]);
 
+  // ── Polyarc mode — owned locally so togglePolyarcMode is always a function ─
+  const [polyarcMode, setPolyarcMode] = useState<'line' | 'arc'>('line');
+  const togglePolyarcMode = useCallback(() => {
+    setPolyarcMode(m => m === 'line' ? 'arc' : 'line');
+  }, []);
+
   // ── Calibration ───────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
     setPendingPtLen(ptLen);
@@ -369,7 +377,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     finishMeasurement, handleCanvasClick, handleContextMenu,
     handleCanvasPointerMove, handleCanvasPointerDown,
     handleCanvasPointerUp, toCanvas, setCursorPoint,
-    polyarcMode, togglePolyarcMode,
   } = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
@@ -385,6 +392,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
     snapCandidates,
+    polyarcMode,
+    togglePolyarcMode,
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
   } as any);
 
@@ -1000,7 +1009,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               offsetSourcePolygon={offsetSourcePolygon}
               offsetIsOpenPath={offsetIsOpenPath}
               offsetOpenEndStyle={offsetOpenEndStyle}
-              offsetOpenOutputType={offsetOpenOutputType}   // FIXED: now forwarded
+              offsetOpenOutputType={offsetOpenOutputType}
             >
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
