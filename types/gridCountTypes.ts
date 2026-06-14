@@ -1,6 +1,6 @@
 // ─── types/gridCountTypes.ts ──────────────────────────────────────────────────
 
-export type TileShape = 'square' | 'hex-flat' | 'hex-pointy' | 'triangle' | 'diamond' | 'rectangle';
+export type TileShape = 'square' | 'hex-flat' | 'hex-pointy' | 'triangle' | 'diamond' | 'rectangle' | 'hexagon';
 
 export interface Point {
   x: number;
