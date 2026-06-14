@@ -2,14 +2,20 @@
 
 // ─── components/Viewer/MagicFillCanvas.tsx ────────────────────────────────────
 //
-//  CHANGES FROM PREVIOUS VERSION:
-//   • Sidebar removed entirely — fills are now pushed to TakeoffContext instead
-//   • active dep added to sizing useEffect (crosshair fix retained)
-//   • No other behavioural changes
+//  FIX 1: getXY now divides by pdfDimensions.w/h instead of rect.width/height.
+//          At zoom != 1, getBoundingClientRect returns the *zoomed* CSS size, so
+//          c.width / rect.width = logicalPx / (logicalPx * zoom) = 1/zoom, which
+//          double-counted the zoom and placed clicks at the wrong position.
+//
+//  FIX 2: Canvas elements are sized via BOTH the HTML width/height attributes
+//          AND style.width/height so bitmap resolution matches layout size.
+//
+//  FIX 3: The interactRef canvas covers exactly pdfDimensions.w × pdfDimensions.h
+//          in both bitmap and CSS, so pointer events map 1-to-1 with PDF pixels.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useState } from 'react';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { MagicFill } from '@/hooks/fill/useMagicFill';
 
@@ -33,6 +39,8 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
+const CLOSE_SNAP_RADIUS = 14; // canvas-space pixels
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface MagicFillCanvasProps {
@@ -43,10 +51,133 @@ interface MagicFillCanvasProps {
   hiddenIds:      Set<number>;
   selectedId:     number | null;
   selectedGroup:  number | null;
+  activeColor?:   string;
   onSingleClick:  (canvasX: number, canvasY: number) => void;
-  onBatchRect:    (x1: number, y1: number, x2: number, y2: number) => void;
+  onPolygonLasso: (poly: [number, number][]) => void;
   onHover:        (canvasX: number, canvasY: number) => void;
   onHoverLeave:   () => void;
+}
+
+// ─── LassoOverlay ─────────────────────────────────────────────────────────────
+
+function LassoOverlay({
+  points, mousePos, activeColor, width, height,
+}: {
+  points:      [number, number][];
+  mousePos:    [number, number] | null;
+  activeColor: string;
+  width:       number;
+  height:      number;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const c = ref.current; if (!c) return;
+    // FIX: set both bitmap size AND css size
+    if (c.width !== width || c.height !== height) {
+      c.width  = width;
+      c.height = height;
+    }
+    c.style.width  = `${width}px`;
+    c.style.height = `${height}px`;
+  }, [width, height]);
+
+  useEffect(() => {
+    const c = ref.current; if (!c) return;
+    const ctx = c.getContext('2d')!;
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (points.length === 0) return;
+
+    const [r, g, b] = hexToRgb(activeColor);
+
+    // filled preview (≥3 pts)
+    if (points.length >= 3) {
+      ctx.beginPath();
+      ctx.moveTo(points[0][0], points[0][1]);
+      for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+      if (mousePos) ctx.lineTo(mousePos[0], mousePos[1]);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(${r},${g},${b},0.10)`;
+      ctx.fill();
+    }
+
+    // committed edges
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
+    ctx.strokeStyle = `rgba(${r},${g},${b},0.9)`;
+    ctx.lineWidth   = 1.8;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // rubber-band to mouse
+    if (mousePos) {
+      const last = points[points.length - 1];
+      ctx.beginPath();
+      ctx.moveTo(last[0], last[1]);
+      ctx.lineTo(mousePos[0], mousePos[1]);
+      ctx.strokeStyle = `rgba(${r},${g},${b},0.5)`;
+      ctx.lineWidth   = 1.2;
+      ctx.setLineDash([4, 6]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // close-hint back to first point
+      if (points.length >= 3) {
+        const dist = Math.hypot(mousePos[0] - points[0][0], mousePos[1] - points[0][1]);
+        ctx.beginPath();
+        ctx.moveTo(mousePos[0], mousePos[1]);
+        ctx.lineTo(points[0][0], points[0][1]);
+        ctx.strokeStyle = dist < CLOSE_SNAP_RADIUS
+          ? `rgba(${r},${g},${b},0.85)`
+          : `rgba(${r},${g},${b},0.18)`;
+        ctx.lineWidth = dist < CLOSE_SNAP_RADIUS ? 1.8 : 1;
+        ctx.setLineDash([3, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // vertex dots
+    points.forEach(([px, py], i) => {
+      const isFirst = i === 0;
+      const dotR    = isFirst ? 7 : 4.5;
+      ctx.beginPath(); ctx.arc(px, py, dotR + 2, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.fill();
+      ctx.beginPath(); ctx.arc(px, py, dotR, 0, Math.PI * 2);
+      ctx.fillStyle = isFirst ? `rgba(${r},${g},${b},1)` : `rgba(${r},${g},${b},0.85)`;
+      ctx.fill();
+      if (isFirst && points.length >= 3) {
+        ctx.beginPath(); ctx.arc(px, py, dotR - 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+    });
+
+    // point count badge
+    if (points.length > 0) {
+      const [lx, ly] = points[points.length - 1];
+      ctx.fillStyle = 'rgba(10,10,10,0.85)';
+      ctx.fillRect(lx + 10, ly - 12, 36, 16);
+      ctx.font      = '9px "Courier New"';
+      ctx.fillStyle = `rgba(${r},${g},${b},1)`;
+      ctx.fillText(`${points.length}pts`, lx + 13, ly);
+    }
+  }, [points, mousePos, activeColor, width, height]);
+
+  return (
+    <canvas
+      ref={ref}
+      style={{
+        position:      'absolute',
+        inset:         0,
+        width:         `${width}px`,
+        height:        `${height}px`,
+        pointerEvents: 'none',
+        zIndex:        46,
+      }}
+    />
+  );
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -59,8 +190,9 @@ export function MagicFillCanvas({
   hiddenIds,
   selectedId,
   selectedGroup,
+  activeColor = '#60a5fa',
   onSingleClick,
-  onBatchRect,
+  onPolygonLasso,
   onHover,
   onHoverLeave,
 }: MagicFillCanvasProps) {
@@ -68,48 +200,82 @@ export function MagicFillCanvas({
   const interactRef = useRef<HTMLCanvasElement>(null);
 
   const animRef    = useRef(0);
-  const dashRef    = useRef(0);
   const pulseRef   = useRef(0);
   const cursorRef  = useRef<{ x: number; y: number } | null>(null);
 
-  const isDragging  = useRef(false);
-  const hasDragged  = useRef(false);
-  const startPt     = useRef<{ x: number; y: number } | null>(null);
-  const dragRect    = useRef<{ x1:number; y1:number; x2:number; y2:number } | null>(null);
+  // space key tracking
+  const spaceHeldRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+
+  // lasso state
+  const [lassoPoints, setLassoPoints] = useState<[number, number][]>([]);
+  const [isLassoing,  setIsLassoing]  = useState(false);
+  const [lassoMouse,  setLassoMouse]  = useState<[number, number] | null>(null);
+  const lassoRef = useRef<[number, number][]>([]);
+
+  // single-click guard (pointer moved significantly = not a click)
+  const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
+  const hasMoved       = useRef(false);
+
+  // ── Space key listener ────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!active) return;
+    const onDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat && !(e.target instanceof HTMLInputElement)) {
+        e.preventDefault();
+        spaceHeldRef.current = true;
+        setSpaceHeld(true);
+      }
+      if (e.code === 'Escape') {
+        lassoRef.current = [];
+        setLassoPoints([]);
+        setIsLassoing(false);
+        setLassoMouse(null);
+      }
+    };
+    const onUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') { spaceHeldRef.current = false; setSpaceHeld(false); }
+    };
+    window.addEventListener('keydown', onDown);
+    window.addEventListener('keyup',   onUp);
+    return () => {
+      window.removeEventListener('keydown', onDown);
+      window.removeEventListener('keyup',   onUp);
+    };
+  }, [active]);
 
   // ── Canvas sizing ──────────────────────────────────────────────────────────
-  // active in deps so sizing runs immediately when MagicFillCanvas mounts,
-  // preventing the 300×150 default canvas size / giant crosshair bug.
+  // FIX: Set both bitmap dimensions (width/height attributes) AND CSS size
+  // so that 1 canvas pixel = 1 PDF pixel, and the canvas fills the wrapper
+  // exactly regardless of device pixel ratio or zoom.
   useEffect(() => {
     if (!pdfDimensions || !active) return;
     const { w, h } = pdfDimensions;
     for (const ref of [polyRef, interactRef]) {
-      const c = ref.current;
-      if (!c) continue;
-      if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
+      const c = ref.current; if (!c) continue;
+      // Bitmap size
+      if (c.width !== w || c.height !== h) {
+        c.width  = w;
+        c.height = h;
+      }
+      // CSS size — must match so coordinates map correctly
       c.style.width  = `${w}px`;
       c.style.height = `${h}px`;
     }
   }, [pdfDimensions, active]);
 
-  // ── Polygon redraw ────────────────────────────────────────────────────────
+  // ── Polygon outline redraw ─────────────────────────────────────────────────
   const redrawPolygons = useCallback(() => {
-    const pc = polyRef.current;
-    if (!pc || !pdfDimensions) return;
-    const ctx = pc.getContext('2d');
-    if (!ctx) return;
+    const pc = polyRef.current; if (!pc || !pdfDimensions) return;
+    const ctx = pc.getContext('2d')!;
     ctx.clearRect(0, 0, pc.width, pc.height);
 
     fills.forEach(f => {
-      if (hiddenIds.has(f.id)) return;
-      if (f.polygon.length < 3) return;
-
+      if (hiddenIds.has(f.id) || f.polygon.length < 3) return;
       if (f.polygon.length === 4) {
-        const xs = f.polygon.map(p => p[0]);
-        const ys = f.polygon.map(p => p[1]);
+        const xs = f.polygon.map(p => p[0]), ys = f.polygon.map(p => p[1]);
         if (new Set(xs).size === 2 && new Set(ys).size === 2) return;
       }
-
       const pts = f.polygon;
       const [r, g, b] = hexToRgb(f.color);
       const isSelected = f.id === selectedId;
@@ -123,177 +289,192 @@ export function MagicFillCanvas({
       };
 
       if (isSelected || isInGroup) {
-        ctx.save();
-        drawPath();
-        ctx.strokeStyle = isInGroup
-          ? 'rgba(96,165,250,0.18)'
-          : `rgba(${r},${g},${b},0.18)`;
-        ctx.lineWidth   = 8;
-        ctx.setLineDash([]);
-        ctx.stroke();
-        ctx.restore();
+        ctx.save(); drawPath();
+        ctx.strokeStyle = isInGroup ? 'rgba(96,165,250,0.18)' : `rgba(${r},${g},${b},0.18)`;
+        ctx.lineWidth = 8; ctx.setLineDash([]); ctx.stroke(); ctx.restore();
       }
-
       drawPath();
       ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected || isInGroup ? 1 : 0.85})`;
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
-      ctx.setLineDash([]);
-      ctx.stroke();
+      ctx.setLineDash([]); ctx.stroke();
     });
   }, [fills, hiddenIds, selectedId, selectedGroup, pdfDimensions]);
 
   useEffect(() => { redrawPolygons(); }, [redrawPolygons]);
 
-  // ── Interaction animation loop ────────────────────────────────────────────
+  // ── Animation loop (crosshair) ────────────────────────────────────────────
   useEffect(() => {
     const ic = interactRef.current;
     if (!ic || !active || !pdfDimensions) {
       cancelAnimationFrame(animRef.current);
-      if (ic) ic.getContext('2d')?.clearRect(0, 0, ic.width, ic.height);
+      ic?.getContext('2d')?.clearRect(0, 0, ic.width, ic.height);
       return;
     }
-
     const loop = () => {
-      dashRef.current  = (dashRef.current + 0.5) % 20;
-      pulseRef.current = pulseRef.current + 0.06;
+      pulseRef.current += 0.06;
+      const ctx = ic.getContext('2d')!;
+      ctx.clearRect(0, 0, ic.width, ic.height);
 
-      const ctx = ic.getContext('2d');
-      if (!ctx) { animRef.current = requestAnimationFrame(loop); return; }
-
-      const cw = ic.width;
-      const ch = ic.height;
-
-      ctx.clearRect(0, 0, cw, ch);
-
-      // ── Drag rect ─────────────────────────────────────────────────────────
-      if (dragRect.current && isDragging.current && hasDragged.current) {
-        const { x1, y1, x2, y2 } = dragRect.current;
-        const rx = Math.min(x1,x2), ry = Math.min(y1,y2);
-        const rw = Math.abs(x2-x1), rh = Math.abs(y2-y1);
-
-        ctx.save();
-        ctx.fillStyle = 'rgba(96,165,250,0.07)';
-        ctx.fillRect(rx, ry, rw, rh);
-        ctx.strokeStyle    = 'rgba(96,165,250,0.9)';
-        ctx.lineWidth      = 1.5;
-        ctx.setLineDash([6, 4]);
-        ctx.lineDashOffset = -dashRef.current;
-        ctx.strokeRect(rx, ry, rw, rh);
-        ctx.setLineDash([]);
-
-        for (const [hx, hy] of [
-          [rx, ry], [rx+rw, ry], [rx+rw, ry+rh], [rx, ry+rh],
-        ] as [number,number][]) {
-          ctx.fillStyle   = '#60a5fa';
-          ctx.fillRect(hx-4, hy-4, 8, 8);
-          ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-          ctx.lineWidth   = 1;
-          ctx.strokeRect(hx-4, hy-4, 8, 8);
-        }
-        ctx.font      = '9px "Courier New",monospace';
-        ctx.fillStyle = 'rgba(96,165,250,0.9)';
-        ctx.fillText(`${Math.round(Math.abs(x2-x1))}×${Math.round(Math.abs(y2-y1))}`, rx+6, ry+14);
-        ctx.restore();
-      }
-
-      // ── Crosshair ─────────────────────────────────────────────────────────
-      if (cursorRef.current && (!isDragging.current || !hasDragged.current)) {
+      if (cursorRef.current) {
         const { x, y } = cursorRef.current;
         const alpha = 0.28 + 0.18 * Math.sin(pulseRef.current);
+        const [r, g, b] = hexToRgb(isLassoing ? activeColor : '#f59e0b');
 
         ctx.save();
-        ctx.strokeStyle = `rgba(245,158,11,${alpha})`;
+        ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;
         ctx.lineWidth   = 1;
         ctx.setLineDash([4, 4]);
-        ctx.beginPath(); ctx.moveTo(0,  y); ctx.lineTo(cw, y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(x,  0); ctx.lineTo(x, ch); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(ic.width, y); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, ic.height); ctx.stroke();
         ctx.setLineDash([]);
-        ctx.beginPath();
-        ctx.arc(x, y, 4, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(245,158,11,${0.5 + 0.4 * Math.sin(pulseRef.current)})`;
+        ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(${r},${g},${b},${0.5 + 0.4 * Math.sin(pulseRef.current)})`;
         ctx.fill();
         ctx.restore();
       }
-
       animRef.current = requestAnimationFrame(loop);
     };
-
     animRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animRef.current);
-  }, [active, pdfDimensions]);
+  }, [active, pdfDimensions, isLassoing, activeColor]);
 
   // ── Coordinate helper ─────────────────────────────────────────────────────
+  //
+  //  FIX: Use pdfDimensions.w / rect.width (not canvas.width / rect.width).
+  //  pdfDimensions.w is the stable logical canvas resolution.
+  //  rect.width is the current CSS (zoomed) size.
+  //  Their ratio converts CSS-pixel offsets into logical PDF pixels
+  //  regardless of zoom level.
+  //
   const getXY = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const canvas = e.currentTarget;
-    const rect   = canvas.getBoundingClientRect();
-    const scaleX = canvas.width  / rect.width;
-    const scaleY = canvas.height / rect.height;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const w = pdfDimensions?.w ?? rect.width;
+    const h = pdfDimensions?.h ?? rect.height;
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top)  * scaleY,
+      x: (e.clientX - rect.left) * (w / rect.width),
+      y: (e.clientY - rect.top)  * (h / rect.height),
     };
-  }, []);
+  }, [pdfDimensions]);
 
-  // ── Pointer handlers ──────────────────────────────────────────────────────
+  // ── Pointer down ──────────────────────────────────────────────────────────
   const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     if (e.button !== 0) return;
     e.currentTarget.setPointerCapture(e.pointerId);
-    const pt = getXY(e);
-    startPt.current    = pt;
-    isDragging.current = true;
-    hasDragged.current = false;
-    dragRect.current   = { x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y };
-  }, [getXY]);
+    const { x, y } = getXY(e);
+    pointerDownPos.current = { x, y };
+    hasMoved.current       = false;
 
+    // ── Space held → lasso vertex placement ───────────────────────────────
+    if (spaceHeldRef.current || isLassoing) {
+      const current = lassoRef.current;
+
+      if (current.length === 0) {
+        const pts: [number, number][] = [[x, y]];
+        lassoRef.current = pts;
+        setLassoPoints(pts);
+        setIsLassoing(true);
+        return;
+      }
+
+      // check close-snap
+      if (current.length >= 3) {
+        const dist = Math.hypot(x - current[0][0], y - current[0][1]);
+        if (dist < CLOSE_SNAP_RADIUS) {
+          onPolygonLasso(current);
+          lassoRef.current = [];
+          setLassoPoints([]);
+          setIsLassoing(false);
+          setLassoMouse(null);
+          return;
+        }
+      }
+
+      // add vertex
+      const pts: [number, number][] = [...current, [x, y]];
+      lassoRef.current = pts;
+      setLassoPoints(pts);
+    }
+    // non-lasso: handled on pointer-up
+  }, [getXY, isLassoing, onPolygonLasso]);
+
+  // ── Pointer move ──────────────────────────────────────────────────────────
   const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    const pt = getXY(e);
-    cursorRef.current = pt;
-    onHover(pt.x, pt.y);
-    if (!isDragging.current || !startPt.current) return;
-    const dx = Math.abs(pt.x - startPt.current.x);
-    const dy = Math.abs(pt.y - startPt.current.y);
-    if (dx > 6 || dy > 6) hasDragged.current = true;
-    if (hasDragged.current) {
-      dragRect.current = { x1: startPt.current.x, y1: startPt.current.y, x2: pt.x, y2: pt.y };
-    }
-  }, [getXY, onHover]);
+    const { x, y } = getXY(e);
+    cursorRef.current = { x, y };
+    onHover(x, y);
 
-  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDragging.current) return;
-    isDragging.current = false;
-    const pt = getXY(e);
-    if (hasDragged.current && startPt.current) {
-      onBatchRect(startPt.current.x, startPt.current.y, pt.x, pt.y);
-    } else if (startPt.current) {
-      onSingleClick(pt.x, pt.y);
+    if (isLassoing) {
+      setLassoMouse([x, y]);
+      return;
     }
-    dragRect.current   = null;
-    startPt.current    = null;
-    hasDragged.current = false;
-  }, [getXY, onSingleClick, onBatchRect]);
+
+    if (pointerDownPos.current) {
+      const dx = Math.abs(x - pointerDownPos.current.x);
+      const dy = Math.abs(y - pointerDownPos.current.y);
+      if (dx > 4 || dy > 4) hasMoved.current = true;
+    }
+  }, [getXY, onHover, isLassoing]);
+
+  // ── Pointer up ────────────────────────────────────────────────────────────
+  const handlePointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isLassoing) return;
+    if (!pointerDownPos.current) return;
+
+    const { x, y } = getXY(e);
+    if (!hasMoved.current) {
+      onSingleClick(x, y);
+    }
+    pointerDownPos.current = null;
+    hasMoved.current       = false;
+  }, [getXY, onSingleClick, isLassoing]);
 
   const handlePointerLeave = useCallback(() => {
     cursorRef.current = null;
+    if (isLassoing) setLassoMouse(null);
     onHoverLeave();
-  }, [onHoverLeave]);
+  }, [onHoverLeave, isLassoing]);
 
   if (!active || !pdfDimensions) return null;
 
+  const { w, h } = pdfDimensions;
+
   return (
     <>
-      {/* Layer 42: polygon outlines */}
+      {/* Layer 42: committed fill polygon outlines */}
       <canvas
         ref={polyRef}
-        className="absolute inset-0 z-[42] pointer-events-none"
-        style={{ width: pdfDimensions.w, height: pdfDimensions.h }}
+        style={{
+          position:      'absolute',
+          inset:         0,
+          width:         `${w}px`,
+          height:        `${h}px`,
+          zIndex:        42,
+          pointerEvents: 'none',
+        }}
       />
-      {/* Layer 45: interaction + animated overlay */}
+
+      {/* Layer 43: lasso-in-progress overlay */}
+      {(isLassoing || lassoPoints.length > 0) && (
+        <LassoOverlay
+          points={lassoPoints}
+          mousePos={lassoMouse}
+          activeColor={activeColor}
+          width={w}
+          height={h}
+        />
+      )}
+
+      {/* Layer 45: crosshair + interaction
+          CRITICAL: This canvas must be exactly w×h in both bitmap and CSS
+          so that pointer event coordinates map directly to PDF pixel space. */}
       <canvas
         ref={interactRef}
-        className="absolute inset-0 z-[45]"
         style={{
-          width:         pdfDimensions.w,
-          height:        pdfDimensions.h,
+          position:      'absolute',
+          inset:         0,
+          width:         `${w}px`,
+          height:        `${h}px`,
+          zIndex:        45,
           cursor:        isFilling ? 'wait' : 'crosshair',
           pointerEvents: isFilling ? 'none' : 'auto',
         }}
@@ -302,6 +483,59 @@ export function MagicFillCanvas({
         onPointerUp={handlePointerUp}
         onPointerLeave={handlePointerLeave}
       />
+
+      {/* Lasso status banner */}
+      {isLassoing && (
+        <div style={{
+          position:      'absolute',
+          top:           10,
+          left:          '50%',
+          transform:     'translateX(-50%)',
+          background:    'rgba(10,10,10,.9)',
+          border:        `1px solid ${activeColor}`,
+          padding:       '5px 16px',
+          fontSize:      8,
+          color:         activeColor,
+          textTransform: 'uppercase',
+          letterSpacing: '.1em',
+          pointerEvents: 'none',
+          zIndex:        50,
+          display:       'flex',
+          alignItems:    'center',
+          gap:           8,
+          fontFamily:    "'Courier New',monospace",
+          whiteSpace:    'nowrap',
+        }}>
+          <span style={{ fontSize: 12, opacity: .7 }}>⬡</span>
+          {lassoPoints.length < 3
+            ? `Click to place vertices · ${lassoPoints.length} placed`
+            : `${lassoPoints.length} vertices · click near ① to close · Esc to cancel`
+          }
+        </div>
+      )}
+
+      {/* Space-held hint (not yet lassoing) */}
+      {spaceHeld && !isLassoing && !isFilling && (
+        <div style={{
+          position:      'absolute',
+          top:           10,
+          left:          '50%',
+          transform:     'translateX(-50%)',
+          background:    'rgba(10,10,10,.85)',
+          border:        '1px solid #60a5fa',
+          padding:       '4px 14px',
+          fontSize:      8,
+          color:         '#60a5fa',
+          textTransform: 'uppercase',
+          letterSpacing: '.1em',
+          pointerEvents: 'none',
+          zIndex:        50,
+          fontFamily:    "'Courier New',monospace",
+          whiteSpace:    'nowrap',
+        }}>
+          Polygon lasso — click to start placing vertices
+        </div>
+      )}
     </>
   );
 }

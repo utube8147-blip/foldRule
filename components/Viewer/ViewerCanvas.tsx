@@ -1,7 +1,17 @@
 'use client';
 // ─── components/Viewer/ViewerCanvas.tsx ───────────────────────────────────────
+//
+//  FIX: fillCanvasRef <canvas> now has explicit width and height attributes
+//       set via a useEffect that tracks pdfDimensions. Without this the canvas
+//       bitmap defaults to 300×150 while the mask is built at full PDF
+//       resolution, causing every pixel operation to map into the wrong area.
+//
+//  FIX: style.width / style.height on fillCanvasRef are set to pdfDimensions
+//       w/h so the CSS layout size matches the bitmap exactly.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useId } from 'react';
+import React, { useId, useEffect, useRef } from 'react';
 import { FolderOpen, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
@@ -60,12 +70,8 @@ interface ViewerCanvasProps {
   offsetOutputType?:       OffsetOutputType;
   offsetPreviewPolygons?:  Array<{ x: number; y: number }[]> | null;
   offsetSourcePolygon?:    Array<{ x: number; y: number }> | null;
-  // FIX 2/4: offsetIsOpenPath is now true whenever the source is an open path,
-  // regardless of endStyle. The overlay uses openEndStyle to decide render mode.
   offsetIsOpenPath?:       boolean;
-  // openEndStyle drives the rendering decision (open strokes vs closed polygon)
   offsetOpenEndStyle?:     'square' | 'round' | 'butt' | 'none';
-  // openOutputType is now always passed when source is open (not gated on isOpenPath)
   offsetOpenOutputType?:   string;
 
   toCanvas: (x: number, y: number) => { x: number; y: number };
@@ -196,20 +202,6 @@ function OffsetEligibilityOverlay({
 }
 
 // ─── OffsetPreviewOverlay ─────────────────────────────────────────────────────
-//
-//  FIX 4: renderOpen is now driven solely by openEndStyle === 'none'.
-//  Previously it was `isOpenPath && openEndStyle === 'none'`, which meant
-//  left/right with square/round/butt (isOpenPath=false at the time) never
-//  got fill. Now:
-//
-//  renderOpen = openEndStyle === 'none'
-//    → open strokes, no fill, no Z close
-//
-//  showFill logic for open paths:
-//    isOpenPath=true + renderOpen=false (square/round/butt caps) →
-//      fill when openOutputType is 'one-side-area' or 'buffer-area'
-//
-//  Donut rendering only applies to closed-path sources.
 
 function OffsetPreviewOverlay({
   polygons,
@@ -230,25 +222,15 @@ function OffsetPreviewOverlay({
 }) {
   const { w, h } = pdfDimensions;
 
-  // FIX 4: renderOpen is based purely on endStyle, not on isOpenPath.
-  // For square/round/butt the geometry is a closed polygon even for open sources.
   const renderOpen = openEndStyle === 'none';
-
-  // Donut rendering only for closed path sources
   const isDonut = !isOpenPath && (outputType === 'donut' || outputType === 'donut-both');
 
-  // showFill logic:
-  //   • renderOpen → never fill (raw open strokes)
-  //   • donut → always fill (with compound path)
-  //   • closed path area outputs → fill
-  //   • open path with caps (square/round/butt) → fill when area output type
   const showFill = (() => {
     if (renderOpen) return false;
     if (isDonut)    return true;
     if (!isOpenPath) {
       return outputType === 'area' || outputType === 'donut' || outputType === 'donut-both';
     }
-    // Open path with caps: fill when measuring area
     return openOutputType === 'one-side-area' || openOutputType === 'buffer-area';
   })();
 
@@ -267,7 +249,6 @@ function OffsetPreviewOverlay({
       {polygons.map((poly, i) => {
         if (poly.length < 2) return null;
 
-        // FIX 4: close based on renderOpen, not isOpenPath
         const shouldClose = !renderOpen;
         const offsetD = buildPathD(poly, w, h, shouldClose);
         if (!offsetD) return null;
@@ -321,6 +302,41 @@ function OffsetPreviewOverlay({
       })}
     </svg>
   );
+}
+
+// ─── FillCanvasSizer ──────────────────────────────────────────────────────────
+//
+//  FIX: This component is the single source of truth for sizing fillCanvasRef.
+//  It runs a useEffect whenever pdfDimensions changes and sets both the bitmap
+//  dimensions (canvas.width / canvas.height) and CSS size (style.width/height).
+//
+//  Why not just set width/height in JSX?
+//  React treats canvas width/height as controlled attributes and will reset them
+//  to the JSX values after every render, which can race with the PDF renderer
+//  which also sets these. By using a ref + useEffect we apply the size exactly
+//  once per dimension change without causing React to fight the PDF renderer.
+//
+function FillCanvasSizer({
+  fillCanvasRef,
+  pdfDimensions,
+}: {
+  fillCanvasRef: React.RefObject<HTMLCanvasElement | null>;
+  pdfDimensions: PdfDimensions | null;
+}) {
+  useEffect(() => {
+    const fc = fillCanvasRef.current;
+    if (!fc || !pdfDimensions) return;
+    const { w, h } = pdfDimensions;
+    // Bitmap size — must match pdfCanvasRef bitmap so ImageData maps 1-to-1
+    if (fc.width  !== w) fc.width  = w;
+    if (fc.height !== h) fc.height = h;
+    // CSS layout size — must match pdfDimensions so the canvas occupies
+    // exactly the same pixel area as the rendered PDF in the DOM
+    fc.style.width  = `${w}px`;
+    fc.style.height = `${h}px`;
+  }, [fillCanvasRef, pdfDimensions]);
+
+  return null; // renders nothing — side-effects only
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -469,6 +485,14 @@ export function ViewerCanvas({
           className="relative shadow-2xl border border-industrial-border bg-white"
           style={canvasWrapStyle}
         >
+          {/* FIX: FillCanvasSizer keeps fillCanvasRef bitmap + CSS size in
+              sync with pdfDimensions whenever dimensions change. This is the
+              root fix for the "fill covers the whole scroll area" bug. */}
+          <FillCanvasSizer
+            fillCanvasRef={fillCanvasRef}
+            pdfDimensions={pdfDimensions}
+          />
+
           <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
 
           <canvas
@@ -476,10 +500,16 @@ export function ViewerCanvas({
             className="absolute inset-0 z-10 pointer-events-none"
           />
 
+          {/* FIX: fillCanvasRef — no explicit width/height JSX attributes.
+              Dimensions are controlled exclusively by FillCanvasSizer above
+              to avoid React overwriting them on re-render. The canvas must
+              sit at z-[39] so it renders below MagicFillCanvas overlays
+              (z-42 through z-46) but above the vector layer (z-10).
+              style.width and style.height are set by FillCanvasSizer in px
+              matching pdfDimensions so it exactly overlaps the PDF page. */}
           <canvas
             ref={fillCanvasRef}
             className="absolute inset-0 z-[39] pointer-events-none"
-            style={{ width: pdfDimensions?.w, height: pdfDimensions?.h }}
           />
 
           <canvas
@@ -550,7 +580,6 @@ export function ViewerCanvas({
               sourcePolygon={offsetSourcePolygon ?? null}
               isOpenPath={offsetIsOpenPath}
               openEndStyle={offsetOpenEndStyle}
-              // FIX 3: always passed now (not gated behind offsetIsOpenPath)
               openOutputType={offsetOpenOutputType}
             />
           )}

@@ -1,19 +1,16 @@
 'use client';
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-//  FIXES in this revision
-//  ──────────────────────
-//  1. polyarcMode null-guarded everywhere it is used (?.toUpperCase() ?? 'LINE')
-//     so the status bar never crashes when polyarcMode is undefined on first render.
-//  2. offsetOpenOutputType now forwarded to ViewerCanvas as a prop — it was
-//     tracked in state but the JSX omitted it, so fill decisions in
-//     OffsetPreviewOverlay were always seeing undefined.
-//  3. offsetOpenEndStyle forwarded to ViewerCanvas (was already in state but
-//     confirmed to be in JSX).
-//  4. offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
-//     For square/round/butt, the geometry is a closed polygon.
-//  5. polyarcMode + togglePolyarcMode now owned locally in Viewer so
-//     togglePolyarcMode is never undefined on first render.
+//  FIXES in this revision (on top of previous fixes)
+//  ──────────────────────────────────────────────────
+//  1. MagicFillCanvas now receives onPolygonLasso (was incorrectly onBatchRect).
+//  2. MagicFillCanvas now receives activeColor (was missing entirely).
+//  3. handleMagicPolygonFill destructured from useMagicFillSession and wired up.
+//  4. polyarcMode null-guarded everywhere (?.toUpperCase() ?? 'LINE').
+//  5. offsetOpenOutputType forwarded to ViewerCanvas.
+//  6. offsetOpenEndStyle forwarded to ViewerCanvas.
+//  7. offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
+//  8. polyarcMode + togglePolyarcMode owned locally so never undefined.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -397,7 +394,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
   } as any);
 
-  // FIXED: safe fallback so status bar never crashes before polyarcMode is set
+  // Safe fallback so status bar never crashes before polyarcMode is set
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
@@ -460,7 +457,11 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     mfFillMsg, mfFillSub, mfFillProgress,
     mfMetersPerPixel, mfLastFillPos,
     showMfNameDialog, pendingMfData,
-    handleMagicSingleClick, handleMagicBatchRect,
+    // FIX: destructure activeColor and handleMagicPolygonFill
+    activeColor,
+    handleMagicSingleClick,
+    handleMagicBatchRect,
+    handleMagicPolygonFill,
     handleMagicHover, handleMagicHoverLeave,
     handleMagicFillHoles, handleMagicUndo,
     handleMagicClear, handleMagicDelete,
@@ -490,7 +491,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
   const [offsetCommitWarn,  setOffsetCommitWarn]  = useState<string | null>(null);
   const [hoveredOffsetId,   setHoveredOffsetId]   = useState<string | null>(null);
   const [offsetOutputType,  setOffsetOutputType]  = useState<OffsetOutputType>('length');
-  // open path end style and output type for preview overlay rendering
   const [offsetOpenEndStyle,   setOffsetOpenEndStyle]   = useState<OpenEndStyle>('square');
   const [offsetOpenOutputType, setOffsetOpenOutputType] = useState<OpenOutputType>('parallel-length');
 
@@ -573,8 +573,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     return shape?.pts ?? null;
   }, [offsetSourceMeasurement, offsetEligiblePolygons]);
 
-  // offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
-  // For square/round/butt caps the geometry is a closed polygon.
+  // offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'
   const offsetIsOpenPath = useMemo(() => {
     if (!offsetSourceMeasurement) return false;
     if (!isValidOffsetOpenSource(offsetSourceMeasurement)) return false;
@@ -1011,6 +1010,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
               offsetOpenEndStyle={offsetOpenEndStyle}
               offsetOpenOutputType={offsetOpenOutputType}
             >
+              {/* FIX: onPolygonLasso (was onBatchRect) and activeColor now correctly passed */}
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
                 active={isMagicFillTool}
@@ -1019,8 +1019,9 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 hiddenIds={mfHiddenIds}
                 selectedId={mfSelectedId}
                 selectedGroup={mfSelectedGroup}
+                activeColor={activeColor}
                 onSingleClick={handleMagicSingleClick}
-                onBatchRect={handleMagicBatchRect}
+                onPolygonLasso={handleMagicPolygonFill}
                 onHover={handleMagicHover}
                 onHoverLeave={handleMagicHoverLeave}
               />
@@ -1153,7 +1154,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 <div className="w-px h-3 bg-industrial-border" />
                 {mfStagedCount > 0
                   ? <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
-                  : <span>Click: fill · Drag: batch fill</span>
+                  : <span>Click: fill · Space+click: polygon lasso</span>
                 }
               </>
             ) : isGridCountTool ? (
@@ -1191,7 +1192,6 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                   ? ` — ${polyarcLineCount} line${polyarcLineCount !== 1 ? 's' : ''} · ${polyarcArcCount} arc${polyarcArcCount !== 1 ? 's' : ''}`
                   : ''
                 }
-                {/* FIXED: safePolyarcMode can never be undefined */}
                 {' '}· Mode: <span className="text-amber-300 font-bold">{safePolyarcMode.toUpperCase()}</span>
                 {' '}· Press A to toggle · Drag for arc · Double-click or Enter to finish
               </span>
