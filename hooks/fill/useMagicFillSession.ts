@@ -1,32 +1,28 @@
 'use client';
 // ─── hooks/fill/useMagicFillSession.ts ───────────────────────────────────────
 //
-//  FIX (this revision): mask-generation guard against a stale-worker race.
-//
-//  Bug: handleMagicSingleClick / handleMagicPolygonFill spawn a Blob worker
-//  and capture `mw`/`mh` (mask-pixel dimensions) in a closure, then later
-//  apply the worker's async result to `fillDataRef.current` using those
-//  captured dimensions. If the PDF re-renders (page switch, zoom-triggered
-//  re-render, window resize, hot reload, etc.) WHILE that worker is still
-//  running, the mask-build effect below replaces maskRef / maskWRef /
-//  maskHRef / fillDataRef with NEW dimensions. The old worker is never told
-//  to stop, so when it eventually finishes, its onmessage handler
-//  overwrites the freshly-rebuilt fillDataRef.current with a buffer sized
-//  for the OLD dimensions — while maskWRef/maskHRef now hold the NEW ones.
-//  The next click then does:
-//    new ImageData(new Uint8ClampedArray(fillDataRef.current.data), mw, mh)
-//  with `fillDataRef.current.data.length` (old size) no longer a multiple
-//  of `4 * mw` (new size) → "Failed to construct 'ImageData': The input
-//  data length is not a multiple of (4 * width)."
-//
-//  Fix: a `maskGenerationRef` counter is bumped every time the mask is
-//  rebuilt. Each fill operation captures the generation at the moment it
-//  starts; before applying a worker's result, it checks the generation is
-//  still current and bails out (discarding the stale result) if not. The
-//  mask-rebuild effect also proactively kills any in-flight worker and
-//  resets the "filling" UI state, so a stale result can't be produced in
-//  the first place in the common case, and can't get stuck mid-air in the
-//  rare case where a message was already queued before terminate() landed.
+//  FIX: mask-generation guard against a stale-worker race.
+//  FIX: smoothing parity — both workers now run erode(2)→dilate(2) opening +
+//       8-connected marching-squares contour + adaptive RDP simplification
+//       before reporting polygon / svgPath / perimPx, matching the non-magic
+//       fill tool (fillCore.ts). The crude bbox polygon, boundary-pixel
+//       perimPx loop, and raw maskToSvgPath() calls have been removed from
+//       both worker onmessage handlers and replaced with mfBuildSmoothPolygon /
+//       mfPolygonPerim / mfPolygonToPath (all defined in MF_SMOOTH_CONTOUR_SOURCE
+//       below and inlined into each worker blob).
+//  FIX: mfMarchingSquares backtrack bug. The contour tracer was reusing the
+//       *previous foreground pixel* as the "backtrack" point for the next
+//       clockwise neighbour scan instead of the actual background pixel it
+//       entered from. That caused the very first candidate checked on every
+//       iteration after the first to be the cell the tracer had just left —
+//       which is always set — so it instantly bounced back to the start
+//       pixel after a single hop, producing a degenerate 2-point "contour"
+//       for every shape. mfPolygonToPath then emitted a zero-area path
+//       (e.g. "M0,0 L1,0 Z"), which is why the raster fill still painted
+//       fine but no SVG outline ever showed up. Fixed by tracking the real
+//       background backtrack pixel (the last *failed*, i.e. unset,
+//       direction checked just before the match) instead of the previous
+//       foreground cell.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -60,10 +56,118 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Shared smoothing-pipeline source — ported from fillCore.ts's outerShape /
+// marchingSquaresContour / rdpSimplify / adaptiveRdp / polygonPerim /
+// buildPolygonFromMask. Inlined into both worker blobs below under an `mf`
+// prefix so it can never shadow anything SVG_PATH_UTILS_SOURCE defines.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MF_SMOOTH_CONTOUR_SOURCE = /* js */`
+function mfMarchingSquares(mask, w, h) {
+  const W = w + 2, H = h + 2;
+  const field = new Uint8Array(W * H);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      if (mask[y * w + x]) field[(y + 1) * W + (x + 1)] = 1;
+  let startX = -1, startY = -1;
+  outer: for (let y = 0; y < H; y++)
+    for (let x = 0; x < W; x++)
+      if (field[y * W + x]) { startX = x; startY = y; break outer; }
+  if (startX === -1) return [];
+  const dx8 = [ 1, 1, 0,-1,-1,-1, 0, 1];
+  const dy8 = [ 0, 1, 1, 1, 0,-1,-1,-1];
+  const contour = [];
+  let cx = startX, cy = startY;
+  // backX/backY = the BACKGROUND pixel we entered the current pixel from.
+  // West-of-start is guaranteed background by the raster-scan order above
+  // (it's the first set pixel found scanning top-to-bottom, left-to-right).
+  let backX = startX - 1, backY = startY;
+  let steps = 0;
+  const maxSteps = W * H * 2;
+  do {
+    contour.push([cx - 1, cy - 1]);
+    const wantDx = backX - cx, wantDy = backY - cy;
+    let startDir = 0;
+    for (let d = 0; d < 8; d++)
+      if (dx8[d] === wantDx && dy8[d] === wantDy) { startDir = d; break; }
+    let moved = false;
+    for (let t = 0; t < 8; t++) {
+      const d = (startDir + t) % 8;
+      const nx = cx + dx8[d], ny = cy + dy8[d];
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H && field[ny * W + nx]) {
+        // The direction checked immediately before this match was unset
+        // by definition (otherwise it would have matched first) — that's
+        // the correct backtrack point for the NEXT iteration, not the
+        // foreground cell we're leaving.
+        const bd = (startDir + t - 1 + 8) % 8;
+        backX = cx + dx8[bd];
+        backY = cy + dy8[bd];
+        cx = nx; cy = ny; moved = true; break;
+      }
+    }
+    if (!moved) break;
+    if (++steps > maxSteps) break;
+  } while (!(cx === startX && cy === startY));
+  return contour;
+}
+
+function mfRdpSimplify(pts, eps) {
+  if (pts.length <= 3) return pts;
+  const distToLine = (p, a, b) => {
+    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
+    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    if (len2 === 0) return Math.hypot(px - ax, py - ay);
+    const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
+    return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
+  };
+  const keep = new Set([0, pts.length - 1]);
+  const rec = (lo, hi) => {
+    if (hi - lo < 2) return;
+    let maxD = 0, idx = lo;
+    for (let i = lo + 1; i < hi; i++) {
+      const d = distToLine(pts[i], pts[lo], pts[hi]);
+      if (d > maxD) { maxD = d; idx = i; }
+    }
+    if (maxD > eps) { keep.add(idx); rec(lo, idx); rec(idx, hi); }
+  };
+  rec(0, pts.length - 1);
+  return [...keep].sort((a, b) => a - b).map(i => pts[i]);
+}
+
+function mfAdaptiveRdp(pts) {
+  if (pts.length < 4) return pts;
+  let perim = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    perim += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+  }
+  const eps = Math.max(0.5, Math.min(3, perim / 400));
+  return mfRdpSimplify(pts, eps);
+}
+
+function mfPolygonPerim(pts) {
+  let p = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const j = (i + 1) % pts.length;
+    p += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+  }
+  return Math.round(p);
+}
+
+function mfPolygonToPath(poly) {
+  if (!poly.length) return '';
+  let d = 'M' + poly[0][0] + ',' + poly[0][1];
+  for (let i = 1; i < poly.length; i++) d += ' L' + poly[i][0] + ',' + poly[i][1];
+  return d + ' Z';
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
 // ─────────────────────────────────────────────────────────────────────────────
 const RASTER_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
+${MF_SMOOTH_CONTOUR_SOURCE}
 
 const FILL_GROW = 3;
 const OFFSETS_R = [
@@ -123,6 +227,56 @@ function dilateMaskFast(src, w, h, r) {
     }
   }
   return out;
+}
+
+// erode primitive needed for the opening pass (erode→dilate) before contour tracing
+function mfErode(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+// opening (erode then dilate) to remove jagged boundary spurs before tracing
+function mfOuterShape(filled, w, h) {
+  const eroded   = mfErode(filled, w, h, 2);
+  const restored = dilateMaskFast(eroded, w, h, 2);
+  return restored;
+}
+
+// full smoothing pipeline: opening → marching-squares → adaptive RDP
+function mfBuildSmoothPolygon(mask, w, h) {
+  const outer = mfOuterShape(mask, w, h);
+  const raw   = mfMarchingSquares(outer, w, h);
+  if (raw.length === 0) {
+    // fallback: bbox of set pixels
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const x = i % w, y = (i / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
+  }
+  return mfAdaptiveRdp(raw);
 }
 
 function multiSeedFill(mask, w, h, cx, cy) {
@@ -198,30 +352,13 @@ self.onmessage = ({ data }) => {
   const closed = closeHoles(filled, w, h);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  const areaPx  = maskArea(closed);
-  const svgPath = maskToSvgPath(closed, w, h);
+  const areaPx = maskArea(closed);
 
-  let minX = w, minY = h, maxX = 0, maxY = 0;
-  for (let i = 0; i < closed.length; i++) {
-    if (!closed[i]) continue;
-    const px = i % w, py = (i / w) | 0;
-    if (px < minX) minX = px; if (px > maxX) maxX = px;
-    if (py < minY) minY = py; if (py > maxY) maxY = py;
-  }
-  const polygon = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
-
-  let perimPx = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!closed[y * w + x]) continue;
-      if (
-        x === 0 || !closed[y * w + x - 1] ||
-        x === w-1 || !closed[y * w + x + 1] ||
-        y === 0 || !closed[(y-1) * w + x] ||
-        y === h-1 || !closed[(y+1) * w + x]
-      ) perimPx++;
-    }
-  }
+  // Smoothed contour pipeline replaces the old crude bbox polygon +
+  // boundary-pixel perimPx + raw maskToSvgPath() call.
+  const polygon = mfBuildSmoothPolygon(closed, w, h);
+  const svgPath = mfPolygonToPath(polygon);
+  const perimPx = mfPolygonPerim(polygon);
 
   self.postMessage(
     { fillDataBuffer: fillDataArr.buffer, closedBuffer: closed.buffer, areaPx, perimPx, polygon, svgPath },
@@ -235,6 +372,7 @@ self.onmessage = ({ data }) => {
 // ─────────────────────────────────────────────────────────────────────────────
 const POLYGON_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
+${MF_SMOOTH_CONTOUR_SOURCE}
 
 function cropMask(full, W, x1, y1, x2, y2) {
   const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
@@ -417,6 +555,31 @@ function erodeMaskFast(src, w, h, r) {
   return out;
 }
 
+// opening pass before contour tracing, reusing the erode/dilate primitives
+// this worker already defines for buildSolidFill.
+function mfOuterShape(filled, w, h) {
+  const eroded   = erodeMaskFast(filled, w, h, 2);
+  const restored = dilateMaskFast(eroded, w, h, 2);
+  return restored;
+}
+
+// full smoothing pipeline: opening → marching-squares → adaptive RDP
+function mfBuildSmoothPolygon(mask, w, h) {
+  const outer = mfOuterShape(mask, w, h);
+  const raw   = mfMarchingSquares(outer, w, h);
+  if (raw.length === 0) {
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const x = i % w, y = (i / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
+  }
+  return mfAdaptiveRdp(raw);
+}
+
 function maskArea(mask) { let c = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) c++; return c; }
 
 function paintFill(mask, d, r, g, b, opacity) {
@@ -492,29 +655,11 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  const svgPath = maskToSvgPath(closed, w, h);
-
-  let minX = w, minY = h, maxX = 0, maxY = 0;
-  for (let i = 0; i < closed.length; i++) {
-    if (!closed[i]) continue;
-    const x = i % w, y = (i / w) | 0;
-    if (x < minX) minX = x; if (x > maxX) maxX = x;
-    if (y < minY) minY = y; if (y > maxY) maxY = y;
-  }
-  const polygon = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
-
-  let perimPx = 0;
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!closed[y * w + x]) continue;
-      if (
-        x === 0 || !closed[y * w + x - 1] ||
-        x === w-1 || !closed[y * w + x + 1] ||
-        y === 0 || !closed[(y-1) * w + x] ||
-        y === h-1 || !closed[(y+1) * w + x]
-      ) perimPx++;
-    }
-  }
+  // Smoothed contour pipeline replaces the old crude bbox polygon +
+  // boundary-pixel perimPx loop + raw maskToSvgPath() call.
+  const polygon = mfBuildSmoothPolygon(closed, w, h);
+  const svgPath = mfPolygonToPath(polygon);
+  const perimPx = mfPolygonPerim(polygon);
 
   const regionCount = Math.max(1, localResults.length);
   self.postMessage(
@@ -620,22 +765,22 @@ export function useMagicFillSession({
   const cycleColor  = useCallback(() => setActiveColorIdx(i => (i + 1) % FILL_COLORS.length), []);
 
   // ── Internal refs ─────────────────────────────────────────────────────────
-  const maskRef         = useRef<Uint8Array | null>(null);
-  const maskWRef         = useRef(0);
-  const maskHRef         = useRef(0);
-  const fillDataRef     = useRef<ImageData | null>(null);
-  const fillCountRef    = useRef(0);
-  const groupCountRef   = useRef(0);
-  const fillPixelMaps   = useRef<Map<number, Uint8Array>>(new Map());
-  const snapshots       = useRef<ImageData[]>([]);
-  const magicFillsRef   = useRef<MagicFill[]>([]);
-  const mfOpacity       = 40;
+  const maskRef       = useRef<Uint8Array | null>(null);
+  const maskWRef      = useRef(0);
+  const maskHRef      = useRef(0);
+  const fillDataRef   = useRef<ImageData | null>(null);
+  const fillCountRef  = useRef(0);
+  const groupCountRef = useRef(0);
+  const fillPixelMaps = useRef<Map<number, Uint8Array>>(new Map());
+  const snapshots     = useRef<ImageData[]>([]);
+  const magicFillsRef = useRef<MagicFill[]>([]);
+  const mfOpacity     = 40;
 
-  // FIX: generation counter — bumped every time the mask/fillData are
-  // rebuilt. Each fill operation snapshots the current generation before
-  // spawning its worker; the worker's result is only applied if the
-  // generation is still current, preventing a stale (pre-rebuild) result
-  // from corrupting the freshly-built fillDataRef with mismatched dims.
+  // Generation counter — bumped every time the mask/fillData are rebuilt.
+  // Each fill operation snapshots the current generation before spawning its
+  // worker; the worker's result is only applied if the generation is still
+  // current, preventing a stale (pre-rebuild) result from corrupting the
+  // freshly-built fillDataRef with mismatched dimensions.
   const maskGenerationRef = useRef(0);
 
   const workerRef    = useRef<Worker | null>(null);
@@ -654,13 +799,10 @@ export function useMagicFillSession({
     const w = bc.width, h = bc.height;
     if (!w || !h) return;
 
-    // FIX: cancel any flood-fill worker still running against the OLD mask
-    // before we replace maskRef/fillDataRef below — otherwise its delayed
-    // onmessage can land afterwards and overwrite the freshly-rebuilt
-    // fillDataRef with a buffer sized for the OLD dimensions (the root
-    // cause of the "ImageData ... not a multiple of (4 * width)" crash).
-    // Bumping the generation is a backstop in case a message was already
-    // queued on the main thread before terminate() took effect.
+    // Cancel any in-flight worker before replacing maskRef/fillDataRef —
+    // its delayed onmessage could otherwise overwrite the freshly-rebuilt
+    // fillDataRef with a buffer sized for the old dimensions.
+    // Bumping the generation is a backstop for messages already queued.
     killWorker(workerRef as any, workerUrlRef as any);
     maskGenerationRef.current += 1;
     setMfIsFilling(false);
@@ -710,9 +852,8 @@ export function useMagicFillSession({
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
 
-    // FIX: snapshot the generation this fill belongs to. If the mask gets
-    // rebuilt (new PDF render) before this worker's result comes back, the
-    // generation will have moved on and we discard the stale result.
+    // Snapshot the generation this fill belongs to. If the mask gets
+    // rebuilt before the worker returns, we discard the stale result.
     const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
@@ -752,10 +893,7 @@ export function useMagicFillSession({
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
 
-      // FIX: mask was rebuilt while this fill was in flight — its result
-      // is sized for a mask/canvas that no longer exists. Applying it
-      // would corrupt fillDataRef and crash the *next* fill's
-      // ImageData() construction. Discard it silently.
+      // Mask was rebuilt while fill was in flight — discard stale result.
       if (myGeneration !== maskGenerationRef.current) return;
 
       if (result.empty) {
@@ -814,8 +952,7 @@ export function useMagicFillSession({
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
 
-    // FIX: same generation guard as handleMagicSingleClick — see comments
-    // there for the full explanation of the race this protects against.
+    // Same generation guard as handleMagicSingleClick.
     const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
@@ -861,8 +998,7 @@ export function useMagicFillSession({
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
 
-      // FIX: discard a result that belongs to a mask generation which has
-      // since been replaced by a PDF re-render.
+      // Discard result belonging to a replaced mask generation.
       if (myGeneration !== maskGenerationRef.current) return;
 
       if (result.empty || result.error === 'leak') {
