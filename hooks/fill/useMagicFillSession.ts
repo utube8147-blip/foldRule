@@ -1,74 +1,50 @@
 'use client';
 // ─── hooks/fill/useMagicFillSession.ts ───────────────────────────────────────
 //
-//  SVG FIX (carried over): the previous "marchingSquaresContour" inside
-//  SVG_PATH_UTILS was not real boundary tracing — it collected every boundary
-//  pixel and sorted them by angle from the centroid. That only produces a
-//  valid ordering for star-shaped blobs (every angle hits the boundary once).
-//  For non-convex / radial shapes — e.g. a spiral staircase with tread wedges
-//  sticking out — a single angle can hit the boundary at several different
-//  radii, so the angle-sort scrambles the true perimeter order. Feeding that
-//  scrambled order through Catmull-Rom smoothing produced a jagged, spiky,
-//  self-crossing outline (the "psoriasis" look).
+//  FIX (this revision): mask-generation guard against a stale-worker race.
 //
-//  FIX 1 — replaced with proper Moore-neighbor boundary tracing (walks the
-//  actual connected perimeter pixel-by-pixel), which stays correct regardless
-//  of how non-convex / radial the filled region is.
+//  Bug: handleMagicSingleClick / handleMagicPolygonFill spawn a Blob worker
+//  and capture `mw`/`mh` (mask-pixel dimensions) in a closure, then later
+//  apply the worker's async result to `fillDataRef.current` using those
+//  captured dimensions. If the PDF re-renders (page switch, zoom-triggered
+//  re-render, window resize, hot reload, etc.) WHILE that worker is still
+//  running, the mask-build effect below replaces maskRef / maskWRef /
+//  maskHRef / fillDataRef with NEW dimensions. The old worker is never told
+//  to stop, so when it eventually finishes, its onmessage handler
+//  overwrites the freshly-rebuilt fillDataRef.current with a buffer sized
+//  for the OLD dimensions — while maskWRef/maskHRef now hold the NEW ones.
+//  The next click then does:
+//    new ImageData(new Uint8ClampedArray(fillDataRef.current.data), mw, mh)
+//  with `fillDataRef.current.data.length` (old size) no longer a multiple
+//  of `4 * mw` (new size) → "Failed to construct 'ImageData': The input
+//  data length is not a multiple of (4 * width)."
 //
-//  FIX 2 — the old catmullRomToBezier() unconditionally emitted a bezier 'C'
-//  command between every pair of points, so even dead-straight wall corners
-//  got rounded into curves. Replaced with buildAdaptivePath(), which measures
-//  the turn angle at each vertex and only smooths runs of shallow-turning
-//  points (genuine curves); sharp corners (real wall joints) are connected
-//  with straight 'L' lines instead.
-//
-//  Both fixes live inside SVG_PATH_UTILS, which is shared by both
-//  RASTER_WORKER_SOURCE (single-click flood fill) and POLYGON_WORKER_SOURCE
-//  (lasso fill), so this one change fixes both fill modes.
-//
-//  COORD-SYNC FIX (carried over): expose maskW / maskH (the mask/bitmap
-//  dimensions that svgPath strings are generated in) as STATE so consumers
-//  (Viewer.tsx → MagicFillCanvas) can correctly size the SVG overlay's
-//  viewBox to match the coordinate space of the painted fill canvas and the
-//  svgPath geometry. Previously only refs were available, which don't
-//  trigger re-renders, and the SVG layer used pdfDimensions (CSS size)
-//  instead of the mask/bitmap size — causing the perimeter outline to be
-//  scaled larger than and offset from the actual painted fill.
-//
-//  RESOLUTION-NORMALIZATION FIX (this revision): DILATE_R / ERODE_R /
-//  FILL_GROW / ROOM_GROW below are fixed *pixel* radii. They were chosen
-//  against a PDF rendered at a generous density (long edge roughly
-//  1800-2500px — the kind of output you get from a ~3x PDF.js render scale
-//  on a normal page). At that density a 2px dilate comfortably bridges the
-//  anti-aliasing gaps in a wall stroke. If pdfCanvasRef ever gets rendered
-//  at a lower density than that, the exact same radii are too small
-//  relative to the now-thinner wall strokes: small gaps in walls stop
-//  getting bridged (flood fill leaks into the next room) and the closing
-//  margin right at the wall edge gets thinner too (the fill looks like it's
-//  stopping short of the wall). Both symptoms trace back to the same root
-//  cause — the radii are absolute, the canvas underneath them isn't.
-//
-//  This revision adds normalizedMaskBuild(): if the captured frame is below
-//  a reference density, it's upsampled before buildWallMask/dilate/erode
-//  run, and the resulting binary mask is mapped back down to the canvas's
-//  native size afterward — so DILATE_R/ERODE_R keep doing the same job they
-//  do at high density, and every downstream consumer (maskRef,
-//  maskWRef/maskHRef, the SVG viewBox) still sees the same native w x h it
-//  always did.
-//
-//  NOTE: this is a safety net, not a substitute for rendering the page at a
-//  decent resolution in the first place. Upsampling a frame that was already
-//  rasterized too coarsely can't recover wall pixels that were never
-//  distinct to begin with — it only keeps the *closing strength* consistent.
-//  If pdfCanvasRef's native render scale is well below ~3x (long edge well
-//  under ~1800px), raising that at the source is still the real fix.
+//  Fix: a `maskGenerationRef` counter is bumped every time the mask is
+//  rebuilt. Each fill operation captures the generation at the moment it
+//  starts; before applying a worker's result, it checks the generation is
+//  still current and bails out (discarding the stale result) if not. The
+//  mask-rebuild effect also proactively kills any in-flight worker and
+//  resets the "filling" UI state, so a stale result can't be produced in
+//  the first place in the common case, and can't get stuck mid-air in the
+//  rare case where a message was already queued before terminate() landed.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import type { MagicFill }      from '@/hooks/fill/useMagicFill';
-import type { PdfDimensions }  from '@/types/viewerTypes';
-import type { TakeoffRow }     from '@/types';
+import type { MagicFill }     from '@/hooks/fill/useMagicFill';
+import type { PdfDimensions } from '@/types/viewerTypes';
+import type { TakeoffRow }    from '@/types';
+
+import {
+  buildNormalisedWallMask,
+  traceBoundary,
+  rdpSimplify,
+  buildAdaptivePath,
+  maskToSvgPath,
+} from '@/hooks/fill/fillMaskAndSvgPath';
+
+// ── single source of truth for the worker embed string ───────────────────────
+import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';
 
 const FILL_COLORS = [
   '#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa',
@@ -84,197 +60,10 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SHARED SVG PATH UTILITIES — inlined into both workers
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SVG_PATH_UTILS = /* js */`
-const BEZIER_TENSION   = 0.3;
-const RDP_EPSILON      = 2.0;
-const CORNER_ANGLE_DEG = 32; // turn sharper than this = real corner -> straight line
-
-// Proper Moore-neighbor boundary tracing on the padded field. Walks the
-// actual connected perimeter pixel-by-pixel in order, so it stays correct
-// for non-convex / radial shapes — unlike sorting boundary pixels by angle
-// from the centroid, which only works for star-shaped blobs and scrambles
-// ordering on anything with re-entrant geometry (e.g. staircase treads).
-function marchingSquaresContour(mask, w, h) {
-  const W = w + 2, H = h + 2;
-  const field = new Uint8Array(W * H);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++)
-      if (mask[y * w + x]) field[(y + 1) * W + (x + 1)] = 1;
-
-  let startX = -1, startY = -1;
-  outer: for (let y = 0; y < H; y++)
-    for (let x = 0; x < W; x++)
-      if (field[y * W + x]) { startX = x; startY = y; break outer; }
-  if (startX === -1) return [];
-
-  const dx8 = [ 1, 1, 0,-1,-1,-1, 0, 1];
-  const dy8 = [ 0, 1, 1, 1, 0,-1,-1,-1];
-  const contour = [];
-  let cx = startX, cy = startY;
-  let prevX = startX - 1, prevY = startY;
-  let steps = 0;
-  const maxSteps = W * H * 2;
-
-  do {
-    contour.push([cx - 1, cy - 1]);
-    const fromDx = cx - prevX, fromDy = cy - prevY;
-    let startDir = 0;
-    for (let d = 0; d < 8; d++)
-      if (dx8[d] === -fromDx && dy8[d] === -fromDy) { startDir = d; break; }
-    let moved = false;
-    for (let t = 0; t < 8; t++) {
-      const d = (startDir + t) % 8;
-      const nx = cx + dx8[d], ny = cy + dy8[d];
-      if (nx >= 0 && nx < W && ny >= 0 && ny < H && field[ny * W + nx]) {
-        prevX = cx; prevY = cy; cx = nx; cy = ny; moved = true; break;
-      }
-    }
-    if (!moved) break;
-    if (++steps > maxSteps) break;
-  } while (!(cx === startX && cy === startY));
-
-  return contour;
-}
-
-function rdpSimplify(pts, eps) {
-  if (pts.length <= 3) return pts;
-  const distToLine = (p, a, b) => {
-    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
-    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
-    if (len2 === 0) return Math.hypot(px - ax, py - ay);
-    const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
-    return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
-  };
-  const keep = new Set([0, pts.length - 1]);
-  const rec = (lo, hi) => {
-    if (hi - lo < 2) return;
-    let maxD = 0, idx = lo;
-    for (let i = lo + 1; i < hi; i++) {
-      const d = distToLine(pts[i], pts[lo], pts[hi]);
-      if (d > maxD) { maxD = d; idx = i; }
-    }
-    if (maxD > eps) { keep.add(idx); rec(lo, idx); rec(idx, hi); }
-  };
-  rec(0, pts.length - 1);
-  return [...keep].sort((a, b) => a - b).map(i => pts[i]);
-}
-
-// Turn angle (degrees) between the incoming and outgoing edge at a vertex.
-// ~0deg  = dead straight (no turn at all)
-// ~90deg = a right-angle wall corner
-function turnAngleDeg(prev, curr, next) {
-  const v1x = curr[0] - prev[0], v1y = curr[1] - prev[1];
-  const v2x = next[0] - curr[0], v2y = next[1] - curr[1];
-  const len1 = Math.hypot(v1x, v1y), len2 = Math.hypot(v2x, v2y);
-  if (len1 < 1e-6 || len2 < 1e-6) return 0;
-  const dot = Math.max(-1, Math.min(1, (v1x*v2x + v1y*v2y) / (len1*len2)));
-  return Math.acos(dot) * 180 / Math.PI;
-}
-
-// Builds the closed path using straight 'L' lines through sharp corners
-// (real wall joints / right angles) and smooth Catmull-Rom 'C' curves only
-// across runs of shallow-turning points (genuine curves, e.g. a traced arc
-// or circle). A segment between two points is only curved if NEITHER
-// endpoint is a sharp corner — this keeps every straight wall dead straight
-// while still smoothing the parts that are actually curved, instead of
-// rounding every corner into a curve.
-function buildAdaptivePath(pts, tension) {
-  const n = pts.length;
-  if (n < 2) return '';
-  if (n === 2) {
-    return 'M ' + pts[0][0] + ' ' + pts[0][1] + ' L ' + pts[1][0] + ' ' + pts[1][1] + ' Z';
-  }
-
-  const sharp = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n];
-    const next = pts[(i + 1) % n];
-    sharp[i] = turnAngleDeg(prev, pts[i], next) > CORNER_ANGLE_DEG;
-  }
-
-  let d = 'M ' + pts[0][0].toFixed(2) + ' ' + pts[0][1].toFixed(2);
-  for (let i = 0; i < n; i++) {
-    const p1 = pts[i];
-    const p2 = pts[(i + 1) % n];
-
-    if (sharp[i] || sharp[(i + 1) % n]) {
-      // Either endpoint is a real corner — keep this edge a straight line.
-      d += ' L ' + p2[0].toFixed(2) + ' ' + p2[1].toFixed(2);
-    } else {
-      // Both endpoints are shallow-turning — smooth this edge.
-      const p0 = pts[(i - 1 + n) % n];
-      const p3 = pts[(i + 2) % n];
-      const cp1x = p1[0] + (p2[0] - p0[0]) * tension;
-      const cp1y = p1[1] + (p2[1] - p0[1]) * tension;
-      const cp2x = p2[0] - (p3[0] - p1[0]) * tension;
-      const cp2y = p2[1] - (p3[1] - p1[1]) * tension;
-      d += ' C ' + cp1x.toFixed(2) + ' ' + cp1y.toFixed(2) + ','
-                 + cp2x.toFixed(2) + ' ' + cp2y.toFixed(2) + ','
-                 + p2[0].toFixed(2) + ' ' + p2[1].toFixed(2);
-    }
-  }
-  return d + ' Z';
-}
-
-function maskToSvgPath(mask, w, h) {
-  const contour = marchingSquaresContour(mask, w, h);
-
-  if (contour.length === 0) {
-    // True fallback: axis-aligned bounding box
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    for (let i = 0; i < mask.length; i++) {
-      if (!mask[i]) continue;
-      const x = i % w, y = (i / w) | 0;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    return 'M ' + minX + ' ' + minY +
-           ' L ' + maxX + ' ' + minY +
-           ' L ' + maxX + ' ' + maxY +
-           ' L ' + minX + ' ' + maxY + ' Z';
-  }
-
-  // Thin boundary — too many points for RDP, subsample first
-  let pts = contour;
-  if (pts.length > 2000) {
-    const step = Math.ceil(pts.length / 2000);
-    pts = pts.filter((_, i) => i % step === 0);
-  }
-
-  // Compute perimeter for adaptive epsilon
-  let perim = 0;
-  for (let i = 0; i < pts.length; i++) {
-    const j = (i + 1) % pts.length;
-    perim += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
-  }
-  const eps = Math.max(1.0, Math.min(RDP_EPSILON, perim / 400));
-  const simplified = rdpSimplify(pts, eps);
-
-  // Need at least 3 points for a closed path
-  if (simplified.length < 3) {
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    for (const [x, y] of contour) {
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    return 'M ' + minX + ' ' + minY +
-           ' L ' + maxX + ' ' + minY +
-           ' L ' + maxX + ' ' + maxY +
-           ' L ' + minX + ' ' + maxY + ' Z';
-  }
-
-  return buildAdaptivePath(simplified, BEZIER_TENSION);
-}
-`;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
 // ─────────────────────────────────────────────────────────────────────────────
 const RASTER_WORKER_SOURCE = /* js */`
-${SVG_PATH_UTILS}
+${SVG_PATH_UTILS_SOURCE}
 
 const FILL_GROW = 3;
 const OFFSETS_R = [
@@ -412,7 +201,6 @@ self.onmessage = ({ data }) => {
   const areaPx  = maskArea(closed);
   const svgPath = maskToSvgPath(closed, w, h);
 
-  // Polygon: bounding box for legacy compat
   let minX = w, minY = h, maxX = 0, maxY = 0;
   for (let i = 0; i < closed.length; i++) {
     if (!closed[i]) continue;
@@ -422,7 +210,6 @@ self.onmessage = ({ data }) => {
   }
   const polygon = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
 
-  // Perimeter from boundary pixel count
   let perimPx = 0;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
@@ -447,7 +234,7 @@ self.onmessage = ({ data }) => {
 // POLYGON LASSO WORKER — fills all rooms inside a user-drawn polygon
 // ─────────────────────────────────────────────────────────────────────────────
 const POLYGON_WORKER_SOURCE = /* js */`
-${SVG_PATH_UTILS}
+${SVG_PATH_UTILS_SOURCE}
 
 function cropMask(full, W, x1, y1, x2, y2) {
   const lw = x2 - x1 + 1, lh = y2 - y1 + 1;
@@ -778,157 +565,6 @@ interface UseMagicFillSessionProps {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Wall-mask constants
-// ─────────────────────────────────────────────────────────────────────────────
-const WALL_LUMA           = 120;
-const STROKE_NEIGHBOR_MIN = 0.4;
-const DILATE_R            = 2;
-const ERODE_R             = 1;
-
-// Resolution-normalization constants — see header comment for rationale.
-const REFERENCE_LONG_EDGE   = 1800; // ≈ a normal page at a ~3x PDF.js render scale
-const MAX_NORMALIZE_UPSCALE = 4;    // safety cap so a tiny/degenerate canvas can't blow up cost
-
-function buildWallMask(
-  data: Uint8ClampedArray,
-  w:    number,
-  h:    number,
-): Uint8Array {
-  const dark = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] < 20) continue;
-    const luma = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
-    if (luma < WALL_LUMA) dark[i] = 1;
-  }
-  const mask = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      if (!dark[y * w + x]) continue;
-      let n = 0;
-      if (x > 0   && dark[y * w + x - 1])           n++;
-      if (x < w-1 && dark[y * w + x + 1])           n++;
-      if (y > 0   && dark[(y-1) * w + x])           n++;
-      if (y < h-1 && dark[(y+1) * w + x])           n++;
-      if (x > 0   && y > 0   && dark[(y-1)*w+x-1]) n++;
-      if (x < w-1 && y > 0   && dark[(y-1)*w+x+1]) n++;
-      if (x > 0   && y < h-1 && dark[(y+1)*w+x-1]) n++;
-      if (x < w-1 && y < h-1 && dark[(y+1)*w+x+1]) n++;
-      if (n >= STROKE_NEIGHBOR_MIN) mask[y * w + x] = 1;
-    }
-  }
-  return mask;
-}
-
-function dilateMaskMain(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
-  const horiz = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let count = 0;
-    for (let x = 0; x < r && x < w; x++) if (src[y * w + x]) count++;
-    for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && src[y * w + add]) count++;
-      if (count > 0) horiz[y * w + x] = 1;
-      const rem = x - r; if (rem >= 0 && src[y * w + rem]) count--;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  for (let x = 0; x < w; x++) {
-    let count = 0;
-    for (let y = 0; y < r && y < h; y++) if (horiz[y * w + x]) count++;
-    for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && horiz[add * w + x]) count++;
-      if (count > 0) out[y * w + x] = 1;
-      const rem = y - r; if (rem >= 0 && horiz[rem * w + x]) count--;
-    }
-  }
-  return out;
-}
-
-function erodeMaskMain(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
-  const horiz = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let zeros = 0;
-    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
-    for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
-      if (zeros === 0) horiz[y * w + x] = 1;
-      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  for (let x = 0; x < w; x++) {
-    let zeros = 0;
-    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
-    for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
-      if (zeros === 0) out[y * w + x] = 1;
-      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
-    }
-  }
-  return out;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// normalizedMaskBuild — resolution-independent wall-mask construction
-//
-// DILATE_R / ERODE_R are absolute pixel radii tuned against a PDF rendered
-// at a generous density (see header comment). If the captured frame's long
-// edge is below REFERENCE_LONG_EDGE, the frame is upsampled first so the
-// closing operation runs at the density it was tuned for, then the
-// resulting *binary* mask is mapped back down to the canvas's native size
-// (nearest-neighbour — a binary mask must stay binary, no blurring it).
-// Callers never see the intermediate resolution: the returned mask is
-// always exactly w x h, matching what buildWallMask/dilateMaskMain/
-// erodeMaskMain would have produced directly.
-// ─────────────────────────────────────────────────────────────────────────────
-function normalizedMaskBuild(data: Uint8ClampedArray, w: number, h: number): Uint8Array {
-  const longEdge = Math.max(w, h);
-  const upscale = longEdge < REFERENCE_LONG_EDGE
-    ? Math.min(MAX_NORMALIZE_UPSCALE, REFERENCE_LONG_EDGE / longEdge)
-    : 1;
-
-  if (upscale === 1) {
-    const raw = buildWallMask(data, w, h);
-    const dil = dilateMaskMain(raw, w, h, DILATE_R);
-    return erodeMaskMain(dil, w, h, ERODE_R);
-  }
-
-  const uw = Math.max(1, Math.round(w * upscale));
-  const uh = Math.max(1, Math.round(h * upscale));
-
-  // Upsample the captured frame so the closing below runs at the density
-  // it was tuned for, regardless of the canvas's native resolution.
-  const srcCanvas = document.createElement('canvas');
-  srcCanvas.width = w; srcCanvas.height = h;
-  srcCanvas.getContext('2d')!.putImageData(
-    new ImageData(new Uint8ClampedArray(data), w, h), 0, 0,
-  );
-
-  const upCanvas = document.createElement('canvas');
-  upCanvas.width = uw; upCanvas.height = uh;
-  const upCtx = upCanvas.getContext('2d')!;
-  upCtx.imageSmoothingEnabled = true;
-  upCtx.imageSmoothingQuality = 'high';
-  upCtx.drawImage(srcCanvas, 0, 0, uw, uh);
-  const upData = upCtx.getImageData(0, 0, uw, uh).data;
-
-  const raw    = buildWallMask(upData, uw, uh);
-  const dil    = dilateMaskMain(raw, uw, uh, DILATE_R);
-  const maskUp = erodeMaskMain(dil, uw, uh, ERODE_R);
-
-  // Map the binary mask back down to native size.
-  const mask = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    const sy = Math.min(uh - 1, Math.round(y * upscale));
-    const rowOff = sy * uw;
-    for (let x = 0; x < w; x++) {
-      const sx = Math.min(uw - 1, Math.round(x * upscale));
-      mask[y * w + x] = maskUp[rowOff + sx];
-    }
-  }
-  return mask;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Formatting
 // ─────────────────────────────────────────────────────────────────────────────
 export function fmtArea(px: number, mpp: number | null): string {
@@ -975,19 +611,7 @@ export function useMagicFillSession({
   const [showMfNameDialog,setShowMfNameDialog]= useState(false);
   const [pendingMfData,   setPendingMfData]   = useState<any>(null);
 
-  // ── Mask bitmap dimensions (state mirror) ─────────────────────────────────
-  //
-  //  FIX (coord-sync): maskWRef/maskHRef below are refs and don't trigger
-  //  re-renders. The SVG perimeter overlay (SvgFillLayer in MagicFillCanvas)
-  //  needs maskW/maskH as its viewBox dimensions — this is the coordinate
-  //  space that svgPath strings (produced by maskToSvgPath in the workers
-  //  above, and in useMagicFill.ts) are expressed in. That space is the
-  //  PDF canvas BITMAP size (pdfCanvasRef.width/height), which is generally
-  //  larger than pdfDimensions (the CSS display size) due to devicePixelRatio
-  //  scaling in the PDF renderer. Declaring the SVG viewBox using
-  //  pdfDimensions instead of this mask size is what made the perimeter
-  //  outline render larger than, and offset from, the painted fill.
-  //
+  // ── Mask bitmap dimensions ────────────────────────────────────────────────
   const [maskDims, setMaskDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   // ── Color cycling ─────────────────────────────────────────────────────────
@@ -997,8 +621,8 @@ export function useMagicFillSession({
 
   // ── Internal refs ─────────────────────────────────────────────────────────
   const maskRef         = useRef<Uint8Array | null>(null);
-  const maskWRef        = useRef(0);
-  const maskHRef        = useRef(0);
+  const maskWRef         = useRef(0);
+  const maskHRef         = useRef(0);
   const fillDataRef     = useRef<ImageData | null>(null);
   const fillCountRef    = useRef(0);
   const groupCountRef   = useRef(0);
@@ -1007,13 +631,20 @@ export function useMagicFillSession({
   const magicFillsRef   = useRef<MagicFill[]>([]);
   const mfOpacity       = 40;
 
+  // FIX: generation counter — bumped every time the mask/fillData are
+  // rebuilt. Each fill operation snapshots the current generation before
+  // spawning its worker; the worker's result is only applied if the
+  // generation is still current, preventing a stale (pre-rebuild) result
+  // from corrupting the freshly-built fillDataRef with mismatched dims.
+  const maskGenerationRef = useRef(0);
+
   const workerRef    = useRef<Worker | null>(null);
   const workerUrlRef = useRef<string | null>(null);
 
   useEffect(() => { magicFillsRef.current = magicFills; }, [magicFills]);
   useEffect(() => () => killWorker(workerRef as any, workerUrlRef as any), []);
 
-  // ── Build wall mask when PDF renders ──────────────────────────────────────
+  // ── Build wall mask when PDF renders ─────────────────────────────────────
   useEffect(() => {
     if (pdfRenderCount === 0) return;
     const bc = pdfCanvasRef.current;
@@ -1022,6 +653,18 @@ export function useMagicFillSession({
 
     const w = bc.width, h = bc.height;
     if (!w || !h) return;
+
+    // FIX: cancel any flood-fill worker still running against the OLD mask
+    // before we replace maskRef/fillDataRef below — otherwise its delayed
+    // onmessage can land afterwards and overwrite the freshly-rebuilt
+    // fillDataRef with a buffer sized for the OLD dimensions (the root
+    // cause of the "ImageData ... not a multiple of (4 * width)" crash).
+    // Bumping the generation is a backstop in case a message was already
+    // queued on the main thread before terminate() took effect.
+    killWorker(workerRef as any, workerUrlRef as any);
+    maskGenerationRef.current += 1;
+    setMfIsFilling(false);
+    setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
 
     if (fc.width  !== w) fc.width  = w;
     if (fc.height !== h) fc.height = h;
@@ -1034,16 +677,12 @@ export function useMagicFillSession({
     if (!ctx) return;
 
     const id   = ctx.getImageData(0, 0, w, h);
-    const mask = normalizedMaskBuild(id.data, w, h);
+    const mask = buildNormalisedWallMask(id.data, w, h);
 
     maskRef.current     = mask;
     maskWRef.current    = w;
     maskHRef.current    = h;
     fillDataRef.current = new ImageData(w, h);
-
-    // FIX: mirror mask dimensions into state so consumers re-render and the
-    // SVG overlay's viewBox can be sized to maskW x maskH (the svgPath
-    // coordinate space), not pdfDimensions.
     setMaskDims({ w, h });
 
     fillCountRef.current  = 0;
@@ -1070,6 +709,11 @@ export function useMagicFillSession({
 
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
+
+    // FIX: snapshot the generation this fill belongs to. If the mask gets
+    // rebuilt (new PDF render) before this worker's result comes back, the
+    // generation will have moved on and we discard the stale result.
+    const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
     const cssH = pdfDimensions?.h ?? mh;
@@ -1107,6 +751,13 @@ export function useMagicFillSession({
 
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
+
+      // FIX: mask was rebuilt while this fill was in flight — its result
+      // is sized for a mask/canvas that no longer exists. Applying it
+      // would corrupt fillDataRef and crash the *next* fill's
+      // ImageData() construction. Discard it silently.
+      if (myGeneration !== maskGenerationRef.current) return;
+
       if (result.empty) {
         snapshots.current.pop();
         setMfIsFilling(false); setMfFillMsg(''); setMfFillSub(undefined);
@@ -1147,8 +798,10 @@ export function useMagicFillSession({
     worker.onerror = (e) => {
       console.error('[MagicFill] raster worker error', e);
       killWorker(workerRef as any, workerUrlRef as any);
-      snapshots.current.pop();
-      setMfIsFilling(false); setMfFillMsg(''); setMfFillSub(undefined);
+      if (myGeneration === maskGenerationRef.current) {
+        snapshots.current.pop();
+        setMfIsFilling(false); setMfFillMsg(''); setMfFillSub(undefined);
+      }
     };
   }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions]);
 
@@ -1160,6 +813,10 @@ export function useMagicFillSession({
 
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
+
+    // FIX: same generation guard as handleMagicSingleClick — see comments
+    // there for the full explanation of the race this protects against.
+    const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
     const cssH = pdfDimensions?.h ?? mh;
@@ -1203,6 +860,10 @@ export function useMagicFillSession({
 
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
+
+      // FIX: discard a result that belongs to a mask generation which has
+      // since been replaced by a PDF re-render.
+      if (myGeneration !== maskGenerationRef.current) return;
 
       if (result.empty || result.error === 'leak') {
         snapshots.current.pop();
@@ -1250,9 +911,11 @@ export function useMagicFillSession({
     worker.onerror = (e) => {
       console.error('[MagicFill] polygon worker error', e);
       killWorker(workerRef as any, workerUrlRef as any);
-      snapshots.current.pop();
-      setMfIsFilling(false);
-      setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
+      if (myGeneration === maskGenerationRef.current) {
+        snapshots.current.pop();
+        setMfIsFilling(false);
+        setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
+      }
     };
   }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions]);
 
@@ -1430,10 +1093,6 @@ export function useMagicFillSession({
     allVisibleFills,
     magicFills,
     mfStagedCount,
-    // FIX: mask bitmap dimensions — the coordinate space of svgPath strings.
-    // Consumers (Viewer.tsx → MagicFillCanvas's SvgFillLayer) MUST use this
-    // for the SVG viewBox, not pdfDimensions, so the perimeter outline lines
-    // up 1:1 with the painted fill canvas.
     maskW: maskDims.w,
     maskH: maskDims.h,
     mfSelectedId,    setMfSelectedId,

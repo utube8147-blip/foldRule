@@ -462,6 +462,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     handleMagicSingleClick,
     handleMagicBatchRect,
     handleMagicPolygonFill,
+    maskW, maskH,
     handleMagicHover, handleMagicHoverLeave,
     handleMagicFillHoles, handleMagicUndo,
     handleMagicClear, handleMagicDelete,
@@ -1017,6 +1018,8 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
                 isFilling={mfIsFilling || mfIsRepainting}
                 fills={allVisibleFills}
                 hiddenIds={mfHiddenIds}
+                maskW={maskW}
+                maskH={maskH}
                 selectedId={mfSelectedId}
                 selectedGroup={mfSelectedGroup}
                 activeColor={activeColor}

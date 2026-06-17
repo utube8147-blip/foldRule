@@ -1,15 +1,16 @@
 'use client';
 
-// ─── hooks/useMagicFill.ts ────────────────────────────────────────────────────
+// ─── hooks/fill/useMagicFill.ts ───────────────────────────────────────────────
 //
-//  Worker loaded from /src/workers/maskWorker.js via Webpack worker syntax.
-//  Auto hole-filling is applied after every fillAt / fillRect call.
+//  CHANGE: MagicFill now carries svgPath and svgMode so MagicFillCanvas can
+//  render the smooth marching-squares contour via Path2D instead of the
+//  bounding-box polygon array.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useRef, useCallback, useEffect } from 'react';
 
-// ─── Public types (unchanged) ─────────────────────────────────────────────────
+// ─── Public types ─────────────────────────────────────────────────────────────
 
 export interface MagicFill {
   id:       number;
@@ -20,6 +21,12 @@ export interface MagicFill {
   perimPx:  number;
   polygon:  [number, number][];
   groupId?: number;
+
+  // ── SVG path fields (populated by useMagicFillSession workers) ────────────
+  //  svgPath — the full SVG path data string produced by maskToSvgPath()
+  //  svgMode — true when svgPath should be used in preference to polygon
+  svgPath?: string;
+  svgMode?: boolean;
 }
 
 export interface HoleFillResult {
@@ -221,21 +228,15 @@ function processMask(grown: Uint8Array, w: number, h: number) {
 
 export function useMagicFill(): MagicFillAPI {
 
-  // ── Worker + CCL state ────────────────────────────────────────────────────
   const workerRef        = useRef<Worker | null>(null);
   const readyRef         = useRef(false);
 
-  // Calls that arrived before the worker was ready are queued here and
-  // replayed automatically the moment the 'ready' message arrives.
   type PendingFillAt = {
     cx: number; cy: number; fc: HTMLCanvasElement;
     color: string; opacity: number; label: string;
     resolve: (v: MagicFill | null) => void;
   };
   const pendingFillAt = useRef<PendingFillAt[]>([]);
-
-  // Stable ref to the drain function — assigned after all callbacks are
-  // defined so the useEffect closure can call it without capturing undefined.
   const drainRef = useRef<(() => void) | null>(null);
 
   const labelMapRef      = useRef<Uint32Array | null>(null);
@@ -244,7 +245,6 @@ export function useMagicFill(): MagicFillAPI {
   const maskWRef         = useRef(0);
   const maskHRef         = useRef(0);
 
-  // ── Paint state ───────────────────────────────────────────────────────────
   const snapshots     = useRef<ImageData[]>([]);
   const pixelMaps     = useRef<Map<number, Uint8Array>>(new Map());
   const fillOrder     = useRef<number[]>([]);
@@ -252,10 +252,7 @@ export function useMagicFill(): MagicFillAPI {
   const fillWRef      = useRef(0);
   const fillHRef      = useRef(0);
 
-  // ── Boot worker from file ─────────────────────────────────────────────────
   useEffect(() => {
-    // Webpack 5: new URL(..., import.meta.url) emits a proper worker chunk.
-    // If you use a different bundler, adjust the Worker constructor accordingly.
     const w = new Worker(
       new URL('../../workers/maskWorker.js', import.meta.url),
     );
@@ -272,16 +269,12 @@ export function useMagicFill(): MagicFillAPI {
         return;
       }
       if (msg.type === 'ready') {
-        console.log('[useMagicFill] worker ready —',
-          msg.regionCount, 'regions at', msg.width, 'x', msg.height);
         labelMapRef.current      = new Uint32Array(msg.labelMap);
         regionPixelsRef.current  = new Int32Array(msg.pixelsBuf);
         regionOffsetsRef.current = new Int32Array(msg.offsetsBuf);
         maskWRef.current         = msg.width;
         maskHRef.current         = msg.height;
         readyRef.current         = true;
-
-        // Drain via stable ref — callbacks are defined after this useEffect
         drainRef.current?.();
       }
     };
@@ -289,17 +282,13 @@ export function useMagicFill(): MagicFillAPI {
     return () => { w.terminate(); };
   }, []);
 
-  // ── buildMask ─────────────────────────────────────────────────────────────
   const buildMask = useCallback((pdfCanvas: HTMLCanvasElement) => {
     const pw = pdfCanvas.width, ph = pdfCanvas.height;
-    if (!pw || !ph) {
-      console.warn('[useMagicFill] buildMask: canvas has zero dimensions');
-      return;
-    }
+    if (!pw || !ph) return;
     readyRef.current = false;
 
     const ctx = pdfCanvas.getContext('2d');
-    if (!ctx) { console.warn('[useMagicFill] buildMask: no 2d context'); return; }
+    if (!ctx) return;
 
     const MAX_PX = 4_000_000;
     let tw = pw, th = ph;
@@ -307,7 +296,6 @@ export function useMagicFill(): MagicFillAPI {
       const sc = Math.sqrt(MAX_PX / (pw * ph));
       tw = Math.max(1, Math.round(pw * sc));
       th = Math.max(1, Math.round(ph * sc));
-      console.log(`[useMagicFill] downscaling ${pw}x${ph} → ${tw}x${th} for worker`);
     }
 
     let imgData: ImageData;
@@ -321,16 +309,12 @@ export function useMagicFill(): MagicFillAPI {
     }
 
     const buffer = imgData.data.buffer.slice(0);
-    console.log('[useMagicFill] posting to worker —', tw, 'x', th,
-      'buffer bytes:', buffer.byteLength);
-
     workerRef.current?.postMessage(
       { type: 'build', buffer, width: tw, height: th },
       [buffer],
     );
   }, []);
 
-  // ── Build fill-canvas region mask from CCL result ─────────────────────────
   const getRegionMask = useCallback((
     canvasX: number, canvasY: number, fw: number, fh: number,
   ): Uint8Array | null => {
@@ -367,7 +351,6 @@ export function useMagicFill(): MagicFillAPI {
     return mask;
   }, []);
 
-  // ── Shared paint helper ───────────────────────────────────────────────────
   const getFreshFillData = useCallback((fc: HTMLCanvasElement): ImageData => {
     const w = fc.width, h = fc.height;
     fillWRef.current = w; fillHRef.current = h;
@@ -375,12 +358,6 @@ export function useMagicFill(): MagicFillAPI {
     return ctx ? ctx.getImageData(0, 0, w, h) : new ImageData(w, h);
   }, []);
 
-  // ── Auto hole-fill: flood from border, close interior gaps ───────────────
-  //
-  //  Works purely on the pixel map — no canvas read required.
-  //  Returns the closed mask and also updates pixelMaps + fillSnapshots in place
-  //  so restoreFills() / repaintFillColor() always see the latest shape.
-  //
   const applyAutoHoleFill = useCallback((
     fill: MagicFill,
     pixMap: Uint8Array,
@@ -388,7 +365,6 @@ export function useMagicFill(): MagicFillAPI {
     fh: number,
     fc: HTMLCanvasElement,
   ): { closed: Uint8Array; result: HoleFillResult } => {
-    // Flood-fill from every border pixel to find "outside"
     const outside = new Uint8Array(fw * fh);
     const stack: number[] = [];
 
@@ -411,7 +387,6 @@ export function useMagicFill(): MagicFillAPI {
       if (y < fh-1) push(i + fw);
     }
 
-    // Everything not outside and not already filled = a hole → fill it
     const closed = new Uint8Array(fw * fh);
     for (let i = 0; i < fw * fh; i++)
       closed[i] = pixMap[i] || (outside[i] ? 0 : 1);
@@ -419,7 +394,6 @@ export function useMagicFill(): MagicFillAPI {
     const [r, g, b] = hexToRgb(fill.color);
     const a         = fill.opacity / 100;
 
-    // Paint only the newly added hole pixels on top of the canvas
     const added = new Uint8Array(fw * fh);
     for (let i = 0; i < fw * fh; i++) if (closed[i] && !pixMap[i]) added[i] = 1;
 
@@ -429,7 +403,6 @@ export function useMagicFill(): MagicFillAPI {
       fc.getContext('2d')!.putImageData(fd, 0, 0);
     }
 
-    // Update stored maps so future operations see the complete shape
     pixelMaps.current.set(fill.id, closed);
     fillSnapshots.current.set(fill.id,
       paintFillToSnapshot(closed, fw, fh, r, g, b, a));
@@ -459,19 +432,11 @@ export function useMagicFill(): MagicFillAPI {
     return fill;
   }, [getFreshFillData]);
 
-  // ── fillAt — paints region then auto-closes holes ─────────────────────────
-  //
-  //  Returns a Promise so the call is never lost when the worker is still
-  //  warming up after mount. If already ready the promise resolves in the
-  //  same microtask tick so callers feel no latency difference.
-  //
   const fillAt = useCallback((
     canvasX: number, canvasY: number, fc: HTMLCanvasElement,
     color: string, opacity: number, label: string,
   ): Promise<MagicFill | null> => {
-    // Worker not ready yet — queue and replay once the mask arrives
     if (!readyRef.current) {
-      console.log('[useMagicFill] worker not ready — queuing fillAt');
       return new Promise<MagicFill | null>((resolve) => {
         pendingFillAt.current.push({
           cx: canvasX, cy: canvasY, fc, color, opacity, label, resolve,
@@ -487,7 +452,6 @@ export function useMagicFill(): MagicFillAPI {
 
     const fill = paintRegion(regionMask, fw, fh, color, opacity, label, fc);
 
-    // Auto hole-fill: update fill metrics with closed shape
     const pixMap = pixelMaps.current.get(fill.id)!;
     const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, fc);
     fill.areaPx  = result.areaPx;
@@ -497,7 +461,6 @@ export function useMagicFill(): MagicFillAPI {
     return Promise.resolve(fill);
   }, [getRegionMask, paintRegion, applyAutoHoleFill]);
 
-  // ── fillRect — paints all regions in rect then auto-closes holes ──────────
   const fillRect = useCallback(async (
     x1: number, y1: number, x2: number, y2: number,
     fc: HTMLCanvasElement, color: string, opacity: number,
@@ -555,7 +518,6 @@ export function useMagicFill(): MagicFillAPI {
         `${labelPrefix} ${++count}`, fc);
       fill.groupId = groupId;
 
-      // Auto hole-fill each region
       const pixMap = pixelMaps.current.get(fill.id)!;
       const { result } = applyAutoHoleFill(fill, pixMap, fw, fh, fc);
       fill.areaPx  = result.areaPx;
@@ -569,7 +531,6 @@ export function useMagicFill(): MagicFillAPI {
     return results;
   }, [paintRegion, applyAutoHoleFill]);
 
-  // ── fillHoles (manual, still exposed for explicit calls) ──────────────────
   const fillHoles = useCallback((
     id: number, fill: MagicFill, fc: HTMLCanvasElement,
   ): HoleFillResult | null => {
@@ -580,15 +541,9 @@ export function useMagicFill(): MagicFillAPI {
     return result;
   }, [applyAutoHoleFill]);
 
-  // ── Wire up drain function (must be after all callbacks are defined) ────
-  //
-  //  drainRef is called by the worker onmessage once the mask is ready.
-  //  By assigning it here (body of the hook, after all useCallbacks) every
-  //  function it references is already a stable, defined value.
   drainRef.current = () => {
     const pending = pendingFillAt.current.splice(0);
     if (!pending.length) return;
-    console.log(`[useMagicFill] draining ${pending.length} queued fillAt call(s)`);
     for (const p of pending) {
       const fw = p.fc.width, fh = p.fc.height;
       const regionMask = getRegionMask(p.cx, p.cy, fw, fh);
@@ -603,7 +558,6 @@ export function useMagicFill(): MagicFillAPI {
     }
   };
 
-  // ── pushSnapshot / undo / clearAll ────────────────────────────────────────
   const pushSnapshot = useCallback((fc: HTMLCanvasElement) => {
     fillWRef.current = fc.width; fillHRef.current = fc.height;
     const ctx = fc.getContext('2d');
@@ -632,7 +586,6 @@ export function useMagicFill(): MagicFillAPI {
     fillOrder.current = [];
   }, []);
 
-  // ── Registry ──────────────────────────────────────────────────────────────
   const registerFill = useCallback((fill: MagicFill, pm: Uint8Array) => {
     pixelMaps.current.set(fill.id, pm);
     fillOrder.current.push(fill.id);
@@ -663,7 +616,6 @@ export function useMagicFill(): MagicFillAPI {
     return -1;
   }, []);
 
-  // ── restoreFills / repaintFillColor ───────────────────────────────────────
   const restoreFills = useCallback((
     visibleIds: Set<number>, fc: HTMLCanvasElement,
   ) => {
@@ -694,7 +646,6 @@ export function useMagicFill(): MagicFillAPI {
     restoreFills(visibleIds, fc);
   }, [restoreFills]);
 
-  // ── Public API ────────────────────────────────────────────────────────────
   return {
     get ready() { return readyRef.current; },
     buildMask,

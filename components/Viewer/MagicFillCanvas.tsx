@@ -2,16 +2,25 @@
 
 // ─── components/Viewer/MagicFillCanvas.tsx ────────────────────────────────────
 //
-//  FIX 1: getXY now divides by pdfDimensions.w/h instead of rect.width/height.
-//          At zoom != 1, getBoundingClientRect returns the *zoomed* CSS size, so
-//          c.width / rect.width = logicalPx / (logicalPx * zoom) = 1/zoom, which
-//          double-counted the zoom and placed clicks at the wrong position.
+//  FIX: polyRef's bitmap is now sized to mask-pixel space (maskW × maskH),
+//       not CSS pdfDimensions. fill.svgPath / fill.polygon coordinates come
+//       back from the flood-fill workers in mask-pixel space (derived from
+//       pdfCanvasRef's actual bitmap resolution), which can differ from
+//       pdfDimensions (the CSS display size) whenever the PDF canvas is
+//       rendered at a different pixel density than its CSS box. Previously
+//       polyRef's bitmap was sized to pdfDimensions, so stroke(path2d) drew
+//       mask-space numbers onto a CSS-space pixel grid — silently mis-scaling
+//       the outline so it no longer matched the actual flood-filled raster
+//       underneath (which is unaffected because canvas bitmap→CSS stretching
+//       handles that unit conversion automatically for the raster paint).
 //
-//  FIX 2: Canvas elements are sized via BOTH the HTML width/height attributes
-//          AND style.width/height so bitmap resolution matches layout size.
+//       polyRef's CSS box (style.width/height) is still set to pdfDimensions
+//       so it visually overlays the page correctly — only the underlying
+//       bitmap resolution changes, exactly like FillCanvasSizer does for
+//       fillCanvasRef in ViewerCanvas.tsx.
 //
-//  FIX 3: The interactRef canvas covers exactly pdfDimensions.w × pdfDimensions.h
-//          in both bitmap and CSS, so pointer events map 1-to-1 with PDF pixels.
+//       interactRef is unchanged — its crosshair drawing consumes CSS-space
+//       coordinates from getXY() and was already self-consistent.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -39,12 +48,50 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-const CLOSE_SNAP_RADIUS = 14; // canvas-space pixels
+const CLOSE_SNAP_RADIUS = 14;
+
+// ─── SVG path → canvas path helper ───────────────────────────────────────────
+//
+//  Builds a Path2D from the svgPath string when available, falling back to
+//  the polygon point array when not. This is the only place we need to
+//  decide between the two representations. NOTE: both fill.svgPath and
+//  fill.polygon are in MASK-PIXEL space — see the canvas-sizing effect below,
+//  which is why polyRef's bitmap must be sized to maskW × maskH.
+//
+function buildPath2D(fill: MagicFill & { svgPath?: string; svgMode?: boolean }): Path2D {
+  // Prefer SVG path — it is the smooth marching-squares contour
+  if (fill.svgMode && fill.svgPath) {
+    try {
+      return new Path2D(fill.svgPath);
+    } catch {
+      // malformed path string — fall through to polygon
+    }
+  }
+
+  // Fallback: polygon bounding-box array
+  const p = new Path2D();
+  const pts = fill.polygon;
+  if (pts.length === 0) return p;
+  p.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]);
+  p.closePath();
+  return p;
+}
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface MagicFillCanvasProps {
   pdfDimensions:  PdfDimensions | null;
+  // Mask-pixel-space dimensions of the flood-fill bitmap (from
+  // pdfCanvasRef's actual bitmap resolution, as tracked by
+  // useMagicFillSession). May differ from pdfDimensions when the PDF
+  // canvas is rendered at a different pixel density than its CSS box.
+  // Used to size polyRef's bitmap so committed fill outlines
+  // (svgPath/polygon, which are in this same space) draw 1:1 instead of
+  // getting mis-scaled. Falls back to pdfDimensions if not yet available
+  // (e.g. before the first PDF render completes).
+  maskW?:         number;
+  maskH?:         number;
   active:         boolean;
   isFilling:      boolean;
   fills:          MagicFill[];
@@ -59,7 +106,10 @@ interface MagicFillCanvasProps {
 }
 
 // ─── LassoOverlay ─────────────────────────────────────────────────────────────
-
+//
+//  Unchanged — lasso points are produced by getXY() below, which is already
+//  in CSS-space (pdfDimensions), so this overlay's sizing stays as-is.
+//
 function LassoOverlay({
   points, mousePos, activeColor, width, height,
 }: {
@@ -73,7 +123,6 @@ function LassoOverlay({
 
   useEffect(() => {
     const c = ref.current; if (!c) return;
-    // FIX: set both bitmap size AND css size
     if (c.width !== width || c.height !== height) {
       c.width  = width;
       c.height = height;
@@ -90,7 +139,6 @@ function LassoOverlay({
 
     const [r, g, b] = hexToRgb(activeColor);
 
-    // filled preview (≥3 pts)
     if (points.length >= 3) {
       ctx.beginPath();
       ctx.moveTo(points[0][0], points[0][1]);
@@ -101,7 +149,6 @@ function LassoOverlay({
       ctx.fill();
     }
 
-    // committed edges
     ctx.beginPath();
     ctx.moveTo(points[0][0], points[0][1]);
     for (let i = 1; i < points.length; i++) ctx.lineTo(points[i][0], points[i][1]);
@@ -111,7 +158,6 @@ function LassoOverlay({
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // rubber-band to mouse
     if (mousePos) {
       const last = points[points.length - 1];
       ctx.beginPath();
@@ -123,7 +169,6 @@ function LassoOverlay({
       ctx.stroke();
       ctx.setLineDash([]);
 
-      // close-hint back to first point
       if (points.length >= 3) {
         const dist = Math.hypot(mousePos[0] - points[0][0], mousePos[1] - points[0][1]);
         ctx.beginPath();
@@ -139,7 +184,6 @@ function LassoOverlay({
       }
     }
 
-    // vertex dots
     points.forEach(([px, py], i) => {
       const isFirst = i === 0;
       const dotR    = isFirst ? 7 : 4.5;
@@ -154,7 +198,6 @@ function LassoOverlay({
       }
     });
 
-    // point count badge
     if (points.length > 0) {
       const [lx, ly] = points[points.length - 1];
       ctx.fillStyle = 'rgba(10,10,10,0.85)';
@@ -184,6 +227,8 @@ function LassoOverlay({
 
 export function MagicFillCanvas({
   pdfDimensions,
+  maskW,
+  maskH,
   active,
   isFilling,
   fills,
@@ -203,17 +248,14 @@ export function MagicFillCanvas({
   const pulseRef   = useRef(0);
   const cursorRef  = useRef<{ x: number; y: number } | null>(null);
 
-  // space key tracking
   const spaceHeldRef = useRef(false);
   const [spaceHeld, setSpaceHeld] = useState(false);
 
-  // lasso state
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([]);
   const [isLassoing,  setIsLassoing]  = useState(false);
   const [lassoMouse,  setLassoMouse]  = useState<[number, number] | null>(null);
   const lassoRef = useRef<[number, number][]>([]);
 
-  // single-click guard (pointer moved significantly = not a click)
   const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
   const hasMoved       = useRef(false);
 
@@ -244,59 +286,84 @@ export function MagicFillCanvas({
     };
   }, [active]);
 
-  // ── Canvas sizing ──────────────────────────────────────────────────────────
-  // FIX: Set both bitmap dimensions (width/height attributes) AND CSS size
-  // so that 1 canvas pixel = 1 PDF pixel, and the canvas fills the wrapper
-  // exactly regardless of device pixel ratio or zoom.
+  // ── Canvas sizing ─────────────────────────────────────────────────────────
+  //
+  //  FIX: polyRef's BITMAP is sized to maskW × maskH (mask-pixel space, the
+  //  same space fill.svgPath / fill.polygon coordinates live in), while its
+  //  CSS box stays at pdfDimensions so it overlays the page correctly. The
+  //  browser's bitmap→CSS stretch does the unit conversion, identical to how
+  //  fillCanvasRef is handled by FillCanvasSizer in ViewerCanvas.tsx.
+  //
+  //  interactRef keeps bitmap === CSS size (pdfDimensions) since its drawing
+  //  (crosshair) is produced in CSS-space coordinates by getXY() below and
+  //  was never affected by this bug.
+  //
+  //  Falls back to pdfDimensions for polyRef if maskW/maskH aren't available
+  //  yet (e.g. before the first PDF render / mask build completes) so the
+  //  canvas still has a sane bitmap size rather than 0×0.
+  //
   useEffect(() => {
     if (!pdfDimensions || !active) return;
-    const { w, h } = pdfDimensions;
-    for (const ref of [polyRef, interactRef]) {
-      const c = ref.current; if (!c) continue;
-      // Bitmap size
-      if (c.width !== w || c.height !== h) {
-        c.width  = w;
-        c.height = h;
-      }
-      // CSS size — must match so coordinates map correctly
-      c.style.width  = `${w}px`;
-      c.style.height = `${h}px`;
-    }
-  }, [pdfDimensions, active]);
+    const { w: cssW, h: cssH } = pdfDimensions;
 
-  // ── Polygon outline redraw ─────────────────────────────────────────────────
+    const pc = polyRef.current;
+    if (pc) {
+      const bw = maskW && maskW > 0 ? maskW : cssW;
+      const bh = maskH && maskH > 0 ? maskH : cssH;
+      if (pc.width !== bw || pc.height !== bh) { pc.width = bw; pc.height = bh; }
+      pc.style.width  = `${cssW}px`;
+      pc.style.height = `${cssH}px`;
+    }
+
+    const ic = interactRef.current;
+    if (ic) {
+      if (ic.width !== cssW || ic.height !== cssH) { ic.width = cssW; ic.height = cssH; }
+      ic.style.width  = `${cssW}px`;
+      ic.style.height = `${cssH}px`;
+    }
+  }, [pdfDimensions, maskW, maskH, active]);
+
+  // ── Polygon outline redraw — now uses SVG path via Path2D ────────────────
   const redrawPolygons = useCallback(() => {
     const pc = polyRef.current; if (!pc || !pdfDimensions) return;
     const ctx = pc.getContext('2d')!;
     ctx.clearRect(0, 0, pc.width, pc.height);
 
     fills.forEach(f => {
-      if (hiddenIds.has(f.id) || f.polygon.length < 3) return;
-      if (f.polygon.length === 4) {
-        const xs = f.polygon.map(p => p[0]), ys = f.polygon.map(p => p[1]);
+      if (hiddenIds.has(f.id)) return;
+
+      const fill = f as MagicFill & { svgPath?: string; svgMode?: boolean };
+
+      // Skip degenerate bounding-box polygons that have no real SVG path
+      const hasSvg = fill.svgMode && !!fill.svgPath;
+      if (!hasSvg && fill.polygon.length < 3) return;
+      if (!hasSvg && fill.polygon.length === 4) {
+        const xs = fill.polygon.map(p => p[0]), ys = fill.polygon.map(p => p[1]);
         if (new Set(xs).size === 2 && new Set(ys).size === 2) return;
       }
-      const pts = f.polygon;
+
+      const path2d    = buildPath2D(fill);
       const [r, g, b] = hexToRgb(f.color);
       const isSelected = f.id === selectedId;
       const isInGroup  = selectedGroup != null && f.groupId === selectedGroup;
 
-      const drawPath = () => {
-        ctx.beginPath();
-        ctx.moveTo(pts[0][0], pts[0][1]);
-        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-        ctx.closePath();
-      };
-
+      // Glow halo for selected / group
       if (isSelected || isInGroup) {
-        ctx.save(); drawPath();
-        ctx.strokeStyle = isInGroup ? 'rgba(96,165,250,0.18)' : `rgba(${r},${g},${b},0.18)`;
-        ctx.lineWidth = 8; ctx.setLineDash([]); ctx.stroke(); ctx.restore();
+        ctx.save();
+        ctx.strokeStyle = isInGroup
+          ? 'rgba(96,165,250,0.18)'
+          : `rgba(${r},${g},${b},0.18)`;
+        ctx.lineWidth   = 8;
+        ctx.setLineDash([]);
+        ctx.stroke(path2d);
+        ctx.restore();
       }
-      drawPath();
+
+      // Main outline
       ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected || isInGroup ? 1 : 0.85})`;
       ctx.lineWidth   = isSelected ? 2.5 : isInGroup ? 2 : 1.6;
-      ctx.setLineDash([]); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.stroke(path2d);
     });
   }, [fills, hiddenIds, selectedId, selectedGroup, pdfDimensions]);
 
@@ -340,11 +407,10 @@ export function MagicFillCanvas({
 
   // ── Coordinate helper ─────────────────────────────────────────────────────
   //
-  //  FIX: Use pdfDimensions.w / rect.width (not canvas.width / rect.width).
-  //  pdfDimensions.w is the stable logical canvas resolution.
-  //  rect.width is the current CSS (zoomed) size.
-  //  Their ratio converts CSS-pixel offsets into logical PDF pixels
-  //  regardless of zoom level.
+  //  Returns CSS-space (pdfDimensions) coordinates. Used for lasso points,
+  //  onSingleClick, onHover, onPolygonLasso — all of which are then converted
+  //  to mask-pixel space inside useMagicFillSession before being sent to the
+  //  workers. This function is unchanged and was never part of the bug.
   //
   const getXY = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -364,7 +430,6 @@ export function MagicFillCanvas({
     pointerDownPos.current = { x, y };
     hasMoved.current       = false;
 
-    // ── Space held → lasso vertex placement ───────────────────────────────
     if (spaceHeldRef.current || isLassoing) {
       const current = lassoRef.current;
 
@@ -376,7 +441,6 @@ export function MagicFillCanvas({
         return;
       }
 
-      // check close-snap
       if (current.length >= 3) {
         const dist = Math.hypot(x - current[0][0], y - current[0][1]);
         if (dist < CLOSE_SNAP_RADIUS) {
@@ -389,12 +453,10 @@ export function MagicFillCanvas({
         }
       }
 
-      // add vertex
       const pts: [number, number][] = [...current, [x, y]];
       lassoRef.current = pts;
       setLassoPoints(pts);
     }
-    // non-lasso: handled on pointer-up
   }, [getXY, isLassoing, onPolygonLasso]);
 
   // ── Pointer move ──────────────────────────────────────────────────────────
@@ -421,9 +483,7 @@ export function MagicFillCanvas({
     if (!pointerDownPos.current) return;
 
     const { x, y } = getXY(e);
-    if (!hasMoved.current) {
-      onSingleClick(x, y);
-    }
+    if (!hasMoved.current) onSingleClick(x, y);
     pointerDownPos.current = null;
     hasMoved.current       = false;
   }, [getXY, onSingleClick, isLassoing]);
@@ -440,7 +500,10 @@ export function MagicFillCanvas({
 
   return (
     <>
-      {/* Layer 42: committed fill polygon outlines */}
+      {/* Layer 42: committed fill outlines — drawn via SVG Path2D.
+          Bitmap is maskW×maskH (mask-pixel space); CSS box is w×h
+          (pdfDimensions). The browser's bitmap→CSS stretch reconciles
+          the two spaces, matching how fillCanvasRef is handled. */}
       <canvas
         ref={polyRef}
         style={{
@@ -464,9 +527,7 @@ export function MagicFillCanvas({
         />
       )}
 
-      {/* Layer 45: crosshair + interaction
-          CRITICAL: This canvas must be exactly w×h in both bitmap and CSS
-          so that pointer event coordinates map directly to PDF pixel space. */}
+      {/* Layer 45: crosshair + interaction */}
       <canvas
         ref={interactRef}
         style={{
@@ -514,7 +575,7 @@ export function MagicFillCanvas({
         </div>
       )}
 
-      {/* Space-held hint (not yet lassoing) */}
+      {/* Space-held hint */}
       {spaceHeld && !isLassoing && !isFilling && (
         <div style={{
           position:      'absolute',
