@@ -24,6 +24,18 @@
 //       direction checked just before the match) instead of the previous
 //       foreground cell.
 //
+//  FIX (this revision): smooth SVG outlines.
+//  Both workers now derive svgPath via maskToSvgPath() from SVG_PATH_UTILS_SOURCE
+//  instead of the simple mfPolygonToPath() straight-line polygon. This gives
+//  outlines that:
+//    • detect circular arc runs (stairwells, curved walls) and emit exact
+//      SVG "A" arc commands for them
+//    • simplify straight wall runs with RDP before emitting "L" line segments
+//    • blend remaining corners with Catmull-Rom → cubic bezier "C" commands
+//  The mfBuildSmoothPolygon / mfPolygonToPath helpers are still kept for the
+//  polygon[] array (used for area/perimeter measurement), but svgPath now
+//  comes from maskToSvgPath() for maximum outline quality.
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -60,6 +72,10 @@ function hexToRgb(hex: string): [number, number, number] {
 // marchingSquaresContour / rdpSimplify / adaptiveRdp / polygonPerim /
 // buildPolygonFromMask. Inlined into both worker blobs below under an `mf`
 // prefix so it can never shadow anything SVG_PATH_UTILS_SOURCE defines.
+//
+// NOTE: mfBuildSmoothPolygon / mfPolygonPerim are still used to derive the
+// polygon[] array for area/perimeter measurements. svgPath now comes from
+// maskToSvgPath() (part of SVG_PATH_UTILS_SOURCE) for smooth arc+bezier outlines.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MF_SMOOTH_CONTOUR_SOURCE = /* js */`
@@ -164,6 +180,11 @@ function mfPolygonToPath(poly) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
+//
+// svgPath is now produced by maskToSvgPath() from SVG_PATH_UTILS_SOURCE which
+// runs: traceMaskBoundary → findArcRuns (circle fitting) → RDP simplification
+// → Catmull-Rom bezier smoothing, giving a smooth arc+line+bezier outline.
+// polygon[] still comes from mfBuildSmoothPolygon for measurement purposes.
 // ─────────────────────────────────────────────────────────────────────────────
 const RASTER_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -229,7 +250,7 @@ function dilateMaskFast(src, w, h, r) {
   return out;
 }
 
-// erode primitive needed for the opening pass (erode→dilate) before contour tracing
+// erode primitive needed for the opening pass (erode->dilate) before contour tracing
 function mfErode(src, w, h, r) {
   const horiz = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -261,7 +282,8 @@ function mfOuterShape(filled, w, h) {
   return restored;
 }
 
-// full smoothing pipeline: opening → marching-squares → adaptive RDP
+// polygon[] pipeline for measurement: opening -> marching-squares -> adaptive RDP
+// (unchanged — polygon is used for area/perimeter numbers, not rendering)
 function mfBuildSmoothPolygon(mask, w, h) {
   const outer = mfOuterShape(mask, w, h);
   const raw   = mfMarchingSquares(outer, w, h);
@@ -354,11 +376,19 @@ self.onmessage = ({ data }) => {
 
   const areaPx = maskArea(closed);
 
-  // Smoothed contour pipeline replaces the old crude bbox polygon +
-  // boundary-pixel perimPx + raw maskToSvgPath() call.
+  // polygon[] for measurement: marching-squares + adaptive RDP
+  // (used for area / perimeter numbers only, not for rendering)
   const polygon = mfBuildSmoothPolygon(closed, w, h);
-  const svgPath = mfPolygonToPath(polygon);
   const perimPx = mfPolygonPerim(polygon);
+
+  // svgPath for rendering: full arc-aware pipeline from SVG_PATH_UTILS_SOURCE.
+  // maskToSvgPath runs:
+  //   traceMaskBoundary (exact pixel-edge tracer, handles notches/doorways)
+  //   -> findArcRuns (Kasa circle fit, emits SVG "A" arc commands for curved walls)
+  //   -> rdpSimplify (Ramer-Douglas-Peucker for straight wall runs)
+  //   -> buildOpenChainPath (Catmull-Rom -> cubic bezier for gentle corners)
+  // Result is a smooth mix of exact arcs, crisp lines and bezier curves.
+  const svgPath = maskToSvgPath(closed, w, h);
 
   self.postMessage(
     { fillDataBuffer: fillDataArr.buffer, closedBuffer: closed.buffer, areaPx, perimPx, polygon, svgPath },
@@ -369,6 +399,9 @@ self.onmessage = ({ data }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POLYGON LASSO WORKER — fills all rooms inside a user-drawn polygon
+//
+// Same change as the raster worker: svgPath now comes from maskToSvgPath()
+// for smooth arc+bezier outlines; polygon[] still from mfBuildSmoothPolygon.
 // ─────────────────────────────────────────────────────────────────────────────
 const POLYGON_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -555,15 +588,14 @@ function erodeMaskFast(src, w, h, r) {
   return out;
 }
 
-// opening pass before contour tracing, reusing the erode/dilate primitives
-// this worker already defines for buildSolidFill.
+// opening pass before contour tracing — removes jagged boundary spurs
 function mfOuterShape(filled, w, h) {
   const eroded   = erodeMaskFast(filled, w, h, 2);
   const restored = dilateMaskFast(eroded, w, h, 2);
   return restored;
 }
 
-// full smoothing pipeline: opening → marching-squares → adaptive RDP
+// polygon[] pipeline for measurement (unchanged)
 function mfBuildSmoothPolygon(mask, w, h) {
   const outer = mfOuterShape(mask, w, h);
   const raw   = mfMarchingSquares(outer, w, h);
@@ -655,11 +687,15 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  // Smoothed contour pipeline replaces the old crude bbox polygon +
-  // boundary-pixel perimPx loop + raw maskToSvgPath() call.
+  // polygon[] for measurement: marching-squares + adaptive RDP
   const polygon = mfBuildSmoothPolygon(closed, w, h);
-  const svgPath = mfPolygonToPath(polygon);
   const perimPx = mfPolygonPerim(polygon);
+
+  // svgPath for rendering: full arc-aware pipeline from SVG_PATH_UTILS_SOURCE.
+  // maskToSvgPath runs traceMaskBoundary -> findArcRuns (circle fit, emits
+  // SVG "A" arc commands) -> rdpSimplify -> Catmull-Rom bezier for corners,
+  // producing a smooth mix of exact arcs, crisp lines and bezier curves.
+  const svgPath = maskToSvgPath(closed, w, h);
 
   const regionCount = Math.max(1, localResults.length);
   self.postMessage(
