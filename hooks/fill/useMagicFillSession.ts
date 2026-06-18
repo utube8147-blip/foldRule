@@ -1,40 +1,32 @@
 'use client';
 // ─── hooks/fill/useMagicFillSession.ts ───────────────────────────────────────
 //
-//  FIX: mask-generation guard against a stale-worker race.
-//  FIX: smoothing parity — both workers now run erode(2)→dilate(2) opening +
-//       8-connected marching-squares contour + adaptive RDP simplification
-//       before reporting polygon / svgPath / perimPx, matching the non-magic
-//       fill tool (fillCore.ts). The crude bbox polygon, boundary-pixel
-//       perimPx loop, and raw maskToSvgPath() calls have been removed from
-//       both worker onmessage handlers and replaced with mfBuildSmoothPolygon /
-//       mfPolygonPerim / mfPolygonToPath (all defined in MF_SMOOTH_CONTOUR_SOURCE
-//       below and inlined into each worker blob).
-//  FIX: mfMarchingSquares backtrack bug. The contour tracer was reusing the
-//       *previous foreground pixel* as the "backtrack" point for the next
-//       clockwise neighbour scan instead of the actual background pixel it
-//       entered from. That caused the very first candidate checked on every
-//       iteration after the first to be the cell the tracer had just left —
-//       which is always set — so it instantly bounced back to the start
-//       pixel after a single hop, producing a degenerate 2-point "contour"
-//       for every shape. mfPolygonToPath then emitted a zero-area path
-//       (e.g. "M0,0 L1,0 Z"), which is why the raster fill still painted
-//       fine but no SVG outline ever showed up. Fixed by tracking the real
-//       background backtrack pixel (the last *failed*, i.e. unset,
-//       direction checked just before the match) instead of the previous
-//       foreground cell.
+//  IMPROVEMENTS (this revision — mirrors svgPathUtils.js improvements):
 //
-//  FIX (this revision): smooth SVG outlines.
-//  Both workers now derive svgPath via maskToSvgPath() from SVG_PATH_UTILS_SOURCE
-//  instead of the simple mfPolygonToPath() straight-line polygon. This gives
-//  outlines that:
-//    • detect circular arc runs (stairwells, curved walls) and emit exact
-//      SVG "A" arc commands for them
-//    • simplify straight wall runs with RDP before emitting "L" line segments
-//    • blend remaining corners with Catmull-Rom → cubic bezier "C" commands
-//  The mfBuildSmoothPolygon / mfPolygonToPath helpers are still kept for the
-//  polygon[] array (used for area/perimeter measurement), but svgPath now
-//  comes from maskToSvgPath() for maximum outline quality.
+//  1. OUTLINE SHRINK (improvement 1)
+//     mfOuterShape in both workers previously ran erode(2)→dilate(2), a
+//     morphological opening whose net displacement is zero. It now runs a
+//     bare erode(WALL_HALF_PX=3) so the measurement polygon[] sits closer
+//     to the wall centre line rather than the inner face. The SVG path itself
+//     applies the same shrink internally inside maskToSvgPath (via
+//     shrinkMaskForTrace) from SVG_PATH_UTILS_SOURCE, so both outputs are
+//     consistently offset toward the wall centre line.
+//
+//  2. SVG WALL-LINE SNAPPING (improvement 2)
+//     Both worker postMessage calls now receive a `svgLines` array in
+//     mask-pixel space. The workers forward it to maskToSvgPath, which snaps
+//     simplified outline vertices onto nearby wall lines (within SNAP_RADIUS_PX
+//     = 8 px). Callers that don't pass svgLines (or pass an empty array) get
+//     the same behaviour as before — the feature degrades gracefully.
+//     svgLines are passed in from the hook's new optional prop and scaled from
+//     normalised [0-1] coords to mask-pixel coords before being sent.
+//
+//  3. ANGLE-CONSTRAINED RDP (improvement 3)
+//     Handled entirely inside maskToSvgPath / buildSmartPath in
+//     SVG_PATH_UTILS_SOURCE. No worker-level changes needed.
+//
+//  4. TIGHTER RDP + PER-SEGMENT EPSILON (improvement 4)
+//     Handled entirely inside SVG_PATH_UTILS_SOURCE. No worker-level changes.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -51,7 +43,6 @@ import {
   maskToSvgPath,
 } from '@/hooks/fill/fillMaskAndSvgPath';
 
-// ── single source of truth for the worker embed string ───────────────────────
 import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';
 
 const FILL_COLORS = [
@@ -67,18 +58,30 @@ function hexToRgb(hex: string): [number, number, number] {
   ];
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared smoothing-pipeline source — ported from fillCore.ts's outerShape /
-// marchingSquaresContour / rdpSimplify / adaptiveRdp / polygonPerim /
-// buildPolygonFromMask. Inlined into both worker blobs below under an `mf`
-// prefix so it can never shadow anything SVG_PATH_UTILS_SOURCE defines.
+// ── SVG line segment type (normalised [0-1] coords from useSvgSnapPoints) ────
 //
-// NOTE: mfBuildSmoothPolygon / mfPolygonPerim are still used to derive the
-// polygon[] array for area/perimeter measurements. svgPath now comes from
-// maskToSvgPath() (part of SVG_PATH_UTILS_SOURCE) for smooth arc+bezier outlines.
+//  The hook accepts an optional svgLines prop in this format and converts to
+//  mask-pixel coords before forwarding to the workers.
+//
+export interface NormalisedSvgLine {
+  x1: number; y1: number;
+  x2: number; y2: number;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared smoothing-pipeline source inlined into both worker blobs.
+//
+// CHANGE (improvement 1): mfOuterShape now runs erode-only (no re-dilate) so
+// the measurement polygon[] sits closer to the wall centre line.
+// WALL_HALF_PX controls the erosion distance; set to 3 px (≈ half a typical
+// thin interior wall at common scan resolutions).
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MF_SMOOTH_CONTOUR_SOURCE = /* js */`
+// Improvement 1: wall half-thickness in mask pixels. Eroding by this amount
+// moves the measurement polygon boundary toward the wall centre line.
+const WALL_HALF_PX = 3;
+
 function mfMarchingSquares(mask, w, h) {
   const W = w + 2, H = h + 2;
   const field = new Uint8Array(W * H);
@@ -94,9 +97,6 @@ function mfMarchingSquares(mask, w, h) {
   const dy8 = [ 0, 1, 1, 1, 0,-1,-1,-1];
   const contour = [];
   let cx = startX, cy = startY;
-  // backX/backY = the BACKGROUND pixel we entered the current pixel from.
-  // West-of-start is guaranteed background by the raster-scan order above
-  // (it's the first set pixel found scanning top-to-bottom, left-to-right).
   let backX = startX - 1, backY = startY;
   let steps = 0;
   const maxSteps = W * H * 2;
@@ -111,10 +111,6 @@ function mfMarchingSquares(mask, w, h) {
       const d = (startDir + t) % 8;
       const nx = cx + dx8[d], ny = cy + dy8[d];
       if (nx >= 0 && nx < W && ny >= 0 && ny < H && field[ny * W + nx]) {
-        // The direction checked immediately before this match was unset
-        // by definition (otherwise it would have matched first) — that's
-        // the correct backtrack point for the NEXT iteration, not the
-        // foreground cell we're leaving.
         const bd = (startDir + t - 1 + 8) % 8;
         backX = cx + dx8[bd];
         backY = cy + dy8[bd];
@@ -176,15 +172,61 @@ function mfPolygonToPath(poly) {
   for (let i = 1; i < poly.length; i++) d += ' L' + poly[i][0] + ',' + poly[i][1];
   return d + ' Z';
 }
+
+// Improvement 1: erode-only (no re-dilate) so the polygon boundary sits
+// closer to the wall centre line rather than the inner face.
+function mfErode(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+// CHANGED: erode-only (was erode→dilate opening). Net effect: polygon boundary
+// moves outward by WALL_HALF_PX pixels toward the wall centre line.
+function mfOuterShape(filled, w, h) {
+  return mfErode(filled, w, h, WALL_HALF_PX);
+}
+
+function mfBuildSmoothPolygon(mask, w, h) {
+  const outer = mfOuterShape(mask, w, h);
+  const raw   = mfMarchingSquares(outer, w, h);
+  if (raw.length === 0) {
+    let minX = w, minY = h, maxX = 0, maxY = 0;
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      const x = i % w, y = (i / w) | 0;
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
+  }
+  return mfAdaptiveRdp(raw);
+}
 `;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
 //
-// svgPath is now produced by maskToSvgPath() from SVG_PATH_UTILS_SOURCE which
-// runs: traceMaskBoundary → findArcRuns (circle fitting) → RDP simplification
-// → Catmull-Rom bezier smoothing, giving a smooth arc+line+bezier outline.
-// polygon[] still comes from mfBuildSmoothPolygon for measurement purposes.
+// CHANGE (improvement 2): onmessage now destructures `svgLines` from data and
+// passes it to maskToSvgPath so outline vertices snap onto nearby wall lines.
 // ─────────────────────────────────────────────────────────────────────────────
 const RASTER_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -248,57 +290,6 @@ function dilateMaskFast(src, w, h, r) {
     }
   }
   return out;
-}
-
-// erode primitive needed for the opening pass (erode->dilate) before contour tracing
-function mfErode(src, w, h, r) {
-  const horiz = new Uint8Array(w * h);
-  for (let y = 0; y < h; y++) {
-    let zeros = 0;
-    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
-    for (let x = 0; x < w; x++) {
-      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
-      if (zeros === 0) horiz[y * w + x] = 1;
-      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
-    }
-  }
-  const out = new Uint8Array(w * h);
-  for (let x = 0; x < w; x++) {
-    let zeros = 0;
-    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
-    for (let y = 0; y < h; y++) {
-      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
-      if (zeros === 0) out[y * w + x] = 1;
-      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
-    }
-  }
-  return out;
-}
-
-// opening (erode then dilate) to remove jagged boundary spurs before tracing
-function mfOuterShape(filled, w, h) {
-  const eroded   = mfErode(filled, w, h, 2);
-  const restored = dilateMaskFast(eroded, w, h, 2);
-  return restored;
-}
-
-// polygon[] pipeline for measurement: opening -> marching-squares -> adaptive RDP
-// (unchanged — polygon is used for area/perimeter numbers, not rendering)
-function mfBuildSmoothPolygon(mask, w, h) {
-  const outer = mfOuterShape(mask, w, h);
-  const raw   = mfMarchingSquares(outer, w, h);
-  if (raw.length === 0) {
-    // fallback: bbox of set pixels
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    for (let i = 0; i < mask.length; i++) {
-      if (!mask[i]) continue;
-      const x = i % w, y = (i / w) | 0;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
-  }
-  return mfAdaptiveRdp(raw);
 }
 
 function multiSeedFill(mask, w, h, cx, cy) {
@@ -365,8 +356,10 @@ function maskArea(mask) {
   let c = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) c++; return c;
 }
 
+// CHANGE (improvement 2): destructure svgLines from data and forward to
+// maskToSvgPath so outline vertices snap onto nearby architectural wall lines.
 self.onmessage = ({ data }) => {
-  const { maskBuffer, fillDataBuffer, w, h, cx, cy, r, g, b, opacity } = data;
+  const { maskBuffer, fillDataBuffer, w, h, cx, cy, r, g, b, opacity, svgLines } = data;
   const mask = new Uint8Array(maskBuffer);
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   const filled = multiSeedFill(mask, w, h, cx, cy);
@@ -376,19 +369,15 @@ self.onmessage = ({ data }) => {
 
   const areaPx = maskArea(closed);
 
-  // polygon[] for measurement: marching-squares + adaptive RDP
-  // (used for area / perimeter numbers only, not for rendering)
+  // polygon[] for measurement: mfBuildSmoothPolygon uses the erode-only
+  // mfOuterShape (improvement 1), so it sits closer to the wall centre line.
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
-  // svgPath for rendering: full arc-aware pipeline from SVG_PATH_UTILS_SOURCE.
-  // maskToSvgPath runs:
-  //   traceMaskBoundary (exact pixel-edge tracer, handles notches/doorways)
-  //   -> findArcRuns (Kasa circle fit, emits SVG "A" arc commands for curved walls)
-  //   -> rdpSimplify (Ramer-Douglas-Peucker for straight wall runs)
-  //   -> buildOpenChainPath (Catmull-Rom -> cubic bezier for gentle corners)
-  // Result is a smooth mix of exact arcs, crisp lines and bezier curves.
-  const svgPath = maskToSvgPath(closed, w, h);
+  // svgPath for rendering: maskToSvgPath applies shrinkMaskForTrace
+  // (improvement 1) internally, snaps to svgLines (improvement 2), and
+  // angle-locks straight segments (improvement 3).
+  const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   self.postMessage(
     { fillDataBuffer: fillDataArr.buffer, closedBuffer: closed.buffer, areaPx, perimPx, polygon, svgPath },
@@ -400,8 +389,7 @@ self.onmessage = ({ data }) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // POLYGON LASSO WORKER — fills all rooms inside a user-drawn polygon
 //
-// Same change as the raster worker: svgPath now comes from maskToSvgPath()
-// for smooth arc+bezier outlines; polygon[] still from mfBuildSmoothPolygon.
+// CHANGE (improvement 2): same svgLines forwarding as the raster worker.
 // ─────────────────────────────────────────────────────────────────────────────
 const POLYGON_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -588,30 +576,6 @@ function erodeMaskFast(src, w, h, r) {
   return out;
 }
 
-// opening pass before contour tracing — removes jagged boundary spurs
-function mfOuterShape(filled, w, h) {
-  const eroded   = erodeMaskFast(filled, w, h, 2);
-  const restored = dilateMaskFast(eroded, w, h, 2);
-  return restored;
-}
-
-// polygon[] pipeline for measurement (unchanged)
-function mfBuildSmoothPolygon(mask, w, h) {
-  const outer = mfOuterShape(mask, w, h);
-  const raw   = mfMarchingSquares(outer, w, h);
-  if (raw.length === 0) {
-    let minX = w, minY = h, maxX = 0, maxY = 0;
-    for (let i = 0; i < mask.length; i++) {
-      if (!mask[i]) continue;
-      const x = i % w, y = (i / w) | 0;
-      if (x < minX) minX = x; if (x > maxX) maxX = x;
-      if (y < minY) minY = y; if (y > maxY) maxY = y;
-    }
-    return [[minX,minY],[maxX,minY],[maxX,maxY],[minX,maxY]];
-  }
-  return mfAdaptiveRdp(raw);
-}
-
 function maskArea(mask) { let c = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) c++; return c; }
 
 function paintFill(mask, d, r, g, b, opacity) {
@@ -669,8 +633,10 @@ function buildSolidFill(unioned, inside, fullMask, w, h) {
   return final;
 }
 
+// CHANGE (improvement 2): destructure svgLines from data and forward to
+// maskToSvgPath so the outline snaps onto nearby architectural wall lines.
 self.onmessage = ({ data }) => {
-  const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, poly } = data;
+  const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, poly, svgLines } = data;
   const fullMask = new Uint8Array(maskBuffer);
   const { localResults, unioned, inside } = findRegionsInsidePolygon(fullMask, w, h, poly);
   if (localResults.length === 0) {
@@ -687,15 +653,12 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  // polygon[] for measurement: marching-squares + adaptive RDP
+  // polygon[] for measurement (erode-only mfOuterShape — improvement 1)
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
-  // svgPath for rendering: full arc-aware pipeline from SVG_PATH_UTILS_SOURCE.
-  // maskToSvgPath runs traceMaskBoundary -> findArcRuns (circle fit, emits
-  // SVG "A" arc commands) -> rdpSimplify -> Catmull-Rom bezier for corners,
-  // producing a smooth mix of exact arcs, crisp lines and bezier curves.
-  const svgPath = maskToSvgPath(closed, w, h);
+  // svgPath: shrink + snap + angle-lock (improvements 1-3)
+  const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   const regionCount = Math.max(1, localResults.length);
   self.postMessage(
@@ -743,6 +706,11 @@ interface UseMagicFillSessionProps {
   onDeleteMeasurementProp?: (id: string) => void;
   onAppendComplete?:        () => void;
   batchCommitMeasurements?: (rows: any[]) => void;
+  // Improvement 2: optional SVG wall-line segments in normalised [0-1] coords.
+  // When provided, simplified outline vertices snap onto the nearest line
+  // within SNAP_RADIUS_PX mask pixels, pulling the outline onto the actual
+  // architectural lines in the plan.
+  svgLines?: NormalisedSvgLine[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -773,6 +741,7 @@ export function useMagicFillSession({
   onDeleteMeasurementProp,
   onAppendComplete,
   batchCommitMeasurements,
+  svgLines,
 }: UseMagicFillSessionProps) {
 
   // ── Fill state ────────────────────────────────────────────────────────────
@@ -813,10 +782,6 @@ export function useMagicFillSession({
   const mfOpacity     = 40;
 
   // Generation counter — bumped every time the mask/fillData are rebuilt.
-  // Each fill operation snapshots the current generation before spawning its
-  // worker; the worker's result is only applied if the generation is still
-  // current, preventing a stale (pre-rebuild) result from corrupting the
-  // freshly-built fillDataRef with mismatched dimensions.
   const maskGenerationRef = useRef(0);
 
   const workerRef    = useRef<Worker | null>(null);
@@ -824,6 +789,32 @@ export function useMagicFillSession({
 
   useEffect(() => { magicFillsRef.current = magicFills; }, [magicFills]);
   useEffect(() => () => killWorker(workerRef as any, workerUrlRef as any), []);
+
+  // ── Improvement 2: scale normalised svgLines to mask-pixel coords ─────────
+  //
+  //  svgLines come in from useSvgSnapPoints in normalised [0-1] coords.
+  //  The workers need them in mask-pixel space (maskW × maskH) so that the
+  //  snap-radius comparison in snapToWallLines() uses consistent units.
+  //
+  //  We produce a new scaled array whenever svgLines or maskDims change and
+  //  keep it in a ref so it never causes re-renders.
+  //
+  const scaledSvgLinesRef = useRef<Array<{ x1: number; y1: number; x2: number; y2: number }> | null>(null);
+
+  useEffect(() => {
+    const mw = maskDims.w;
+    const mh = maskDims.h;
+    if (!svgLines || svgLines.length === 0 || !mw || !mh) {
+      scaledSvgLinesRef.current = null;
+      return;
+    }
+    scaledSvgLinesRef.current = svgLines.map(l => ({
+      x1: l.x1 * mw,
+      y1: l.y1 * mh,
+      x2: l.x2 * mw,
+      y2: l.y2 * mh,
+    }));
+  }, [svgLines, maskDims]);
 
   // ── Build wall mask when PDF renders ─────────────────────────────────────
   useEffect(() => {
@@ -835,10 +826,6 @@ export function useMagicFillSession({
     const w = bc.width, h = bc.height;
     if (!w || !h) return;
 
-    // Cancel any in-flight worker before replacing maskRef/fillDataRef —
-    // its delayed onmessage could otherwise overwrite the freshly-rebuilt
-    // fillDataRef with a buffer sized for the old dimensions.
-    // Bumping the generation is a backstop for messages already queued.
     killWorker(workerRef as any, workerUrlRef as any);
     maskGenerationRef.current += 1;
     setMfIsFilling(false);
@@ -888,8 +875,6 @@ export function useMagicFillSession({
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
 
-    // Snapshot the generation this fill belongs to. If the mask gets
-    // rebuilt before the worker returns, we discard the stale result.
     const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
@@ -914,6 +899,8 @@ export function useMagicFillSession({
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
+    // Improvement 2: pass scaled SVG lines to the worker so maskToSvgPath
+    // can snap outline vertices onto nearby architectural wall lines.
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
@@ -922,6 +909,7 @@ export function useMagicFillSession({
         cx: maskX, cy: maskY,
         r, g, b,
         opacity: mfOpacity / 100,
+        svgLines: scaledSvgLinesRef.current ?? [],
       },
       [maskCopy, fillDataCopy],
     );
@@ -929,7 +917,6 @@ export function useMagicFillSession({
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
 
-      // Mask was rebuilt while fill was in flight — discard stale result.
       if (myGeneration !== maskGenerationRef.current) return;
 
       if (result.empty) {
@@ -988,7 +975,6 @@ export function useMagicFillSession({
     const mw = maskWRef.current, mh = maskHRef.current;
     if (!mw || !mh) return;
 
-    // Same generation guard as handleMagicSingleClick.
     const myGeneration = maskGenerationRef.current;
 
     const cssW = pdfDimensions?.w ?? mw;
@@ -1019,6 +1005,7 @@ export function useMagicFillSession({
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
+    // Improvement 2: pass scaled SVG lines to the polygon lasso worker.
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
@@ -1027,6 +1014,7 @@ export function useMagicFillSession({
         r, g, b,
         opacity: mfOpacity / 100,
         poly: maskPoly,
+        svgLines: scaledSvgLinesRef.current ?? [],
       },
       [maskCopy, fillDataCopy],
     );
@@ -1034,7 +1022,6 @@ export function useMagicFillSession({
     worker.onmessage = ({ data: result }) => {
       killWorker(workerRef as any, workerUrlRef as any);
 
-      // Discard result belonging to a replaced mask generation.
       if (myGeneration !== maskGenerationRef.current) return;
 
       if (result.empty || result.error === 'leak') {

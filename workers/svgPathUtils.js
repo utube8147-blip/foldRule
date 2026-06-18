@@ -9,85 +9,122 @@
 //    2. Embedded verbatim into Blob-based web workers via SVG_PATH_UTILS_SOURCE
 //       (exported as a string so workers can inline it without ES-module imports).
 //
-//  FIX (previous revision): replaced the boundary tracer with an exact
-//  pixel-grid edge tracer (traceMaskBoundary) so notches/doorways no longer
-//  cause early termination / fallback-to-bbox-rectangle.
+//  IMPROVEMENTS (this revision):
 //
-//  FIX (previous revision): arc-aware path building — detects circular arc
-//  runs and emits exact SVG "A" arc commands for them.
+//  1. OUTLINE SHRINK BEFORE TRACING
+//     The flood-fill stops at wall pixels, so the traced boundary runs along
+//     the *inner* wall face — offset inward from the actual wall centre line
+//     by roughly half the wall thickness.  The workers' mfOuterShape() used to
+//     run erode(2)→dilate(2) (a morphological opening whose net displacement is
+//     zero).  It now runs erode(WALL_HALF_PX) only — a true inward shrink of
+//     the filled region — so that traceMaskBoundary sees the shrunken edge,
+//     which sits closer to the wall centre line.  WALL_HALF_PX defaults to 3
+//     and is tunable at the top of the worker source.
+//     NOTE: this only affects the polygon[] measurement array; maskToSvgPath
+//     receives the *original* closed mask and does the shrink internally via
+//     the new shrinkMaskForTrace() helper, controlled by OUTLINE_SHRINK_PX.
 //
-//  FIX (this revision): arc noise suppression.
+//  2. SNAP OUTLINE SEGMENTS TO SVG WALL LINES
+//     maskToSvgPath now accepts an optional svgLines parameter — the same
+//     normalised line segments that useSvgSnapPoints already produces and
+//     passes to the snap engine.  After RDP simplification each simplified
+//     vertex is projected onto the nearest SVG wall line within SNAP_RADIUS_PX.
+//     When the projection distance is below the threshold the vertex is moved
+//     onto the line, pulling the outline onto the actual architectural lines.
+//     This is the largest quality win when vector data is available.  The
+//     function degrades gracefully when svgLines is empty or absent.
 //
-//  The previous arc detector was too permissive: on scanned/painted floor
-//  plans the boundary trace is slightly rough/noisy, which meant tiny circles
-//  (radius 5-30 px) were fitted to short runs of jagged boundary pixels and
-//  emitted as real arcs. This produced hundreds of microscopic arc commands
-//  that distorted the outline instead of smoothing it.
+//  3. ANGLE-CONSTRAINED RDP FOR STRAIGHT WALLS
+//     After snapping (or when no svgLines are available), segments whose
+//     angle is within ANGLE_LOCK_TOL_DEG of a principal direction (0 / 45 /
+//     90 / 135°) are rotated to that exact angle.  Both endpoints of a segment
+//     are adjusted so the midpoint stays fixed — this preserves the overall
+//     outline position while straightening slightly-off-axis wall segments into
+//     crisp rectilinear or diagonal lines.
 //
-//  Key changes in this revision:
-//
-//  1. MIN_ARC_RADIUS_PX (40 px) — any fitted circle whose radius is below
-//     this absolute threshold is rejected immediately. Real architectural
-//     arcs (stairwells, curved walls, rounded corners) are always much larger
-//     than the pixel-level noise circles that were slipping through.
-//
-//  2. MIN_ARC_RADIUS_REL (0.04) — the fitted radius must also be at least
-//     4 % of the loop's bounding-box diagonal. This catches the same noise
-//     on high-resolution scans where a 40 px absolute floor might still be
-//     too small. The two thresholds are ANDed: both must pass.
-//
-//  3. MIN_ARC_RUN_LEN raised 14 → 22 — a longer minimum window means the
-//     Kasa fit has more points to work with, making it much harder for a
-//     short noisy spike to accumulate enough consecutive points to qualify.
-//
-//  4. ARC_FIT_TOL_PX tightened 1.5 → 1.2 px — stricter per-point residual
-//     tolerance so that a run is only accepted when the points genuinely lie
-//     on a circle, not merely "close enough" due to the grow/merge that
-//     turns a jagged painted boundary into a fuzzy blob.
-//
-//  5. MIN_ARC_SPAN_DEG raised 10 → 18° — rejects very shallow "arcs" that
-//     are really just mildly bowed straight wall segments.
-//
-//  6. Gaussian pre-smoothing of the boundary trace (smoothBoundary, σ=1.5,
-//     kernel half-width 4) before arc detection. This reduces the ±1–2 px
-//     pixel-grid noise inherent in the exact edge tracer without blurring
-//     the large-scale geometry. Arc detection runs on the smoothed coords;
-//     the actual path commands still use the original (unsmoothed) endpoint
-//     positions so the final outline stays precisely on the mask boundary.
-//
-//  Together these changes mean that only genuine architectural curves —
-//  stairwells, rounded vestibules, curved exterior walls — are emitted as
-//  SVG arc commands, while pixel-level roughness is handled by the existing
-//  RDP + Catmull-Rom bezier pipeline.
+//  4. TIGHTER PARAMETERS + PER-SEGMENT RDP EPSILON
+//     Straight-wall runs now use RDP_EPSILON_STRAIGHT (4.0 px) instead of the
+//     shared 2.0 px, giving more aggressive simplification for long straight
+//     walls while arc runs retain fine detail.  The Gaussian smoother σ is
+//     kept at 1.5 but its role is now *purely* for arc detection — all path
+//     commands still use the original (unsmoothed) coordinates.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-const BEZIER_TENSION    = 0.3;
-const RDP_EPSILON       = 2.0;
-const CORNER_ANGLE_DEG  = 32;
+const BEZIER_TENSION        = 0.3;
+const RDP_EPSILON           = 2.0;    // default / arc-adjacent segments
+const RDP_EPSILON_STRAIGHT  = 4.0;    // straight-wall runs (more aggressive)
+const CORNER_ANGLE_DEG      = 32;
 
-// Arc-fitting tuning. All distances are in mask-pixel units.
-const ARC_FIT_TOL_PX    = 1.2;   // max allowed distance from a fitted circle (tightened from 1.5)
-const MIN_ARC_RUN_LEN   = 22;    // min dense boundary points to call something an arc (raised from 14)
-const MAX_ARC_GROW      = 800;   // cap on how far a single run is grown (perf safety)
-const MIN_ARC_SPAN_DEG  = 18;    // min angular sweep (raised from 10) — rejects gently-bowed straights
-const MAX_TRACE_POINTS  = 4000;  // pre-decimation cap so pathological masks can't hang the worker
-const MIN_ARC_RADIUS_PX = 40;    // NEW: absolute min radius in pixels — kills noise-circle arcs
-const MIN_ARC_RADIUS_REL= 0.04;  // NEW: min radius as fraction of loop bbox diagonal
+// Arc-fitting tuning (all distances in mask-pixel units).
+const ARC_FIT_TOL_PX    = 1.2;
+const MIN_ARC_RUN_LEN   = 22;
+const MAX_ARC_GROW      = 800;
+const MIN_ARC_SPAN_DEG  = 18;
+const MAX_TRACE_POINTS  = 4000;
+const MIN_ARC_RADIUS_PX = 40;
+const MIN_ARC_RADIUS_REL= 0.04;
+
+// Improvement 1: how many pixels to erode the mask before tracing the boundary.
+// Moving the trace point inward by ~half the wall thickness moves it toward the
+// wall centre line rather than the inner face.
+const OUTLINE_SHRINK_PX = 3;
+
+// Improvement 2: SVG wall-line snap radius in mask-pixel units.
+// Vertices within this distance of a nearby wall line are snapped onto it.
+const SNAP_RADIUS_PX = 8;
+
+// Improvement 3: how many degrees off-axis a segment may be before its angle
+// is locked to the nearest principal direction (0/45/90/135°).
+const ANGLE_LOCK_TOL_DEG = 8;
+
+// ── Improvement 1 helper: erode a Uint8Array mask by r pixels ────────────────
+//
+//  Separable horizontal + vertical pass (box structuring element, radius r).
+//  A pixel survives only when every pixel in its r-radius neighbourhood is set.
+//  Used to shrink the filled region so the boundary tracer runs closer to the
+//  wall centre line rather than the inner wall face.
+//
+function erodeMask(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+// Shrink the mask by OUTLINE_SHRINK_PX before tracing so the outline sits
+// closer to the wall centre line than to the inner wall face.
+function shrinkMaskForTrace(mask, w, h) {
+  if (OUTLINE_SHRINK_PX <= 0) return mask;
+  return erodeMask(mask, w, h, OUTLINE_SHRINK_PX);
+}
 
 // ── Gaussian boundary smoother ────────────────────────────────────────────────
 //
-//  Applies a 1-D Gaussian (σ=1.5, half-width 4) separately to the x and y
-//  coordinates of a closed loop of boundary points. This damps the ±1-2 px
-//  pixel-grid jitter that the exact edge tracer produces without shifting the
-//  large-scale geometry. Used only for arc detection; the original unsmoothed
-//  points are still used for building the final path commands.
+//  Applies a 1-D Gaussian (σ=1.5, half-width 4) to a closed loop of boundary
+//  points.  Used ONLY for arc detection — path commands always use the original
+//  unsmoothed coordinates.
 //
 function smoothBoundary(pts) {
   const n = pts.length;
   if (n < 9) return pts;
-
-  // Pre-compute Gaussian kernel (σ = 1.5, half-width = 4)
   const sigma = 1.5, hw = 4;
   const kernel = [];
   let ksum = 0;
@@ -97,7 +134,6 @@ function smoothBoundary(pts) {
     ksum += v;
   }
   for (let i = 0; i < kernel.length; i++) kernel[i] /= ksum;
-
   const out = new Array(n);
   for (let i = 0; i < n; i++) {
     let sx = 0, sy = 0;
@@ -114,33 +150,15 @@ function smoothBoundary(pts) {
 
 // ── Exact pixel-grid boundary tracer ──────────────────────────────────────────
 //
-//  Pixel (x, y) is treated as occupying the unit square [x, x+1] × [y, y+1],
-//  so grid-corner coordinates run from (0,0) to (w,h) — the SAME coordinate
-//  space the mask itself lives in (no padding/offset bookkeeping needed by
-//  callers).
-//
-//  Returns an array of closed loops (each loop = array of [x, y] points).
-//  A normal single-blob fill produces exactly one loop; multiple disjoint
-//  filled regions (e.g. several rooms that never got bridged together by
-//  dilation) each produce their own loop.
-//
-//  Orientation: edges are emitted clockwise around each filled pixel
-//  (top→right, right→down, down→left, left→up in image/canvas coordinates,
-//  where y increases downward), so the outer boundary of a solid blob comes
-//  out as a clockwise loop. Callers here only stroke the path, so winding
-//  doesn't affect rendering — it's noted for completeness.
-//
-//  Known limitation: a mask with single-pixel diagonal ("checkerboard")
-//  touches has an inherently ambiguous boundary at that corner. This
-//  tracer resolves it arbitrarily (last edge registered at that vertex
-//  wins) rather than implementing the full marching-squares saddle-case
-//  table — an acceptable simplification for real architectural wall masks.
+//  Returns an array of closed loops (each loop = array of [x, y] corner
+//  coordinates in mask-pixel space).  The interior of each filled pixel occupies
+//  [x, x+1] × [y, y+1]; boundary vertices therefore run from (0,0) to (w,h).
 //
 export function traceMaskBoundary(mask, w, h) {
   const isFilled = (x, y) =>
     x >= 0 && x < w && y >= 0 && y < h && mask[y * w + x] === 1;
 
-  const VW = w + 1; // vertex-grid stride
+  const VW = w + 1;
   const vid = (x, y) => y * VW + x;
   const nextOf = new Map();
   const addEdge = (x1, y1, x2, y2) => nextOf.set(vid(x1, y1), vid(x2, y2));
@@ -148,10 +166,10 @@ export function traceMaskBoundary(mask, w, h) {
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       if (!isFilled(x, y)) continue;
-      if (!isFilled(x, y - 1)) addEdge(x, y, x + 1, y);         // top edge
-      if (!isFilled(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1); // right edge
-      if (!isFilled(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1); // bottom edge
-      if (!isFilled(x - 1, y)) addEdge(x, y + 1, x, y);         // left edge
+      if (!isFilled(x, y - 1)) addEdge(x, y, x + 1, y);
+      if (!isFilled(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);
+      if (!isFilled(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);
+      if (!isFilled(x - 1, y)) addEdge(x, y + 1, x, y);
     }
   }
 
@@ -168,7 +186,7 @@ export function traceMaskBoundary(mask, w, h) {
       used.add(v);
       loop.push([v % VW, (v / VW) | 0]);
       v = nextOf.get(v);
-      if (v === undefined) { loop.length = 0; break; } // malformed/open chain — discard
+      if (v === undefined) { loop.length = 0; break; }
       guard++;
     } while (v !== startV && guard < maxGuard);
     if (loop.length >= 3) loops.push(loop);
@@ -177,13 +195,7 @@ export function traceMaskBoundary(mask, w, h) {
   return loops;
 }
 
-// ── Marching-squares contour tracer — single-loop convenience wrapper ────────
-//
-//  Preserved for backward compatibility with existing callers expecting a
-//  single contour array (e.g. fillMaskAndSvgPath.ts's re-export). Now backed
-//  by the robust edge tracer above: returns the largest loop by point count,
-//  which is the real outer boundary for the common single-blob-fill case.
-//
+// ── Marching-squares contour tracer — single-loop convenience wrapper ─────────
 export function marchingSquaresContour(mask, w, h) {
   const loops = traceMaskBoundary(mask, w, h);
   if (loops.length === 0) return [];
@@ -193,7 +205,6 @@ export function marchingSquaresContour(mask, w, h) {
 }
 
 // ── Ramer–Douglas–Peucker simplification ─────────────────────────────────────
-
 export function rdpSimplify(pts, eps) {
   if (pts.length <= 3) return pts;
   const distToLine = (p, a, b) => {
@@ -218,7 +229,6 @@ export function rdpSimplify(pts, eps) {
 }
 
 // ── Turn-angle helper ─────────────────────────────────────────────────────────
-
 function turnAngleDeg(prev, curr, next) {
   const v1x = curr[0] - prev[0], v1y = curr[1] - prev[1];
   const v2x = next[0] - curr[0], v2y = next[1] - curr[1];
@@ -228,11 +238,99 @@ function turnAngleDeg(prev, curr, next) {
   return Math.acos(dot) * 180 / Math.PI;
 }
 
+// ── Improvement 2: SVG wall-line snap ────────────────────────────────────────
+//
+//  svgLines: array of { x1, y1, x2, y2 } in mask-pixel space (callers that
+//  receive them in normalised [0-1] coords must pre-scale by (maskW, maskH)
+//  before passing here).
+//
+//  Projects each point in pts[] onto every nearby SVG line.  If the closest
+//  projection distance is within SNAP_RADIUS_PX the point is moved onto the
+//  line.  This pulls simplified outline vertices onto the actual architectural
+//  lines, removing the systematic inward offset that remains after the mask
+//  shrink.
+//
+function snapToWallLines(pts, svgLines) {
+  if (!svgLines || svgLines.length === 0) return pts;
+  const r2 = SNAP_RADIUS_PX * SNAP_RADIUS_PX;
+
+  return pts.map(([px, py]) => {
+    let bestDist2 = r2 + 1;
+    let bestX = px, bestY = py;
+
+    for (const seg of svgLines) {
+      const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-6) continue;
+      const t = Math.max(0, Math.min(1,
+        ((px - seg.x1) * dx + (py - seg.y1) * dy) / len2));
+      const nx = seg.x1 + t * dx;
+      const ny = seg.y1 + t * dy;
+      const d2 = (px - nx) ** 2 + (py - ny) ** 2;
+      if (d2 < bestDist2) { bestDist2 = d2; bestX = nx; bestY = ny; }
+    }
+
+    return bestDist2 <= r2 ? [bestX, bestY] : [px, py];
+  });
+}
+
+// ── Improvement 3: angle-lock straight segments ───────────────────────────────
+//
+//  For each consecutive pair of vertices, if the segment angle is within
+//  ANGLE_LOCK_TOL_DEG of a principal direction (0/45/90/135°), rotate the
+//  segment to that exact angle while keeping its midpoint fixed.
+//
+//  The adjustment is propagated only to the two endpoints of the segment, not
+//  beyond — this ensures adjacent segments stay connected (they share the same
+//  vertex object reference after the snap step).
+//
+//  Returns a *new* array; the input is not mutated.
+//
+function angleLockSegments(pts, closed) {
+  const n = pts.length;
+  if (n < 2) return pts;
+
+  // Work on a mutable copy
+  const out = pts.map(p => [p[0], p[1]]);
+
+  const PRINCIPALS_DEG = [0, 45, 90, 135, 180, 225, 270, 315];
+  const TOL = ANGLE_LOCK_TOL_DEG;
+
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const j = (i + 1) % n;
+    const dx = out[j][0] - out[i][0];
+    const dy = out[j][1] - out[i][1];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) continue;
+
+    const angDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+    // Normalise to [0, 360)
+    const angNorm = ((angDeg % 360) + 360) % 360;
+
+    let bestDelta = Infinity, bestPrincipal = angNorm;
+    for (const p of PRINCIPALS_DEG) {
+      let delta = Math.abs(angNorm - p);
+      if (delta > 180) delta = 360 - delta;
+      if (delta < bestDelta) { bestDelta = delta; bestPrincipal = p; }
+    }
+
+    if (bestDelta > TOL) continue; // segment is not near a principal axis
+
+    const targetRad = bestPrincipal * Math.PI / 180;
+    const halfLen   = len / 2;
+    const mx = (out[i][0] + out[j][0]) / 2;
+    const my = (out[i][1] + out[j][1]) / 2;
+    out[i][0] = mx - Math.cos(targetRad) * halfLen;
+    out[i][1] = my - Math.sin(targetRad) * halfLen;
+    out[j][0] = mx + Math.cos(targetRad) * halfLen;
+    out[j][1] = my + Math.sin(targetRad) * halfLen;
+  }
+
+  return out;
+}
+
 // ── Catmull-Rom → cubic bezier path builder (closed loop) ────────────────────
-//
-//  Used as the whole-path fallback when a loop has no detectable arcs at all
-//  (e.g. a purely rectangular room) — same behaviour as before this revision.
-//
 export function buildAdaptivePath(pts, tension = BEZIER_TENSION) {
   const n = pts.length;
   if (n < 2) return '';
@@ -264,15 +362,7 @@ export function buildAdaptivePath(pts, tension = BEZIER_TENSION) {
   return d + ' Z';
 }
 
-// ── Catmull-Rom → cubic bezier path builder (OPEN chain) ──────────────────────
-//
-//  Same corner logic as buildAdaptivePath, but for a non-closed run of
-//  points sitting between two arcs (or between an arc and the seam). The
-//  two endpoints of the chain are forced "sharp" so smoothing never reaches
-//  across the seam into an adjacent arc/line run.
-//
-//  Returns just the trailing " L"/" C" commands (no leading "M").
-//
+// ── Catmull-Rom → cubic bezier path builder (open chain) ─────────────────────
 function buildOpenChainPath(pts, tension = BEZIER_TENSION) {
   const n = pts.length;
   if (n < 2) return '';
@@ -291,8 +381,8 @@ function buildOpenChainPath(pts, tension = BEZIER_TENSION) {
     if (sharp[i] || sharp[i + 1]) {
       d += ` L ${p2[0].toFixed(2)} ${p2[1].toFixed(2)}`;
     } else {
-      const p0 = pts[i - 1]; // safe: sharp[0]=true forces i>=1 here
-      const p3 = pts[i + 2]; // safe: sharp[n-1]=true forces i<=n-3 here
+      const p0 = pts[i - 1];
+      const p3 = pts[i + 2];
       const cp1x = p1[0] + (p2[0] - p0[0]) * tension;
       const cp1y = p1[1] + (p2[1] - p0[1]) * tension;
       const cp2x = p2[0] - (p3[0] - p1[0]) * tension;
@@ -303,12 +393,7 @@ function buildOpenChainPath(pts, tension = BEZIER_TENSION) {
   return d;
 }
 
-// ── Least-squares circle fit (algebraic / Kasa-style normal equations) ───────
-//
-//  Fits x²+y²+ax+by+c=0 to a set of points via the 3×3 normal-equations
-//  system, then converts to center/radius. Returns null if the points are
-//  (numerically) collinear or otherwise don't determine a circle.
-//
+// ── Circle fitting (Kasa / algebraic) ────────────────────────────────────────
 function solveLinear3(M, b) {
   const A = [M[0].slice(), M[1].slice(), M[2].slice()];
   const B = b.slice();
@@ -367,44 +452,22 @@ function angleAt(pt, fit) { return Math.atan2(pt[1] - fit.cy, pt[0] - fit.cx); }
 function normDelta(a, b) {
   let d = b - a;
   while (d <= -Math.PI) d += 2 * Math.PI;
-  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d >   Math.PI) d -= 2 * Math.PI;
   return d;
 }
 
-// Signed angular sweep (degrees) going start → mid → end around `fit`'s
-// center, using three ACTUAL points from the traced boundary (not just the
-// endpoints) so the direction and quadrant are unambiguous even for sweeps
-// approaching or exceeding 180°.
 function arcSpanDeg(pStart, pMid, pEnd, fit) {
   const a0 = angleAt(pStart, fit), aMid = angleAt(pMid, fit), a1 = angleAt(pEnd, fit);
   const total = normDelta(a0, aMid) + normDelta(aMid, a1);
   return total * 180 / Math.PI;
 }
 
-// ── Arc-run detection over a DENSE boundary trace ─────────────────────────────
-//
-//  Greedily grows, from every still-unclaimed start index, the longest run
-//  of consecutive points (on the SMOOTHED boundary) whose max distance from
-//  a fitted circle stays under ARC_FIT_TOL_PX.
-//
-//  A run is accepted only when ALL of the following hold:
-//    • length ≥ MIN_ARC_RUN_LEN (22 pts) — enough samples for a confident fit
-//    • span   ≥ MIN_ARC_SPAN_DEG (18°)  — not a barely-bowed straight wall
-//    • radius ≥ MIN_ARC_RADIUS_PX (40 px) — not a noise micro-circle
-//    • radius ≥ MIN_ARC_RADIUS_REL × bbox_diagonal — not tiny relative to shape
-//    • radius ≤ maxSaneRadius (3× bbox diagonal) — not an absurdly huge circle
-//
-//  Detection runs on the smoothed coords (Gaussian pre-smoothed, σ=1.5) to
-//  suppress the ±1-2 px pixel-grid jitter from the exact edge tracer.
-//  The arc endpoint written into the SVG "A" command still uses the ORIGINAL
-//  unsmoothed position so the outline stays true to the mask boundary.
-//
+// ── Arc-run detection ─────────────────────────────────────────────────────────
 function findArcRuns(pts) {
   const n = pts.length;
   const runs = [];
   if (n < MIN_ARC_RUN_LEN) return runs;
 
-  // Compute bounding-box diagonal for relative radius check
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const [x, y] of pts) {
     if (x < minX) minX = x; if (x > maxX) maxX = x;
@@ -416,7 +479,6 @@ function findArcRuns(pts) {
   const minRadiusRel  = bboxDiag * MIN_ARC_RADIUS_REL;
   const minRadius     = Math.max(minRadiusAbs, minRadiusRel);
 
-  // Smooth the boundary for arc detection only
   const smooth = smoothBoundary(pts);
 
   let i = 0;
@@ -426,7 +488,6 @@ function findArcRuns(pts) {
     for (let len = MIN_ARC_RUN_LEN; len <= cap; len++) {
       const window = smooth.slice(i, i + len);
       const fit = fitCircle(window);
-      // Reject immediately if radius is out of sane range
       if (!fit || fit.r > maxSaneRadius || fit.r < minRadius) break;
       if (maxResidual(window, fit) > ARC_FIT_TOL_PX) break;
       bestLen = len; bestFit = fit;
@@ -434,12 +495,17 @@ function findArcRuns(pts) {
     if (bestLen >= MIN_ARC_RUN_LEN) {
       const endIdx = i + bestLen - 1;
       const midIdx = i + ((bestLen - 1) >> 1);
-      // Use ORIGINAL (unsmoothed) points for span calculation so the SVG
-      // arc endpoints are on the true mask boundary
-      const span = arcSpanDeg(pts[i], pts[midIdx], pts[endIdx], bestFit);
+      // Refit on raw (unsmoothed) points so the emitted radius matches the
+      // true mask boundary rather than the smoothed detection window.
+      const rawWindow = pts.slice(i, endIdx + 1);
+      const rawFit    = fitCircle(rawWindow);
+      const finalFit  = (rawFit && rawFit.r <= maxSaneRadius && rawFit.r >= minRadius * 0.5)
+        ? rawFit
+        : bestFit;
+      const span = arcSpanDeg(pts[i], pts[midIdx], pts[endIdx], finalFit);
       if (Math.abs(span) >= MIN_ARC_SPAN_DEG) {
-        runs.push({ startIdx: i, endIdx, fit: bestFit, span });
-        i = endIdx; // re-check from the shared boundary point — allows back-to-back arcs
+        runs.push({ startIdx: i, endIdx, fit: finalFit, span });
+        i = endIdx;
         continue;
       }
     }
@@ -450,39 +516,61 @@ function findArcRuns(pts) {
 
 function chainLen(pts) {
   let p = 0;
-  for (let i = 0; i < pts.length - 1; i++) p += Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);
+  for (let i = 0; i < pts.length - 1; i++)
+    p += Math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1]);
   return p;
 }
 
 function loopLen(pts) {
-  return chainLen(pts) + Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
+  return chainLen(pts) +
+    Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
+}
+
+// ── Improvement 2+3 applied to a straight segment array ───────────────────────
+//
+//  Helper used inside buildSmartPath to post-process a non-arc segment before
+//  turning it into path commands.  Receives the raw segment points and the
+//  optional svgLines array (already in mask-pixel space).
+//
+//  Pipeline:
+//    1. RDP with RDP_EPSILON_STRAIGHT (more aggressive for straight walls)
+//    2. Snap vertices to nearby SVG wall lines
+//    3. Angle-lock remaining segments to principal axes
+//
+function processStraightSegment(seg, svgLines) {
+  const eps = Math.max(1.0, Math.min(RDP_EPSILON_STRAIGHT, chainLen(seg) / 400));
+  let simp = seg.length > 2 ? rdpSimplify(seg, eps) : seg.slice();
+  if (svgLines && svgLines.length > 0) simp = snapToWallLines(simp, svgLines);
+  simp = angleLockSegments(simp, false);
+  return simp;
 }
 
 // ── Arc-aware path builder for one closed loop ────────────────────────────────
 //
-//  Detects arc runs on the dense loop, then walks it once: non-arc stretches
-//  get RDP-simplified and passed through buildOpenChainPath (line/bezier),
-//  arc stretches become a single "A" command. Falls back to the original
-//  whole-loop buildAdaptivePath when no arcs are found at all.
+//  Improvements applied here:
+//   • Non-arc segments go through processStraightSegment (improvement 2+3+4)
+//   • Arc segments are unchanged — they already use raw-refit geometry
 //
-function buildSmartPath(pts) {
+function buildSmartPath(pts, svgLines) {
   const n = pts.length;
   if (n < 3) return '';
 
   const runs = findArcRuns(pts);
   if (runs.length === 0) {
-    const eps = Math.max(1.0, Math.min(RDP_EPSILON, loopLen(pts) / 400));
-    const simplified = rdpSimplify(pts, eps);
+    // Whole loop is straight — apply straight-wall pipeline to the full loop.
+    const eps = Math.max(1.0, Math.min(RDP_EPSILON_STRAIGHT, loopLen(pts) / 400));
+    let simplified = rdpSimplify(pts, eps);
+    if (svgLines && svgLines.length > 0) simplified = snapToWallLines(simplified, svgLines);
+    simplified = angleLockSegments(simplified, true);
     return simplified.length >= 3 ? buildAdaptivePath(simplified, BEZIER_TENSION) : '';
   }
 
   const runByStart = new Map(runs.map(r => [r.startIdx, r]));
 
-  const flushLine = (from, to) => {
+  const flushStraight = (from, to) => {
     if (to <= from) return '';
     const seg = pts.slice(from, to + 1);
-    const eps = Math.max(1.0, Math.min(RDP_EPSILON, chainLen(seg) / 400));
-    const simp = seg.length > 2 ? rdpSimplify(seg, eps) : seg;
+    const simp = processStraightSegment(seg, svgLines);
     return buildOpenChainPath(simp, BEZIER_TENSION);
   };
 
@@ -492,10 +580,10 @@ function buildSmartPath(pts) {
   while (i < n) {
     const run = runByStart.get(i);
     if (run) {
-      d += flushLine(bufStart, i);
+      d += flushStraight(bufStart, i);
       const ep = pts[run.endIdx];
       const largeArc = Math.abs(run.span) > 180 ? 1 : 0;
-      const sweep = run.span >= 0 ? 1 : 0;
+      const sweep    = run.span >= 0 ? 1 : 0;
       d += ` A ${run.fit.r.toFixed(2)} ${run.fit.r.toFixed(2)} 0 ${largeArc} ${sweep} ${ep[0].toFixed(2)} ${ep[1].toFixed(2)}`;
       bufStart = run.endIdx;
       i = run.endIdx;
@@ -503,10 +591,9 @@ function buildSmartPath(pts) {
       i++;
     }
   }
-  // close the loop: flush whatever's left, then connect back to the start point
+  // Tail: the remaining segment back to the start point
   const tail = pts.slice(bufStart).concat([pts[0]]);
-  const eps2 = Math.max(1.0, Math.min(RDP_EPSILON, chainLen(tail) / 400));
-  const simpTail = tail.length > 2 ? rdpSimplify(tail, eps2) : tail;
+  const simpTail = processStraightSegment(tail, svgLines);
   d += buildOpenChainPath(simpTail, BEZIER_TENSION);
 
   return d + ' Z';
@@ -514,13 +601,16 @@ function buildSmartPath(pts) {
 
 // ── Main entry: pixel mask → SVG path string ──────────────────────────────────
 //
-//  Traces ALL boundary loops of the mask (traceMaskBoundary). Each loop
-//  becomes its own subpath via buildSmartPath — mixing exact circular arcs
-//  with straight lines and gentle beziers as appropriate — joined with " "
-//  into one `d` string (SVG / Path2D both support multiple subpaths in one
-//  path natively), so disjoint fill regions each get their own outline.
+//  New signature: maskToSvgPath(mask, w, h, svgLines?)
 //
-export function maskToSvgPath(mask, w, h) {
+//  svgLines (optional): array of { x1, y1, x2, y2 } line segments in
+//  mask-pixel space.  When provided, simplified outline vertices that fall
+//  within SNAP_RADIUS_PX of a segment are snapped onto it (improvement 2).
+//
+//  Internally applies shrinkMaskForTrace() (improvement 1) before boundary
+//  tracing so the outline sits closer to the wall centre line.
+//
+export function maskToSvgPath(mask, w, h, svgLines) {
   const fallbackRect = () => {
     let minX = w, minY = h, maxX = 0, maxY = 0;
     for (let i = 0; i < mask.length; i++) {
@@ -532,7 +622,11 @@ export function maskToSvgPath(mask, w, h) {
     return `M ${minX} ${minY} L ${maxX} ${minY} L ${maxX} ${maxY} L ${minX} ${maxY} Z`;
   };
 
-  const loops = traceMaskBoundary(mask, w, h);
+  // Improvement 1: shrink the mask before tracing so the outline boundary
+  // runs along (approximately) the wall centre line rather than the inner face.
+  const traceMask = shrinkMaskForTrace(mask, w, h);
+
+  const loops = traceMaskBoundary(traceMask, w, h);
   if (loops.length === 0) return fallbackRect();
 
   const subpaths = [];
@@ -541,9 +635,9 @@ export function maskToSvgPath(mask, w, h) {
       const step = Math.ceil(pts.length / MAX_TRACE_POINTS);
       pts = pts.filter((_, i) => i % step === 0);
     }
-    if (pts.length < 3 || loopLen(pts) < 6) continue; // discard noise slivers
+    if (pts.length < 3 || loopLen(pts) < 6) continue;
 
-    const d = buildSmartPath(pts);
+    const d = buildSmartPath(pts, svgLines || null);
     if (d) subpaths.push(d);
   }
 
@@ -553,20 +647,24 @@ export function maskToSvgPath(mask, w, h) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Worker embed string
 //
-//  Import this in useMagicFillSession.ts and splice into RASTER_WORKER_SOURCE
-//  and POLYGON_WORKER_SOURCE instead of the hand-maintained SVG_PATH_UTILS
-//  template literal.
+//  Mirrors the module above, inlined as a template-literal string so that both
+//  the raster worker and the polygon lasso worker in useMagicFillSession.ts can
+//  splice it into their Blob sources without ES-module imports.
 //
-//  NOTE: this block intentionally avoids template literals / backticks in
-//  its OWN source (string concatenation only), because it is itself nested
-//  inside the outer `/* js */ \`...\`` template literal below — a raw
-//  backtick in here would terminate that outer string early.
+//  SYNC NOTE: Any change to the logic above MUST be mirrored here.
+//  The two copies are identical except:
+//    • `export function` / `export const` → plain `function` / `const`
+//    • No top-level `export` statements
+//    • Destructuring assignments replaced with compatible equivalents for
+//      older V8 worker environments (kept the same — modern workers are fine)
+//
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const SVG_PATH_UTILS_SOURCE = /* js */`
-const BEZIER_TENSION    = 0.3;
-const RDP_EPSILON       = 2.0;
-const CORNER_ANGLE_DEG  = 32;
+const BEZIER_TENSION        = 0.3;
+const RDP_EPSILON           = 2.0;
+const RDP_EPSILON_STRAIGHT  = 4.0;
+const CORNER_ANGLE_DEG      = 32;
 
 const ARC_FIT_TOL_PX    = 1.2;
 const MIN_ARC_RUN_LEN   = 22;
@@ -575,6 +673,39 @@ const MIN_ARC_SPAN_DEG  = 18;
 const MAX_TRACE_POINTS  = 4000;
 const MIN_ARC_RADIUS_PX = 40;
 const MIN_ARC_RADIUS_REL= 0.04;
+
+const OUTLINE_SHRINK_PX  = 3;
+const SNAP_RADIUS_PX     = 8;
+const ANGLE_LOCK_TOL_DEG = 8;
+
+function erodeMask(src, w, h, r) {
+  const horiz = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    let zeros = 0;
+    for (let x = 0; x < r && x < w; x++) if (!src[y * w + x]) zeros++;
+    for (let x = 0; x < w; x++) {
+      const add = x + r; if (add < w && !src[y * w + add]) zeros++;
+      if (zeros === 0) horiz[y * w + x] = 1;
+      const rem = x - r; if (rem >= 0 && !src[y * w + rem]) zeros--;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let x = 0; x < w; x++) {
+    let zeros = 0;
+    for (let y = 0; y < r && y < h; y++) if (!horiz[y * w + x]) zeros++;
+    for (let y = 0; y < h; y++) {
+      const add = y + r; if (add < h && !horiz[add * w + x]) zeros++;
+      if (zeros === 0) out[y * w + x] = 1;
+      const rem = y - r; if (rem >= 0 && !horiz[rem * w + x]) zeros--;
+    }
+  }
+  return out;
+}
+
+function shrinkMaskForTrace(mask, w, h) {
+  if (OUTLINE_SHRINK_PX <= 0) return mask;
+  return erodeMask(mask, w, h, OUTLINE_SHRINK_PX);
+}
 
 function smoothBoundary(pts) {
   const n = pts.length;
@@ -654,8 +785,8 @@ function marchingSquaresContour(mask, w, h) {
 function rdpSimplify(pts, eps) {
   if (pts.length <= 3) return pts;
   const distToLine = (p, a, b) => {
-    const [ax, ay] = a, [bx, by] = b, [px, py] = p;
-    const len2 = (bx - ax) ** 2 + (by - ay) ** 2;
+    const ax = a[0], ay = a[1], bx = b[0], by = b[1], px = p[0], py = p[1];
+    const len2 = (bx - ax) * (bx - ax) + (by - ay) * (by - ay);
     if (len2 === 0) return Math.hypot(px - ax, py - ay);
     const t = Math.max(0, Math.min(1, ((px-ax)*(bx-ax) + (py-ay)*(by-ay)) / len2));
     return Math.hypot(px - (ax + t*(bx-ax)), py - (ay + t*(by-ay)));
@@ -671,7 +802,7 @@ function rdpSimplify(pts, eps) {
     if (maxD > eps) { keep.add(idx); rec(lo, idx); rec(idx, hi); }
   };
   rec(0, pts.length - 1);
-  return [...keep].sort((a, b) => a - b).map(i => pts[i]);
+  return Array.from(keep).sort((a, b) => a - b).map(i => pts[i]);
 }
 
 function turnAngleDeg(prev, curr, next) {
@@ -683,14 +814,65 @@ function turnAngleDeg(prev, curr, next) {
   return Math.acos(dot) * 180 / Math.PI;
 }
 
+function snapToWallLines(pts, svgLines) {
+  if (!svgLines || svgLines.length === 0) return pts;
+  const r2 = SNAP_RADIUS_PX * SNAP_RADIUS_PX;
+  return pts.map(function(pt) {
+    const px = pt[0], py = pt[1];
+    let bestDist2 = r2 + 1, bestX = px, bestY = py;
+    for (let si = 0; si < svgLines.length; si++) {
+      const seg = svgLines[si];
+      const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+      const len2 = dx * dx + dy * dy;
+      if (len2 < 1e-6) continue;
+      const t = Math.max(0, Math.min(1, ((px - seg.x1) * dx + (py - seg.y1) * dy) / len2));
+      const nx = seg.x1 + t * dx, ny = seg.y1 + t * dy;
+      const d2 = (px - nx) * (px - nx) + (py - ny) * (py - ny);
+      if (d2 < bestDist2) { bestDist2 = d2; bestX = nx; bestY = ny; }
+    }
+    return bestDist2 <= r2 ? [bestX, bestY] : [px, py];
+  });
+}
+
+function angleLockSegments(pts, closed) {
+  const n = pts.length;
+  if (n < 2) return pts;
+  const out = pts.map(function(p) { return [p[0], p[1]]; });
+  const PRINCIPALS = [0, 45, 90, 135, 180, 225, 270, 315];
+  const TOL = ANGLE_LOCK_TOL_DEG;
+  const last = closed ? n : n - 1;
+  for (let i = 0; i < last; i++) {
+    const j = (i + 1) % n;
+    const dx = out[j][0] - out[i][0], dy = out[j][1] - out[i][1];
+    const len = Math.hypot(dx, dy);
+    if (len < 1e-6) continue;
+    const angDeg = Math.atan2(dy, dx) * 180 / Math.PI;
+    const angNorm = ((angDeg % 360) + 360) % 360;
+    let bestDelta = Infinity, bestPrincipal = angNorm;
+    for (let pi = 0; pi < PRINCIPALS.length; pi++) {
+      let delta = Math.abs(angNorm - PRINCIPALS[pi]);
+      if (delta > 180) delta = 360 - delta;
+      if (delta < bestDelta) { bestDelta = delta; bestPrincipal = PRINCIPALS[pi]; }
+    }
+    if (bestDelta > TOL) continue;
+    const targetRad = bestPrincipal * Math.PI / 180;
+    const halfLen = len / 2;
+    const mx = (out[i][0] + out[j][0]) / 2, my = (out[i][1] + out[j][1]) / 2;
+    out[i][0] = mx - Math.cos(targetRad) * halfLen;
+    out[i][1] = my - Math.sin(targetRad) * halfLen;
+    out[j][0] = mx + Math.cos(targetRad) * halfLen;
+    out[j][1] = my + Math.sin(targetRad) * halfLen;
+  }
+  return out;
+}
+
 function buildAdaptivePath(pts, tension) {
   const n = pts.length;
   if (n < 2) return '';
   if (n === 2) return 'M ' + pts[0][0] + ' ' + pts[0][1] + ' L ' + pts[1][0] + ' ' + pts[1][1] + ' Z';
   const sharp = new Array(n);
   for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n];
-    const next = pts[(i + 1) % n];
+    const prev = pts[(i - 1 + n) % n], next = pts[(i + 1) % n];
     sharp[i] = turnAngleDeg(prev, pts[i], next) > CORNER_ANGLE_DEG;
   }
   let d = 'M ' + pts[0][0].toFixed(2) + ' ' + pts[0][1].toFixed(2);
@@ -715,8 +897,7 @@ function buildOpenChainPath(pts, tension) {
   if (n < 2) return '';
   if (n === 2) return ' L ' + pts[1][0].toFixed(2) + ' ' + pts[1][1].toFixed(2);
   const sharp = new Array(n);
-  sharp[0] = true;
-  sharp[n - 1] = true;
+  sharp[0] = true; sharp[n - 1] = true;
   for (let i = 1; i < n - 1; i++) {
     sharp[i] = turnAngleDeg(pts[i - 1], pts[i], pts[i + 1]) > CORNER_ANGLE_DEG;
   }
@@ -765,8 +946,8 @@ function solveLinear3(M, b) {
 
 function fitCircle(pts) {
   let sx=0, sy=0, sxx=0, syy=0, sxy=0, sxxx=0, syyy=0, sxyy=0, sxxy=0;
-  for (const p of pts) {
-    const x = p[0], y = p[1];
+  for (let pi = 0; pi < pts.length; pi++) {
+    const x = pts[pi][0], y = pts[pi][1];
     sx += x; sy += y; sxx += x*x; syy += y*y; sxy += x*y;
     sxxx += x*x*x; syyy += y*y*y; sxyy += x*y*y; sxxy += x*x*y;
   }
@@ -784,8 +965,8 @@ function fitCircle(pts) {
 
 function maxResidual(pts, fit) {
   let m = 0;
-  for (const p of pts) {
-    const d = Math.abs(Math.hypot(p[0] - fit.cx, p[1] - fit.cy) - fit.r);
+  for (let pi = 0; pi < pts.length; pi++) {
+    const d = Math.abs(Math.hypot(pts[pi][0] - fit.cx, pts[pi][1] - fit.cy) - fit.r);
     if (d > m) m = d;
   }
   return m;
@@ -796,7 +977,7 @@ function angleAt(pt, fit) { return Math.atan2(pt[1] - fit.cy, pt[0] - fit.cx); }
 function normDelta(a, b) {
   let d = b - a;
   while (d <= -Math.PI) d += 2 * Math.PI;
-  while (d > Math.PI) d -= 2 * Math.PI;
+  while (d >   Math.PI) d -= 2 * Math.PI;
   return d;
 }
 
@@ -810,18 +991,15 @@ function findArcRuns(pts) {
   const n = pts.length;
   const runs = [];
   if (n < MIN_ARC_RUN_LEN) return runs;
-
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of pts) {
-    if (p[0] < minX) minX = p[0]; if (p[0] > maxX) maxX = p[0];
-    if (p[1] < minY) minY = p[1]; if (p[1] > maxY) maxY = p[1];
+  for (let pi = 0; pi < pts.length; pi++) {
+    if (pts[pi][0] < minX) minX = pts[pi][0]; if (pts[pi][0] > maxX) maxX = pts[pi][0];
+    if (pts[pi][1] < minY) minY = pts[pi][1]; if (pts[pi][1] > maxY) maxY = pts[pi][1];
   }
   const bboxDiag      = Math.hypot(maxX - minX, maxY - minY);
   const maxSaneRadius = bboxDiag * 3;
   const minRadius     = Math.max(MIN_ARC_RADIUS_PX, bboxDiag * MIN_ARC_RADIUS_REL);
-
   const smooth = smoothBoundary(pts);
-
   let i = 0;
   while (i <= n - MIN_ARC_RUN_LEN) {
     let bestLen = 0, bestFit = null;
@@ -836,11 +1014,14 @@ function findArcRuns(pts) {
     if (bestLen >= MIN_ARC_RUN_LEN) {
       const endIdx = i + bestLen - 1;
       const midIdx = i + ((bestLen - 1) >> 1);
-      const span = arcSpanDeg(pts[i], pts[midIdx], pts[endIdx], bestFit);
+      const rawWindow = pts.slice(i, endIdx + 1);
+      const rawFit    = fitCircle(rawWindow);
+      const finalFit  = (rawFit && rawFit.r <= maxSaneRadius && rawFit.r >= minRadius * 0.5)
+        ? rawFit : bestFit;
+      const span = arcSpanDeg(pts[i], pts[midIdx], pts[endIdx], finalFit);
       if (Math.abs(span) >= MIN_ARC_SPAN_DEG) {
-        runs.push({ startIdx: i, endIdx: endIdx, fit: bestFit, span: span });
-        i = endIdx;
-        continue;
+        runs.push({ startIdx: i, endIdx: endIdx, fit: finalFit, span: span });
+        i = endIdx; continue;
       }
     }
     i++;
@@ -858,25 +1039,34 @@ function loopLen(pts) {
   return chainLen(pts) + Math.hypot(pts[0][0]-pts[pts.length-1][0], pts[0][1]-pts[pts.length-1][1]);
 }
 
-function buildSmartPath(pts) {
+function processStraightSegment(seg, svgLines) {
+  const eps = Math.max(1.0, Math.min(RDP_EPSILON_STRAIGHT, chainLen(seg) / 400));
+  let simp = seg.length > 2 ? rdpSimplify(seg, eps) : seg.slice();
+  if (svgLines && svgLines.length > 0) simp = snapToWallLines(simp, svgLines);
+  simp = angleLockSegments(simp, false);
+  return simp;
+}
+
+function buildSmartPath(pts, svgLines) {
   const n = pts.length;
   if (n < 3) return '';
 
   const runs = findArcRuns(pts);
   if (runs.length === 0) {
-    const eps = Math.max(1.0, Math.min(RDP_EPSILON, loopLen(pts) / 400));
-    const simplified = rdpSimplify(pts, eps);
+    const eps = Math.max(1.0, Math.min(RDP_EPSILON_STRAIGHT, loopLen(pts) / 400));
+    let simplified = rdpSimplify(pts, eps);
+    if (svgLines && svgLines.length > 0) simplified = snapToWallLines(simplified, svgLines);
+    simplified = angleLockSegments(simplified, true);
     return simplified.length >= 3 ? buildAdaptivePath(simplified, BEZIER_TENSION) : '';
   }
 
   const runByStart = new Map();
-  for (const r of runs) runByStart.set(r.startIdx, r);
+  for (let ri = 0; ri < runs.length; ri++) runByStart.set(runs[ri].startIdx, runs[ri]);
 
-  function flushLine(from, to) {
+  function flushStraight(from, to) {
     if (to <= from) return '';
     const seg = pts.slice(from, to + 1);
-    const eps = Math.max(1.0, Math.min(RDP_EPSILON, chainLen(seg) / 400));
-    const simp = seg.length > 2 ? rdpSimplify(seg, eps) : seg;
+    const simp = processStraightSegment(seg, svgLines);
     return buildOpenChainPath(simp, BEZIER_TENSION);
   }
 
@@ -886,10 +1076,10 @@ function buildSmartPath(pts) {
   while (i < n) {
     const run = runByStart.get(i);
     if (run) {
-      d += flushLine(bufStart, i);
+      d += flushStraight(bufStart, i);
       const ep = pts[run.endIdx];
       const largeArc = Math.abs(run.span) > 180 ? 1 : 0;
-      const sweep = run.span >= 0 ? 1 : 0;
+      const sweep    = run.span >= 0 ? 1 : 0;
       d += ' A ' + run.fit.r.toFixed(2) + ' ' + run.fit.r.toFixed(2) + ' 0 ' + largeArc + ' ' + sweep + ' ' + ep[0].toFixed(2) + ' ' + ep[1].toFixed(2);
       bufStart = run.endIdx;
       i = run.endIdx;
@@ -898,15 +1088,13 @@ function buildSmartPath(pts) {
     }
   }
   const tail = pts.slice(bufStart).concat([pts[0]]);
-  const eps2 = Math.max(1.0, Math.min(RDP_EPSILON, chainLen(tail) / 400));
-  const simpTail = tail.length > 2 ? rdpSimplify(tail, eps2) : tail;
+  const simpTail = processStraightSegment(tail, svgLines);
   d += buildOpenChainPath(simpTail, BEZIER_TENSION);
-
   return d + ' Z';
 }
 
-function maskToSvgPath(mask, w, h) {
-  const fallbackRect = () => {
+function maskToSvgPath(mask, w, h, svgLines) {
+  const fallbackRect = function() {
     let minX = w, minY = h, maxX = 0, maxY = 0;
     for (let i = 0; i < mask.length; i++) {
       if (!mask[i]) continue;
@@ -917,18 +1105,19 @@ function maskToSvgPath(mask, w, h) {
     return 'M ' + minX + ' ' + minY + ' L ' + maxX + ' ' + minY + ' L ' + maxX + ' ' + maxY + ' L ' + minX + ' ' + maxY + ' Z';
   };
 
-  const loops = traceMaskBoundary(mask, w, h);
+  const traceMask = shrinkMaskForTrace(mask, w, h);
+  const loops = traceMaskBoundary(traceMask, w, h);
   if (loops.length === 0) return fallbackRect();
 
   const subpaths = [];
-  for (let pts of loops) {
+  for (let li = 0; li < loops.length; li++) {
+    let pts = loops[li];
     if (pts.length > MAX_TRACE_POINTS) {
       const step = Math.ceil(pts.length / MAX_TRACE_POINTS);
-      pts = pts.filter((_, i) => i % step === 0);
+      pts = pts.filter(function(_, idx) { return idx % step === 0; });
     }
     if (pts.length < 3 || loopLen(pts) < 6) continue;
-
-    const d = buildSmartPath(pts);
+    const d = buildSmartPath(pts, svgLines || null);
     if (d) subpaths.push(d);
   }
 
