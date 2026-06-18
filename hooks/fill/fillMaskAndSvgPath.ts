@@ -5,7 +5,7 @@
 const WALL_LUMA           = 120;
 const STROKE_NEIGHBOR_MIN = 0.4;
 const DILATE_R            = 2;
-const ERODE_R             = 1;
+const ERODE_R             = 2;
 
 /**
  * Step 1 — dark-pixel detection + stroke-neighbor filter.

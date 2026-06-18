@@ -3,14 +3,25 @@
 //
 //  IMPROVEMENTS (this revision — mirrors svgPathUtils.js improvements):
 //
-//  1. OUTLINE SHRINK (improvement 1)
+//  1. OUTLINE SHRINK (improvement 1) — NOW DISABLED (WALL_HALF_PX = 0)
 //     mfOuterShape in both workers previously ran erode(2)→dilate(2), a
-//     morphological opening whose net displacement is zero. It now runs a
-//     bare erode(WALL_HALF_PX=3) so the measurement polygon[] sits closer
-//     to the wall centre line rather than the inner face. The SVG path itself
-//     applies the same shrink internally inside maskToSvgPath (via
-//     shrinkMaskForTrace) from SVG_PATH_UTILS_SOURCE, so both outputs are
-//     consistently offset toward the wall centre line.
+//     morphological opening whose net displacement is zero. A later revision
+//     changed it to a bare erode(WALL_HALF_PX) so the measurement polygon[]
+//     would sit closer to an assumed wall centre line. That assumption only
+//     holds when the fill is actually bounded by a wall ~2×WALL_HALF_PX thick
+//     on every side. For fills that aren't bounded by a real wall of that
+//     thickness (furniture/fixture outlines, thin or absent boundary lines,
+//     etc.) it just makes fill.polygon — and, via the matching
+//     OUTLINE_SHRINK_PX in svgPathUtils.js, the rendered fill.svgPath outline
+//     too — visibly smaller than the actual painted raster fill, since the
+//     raster paint itself is generated from the un-eroded mask.
+//     WALL_HALF_PX is now 0, so mfOuterShape is a no-op and both the
+//     measurement polygon and the rendered outline trace the exact same mask
+//     that gets painted — outline, measurement, and visible fill all agree.
+//     If you want a wall-centreline approximation back, this is the knob —
+//     but pair it with a real measured wall-thickness signal per fill rather
+//     than a fixed constant, or it will mis-shrink anything that isn't
+//     bounded by a wall of exactly that thickness.
 //
 //  2. SVG WALL-LINE SNAPPING (improvement 2)
 //     Both worker postMessage calls now receive a `svgLines` array in
@@ -71,16 +82,19 @@ export interface NormalisedSvgLine {
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared smoothing-pipeline source inlined into both worker blobs.
 //
-// CHANGE (improvement 1): mfOuterShape now runs erode-only (no re-dilate) so
-// the measurement polygon[] sits closer to the wall centre line.
-// WALL_HALF_PX controls the erosion distance; set to 3 px (≈ half a typical
-// thin interior wall at common scan resolutions).
+// CHANGE (improvement 1, now disabled): mfOuterShape runs erode-only (no
+// re-dilate), but WALL_HALF_PX is set to 0 so it's effectively a no-op — the
+// measurement polygon[] traces the exact same mask that gets painted, with no
+// assumed wall-centreline offset.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MF_SMOOTH_CONTOUR_SOURCE = /* js */`
-// Improvement 1: wall half-thickness in mask pixels. Eroding by this amount
-// moves the measurement polygon boundary toward the wall centre line.
-const WALL_HALF_PX = 3;
+// Improvement 1 (disabled): wall half-thickness in mask pixels. Previously
+// eroding by this amount moved the measurement polygon boundary toward an
+// assumed wall centre line. Set to 0 so mfOuterShape is a no-op and the
+// measurement polygon matches the actual painted fill boundary exactly —
+// consistent with OUTLINE_SHRINK_PX = 0 in svgPathUtils.js.
+const WALL_HALF_PX = 0;
 
 function mfMarchingSquares(mask, w, h) {
   const W = w + 2, H = h + 2;
@@ -173,8 +187,9 @@ function mfPolygonToPath(poly) {
   return d + ' Z';
 }
 
-// Improvement 1: erode-only (no re-dilate) so the polygon boundary sits
-// closer to the wall centre line rather than the inner face.
+// Improvement 1 (disabled): erode-only (no re-dilate), but with
+// WALL_HALF_PX = 0 this is a no-op — mfErode(filled, w, h, 0) returns the
+// mask unchanged, so the polygon boundary matches the actual painted fill.
 function mfErode(src, w, h, r) {
   const horiz = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -199,8 +214,9 @@ function mfErode(src, w, h, r) {
   return out;
 }
 
-// CHANGED: erode-only (was erode→dilate opening). Net effect: polygon boundary
-// moves outward by WALL_HALF_PX pixels toward the wall centre line.
+// CHANGED: erode-only (was erode→dilate opening). With WALL_HALF_PX = 0 this
+// is a no-op (mfErode with radius 0 returns the input unchanged), so the
+// polygon boundary matches the actual painted fill mask exactly.
 function mfOuterShape(filled, w, h) {
   return mfErode(filled, w, h, WALL_HALF_PX);
 }
@@ -370,13 +386,15 @@ self.onmessage = ({ data }) => {
   const areaPx = maskArea(closed);
 
   // polygon[] for measurement: mfBuildSmoothPolygon uses the erode-only
-  // mfOuterShape (improvement 1), so it sits closer to the wall centre line.
+  // mfOuterShape (improvement 1, now disabled via WALL_HALF_PX = 0), so it
+  // traces the same boundary as the actual painted fill.
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
   // svgPath for rendering: maskToSvgPath applies shrinkMaskForTrace
-  // (improvement 1) internally, snaps to svgLines (improvement 2), and
-  // angle-locks straight segments (improvement 3).
+  // (improvement 1, now disabled via OUTLINE_SHRINK_PX = 0) internally, snaps
+  // to svgLines (improvement 2), and angle-locks straight segments
+  // (improvement 3).
   const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   self.postMessage(
@@ -653,11 +671,12 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  // polygon[] for measurement (erode-only mfOuterShape — improvement 1)
+  // polygon[] for measurement (erode-only mfOuterShape — improvement 1, now
+  // disabled via WALL_HALF_PX = 0, so it traces the actual painted boundary)
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
-  // svgPath: shrink + snap + angle-lock (improvements 1-3)
+  // svgPath: shrink (now disabled) + snap + angle-lock (improvements 1-3)
   const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   const regionCount = Math.max(1, localResults.length);

@@ -11,18 +11,21 @@
 //
 //  IMPROVEMENTS (this revision):
 //
-//  1. OUTLINE SHRINK BEFORE TRACING
+//  1. OUTLINE SHRINK BEFORE TRACING — NOW DISABLED (OUTLINE_SHRINK_PX = 0)
 //     The flood-fill stops at wall pixels, so the traced boundary runs along
-//     the *inner* wall face — offset inward from the actual wall centre line
-//     by roughly half the wall thickness.  The workers' mfOuterShape() used to
-//     run erode(2)→dilate(2) (a morphological opening whose net displacement is
-//     zero).  It now runs erode(WALL_HALF_PX) only — a true inward shrink of
-//     the filled region — so that traceMaskBoundary sees the shrunken edge,
-//     which sits closer to the wall centre line.  WALL_HALF_PX defaults to 3
-//     and is tunable at the top of the worker source.
-//     NOTE: this only affects the polygon[] measurement array; maskToSvgPath
-//     receives the *original* closed mask and does the shrink internally via
-//     the new shrinkMaskForTrace() helper, controlled by OUTLINE_SHRINK_PX.
+//     the *inner* wall face. A previous revision eroded the mask by
+//     OUTLINE_SHRINK_PX before tracing to pull the outline toward an assumed
+//     wall centre line. That assumption only holds for actual walls of
+//     roughly 2×OUTLINE_SHRINK_PX thickness — for free-standing fills
+//     (furniture, fixtures, rooms with thin/no detected wall) it just makes
+//     the rendered outline visibly smaller than the solid color underneath,
+//     since the raster paint itself is generated from the UN-eroded mask.
+//     OUTLINE_SHRINK_PX is now 0, so maskToSvgPath traces the exact same
+//     mask that gets painted — the outline always matches the fill exactly.
+//     If you want a wall-centreline approximation back, this is the single
+//     knob to change (and you'll want a real measured wall-thickness signal
+//     rather than a fixed constant, or it will mis-shrink fills that aren't
+//     bounded by a wall of that exact thickness).
 //
 //  2. SNAP OUTLINE SEGMENTS TO SVG WALL LINES
 //     maskToSvgPath now accepts an optional svgLines parameter — the same
@@ -65,10 +68,10 @@ const MAX_TRACE_POINTS  = 4000;
 const MIN_ARC_RADIUS_PX = 40;
 const MIN_ARC_RADIUS_REL= 0.04;
 
-// Improvement 1: how many pixels to erode the mask before tracing the boundary.
-// Moving the trace point inward by ~half the wall thickness moves it toward the
-// wall centre line rather than the inner face.
-const OUTLINE_SHRINK_PX = 3;
+// Improvement 1 (now disabled): how many pixels to erode the mask before
+// tracing the boundary. Set to 0 so the traced outline matches the actual
+// painted fill mask exactly — no assumed wall-centreline offset.
+const OUTLINE_SHRINK_PX = 0;
 
 // Improvement 2: SVG wall-line snap radius in mask-pixel units.
 // Vertices within this distance of a nearby wall line are snapped onto it.
@@ -111,6 +114,8 @@ function erodeMask(src, w, h, r) {
 
 // Shrink the mask by OUTLINE_SHRINK_PX before tracing so the outline sits
 // closer to the wall centre line than to the inner wall face.
+// With OUTLINE_SHRINK_PX === 0 this is a no-op and returns the mask as-is,
+// so the traced outline matches the actual painted fill exactly.
 function shrinkMaskForTrace(mask, w, h) {
   if (OUTLINE_SHRINK_PX <= 0) return mask;
   return erodeMask(mask, w, h, OUTLINE_SHRINK_PX);
@@ -607,8 +612,9 @@ function buildSmartPath(pts, svgLines) {
 //  mask-pixel space.  When provided, simplified outline vertices that fall
 //  within SNAP_RADIUS_PX of a segment are snapped onto it (improvement 2).
 //
-//  Internally applies shrinkMaskForTrace() (improvement 1) before boundary
-//  tracing so the outline sits closer to the wall centre line.
+//  shrinkMaskForTrace() (improvement 1) runs first but is a no-op while
+//  OUTLINE_SHRINK_PX === 0, so the traced outline matches the exact mask
+//  that was painted — no inward offset.
 //
 export function maskToSvgPath(mask, w, h, svgLines) {
   const fallbackRect = () => {
@@ -622,8 +628,8 @@ export function maskToSvgPath(mask, w, h, svgLines) {
     return `M ${minX} ${minY} L ${maxX} ${minY} L ${maxX} ${maxY} L ${minX} ${maxY} Z`;
   };
 
-  // Improvement 1: shrink the mask before tracing so the outline boundary
-  // runs along (approximately) the wall centre line rather than the inner face.
+  // Improvement 1 (disabled): with OUTLINE_SHRINK_PX === 0 this returns the
+  // mask unchanged, so the outline boundary matches the painted fill exactly.
   const traceMask = shrinkMaskForTrace(mask, w, h);
 
   const loops = traceMaskBoundary(traceMask, w, h);
@@ -674,7 +680,9 @@ const MAX_TRACE_POINTS  = 4000;
 const MIN_ARC_RADIUS_PX = 40;
 const MIN_ARC_RADIUS_REL= 0.04;
 
-const OUTLINE_SHRINK_PX  = 3;
+// Improvement 1 (disabled): kept at 0 so the worker-traced outline matches
+// the exact mask it paints, instead of an assumed wall-centreline offset.
+const OUTLINE_SHRINK_PX  = 0;
 const SNAP_RADIUS_PX     = 8;
 const ANGLE_LOCK_TOL_DEG = 8;
 
