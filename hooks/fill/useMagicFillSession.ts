@@ -1,47 +1,28 @@
 'use client';
 // ─── hooks/fill/useMagicFillSession.ts ───────────────────────────────────────
 //
-//  IMPROVEMENTS (this revision — mirrors svgPathUtils.js improvements):
+//  FIX: zoom-agnostic mask building
+//  Previously buildNormalisedWallMask was called on pdfCanvasRef.current whose
+//  bitmap resolution scales with committedScale. At low zoom, thin wall lines
+//  collapse to sub-pixel and flood-fill leaks through them.
+//
+//  Now we render the PDF page into a dedicated off-screen canvas at a fixed
+//  MASK_SCALE (3×) every time pdfRenderCount changes. The viewer's zoom has
+//  no effect on mask quality. Coordinate conversion in handleMagicSingleClick
+//  and handleMagicPolygonFill already uses maskWRef/maskHRef for scaling, so
+//  clicks at any viewer zoom map correctly into the high-res mask space.
+//
+//  IMPROVEMENTS (previous revision — mirrors svgPathUtils.js improvements):
 //
 //  1. OUTLINE SHRINK (improvement 1) — NOW DISABLED (WALL_HALF_PX = 0)
-//     mfOuterShape in both workers previously ran erode(2)→dilate(2), a
-//     morphological opening whose net displacement is zero. A later revision
-//     changed it to a bare erode(WALL_HALF_PX) so the measurement polygon[]
-//     would sit closer to an assumed wall centre line. That assumption only
-//     holds when the fill is actually bounded by a wall ~2×WALL_HALF_PX thick
-//     on every side. For fills that aren't bounded by a real wall of that
-//     thickness (furniture/fixture outlines, thin or absent boundary lines,
-//     etc.) it just makes fill.polygon — and, via the matching
-//     OUTLINE_SHRINK_PX in svgPathUtils.js, the rendered fill.svgPath outline
-//     too — visibly smaller than the actual painted raster fill, since the
-//     raster paint itself is generated from the un-eroded mask.
-//     WALL_HALF_PX is now 0, so mfOuterShape is a no-op and both the
-//     measurement polygon and the rendered outline trace the exact same mask
-//     that gets painted — outline, measurement, and visible fill all agree.
-//     If you want a wall-centreline approximation back, this is the knob —
-//     but pair it with a real measured wall-thickness signal per fill rather
-//     than a fixed constant, or it will mis-shrink anything that isn't
-//     bounded by a wall of exactly that thickness.
-//
 //  2. SVG WALL-LINE SNAPPING (improvement 2)
-//     Both worker postMessage calls now receive a `svgLines` array in
-//     mask-pixel space. The workers forward it to maskToSvgPath, which snaps
-//     simplified outline vertices onto nearby wall lines (within SNAP_RADIUS_PX
-//     = 8 px). Callers that don't pass svgLines (or pass an empty array) get
-//     the same behaviour as before — the feature degrades gracefully.
-//     svgLines are passed in from the hook's new optional prop and scaled from
-//     normalised [0-1] coords to mask-pixel coords before being sent.
-//
 //  3. ANGLE-CONSTRAINED RDP (improvement 3)
-//     Handled entirely inside maskToSvgPath / buildSmartPath in
-//     SVG_PATH_UTILS_SOURCE. No worker-level changes needed.
-//
 //  4. TIGHTER RDP + PER-SEGMENT EPSILON (improvement 4)
-//     Handled entirely inside SVG_PATH_UTILS_SOURCE. No worker-level changes.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useRef, useCallback, useEffect } from 'react';
+import type { PDFPageProxy } from 'pdfjs-dist';
 import type { MagicFill }     from '@/hooks/fill/useMagicFill';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import type { TakeoffRow }    from '@/types';
@@ -55,6 +36,11 @@ import {
 } from '@/hooks/fill/fillMaskAndSvgPath';
 
 import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';
+
+// ── Fixed scale used when rendering the PDF off-screen for mask building.
+//    High enough that thin wall lines (≥0.5 pt) survive as ≥1-px strokes.
+//    Completely independent of whatever committedScale the viewer is at.
+const MASK_SCALE = 3;
 
 const FILL_COLORS = [
   '#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa',
@@ -70,10 +56,6 @@ function hexToRgb(hex: string): [number, number, number] {
 }
 
 // ── SVG line segment type (normalised [0-1] coords from useSvgSnapPoints) ────
-//
-//  The hook accepts an optional svgLines prop in this format and converts to
-//  mask-pixel coords before forwarding to the workers.
-//
 export interface NormalisedSvgLine {
   x1: number; y1: number;
   x2: number; y2: number;
@@ -81,19 +63,9 @@ export interface NormalisedSvgLine {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared smoothing-pipeline source inlined into both worker blobs.
-//
-// CHANGE (improvement 1, now disabled): mfOuterShape runs erode-only (no
-// re-dilate), but WALL_HALF_PX is set to 0 so it's effectively a no-op — the
-// measurement polygon[] traces the exact same mask that gets painted, with no
-// assumed wall-centreline offset.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const MF_SMOOTH_CONTOUR_SOURCE = /* js */`
-// Improvement 1 (disabled): wall half-thickness in mask pixels. Previously
-// eroding by this amount moved the measurement polygon boundary toward an
-// assumed wall centre line. Set to 0 so mfOuterShape is a no-op and the
-// measurement polygon matches the actual painted fill boundary exactly —
-// consistent with OUTLINE_SHRINK_PX = 0 in svgPathUtils.js.
 const WALL_HALF_PX = 0;
 
 function mfMarchingSquares(mask, w, h) {
@@ -187,9 +159,6 @@ function mfPolygonToPath(poly) {
   return d + ' Z';
 }
 
-// Improvement 1 (disabled): erode-only (no re-dilate), but with
-// WALL_HALF_PX = 0 this is a no-op — mfErode(filled, w, h, 0) returns the
-// mask unchanged, so the polygon boundary matches the actual painted fill.
 function mfErode(src, w, h, r) {
   const horiz = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {
@@ -214,9 +183,6 @@ function mfErode(src, w, h, r) {
   return out;
 }
 
-// CHANGED: erode-only (was erode→dilate opening). With WALL_HALF_PX = 0 this
-// is a no-op (mfErode with radius 0 returns the input unchanged), so the
-// polygon boundary matches the actual painted fill mask exactly.
 function mfOuterShape(filled, w, h) {
   return mfErode(filled, w, h, WALL_HALF_PX);
 }
@@ -240,9 +206,6 @@ function mfBuildSmoothPolygon(mask, w, h) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
-//
-// CHANGE (improvement 2): onmessage now destructures `svgLines` from data and
-// passes it to maskToSvgPath so outline vertices snap onto nearby wall lines.
 // ─────────────────────────────────────────────────────────────────────────────
 const RASTER_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -372,8 +335,6 @@ function maskArea(mask) {
   let c = 0; for (let i = 0; i < mask.length; i++) if (mask[i]) c++; return c;
 }
 
-// CHANGE (improvement 2): destructure svgLines from data and forward to
-// maskToSvgPath so outline vertices snap onto nearby architectural wall lines.
 self.onmessage = ({ data }) => {
   const { maskBuffer, fillDataBuffer, w, h, cx, cy, r, g, b, opacity, svgLines } = data;
   const mask = new Uint8Array(maskBuffer);
@@ -385,16 +346,9 @@ self.onmessage = ({ data }) => {
 
   const areaPx = maskArea(closed);
 
-  // polygon[] for measurement: mfBuildSmoothPolygon uses the erode-only
-  // mfOuterShape (improvement 1, now disabled via WALL_HALF_PX = 0), so it
-  // traces the same boundary as the actual painted fill.
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
-  // svgPath for rendering: maskToSvgPath applies shrinkMaskForTrace
-  // (improvement 1, now disabled via OUTLINE_SHRINK_PX = 0) internally, snaps
-  // to svgLines (improvement 2), and angle-locks straight segments
-  // (improvement 3).
   const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   self.postMessage(
@@ -406,8 +360,6 @@ self.onmessage = ({ data }) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POLYGON LASSO WORKER — fills all rooms inside a user-drawn polygon
-//
-// CHANGE (improvement 2): same svgLines forwarding as the raster worker.
 // ─────────────────────────────────────────────────────────────────────────────
 const POLYGON_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
@@ -651,8 +603,6 @@ function buildSolidFill(unioned, inside, fullMask, w, h) {
   return final;
 }
 
-// CHANGE (improvement 2): destructure svgLines from data and forward to
-// maskToSvgPath so the outline snaps onto nearby architectural wall lines.
 self.onmessage = ({ data }) => {
   const { maskBuffer, fillDataBuffer, w, h, r, g, b, opacity, poly, svgLines } = data;
   const fullMask = new Uint8Array(maskBuffer);
@@ -671,12 +621,9 @@ self.onmessage = ({ data }) => {
   const fillDataArr = new Uint8ClampedArray(fillDataBuffer);
   paintFill(closed, fillDataArr, r, g, b, opacity);
 
-  // polygon[] for measurement (erode-only mfOuterShape — improvement 1, now
-  // disabled via WALL_HALF_PX = 0, so it traces the actual painted boundary)
   const polygon = mfBuildSmoothPolygon(closed, w, h);
   const perimPx = mfPolygonPerim(polygon);
 
-  // svgPath: shrink (now disabled) + snap + angle-lock (improvements 1-3)
   const svgPath = maskToSvgPath(closed, w, h, svgLines || null);
 
   const regionCount = Math.max(1, localResults.length);
@@ -725,15 +672,15 @@ interface UseMagicFillSessionProps {
   onDeleteMeasurementProp?: (id: string) => void;
   onAppendComplete?:        () => void;
   batchCommitMeasurements?: (rows: any[]) => void;
-  // Improvement 2: optional SVG wall-line segments in normalised [0-1] coords.
-  // When provided, simplified outline vertices snap onto the nearest line
-  // within SNAP_RADIUS_PX mask pixels, pulling the outline onto the actual
-  // architectural lines in the plan.
   svgLines?: NormalisedSvgLine[];
+  // FIX: ref to the currently rendered PDF page (from useViewerPdf).
+  // Used to render an off-screen high-res bitmap at MASK_SCALE so fill
+  // quality never depends on the viewer's current zoom level.
+  currentPdfPageRef: React.RefObject<PDFPageProxy | null>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Formatting
+// Formatting helper (exported for use in MagicFillUI)
 // ─────────────────────────────────────────────────────────────────────────────
 export function fmtArea(px: number, mpp: number | null): string {
   if (!mpp) return `${px.toLocaleString()} px²`;
@@ -761,6 +708,7 @@ export function useMagicFillSession({
   onAppendComplete,
   batchCommitMeasurements,
   svgLines,
+  currentPdfPageRef,
 }: UseMagicFillSessionProps) {
 
   // ── Fill state ────────────────────────────────────────────────────────────
@@ -780,7 +728,7 @@ export function useMagicFillSession({
   const [showMfNameDialog,setShowMfNameDialog]= useState(false);
   const [pendingMfData,   setPendingMfData]   = useState<any>(null);
 
-  // ── Mask bitmap dimensions ────────────────────────────────────────────────
+  // ── Mask bitmap dimensions (from the off-screen high-res render) ──────────
   const [maskDims, setMaskDims] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   // ── Color cycling ─────────────────────────────────────────────────────────
@@ -809,15 +757,7 @@ export function useMagicFillSession({
   useEffect(() => { magicFillsRef.current = magicFills; }, [magicFills]);
   useEffect(() => () => killWorker(workerRef as any, workerUrlRef as any), []);
 
-  // ── Improvement 2: scale normalised svgLines to mask-pixel coords ─────────
-  //
-  //  svgLines come in from useSvgSnapPoints in normalised [0-1] coords.
-  //  The workers need them in mask-pixel space (maskW × maskH) so that the
-  //  snap-radius comparison in snapToWallLines() uses consistent units.
-  //
-  //  We produce a new scaled array whenever svgLines or maskDims change and
-  //  keep it in a ref so it never causes re-renders.
-  //
+  // ── Scale normalised svgLines to mask-pixel coords ────────────────────────
   const scaledSvgLinesRef = useRef<Array<{ x1: number; y1: number; x2: number; y2: number }> | null>(null);
 
   useEffect(() => {
@@ -836,38 +776,45 @@ export function useMagicFillSession({
   }, [svgLines, maskDims]);
 
   // ── Build wall mask when PDF renders ─────────────────────────────────────
+  //
+  //  FIX: zoom-agnostic mask
+  //
+  //  We render the current PDF page into a dedicated off-screen canvas at
+  //  MASK_SCALE (a fixed 3×). This means thin wall lines that would collapse
+  //  at low viewer zoom are always rendered at 3× and remain solid barriers
+  //  for the flood-fill. The viewer's committedScale has no effect here.
+  //
+  //  The fill canvas (fillCanvasRef) continues to paint at CSS dimensions
+  //  (pdfDimensions) as before — only the mask bitmap uses the larger size.
+  //
+  //  maskW / maskH (from maskDims) flow through to MagicFillCanvas for
+  //  polyRef bitmap sizing, and are used in handleMagicSingleClick /
+  //  handleMagicPolygonFill for the CSS→mask coordinate conversion, so
+  //  clicks remain accurate at every zoom level.
+  //
   useEffect(() => {
     if (pdfRenderCount === 0) return;
-    const bc = pdfCanvasRef.current;
     const fc = fillCanvasRef.current;
-    if (!bc || !fc) return;
+    if (!fc) return;
 
-    const w = bc.width, h = bc.height;
-    if (!w || !h) return;
+    const cssW = pdfDimensions?.w ?? 0;
+    const cssH = pdfDimensions?.h ?? 0;
+    if (!cssW || !cssH) return;
 
-    killWorker(workerRef as any, workerUrlRef as any);
-    maskGenerationRef.current += 1;
-    setMfIsFilling(false);
-    setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
-
-    if (fc.width  !== w) fc.width  = w;
-    if (fc.height !== h) fc.height = h;
-    const cssW = pdfDimensions?.w ?? w;
-    const cssH = pdfDimensions?.h ?? h;
+    // Reset fill canvas to current CSS dimensions.
+    if (fc.width  !== cssW) fc.width  = cssW;
+    if (fc.height !== cssH) fc.height = cssH;
     fc.style.width  = `${cssW}px`;
     fc.style.height = `${cssH}px`;
 
-    const ctx = bc.getContext('2d');
-    if (!ctx) return;
+    killWorker(workerRef as any, workerUrlRef as any);
+    maskGenerationRef.current += 1;
+    const myGeneration = maskGenerationRef.current;
 
-    const id   = ctx.getImageData(0, 0, w, h);
-    const mask = buildNormalisedWallMask(id.data, w, h);
+    setMfIsFilling(false);
+    setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
 
-    maskRef.current     = mask;
-    maskWRef.current    = w;
-    maskHRef.current    = h;
-    fillDataRef.current = new ImageData(w, h);
-    setMaskDims({ w, h });
+    fillDataRef.current = new ImageData(cssW, cssH);
 
     fillCountRef.current  = 0;
     groupCountRef.current = 0;
@@ -882,6 +829,59 @@ export function useMagicFillSession({
     setMfLastFillPos(null);
 
     setMfMetersPerPixel(scaleFactor > 0 ? scaleFactor : null);
+
+    // ── Helper: fall back to the visible canvas bitmap ────────────────────
+    //    Used when the page ref isn't available yet, or if the off-screen
+    //    render fails.
+    const fallbackToVisibleCanvas = () => {
+      const bc = pdfCanvasRef.current;
+      if (!bc || !bc.width || !bc.height) return;
+      if (myGeneration !== maskGenerationRef.current) return;
+      const ctx = bc.getContext('2d');
+      if (!ctx) return;
+      const id   = ctx.getImageData(0, 0, bc.width, bc.height);
+      const mask = buildNormalisedWallMask(id.data, bc.width, bc.height);
+      maskRef.current  = mask;
+      maskWRef.current = bc.width;
+      maskHRef.current = bc.height;
+      setMaskDims({ w: bc.width, h: bc.height });
+    };
+
+    const page = currentPdfPageRef.current;
+    if (!page) {
+      // Page ref not yet populated — fall back (zoom-dependent, but rare).
+      fallbackToVisibleCanvas();
+      return;
+    }
+
+    // ── Render the page at MASK_SCALE into a throwaway off-screen canvas ──
+    const viewport = page.getViewport({ scale: MASK_SCALE });
+    const offW = Math.round(viewport.width);
+    const offH = Math.round(viewport.height);
+
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width  = offW;
+    offCanvas.height = offH;
+    const offCtx = offCanvas.getContext('2d');
+    if (!offCtx) { fallbackToVisibleCanvas(); return; }
+
+    page.render({ canvas: offCanvas, canvasContext: offCtx, viewport })
+      .promise
+      .then(() => {
+        if (myGeneration !== maskGenerationRef.current) return;
+        const id   = offCtx.getImageData(0, 0, offW, offH);
+        const mask = buildNormalisedWallMask(id.data, offW, offH);
+        maskRef.current  = mask;
+        maskWRef.current = offW;
+        maskHRef.current = offH;
+        setMaskDims({ w: offW, h: offH });
+      })
+      .catch((err: any) => {
+        if (err?.name === 'RenderingCancelledException') return;
+        console.error('[useMagicFillSession] off-screen mask render failed — falling back', err);
+        fallbackToVisibleCanvas();
+      });
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfRenderCount]);
 
@@ -896,6 +896,10 @@ export function useMagicFillSession({
 
     const myGeneration = maskGenerationRef.current;
 
+    // CSS-space click → mask-pixel space.
+    // maskW/maskH come from the MASK_SCALE off-screen render so this ratio
+    // is MASK_SCALE / (devicePixelRatio used for the visible canvas), making
+    // clicks accurate at every viewer zoom level.
     const cssW = pdfDimensions?.w ?? mw;
     const cssH = pdfDimensions?.h ?? mh;
     const maskX = Math.round(canvasX * (mw / cssW));
@@ -906,7 +910,7 @@ export function useMagicFillSession({
     setMfFillSub('Running off main thread…');
 
     snapshots.current.push(
-      new ImageData(new Uint8ClampedArray(fillDataRef.current.data), mw, mh),
+      new ImageData(new Uint8ClampedArray(fillDataRef.current.data), fc.width, fc.height),
     );
 
     killWorker(workerRef as any, workerUrlRef as any);
@@ -918,8 +922,6 @@ export function useMagicFillSession({
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
-    // Improvement 2: pass scaled SVG lines to the worker so maskToSvgPath
-    // can snap outline vertices onto nearby architectural wall lines.
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
@@ -946,14 +948,39 @@ export function useMagicFillSession({
 
       const { fillDataBuffer, closedBuffer, areaPx, perimPx, polygon, svgPath } = result;
 
-      const painted = new Uint8ClampedArray(fillDataBuffer);
-      fillDataRef.current = new ImageData(painted, mw, mh);
-      fc.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
+      // The worker operated in mask-pixel space (mw × mh). The fill raster
+      // it returns is also mw × mh — but fillCanvasRef is cssW × cssH.
+      // We need to scale the painted pixels down to CSS space before
+      // putting them on the fill canvas.
+      const paintedMask = new Uint8Array(closedBuffer);
 
-      const closed = new Uint8Array(closedBuffer);
+      // Scale mask pixels → CSS-space ImageData via an intermediate canvas.
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width  = mw;
+      tmpCanvas.height = mh;
+      const tmpCtx = tmpCanvas.getContext('2d')!;
+      const tmpImgData = new ImageData(mw, mh);
+      const [pr, pg, pb] = [r, g, b];
+      const pa = Math.round((mfOpacity / 100) * 255);
+      for (let i = 0; i < paintedMask.length; i++) {
+        if (!paintedMask[i]) continue;
+        tmpImgData.data[i * 4]     = pr;
+        tmpImgData.data[i * 4 + 1] = pg;
+        tmpImgData.data[i * 4 + 2] = pb;
+        tmpImgData.data[i * 4 + 3] = pa;
+      }
+      tmpCtx.putImageData(tmpImgData, 0, 0);
+
+      // Composite scaled version onto the fill canvas.
+      const fillCtx = fc.getContext('2d')!;
+      fillCtx.drawImage(tmpCanvas, 0, 0, cssW, cssH);
+
+      // Keep fillDataRef in sync.
+      fillDataRef.current = fillCtx.getImageData(0, 0, cssW, cssH);
+
       fillCountRef.current += 1;
       const id = Date.now() + fillCountRef.current;
-      fillPixelMaps.current.set(id, closed);
+      fillPixelMaps.current.set(id, paintedMask);
 
       const fill: MagicFill = {
         id,
@@ -1001,6 +1028,7 @@ export function useMagicFillSession({
     const scaleX = mw / cssW;
     const scaleY = mh / cssH;
 
+    // Convert lasso polygon from CSS-space → mask-pixel space.
     const maskPoly = poly.map(([x, y]): [number, number] => [
       Math.round(x * scaleX),
       Math.round(y * scaleY),
@@ -1012,7 +1040,7 @@ export function useMagicFillSession({
     setMfFillProgress(null);
 
     snapshots.current.push(
-      new ImageData(new Uint8ClampedArray(fillDataRef.current.data), mw, mh),
+      new ImageData(new Uint8ClampedArray(fillDataRef.current.data), fc.width, fc.height),
     );
 
     killWorker(workerRef as any, workerUrlRef as any);
@@ -1024,7 +1052,6 @@ export function useMagicFillSession({
     const maskCopy     = maskRef.current.slice().buffer;
     const fillDataCopy = fillDataRef.current.data.slice().buffer;
 
-    // Improvement 2: pass scaled SVG lines to the polygon lasso worker.
     worker.postMessage(
       {
         maskBuffer:     maskCopy,
@@ -1051,18 +1078,34 @@ export function useMagicFillSession({
       }
 
       const { fillDataBuffer, closedBuffer, polygon, areaPx, perimPx, svgPath, regionCount } = result;
-      const painted = new Uint8ClampedArray(fillDataBuffer);
-      fillDataRef.current = new ImageData(painted, mw, mh);
-      fc.getContext('2d')!.putImageData(fillDataRef.current, 0, 0);
+      const paintedMask = new Uint8Array(closedBuffer);
 
-      const closed = new Uint8Array(closedBuffer);
+      // Scale mask-space paint → CSS-space fill canvas (same as single-click).
+      const tmpCanvas = document.createElement('canvas');
+      tmpCanvas.width  = mw;
+      tmpCanvas.height = mh;
+      const tmpCtx = tmpCanvas.getContext('2d')!;
+      const tmpImgData = new ImageData(mw, mh);
+      const pa = Math.round((mfOpacity / 100) * 255);
+      for (let i = 0; i < paintedMask.length; i++) {
+        if (!paintedMask[i]) continue;
+        tmpImgData.data[i * 4]     = r;
+        tmpImgData.data[i * 4 + 1] = g;
+        tmpImgData.data[i * 4 + 2] = b;
+        tmpImgData.data[i * 4 + 3] = pa;
+      }
+      tmpCtx.putImageData(tmpImgData, 0, 0);
+
+      const fillCtx = fc.getContext('2d')!;
+      fillCtx.drawImage(tmpCanvas, 0, 0, cssW, cssH);
+      fillDataRef.current = fillCtx.getImageData(0, 0, cssW, cssH);
 
       groupCountRef.current += 1;
       const gId = groupCountRef.current;
       fillCountRef.current  += 1;
       const id = Date.now() + fillCountRef.current;
 
-      fillPixelMaps.current.set(id, closed);
+      fillPixelMaps.current.set(id, paintedMask);
 
       const fill: MagicFill = {
         id,
@@ -1097,7 +1140,7 @@ export function useMagicFillSession({
     };
   }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions]);
 
-  // ── Batch rect fill ───────────────────────────────────────────────────────
+  // ── Batch rect fill (delegates to polygon lasso) ──────────────────────────
   const handleMagicBatchRect = useCallback((
     x1: number, y1: number, x2: number, y2: number,
   ) => {
@@ -1115,6 +1158,7 @@ export function useMagicFillSession({
     const mw = maskWRef.current, mh = maskHRef.current;
     const cssW = pdfDimensions?.w ?? mw;
     const cssH = pdfDimensions?.h ?? mh;
+    // Scale CSS-space hover coords → mask-pixel space for hit testing.
     const bitmapX = Math.round(canvasX * (mw / cssW));
     const bitmapY = Math.round(canvasY * (mh / cssH));
 
@@ -1149,10 +1193,13 @@ export function useMagicFillSession({
         fillPixelMaps.current.delete(last.id);
         next = prev.slice(0, -1);
       }
-      if (snapshots.current.length > 0 && fillDataRef.current) {
+      if (snapshots.current.length > 0) {
         const snap = snapshots.current.pop()!;
-        fillDataRef.current = new ImageData(new Uint8ClampedArray(snap.data), snap.width, snap.height);
-        fillCanvasRef.current?.getContext('2d')?.putImageData(fillDataRef.current, 0, 0);
+        const fc = fillCanvasRef.current;
+        if (fc) {
+          fillDataRef.current = new ImageData(new Uint8ClampedArray(snap.data), snap.width, snap.height);
+          fc.getContext('2d')?.putImageData(fillDataRef.current, 0, 0);
+        }
       }
       const newSel = next.length ? next[next.length - 1].id : null;
       setMfSelectedId(newSel);

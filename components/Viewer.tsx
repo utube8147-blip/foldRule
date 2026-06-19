@@ -170,7 +170,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     handleContainerPointerUp,
     handleDrawingCanvasPointerDown,
     pdfRef, pageNumberRef, scaleRef, pdfDimensionsRef, onScaleSetRef,
-    pan,
+    pan, currentPdfPageRef,   // ← ADD THIS
   } = useViewerPdf({
     containerRef,
     pdfCanvasRef,
@@ -483,6 +483,7 @@ export function Viewer(props: import('./Viewer/ViewerConstants').ViewerProps) {
     onDeleteMeasurementProp,
     onAppendComplete,
     batchCommitMeasurements,
+    currentPdfPageRef,   // ← ADD THIS — already returned by useViewerPdf
   });
 
   // ── Perimeter offset state ────────────────────────────────────────────────
