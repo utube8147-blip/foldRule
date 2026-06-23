@@ -3,8 +3,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { usePdfDocument } from '@/hooks/usePdfDocument';
 import { useSnapEngine } from '@/hooks/useSnapEngine';
-import { SnapSidebar } from '@/components/SnapSidebar';
-import { LoadingOverlay, IdleScreen } from '@/components/LoadingOverlay';
+import { SnapSidebar } from '@/components/test/SnapSidebar';
+import { LoadingOverlay, IdleScreen } from '@/components/test/LoadingOverlay';
 import type { SnapPoint } from '@/types/snapTypes';
 
 const DRAG_THRESHOLD = 5;

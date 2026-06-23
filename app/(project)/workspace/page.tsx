@@ -28,12 +28,12 @@ import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Navbar } from '@/components/layout/Navbar';
 import dynamic from 'next/dynamic';
-import type { ViewerToolbarAPI } from '@/components/Viewer';
+import type { ViewerToolbarAPI } from '@/components/Viewer/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
 import { ViewerToolbar } from '@/components/Viewer/ViewerToolbar';
 
 const Viewer = dynamic(
-  () => import('@/components/Viewer').then(m => m.Viewer),
+  () => import('@/components/Viewer/Viewer').then(m => m.Viewer),
   { ssr: false }
 );
 
