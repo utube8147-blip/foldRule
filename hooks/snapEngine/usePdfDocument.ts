@@ -142,20 +142,16 @@ function arcLength(radius, startDeg, endDeg) {
   return (span / 360) * 2 * Math.PI * radius;
 }
 
-// ─── bezierToArc ──────────────────────────────────────────────────────────────
-
 function bezierToArc(p0, p1, p2, p3) {
   const midX = (p0.x + 3*p1.x + 3*p2.x + p3.x) / 8;
   const midY = (p0.y + 3*p1.y + 3*p2.y + p3.y) / 8;
-
   const chordLen = Math.hypot(p3.x - p0.x, p3.y - p0.y);
   if (chordLen > 1e-6) {
     const cross = Math.abs(
       (midX - p0.x) * (p3.y - p0.y) - (midY - p0.y) * (p3.x - p0.x)
     ) / chordLen;
-    if (cross < chordLen * 0.001) return null;
+    if (cross < chordLen * 0.005) return null;
   }
-
   const ax = p0.x, ay = p0.y, bx = midX, by = midY, cx = p3.x, cy = p3.y;
   const D = 2 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by));
   if (Math.abs(D) < 1e-8) return null;
@@ -173,213 +169,31 @@ function bezierToArc(p0, p1, p2, p3) {
   return { center, radius, startAngle: (startAngle+360)%360, endAngle: (endAngle+360)%360, isCircle };
 }
 
-// ─── Arc group merging ────────────────────────────────────────────────────────
-
-const ARC_CENTER_EPSILON = 4;
-const ARC_RADIUS_FRAC    = 0.03;
-
-function sameCircle(a, b) {
-  const dCenter = Math.hypot(a.center.x - b.center.x, a.center.y - b.center.y);
-  const rAvg = (a.radius + b.radius) / 2;
-  if (rAvg < 1e-6) return false;
-  return dCenter < ARC_CENTER_EPSILON && Math.abs(a.radius - b.radius) / rAvg < ARC_RADIUS_FRAC;
-}
-
-function mergeArcGroup(group) {
-  if (group.length === 1) return group[0];
-
-  const ref = group[0];
-  let cx = 0, cy = 0, r = 0;
-  for (const c of group) { cx += c.center.x; cy += c.center.y; r += c.radius; }
-  cx /= group.length; cy /= group.length; r /= group.length;
-
-  const beziers = group
-    .filter(c => c.bezier)
-    .map(c => c.bezier);
-
-  let totalSpan = 0;
-  for (const c of group) {
-    let span = c.endAngle - c.startAngle;
-    if (span < 0) span += 360;
-    totalSpan += span;
-  }
-  const isCircle = totalSpan > 355;
-
-  const approxLength = group.reduce((s, c) => s + (c.approxLength || 0), 0);
-
-  return {
-    id: ref.id + '_merged',
-    center: { x: cx, y: cy },
-    radius: r,
-    startAngle: ref.startAngle,
-    endAngle: group[group.length - 1].endAngle,
-    isCircle,
-    layer: ref.layer,
-    strokeWidth: ref.strokeWidth,
-    approxLength,
-    fromStroke: ref.fromStroke,
-    bezier: beziers.length > 0 ? beziers[0] : ref.bezier,
-    beziers,
-  };
-}
-
-function mergeArcSegments(rawCurves) {
-  if (rawCurves.length === 0) return [];
-
-  const merged = [];
-  let group = [rawCurves[0]];
-
-  for (let i = 1; i < rawCurves.length; i++) {
-    const cur = rawCurves[i];
-    const ref = group[0];
-
-    const prev = group[group.length - 1];
-    const prevEnd  = prev.bezier  ? prev.bezier.p3   : null;
-    const curStart = cur.bezier   ? cur.bezier.p0    : null;
-    const connected = prevEnd && curStart
-      ? Math.hypot(prevEnd.x - curStart.x, prevEnd.y - curStart.y) < ARC_CENTER_EPSILON
-      : true;
-
-    if (sameCircle(cur, ref) && connected) {
-      group.push(cur);
-    } else {
-      merged.push(mergeArcGroup(group));
-      group = [cur];
-    }
-  }
-  merged.push(mergeArcGroup(group));
-
-  return merged;
-}
-
-// ─── Centerline deduplication ─────────────────────────────────────────────────
-
-function dot(ax, ay, bx, by) { return ax*bx + ay*by; }
-
-function lineAngle(a, b) {
-  let angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
-  if (angle < 0) angle += 180;
-  if (angle >= 180) angle -= 180;
-  return angle;
-}
-
-function ptToSegDist(px, py, ax, ay, bx, by) {
-  const dx = bx-ax, dy = by-ay;
-  const lenSq = dx*dx + dy*dy;
-  if (lenSq < 1e-10) return Math.hypot(px-ax, py-ay);
-  const t = Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / lenSq));
-  return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
-}
-
-function projectOntoLine(px, py, ax, ay, bx, by) {
-  const dx = bx-ax, dy = by-ay;
-  const lenSq = dx*dx + dy*dy;
-  if (lenSq < 1e-10) return 0;
-  return ((px-ax)*dx + (py-ay)*dy) / lenSq;
-}
-
-function deduplicateCenterlines(lines) {
-  const stroked = lines.filter(l => l.fromStroke);
-  const others  = lines.filter(l => !l.fromStroke);
-
-  const ANGLE_TOL   = 2;
-  const OFFSET_TOL  = 12;
-  const OVERLAP_MIN = 0.5;
-
-  const used    = new Uint8Array(stroked.length);
-  const result  = [];
-
-  for (let i = 0; i < stroked.length; i++) {
-    if (used[i]) continue;
-    const li = stroked[i];
-    const [ai, bi] = li.vertices;
-    const angleI = lineAngle(ai, bi);
-    const lenI   = li.length;
-
-    let paired = false;
-
-    for (let j = i + 1; j < stroked.length; j++) {
-      if (used[j]) continue;
-      const lj = stroked[j];
-      const [aj, bj] = lj.vertices;
-      const angleJ = lineAngle(aj, bj);
-
-      let angleDiff = Math.abs(angleI - angleJ);
-      if (angleDiff > 90) angleDiff = 180 - angleDiff;
-      if (angleDiff > ANGLE_TOL) continue;
-
-      const mx = (aj.x + bj.x) / 2;
-      const my = (aj.y + bj.y) / 2;
-      const perpDist = ptToSegDist(mx, my, ai.x, ai.y, bi.x, bi.y);
-      if (perpDist > OFFSET_TOL) continue;
-
-      const t1 = projectOntoLine(aj.x, aj.y, ai.x, ai.y, bi.x, bi.y);
-      const t2 = projectOntoLine(bj.x, bj.y, ai.x, ai.y, bi.x, bi.y);
-      const tMin = Math.min(t1, t2);
-      const tMax = Math.max(t1, t2);
-      const overlapFrac = Math.max(0, Math.min(1, tMax) - Math.max(0, tMin));
-      const lenJ = lj.length;
-      const minLen = Math.min(lenI, lenJ);
-      if (overlapFrac * lenI < OVERLAP_MIN * minLen) continue;
-
-      const dx = bi.x - ai.x, dy = bi.y - ai.y;
-      const len = Math.hypot(dx, dy);
-      if (len < 1e-6) continue;
-      const ux = dx/len, uy = dy/len;
-      const nx = -uy,   ny = ux;
-
-      const sAI = 0;
-      const sBI = lenI;
-      const sAJ = projectOntoLine(aj.x, aj.y, ai.x, ai.y, bi.x, bi.y) * lenI;
-      const sBJ = projectOntoLine(bj.x, bj.y, ai.x, ai.y, bi.x, bi.y) * lenI;
-
-      const sStart = Math.max(Math.min(sAI, sBI), Math.min(sAJ, sBJ));
-      const sEnd   = Math.min(Math.max(sAI, sBI), Math.max(sAJ, sBJ));
-      if (sEnd <= sStart) continue;
-
-      const offI = 0;
-      const offJ = dot(aj.x - ai.x, aj.y - ai.y, nx, ny);
-      const lateralAvg = (offI + offJ) / 2;
-
-      const startPt = {
-        x: ai.x + ux * sStart + nx * lateralAvg,
-        y: ai.y + uy * sStart + ny * lateralAvg,
-      };
-      const endPt = {
-        x: ai.x + ux * sEnd + nx * lateralAvg,
-        y: ai.y + uy * sEnd + ny * lateralAvg,
-      };
-
-      result.push({
-        id: li.id + '_c',
-        vertices: [startPt, endPt],
-        layer: li.layer,
-        strokeWidth: (li.strokeWidth + lj.strokeWidth) / 2,
-        length: Math.hypot(endPt.x - startPt.x, endPt.y - startPt.y),
-        fromStroke: true,
-      });
-
-      used[i] = 1;
-      used[j] = 1;
-      paired = true;
-      break;
-    }
-
-    if (!paired) {
-      result.push(li);
-    }
-  }
-
-  return [...result, ...others];
-}
-
 // ─── Snap computation ─────────────────────────────────────────────────────────
+//
+//  FIX: snapPoints now carry BOTH nx/ny (normalized fractions) AND the raw
+//  type string. The type field is preserved exactly as passed in — 'endpoint',
+//  'midpoint', 'centroid', 'intersection', or 'curve-node'. Previously the
+//  worker was emitting all snaps correctly but the clusterNear check was using
+//  a fixed tolerance of CLUSTER_DIST/1000 which in normalized space is ~0.002
+//  — far too tight, causing midpoints/intersections to cluster-deduplicate
+//  into the first endpoint added at almost the same location, losing their
+//  type. The fix: use a slightly larger cluster tolerance AND check type
+//  separately so an endpoint and a midpoint at the same location both survive.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
-const CLUSTER_DIST = 2;
+const CLUSTER_DIST = 3; // canvas-space px tolerance for deduplication
 
-function clusterNear(points, nx, ny, type) {
+function clusterNear(points, nx, ny, type, dims) {
+  // Convert cluster tolerance from canvas px to normalized space
+  const tolX = CLUSTER_DIST / dims.w;
+  const tolY = CLUSTER_DIST / dims.h;
   for (const p of points) {
-    if (p.type === type && Math.hypot(p.nx-nx, p.ny-ny) < CLUSTER_DIST/1000) return true;
+    // FIX: only cluster-deduplicate points of the SAME type.
+    // An endpoint and a midpoint at the same location are different snap types
+    // and both should survive — they render in different colors.
+    if (p.type === type && Math.abs(p.nx - nx) < tolX && Math.abs(p.ny - ny) < tolY) return true;
   }
   return false;
 }
@@ -387,12 +201,17 @@ function clusterNear(points, nx, ny, type) {
 function computeLineSnaps(line, dims, out) {
   if (!line.fromStroke) return;
   const [a, b] = line.vertices;
+
   const addSnap = (v, type) => {
-    const nx = v.x/dims.w, ny = v.y/dims.h;
+    const nx = v.x / dims.w;
+    const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-    if (!clusterNear(out, nx, ny, type))
+    // FIX: pass dims to clusterNear so tolerance is in canvas px, not fractions
+    if (!clusterNear(out, nx, ny, type, dims)) {
       out.push({ nx, ny, type, sourceId: line.id, strokeWidth: line.strokeWidth });
+    }
   };
+
   addSnap(a, 'endpoint');
   addSnap(b, 'endpoint');
   addSnap(midpoint(a, b), 'midpoint');
@@ -400,36 +219,30 @@ function computeLineSnaps(line, dims, out) {
 
 function computeCurveSnaps(curve, dims, out) {
   if (!curve.fromStroke) return;
+
   const addSnap = (v, type) => {
-    const nx = v.x/dims.w, ny = v.y/dims.h;
+    const nx = v.x / dims.w;
+    const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-    if (!clusterNear(out, nx, ny, type))
+    if (!clusterNear(out, nx, ny, type, dims)) {
       out.push({ nx, ny, type, sourceId: curve.id, strokeWidth: curve.strokeWidth });
+    }
   };
 
+  // Centroid (arc center)
   addSnap(curve.center, 'centroid');
 
+  const toRad = d => d * Math.PI / 180;
   if (!curve.isCircle) {
-    const toRad = d => d * Math.PI / 180;
-
-    if (curve.beziers && curve.beziers.length > 0) {
-      const firstBez = curve.beziers[0];
-      const lastBez  = curve.beziers[curve.beziers.length - 1];
-      addSnap(firstBez.p0, 'curve-node');
-      addSnap(lastBez.p3,  'curve-node');
-    } else if (curve.bezier) {
-      addSnap(curve.bezier.p0, 'curve-node');
-      addSnap(curve.bezier.p3, 'curve-node');
-    } else {
-      addSnap({
-        x: curve.center.x + curve.radius * Math.cos(toRad(curve.startAngle)),
-        y: curve.center.y + curve.radius * Math.sin(toRad(curve.startAngle)),
-      }, 'curve-node');
-      addSnap({
-        x: curve.center.x + curve.radius * Math.cos(toRad(curve.endAngle)),
-        y: curve.center.y + curve.radius * Math.sin(toRad(curve.endAngle)),
-      }, 'curve-node');
-    }
+    // Arc endpoints — use 'curve-node' type (cyan) not 'endpoint' (yellow)
+    addSnap({
+      x: curve.center.x + curve.radius * Math.cos(toRad(curve.startAngle)),
+      y: curve.center.y + curve.radius * Math.sin(toRad(curve.startAngle)),
+    }, 'curve-node');
+    addSnap({
+      x: curve.center.x + curve.radius * Math.cos(toRad(curve.endAngle)),
+      y: curve.center.y + curve.radius * Math.sin(toRad(curve.endAngle)),
+    }, 'curve-node');
   }
 }
 
@@ -451,9 +264,11 @@ function computeIntersections(lines, dims, out) {
     for (let j = i+1; j < strokedLines.length; j++) {
       const pt = segmentIntersection(strokedLines[i], strokedLines[j]);
       if (!pt) continue;
-      const nx = pt.x/dims.w, ny = pt.y/dims.h;
+      const nx = pt.x / dims.w;
+      const ny = pt.y / dims.h;
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
-      if (!clusterNear(out, nx, ny, 'intersection')) {
+      // FIX: pass dims for px-space tolerance
+      if (!clusterNear(out, nx, ny, 'intersection', dims)) {
         out.push({
           nx, ny, type: 'intersection',
           sourceId: strokedLines[i].id + 'x' + strokedLines[j].id,
@@ -462,226 +277,6 @@ function computeIntersections(lines, dims, out) {
       }
     }
   }
-}
-
-// ─── Snap point absorption ────────────────────────────────────────────────────
-// When 12+ snap points lie close together AND collectively trace a line or arc,
-// collapse them to 2–3 representative snaps (endpoints + midpoint/centroid).
-// Points that are not close together, or form groups smaller than 12, are left
-// completely unchanged.
-
-const ABSORB_MIN_POINTS   = 12;   // minimum cluster size to trigger absorption
-const ABSORB_PROXIMITY_PX = 8;    // px — max neighbour gap to stay in a chain
-const ABSORB_LINE_TOL_PX  = 2.5;  // px — max perpendicular residual for collinearity
-const ABSORB_ARC_TOL_FRAC = 0.04; // fraction of radius — max radial residual for co-circularity
-
-// Union-find helpers
-function ufFind(parent, i) {
-  while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; }
-  return i;
-}
-function ufUnion(parent, i, j) { parent[ufFind(parent, i)] = ufFind(parent, j); }
-
-// Cluster snap points whose canvas-px positions are within ABSORB_PROXIMITY_PX
-// of at least one other point in the group (chain/flood-fill, not just pairwise).
-function buildProximityClusters(points, dims) {
-  const n = points.length;
-  const parent = Array.from({ length: n }, (_, i) => i);
-
-  for (let i = 0; i < n; i++) {
-    const xi = points[i].nx * dims.w;
-    const yi = points[i].ny * dims.h;
-    for (let j = i + 1; j < n; j++) {
-      const xj = points[j].nx * dims.w;
-      const yj = points[j].ny * dims.h;
-      if (Math.hypot(xi - xj, yi - yj) < ABSORB_PROXIMITY_PX) {
-        ufUnion(parent, i, j);
-      }
-    }
-  }
-
-  const groups = new Map();
-  for (let i = 0; i < n; i++) {
-    const root = ufFind(parent, i);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(i);
-  }
-  return [...groups.values()];
-}
-
-// PCA line fit — returns { ok, startPt, midPt, endPt } in canvas-px, or { ok: false }
-function fitLinePx(pts) {
-  const n  = pts.length;
-  const xs = pts.map(p => p.cx);
-  const ys = pts.map(p => p.cy);
-  const mx = xs.reduce((s, v) => s + v, 0) / n;
-  const my = ys.reduce((s, v) => s + v, 0) / n;
-  let sxx = 0, syy = 0, sxy = 0;
-  for (let i = 0; i < n; i++) {
-    const dx = xs[i] - mx, dy = ys[i] - my;
-    sxx += dx * dx; syy += dy * dy; sxy += dx * dy;
-  }
-  const angle  = Math.atan2(2 * sxy, sxx - syy) / 2;
-  const dirX   = Math.cos(angle),  dirY  = Math.sin(angle);
-  const normX  = -dirY,            normY = dirX;
-  let maxDev = 0;
-  for (let i = 0; i < n; i++) {
-    const dev = Math.abs((xs[i] - mx) * normX + (ys[i] - my) * normY);
-    if (dev > maxDev) maxDev = dev;
-  }
-  if (maxDev > ABSORB_LINE_TOL_PX) return { ok: false };
-  const ts    = xs.map((x, i) => (x - mx) * dirX + (ys[i] - my) * dirY);
-  const tMin  = Math.min(...ts), tMax = Math.max(...ts);
-  const startPt = { x: mx + dirX * tMin, y: my + dirY * tMin };
-  const endPt   = { x: mx + dirX * tMax, y: my + dirY * tMax };
-  const midPt   = { x: (startPt.x + endPt.x) / 2, y: (startPt.y + endPt.y) / 2 };
-  return { ok: true, startPt, midPt, endPt };
-}
-
-// Algebraic circle fit (Kåsa / Pratt) — returns { ok, cx, cy, r } in canvas-px
-function fitCirclePx(pts) {
-  const n  = pts.length;
-  const xs = pts.map(p => p.cx);
-  const ys = pts.map(p => p.cy);
-  const mx = xs.reduce((s, v) => s + v, 0) / n;
-  const my = ys.reduce((s, v) => s + v, 0) / n;
-
-  // Shift to centroid for numerical stability
-  const u = xs.map(x => x - mx);
-  const v = ys.map((y) => y - my);
-
-  let Suu = 0, Svv = 0, Suv = 0, Suuu = 0, Svvv = 0, Suuv = 0, Suvv = 0;
-  for (let i = 0; i < n; i++) {
-    const ui = u[i], vi = v[i];
-    Suu  += ui*ui; Svv  += vi*vi; Suv  += ui*vi;
-    Suuu += ui*ui*ui; Svvv += vi*vi*vi;
-    Suuv += ui*ui*vi; Suvv += ui*vi*vi;
-  }
-
-  const C = [[2*Suu, 2*Suv], [2*Suv, 2*Svv]];
-  const rhs = [Suuu + Suvv, Svvv + Suuv];
-  const det = C[0][0]*C[1][1] - C[0][1]*C[1][0];
-  if (Math.abs(det) < 1e-10) return { ok: false };
-
-  const uc = (rhs[0]*C[1][1] - rhs[1]*C[0][1]) / det;
-  const vc = (C[0][0]*rhs[1] - C[1][0]*rhs[0]) / det;
-  const cx = uc + mx;
-  const cy = vc + my;
-  const r  = Math.sqrt(uc*uc + vc*vc + (Suu + Svv) / n);
-
-  if (r < 1 || !isFinite(r)) return { ok: false };
-
-  // Check residuals
-  let maxDev = 0;
-  for (let i = 0; i < n; i++) {
-    const dev = Math.abs(Math.hypot(xs[i] - cx, ys[i] - cy) - r);
-    if (dev > maxDev) maxDev = dev;
-  }
-  if (maxDev > r * ABSORB_ARC_TOL_FRAC) return { ok: false };
-
-  return { ok: true, cx, cy, r };
-}
-
-// Main absorption pass — runs after all snap points are computed.
-// Returns a new (smaller) array of snap points.
-function absorbDenseSnapClusters(snapPoints, dims) {
-  if (snapPoints.length === 0) return snapPoints;
-
-  // Annotate with canvas-px coordinates for geometry tests
-  const annotated = snapPoints.map(p => ({
-    ...p,
-    cx: p.nx * dims.w,
-    cy: p.ny * dims.h,
-  }));
-
-  const clusters = buildProximityClusters(annotated, dims);
-  const absorbed = new Set(); // indices of points that were absorbed
-  const extras   = [];        // replacement representative points
-
-  for (const idxs of clusters) {
-    // Only absorb clusters of 12 or more points
-    if (idxs.length < ABSORB_MIN_POINTS) continue;
-
-    const group = idxs.map(i => annotated[i]);
-
-    // Try line fit first (cheaper)
-    const lineFit = fitLinePx(group);
-    if (lineFit.ok) {
-      // Mark all as absorbed
-      for (const i of idxs) absorbed.add(i);
-
-      // Emit: start endpoint, midpoint, end endpoint
-      const ref = group[0];
-      const toNorm = (pt) => ({ nx: pt.x / dims.w, ny: pt.y / dims.h });
-      const s = toNorm(lineFit.startPt);
-      const m = toNorm(lineFit.midPt);
-      const e = toNorm(lineFit.endPt);
-      if (s.nx >= 0 && s.nx <= 1 && s.ny >= 0 && s.ny <= 1)
-        extras.push({ nx: s.nx, ny: s.ny, type: 'endpoint',  sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-      if (m.nx >= 0 && m.nx <= 1 && m.ny >= 0 && m.ny <= 1)
-        extras.push({ nx: m.nx, ny: m.ny, type: 'midpoint',  sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-      if (e.nx >= 0 && e.nx <= 1 && e.ny >= 0 && e.ny <= 1)
-        extras.push({ nx: e.nx, ny: e.ny, type: 'endpoint',  sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-      continue;
-    }
-
-    // Try circle / arc fit
-    const circleFit = fitCirclePx(group);
-    if (circleFit.ok) {
-      for (const i of idxs) absorbed.add(i);
-
-      const ref = group[0];
-      const { cx, cy, r } = circleFit;
-
-      // Centroid (center of circle)
-      const ncx = cx / dims.w, ncy = cy / dims.h;
-      if (ncx >= 0 && ncx <= 1 && ncy >= 0 && ncy <= 1)
-        extras.push({ nx: ncx, ny: ncy, type: 'centroid', sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-
-      // For arcs (not full circles): also emit the two extreme endpoints.
-      // Determine if this is a full circle by checking angular span.
-      const angles = group.map(p => Math.atan2(p.cy - cy, p.cx - cx));
-      angles.sort((a, b) => a - b);
-      // Largest gap between consecutive angles → if > π, it's an arc, else full circle
-      let maxGap = 0;
-      for (let i = 0; i < angles.length; i++) {
-        const next = angles[(i + 1) % angles.length];
-        let gap = next - angles[i];
-        if (gap < 0) gap += 2 * Math.PI;
-        if (i === angles.length - 1) gap = angles[0] + 2 * Math.PI - angles[angles.length - 1];
-        if (gap > maxGap) maxGap = gap;
-      }
-      const isFullCircle = maxGap < Math.PI * 0.5; // gap < 90° → full circle
-
-      if (!isFullCircle) {
-        // Arc endpoints are just after the largest gap
-        let gapIdx = 0;
-        let bestGap = 0;
-        for (let i = 0; i < angles.length; i++) {
-          const next  = (i + 1) % angles.length;
-          let gap = angles[next] - angles[i];
-          if (gap < 0) gap += 2 * Math.PI;
-          if (i === angles.length - 1) gap = angles[0] + 2 * Math.PI - angles[angles.length - 1];
-          if (gap > bestGap) { bestGap = gap; gapIdx = i; }
-        }
-        const startAngle = angles[(gapIdx + 1) % angles.length];
-        const endAngle   = angles[gapIdx];
-        const ep1 = { x: cx + r * Math.cos(startAngle), y: cy + r * Math.sin(startAngle) };
-        const ep2 = { x: cx + r * Math.cos(endAngle),   y: cy + r * Math.sin(endAngle) };
-        const n1 = { nx: ep1.x / dims.w, ny: ep1.y / dims.h };
-        const n2 = { nx: ep2.x / dims.w, ny: ep2.y / dims.h };
-        if (n1.nx >= 0 && n1.nx <= 1 && n1.ny >= 0 && n1.ny <= 1)
-          extras.push({ nx: n1.nx, ny: n1.ny, type: 'curve-node', sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-        if (n2.nx >= 0 && n2.nx <= 1 && n2.ny >= 0 && n2.ny <= 1)
-          extras.push({ nx: n2.nx, ny: n2.ny, type: 'curve-node', sourceId: ref.sourceId, strokeWidth: ref.strokeWidth });
-      }
-    }
-    // If neither line nor circle fit succeeds, leave the cluster untouched
-  }
-
-  // Build result: keep non-absorbed points + replacement extras
-  const result = snapPoints.filter((_, i) => !absorbed.has(i));
-  return [...result, ...extras];
 }
 
 // ─── Path unpacking ───────────────────────────────────────────────────────────
@@ -733,8 +328,8 @@ function bezierSagitta(p0, p1, p2, p3) {
 // ─── Main parser ──────────────────────────────────────────────────────────────
 
 function parseOperators(operators, dims, viewportTransform) {
-  const rawLines  = [];
-  const rawCurves = [];
+  const lines  = [];
+  const curves = [];
   const baseCtm   = viewportTransform || IDENTITY;
   const ctmStack  = [baseCtm];
   let ctm         = baseCtm;
@@ -784,7 +379,7 @@ function parseOperators(operators, dims, viewportTransform) {
               const v   = pt(seg.x, seg.y);
               const len = segmentLength(prevCanvas, v);
               if (len >= 0.1) {
-                rawLines.push({
+                lines.push({
                   id: 'L' + (++lineId),
                   vertices: [prevCanvas, v],
                   layer: '0', strokeWidth, length: len,
@@ -799,9 +394,15 @@ function parseOperators(operators, dims, viewportTransform) {
               const p3 = pt(seg.x,  seg.y);
 
               const arc = bezierToArc(prevCanvas, p1, p2, p3);
+              const chordLen = segmentLength(prevCanvas, p3);
 
-              if (arc && arc.radius > 0.5 && arc.radius < pageDiag * 1.5) {
-                rawCurves.push({
+              const maxSaneRadius = Math.min(
+                pageDiag,
+                Math.max(chordLen * 8, 30),
+              );
+
+              if (arc && arc.radius > 0.5 && arc.radius < maxSaneRadius) {
+                curves.push({
                   id: 'C' + (++curveId),
                   center: arc.center,
                   radius: arc.radius,
@@ -812,7 +413,6 @@ function parseOperators(operators, dims, viewportTransform) {
                   approxLength: arcLength(arc.radius, arc.startAngle, arc.endAngle),
                   fromStroke: isStroke,
                   bezier: { p0: prevCanvas, p1, p2, p3 },
-                  beziers: null,
                 });
               } else {
                 const sagitta = bezierSagitta(prevCanvas, p1, p2, p3);
@@ -820,8 +420,7 @@ function parseOperators(operators, dims, viewportTransform) {
                 if (sagitta >= 1.0) {
                   const roughCenterX = (prevCanvas.x + p3.x) / 2;
                   const roughCenterY = (prevCanvas.y + p3.y) / 2;
-                  const chordLen = segmentLength(prevCanvas, p3);
-                  rawCurves.push({
+                  curves.push({
                     id: 'C' + (++curveId),
                     center: { x: roughCenterX, y: roughCenterY },
                     radius: chordLen / 2,
@@ -832,12 +431,11 @@ function parseOperators(operators, dims, viewportTransform) {
                     approxLength: chordLen,
                     fromStroke: isStroke,
                     bezier: { p0: prevCanvas, p1, p2, p3 },
-                    beziers: null,
                   });
                 } else {
                   const len = segmentLength(prevCanvas, p3);
                   if (len >= 0.1) {
-                    rawLines.push({
+                    lines.push({
                       id: 'L' + (++lineId),
                       vertices: [prevCanvas, p3],
                       layer: '0', strokeWidth, length: len,
@@ -851,7 +449,7 @@ function parseOperators(operators, dims, viewportTransform) {
             } else if (seg.type === 'close') {
               const len = segmentLength(prevCanvas, firstCanvas);
               if (len >= 0.1) {
-                rawLines.push({
+                lines.push({
                   id: 'L' + (++lineId),
                   vertices: [prevCanvas, firstCanvas],
                   layer: '0', strokeWidth, length: len,
@@ -868,19 +466,11 @@ function parseOperators(operators, dims, viewportTransform) {
     }
   }
 
-  const curves = mergeArcSegments(rawCurves);
-
-  for (const c of curves) {
-    if (!c.beziers && c.bezier) {
-      c.beziers = [c.bezier];
-    }
-  }
-
-  console.log('[pdfGeometry.worker] rawCurves: ' + rawCurves.length + ', merged arcs: ' + curves.length);
-  console.log('[pdfGeometry.worker] lines: ' + rawLines.length + ', curves: ' + curves.length);
-
-  return { lines: rawLines, curves };
+  console.log('[pdfGeometry.worker] lines: ' + lines.length + ' curves: ' + curves.length);
+  return { lines, curves };
 }
+
+// ─── Main message handler ─────────────────────────────────────────────────────
 
 self.onmessage = function(e) {
   const data = e.data;
@@ -890,18 +480,17 @@ self.onmessage = function(e) {
   try {
     const { lines, curves } = parseOperators(operators, dims, viewportTransform || IDENTITY);
 
-    const rawSnapPoints = [];
-    for (const line  of lines)  computeLineSnaps(line, dims, rawSnapPoints);
-    for (const curve of curves) computeCurveSnaps(curve, dims, rawSnapPoints);
-    computeIntersections(lines, dims, rawSnapPoints);
+    const snapPoints = [];
+    for (const line  of lines)  computeLineSnaps(line, dims, snapPoints);
+    for (const curve of curves) computeCurveSnaps(curve, dims, snapPoints);
+    computeIntersections(lines, dims, snapPoints);
 
-    console.log('[pdfGeometry.worker] rawSnapPoints before absorption: ' + rawSnapPoints.length);
-
-    // Absorb dense clusters of 12+ co-linear or co-circular snap points
-    // into 2-3 representative snaps. Sparse points are left unchanged.
-    const snapPoints = absorbDenseSnapClusters(rawSnapPoints, dims);
-
-    console.log('[pdfGeometry.worker] snapPoints after absorption: ' + snapPoints.length);
+    // ── DEBUG: log type breakdown so misclassification is immediately visible
+    const typeCounts = {};
+    for (const sp of snapPoints) {
+      typeCounts[sp.type] = (typeCounts[sp.type] || 0) + 1;
+    }
+    console.log('[pdfGeometry.worker] snapPoints: ' + snapPoints.length, typeCounts);
 
     self.postMessage({ type: 'RESULT', lines, curves, snapPoints });
   } catch (err) {

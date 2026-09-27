@@ -1,15 +1,15 @@
 // ─── components/Viewer/Viewer.tsx ─────────────────────────────────────────────
 //
-//  FIXES in this revision (on top of previous fixes)
-//  ──────────────────────────────────────────────────
-//  1. MagicFillCanvas now receives onPolygonLasso (was incorrectly onBatchRect).
-//  2. MagicFillCanvas now receives activeColor (was missing entirely).
-//  3. handleMagicPolygonFill destructured from useMagicFillSession and wired up.
-//  4. polyarcMode null-guarded everywhere (?.toUpperCase() ?? 'LINE').
-//  5. offsetOpenOutputType forwarded to ViewerCanvas.
-//  6. offsetOpenEndStyle forwarded to ViewerCanvas.
-//  7. offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'.
-//  8. polyarcMode + togglePolyarcMode owned locally so never undefined.
+//  SNAP PIPELINE CHANGE
+//  ─────────────────────
+//  Replaced SVG-based snap extraction (useSvgSnapPoints + svgUrl fetch) with
+//  PDF-native extraction (usePdfDocument). The new hook runs a CTM-aware inline
+//  worker that emits PdfLine[], PdfCurve[], and SnapPoint[] where:
+//    - PdfLine vertices are already in absolute canvas-space px (from applyMatrix)
+//    - SnapPoint nx/ny are normalized fractions (v.x / dims.w) — must multiply
+//
+//  resolvedSnapPoints: pdfSnapPoints mapped to absolute px via nx*dims.w, ny*dims.h
+//  pdfLines / pdfCurves: passed through as-is (already absolute px)
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -22,7 +22,7 @@ import { ToolType, TakeoffRow } from '@/types';
 import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
-import { useSvgSnapPoints }  from '@/hooks/snapEngine/useSvgSnapPoints';
+import { usePdfDocument }    from '@/hooks/snapEngine/usePdfDocument';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
@@ -93,8 +93,6 @@ interface UndoRedoRefValue {
   setCursorPoint: (p: React.SetStateAction<{ x: number; y: number } | null>) => void;
 }
 
-const svgFetchCache = new Map<string, string>();
-
 export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const {
     activeTool, setActiveTool,
@@ -107,7 +105,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     appendToGroupId: propAppendToGroupId,
     onAppendComplete,
     onToolbarReady,
-    svgUrl,
     showPins: externalShowPins,
     onShowPinsChange: externalOnShowPinsChange,
     onDeleteMeasurement: onDeleteMeasurementProp,
@@ -131,7 +128,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
   const [showSnapSettings, setShowSnapSettings] = useState(false);
 
-  const showPins    = externalShowPins    !== undefined ? externalShowPins    : internalShowPins;
+  const showPins    = externalShowPins         !== undefined ? externalShowPins         : internalShowPins;
   const setShowPins = externalOnShowPinsChange !== undefined ? externalOnShowPinsChange : setInternalShowPins;
 
   // ── Dialog state ──────────────────────────────────────────────────────────
@@ -156,8 +153,26 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const isMagicFillActiveRef = useRef(activeTool === 'magic-fill');
   isMagicFillActiveRef.current = activeTool === 'magic-fill';
 
-  // ── PDF hook ──────────────────────────────────────────────────────────────
-  const startExtractionRef = useRef<((pdf: any, file?: File) => void) | null>(null);
+  // ── PDF document + geometry extraction ───────────────────────────────────
+  //
+  //  usePdfDocument worker emits:
+  //    lines      — vertices in absolute canvas-space px (from applyMatrix, no normalization)
+  //    curves     — center/bezier in absolute canvas-space px
+  //    snapPoints — nx/ny are NORMALIZED fractions (v.x / dims.w)
+  //
+  //  We must multiply snapPoints by dims before passing to useSnapEngine.
+  //  Lines and curves are passed through unchanged.
+  //
+  const {
+    loadFile:    loadPdfFile,
+    lines:       pdfLines,
+    curves:      pdfCurves,
+    snapPoints:  pdfSnapPoints,
+    stage:       pdfStage,
+    dims:        pdfDocDims,
+  } = usePdfDocument();
+
+  // ── PDF viewer hook ───────────────────────────────────────────────────────
   const {
     pdf, pageNumber, setPageNumber, loading,
     scale, setScale, committedScale,
@@ -169,7 +184,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleContainerPointerUp,
     handleDrawingCanvasPointerDown,
     pdfRef, pageNumberRef, scaleRef, pdfDimensionsRef, onScaleSetRef,
-    pan, currentPdfPageRef,   // ← ADD THIS
+    pan, currentPdfPageRef,
   } = useViewerPdf({
     containerRef,
     pdfCanvasRef,
@@ -180,41 +195,19 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     activeDrawingId,
     activeDrawingUrl,
     activeDrawingFile: activeDrawing?.file,
-    onPdfLoaded: (doc: any, file: any) => startExtractionRef.current?.(doc, file),
+    onPdfLoaded: (_doc: any, file: any) => { if (file) loadPdfFile(file); },
     onScaleSet,
     shouldPreserveFillCanvas: isMagicFillActiveRef,
   });
 
   const appendToGroupId = propAppendToGroupId ?? undefined;
 
-  // ── SVG fetch ─────────────────────────────────────────────────────────────
-  const [svgContent, setSvgContent] = useState<string | null>(null);
-  const [svgLoading, setSvgLoading] = useState(false);
-
-  useEffect(() => {
-    if (!svgUrl) { setSvgContent(null); return; }
-    if (svgFetchCache.has(svgUrl)) {
-      setSvgContent(svgFetchCache.get(svgUrl) ?? null);
-      return;
-    }
-    setSvgLoading(true);
-    let cancelled = false;
-    fetch(svgUrl)
-      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.text(); })
-      .then(text => {
-        if (cancelled) return;
-        svgFetchCache.set(svgUrl, text);
-        setSvgContent(text);
-        console.log(`[Viewer] SVG loaded — ${text.length} chars`);
-      })
-      .catch(err => {
-        if (cancelled) return;
-        console.warn(`[Viewer] Failed to load SVG from ${svgUrl}:`, err);
-        setSvgContent(null);
-      })
-      .finally(() => { if (!cancelled) setSvgLoading(false); });
-    return () => { cancelled = true; };
-  }, [svgUrl]);
+  // ── Stable pan ────────────────────────────────────────────────────────────
+  const stablePan = useMemo(
+    () => pan ?? { x: 0, y: 0 },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pan?.x, pan?.y],
+  );
 
   // ── Stable PDF dimensions ─────────────────────────────────────────────────
   const stablePdfDimRef = useRef<{ w: number; h: number } | null>(null);
@@ -231,70 +224,48 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return stablePdfDimRef.current;
   }, [pdfDimensions?.w, pdfDimensions?.h]);
 
-  // ── Stable pan ────────────────────────────────────────────────────────────
-  const stablePan = useMemo(
-    () => pan ?? { x: 0, y: 0 },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pan?.x, pan?.y],
-  );
-
-  // ── Snap points, curves, and lines from SVG ───────────────────────────────
-  const {
-    snapPoints: _svgSnapPoints,
-    svgCurves:  _svgCurves,
-    svgLines:   _svgLines,
-  } = useSvgSnapPoints(svgContent, stablePdfDimensions, snapEnabled);
-
-  const svgSnapPointsRef = useRef(_svgSnapPoints);
-  const svgCurvesRef     = useRef(_svgCurves);
-  const svgLinesRef      = useRef(_svgLines);
-
-  if (_svgSnapPoints !== svgSnapPointsRef.current) svgSnapPointsRef.current = _svgSnapPoints;
-  if (_svgCurves     !== svgCurvesRef.current)     svgCurvesRef.current     = _svgCurves;
-  if (_svgLines      !== svgLinesRef.current)       svgLinesRef.current      = _svgLines;
-
-  const svgSnapPoints = svgSnapPointsRef.current;
-  const svgCurves     = svgCurvesRef.current;
-  const svgLines      = svgLinesRef.current;
-
-  // ── Snap candidates in PDF-pixel space ───────────────────────────────────
-  const snapCandidates = useMemo(() => {
-    if (!stablePdfDimensions) return [];
-    return svgSnapPoints.map(p => ({
-      x:    p.nx * stablePdfDimensions.w,
-      y:    p.ny * stablePdfDimensions.h,
-      type: p.type,
+  // ── Resolved snap points (nx/ny fractions → absolute canvas-space px) ────
+  //
+  //  pdfLines / pdfCurves: vertices already in absolute px — pass through as-is.
+  //  pdfSnapPoints: nx/ny are normalized fractions — multiply by dims once here.
+  //
+  const resolvedSnapPoints = useMemo(() => {
+    if (!pdfDimensions || !pdfSnapPoints.length) return [];
+    const { w, h } = pdfDimensions;
+    return pdfSnapPoints.map(sp => ({
+      ...sp,
+      x: sp.nx * w,
+      y: sp.ny * h,
     }));
-  }, [svgSnapPoints, stablePdfDimensions]);
+  }, [pdfSnapPoints, pdfDimensions?.w, pdfDimensions?.h]);
 
   // ── Snap engine ───────────────────────────────────────────────────────────
   const {
-    pageData, analysisStatus, analysisPage, snapFlashes,
-    startExtraction, getScaledCorners,
-    snapToCorner, triggerSnapFlash,
+    snapFlashes,
+    snapToCorner,
+    triggerSnapFlash,
     redrawPinCanvas,
     cursorPointRef,
+    linearChain,
+    addChainPoint,
+    undoChainPoint,
+    clearChain,
   } = useSnapEngine({
-    pinCanvasRef:     pinCanvasRef         as React.RefObject<HTMLCanvasElement>,
-    pdfDimensionsRef: pdfDimensionsRef     as React.RefObject<NonNullable<typeof pdfDimensions>>,
-    pageNumberRef:    pageNumberRef        as React.RefObject<number>,
-    scaleRef:         scaleRef            as React.RefObject<number>,
+    pinCanvasRef:    pinCanvasRef  as React.RefObject<HTMLCanvasElement | null>,
+    viewportRef:     containerRef  as React.RefObject<HTMLDivElement | null>,
     snapEnabled,
     showPins,
     snapThreshold,
-    confidenceFilter,
-    svgSnapPoints,
-    svgLines,
-    svgCurves,
+    lines:      pdfLines,           // absolute canvas-space px — no conversion needed
+    curves:     pdfCurves,          // absolute canvas-space px — no conversion needed
+    snapPoints: resolvedSnapPoints, // converted from nx/ny fractions → absolute px
     activeTool,
     proximityRadius: 80,
-    viewportRef: containerRef as React.RefObject<HTMLDivElement>,
-    zoom:        scale,
-    pan:         stablePan,
+    zoom:            scale,
+    pan:             stablePan,
   });
 
   const stagedArcs = calcStagedArcCount(tempPoints);
-  useEffect(() => { startExtractionRef.current = startExtraction; }, [startExtraction]);
 
   // ── setActiveTool — raw passthrough ───────────────────────────────────────
   const setActiveToolString = useCallback(
@@ -343,7 +314,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     }
   }, [activeTool]);
 
-  // ── Polyarc mode — owned locally so togglePolyarcMode is always a function ─
+  // ── Polyarc mode ──────────────────────────────────────────────────────────
   const [polyarcMode, setPolyarcMode] = useState<'line' | 'arc'>('line');
   const togglePolyarcMode = useCallback(() => {
     setPolyarcMode(m => m === 'line' ? 'arc' : 'line');
@@ -384,16 +355,15 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
-    isPanning, snapToCorner: snapToCorner as any, getScaledCorners,
+    isPanning, snapToCorner: snapToCorner as any, getScaledCorners: () => [],
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
-    snapCandidates,
+    snapCandidates: [],
     polyarcMode,
     togglePolyarcMode,
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
   } as any);
 
-  // Safe fallback so status bar never crashes before polyarcMode is set
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
 
   useEffect(() => { undoRedoRef.current.setCursorPoint = setCursorPoint; }, [setCursorPoint]);
@@ -456,7 +426,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     mfFillMsg, mfFillSub, mfFillProgress,
     mfMetersPerPixel, mfLastFillPos,
     showMfNameDialog, pendingMfData,
-    // FIX: destructure activeColor and handleMagicPolygonFill
     activeColor,
     handleMagicSingleClick,
     handleMagicBatchRect,
@@ -482,7 +451,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     onDeleteMeasurementProp,
     onAppendComplete,
     batchCommitMeasurements,
-    currentPdfPageRef,   // ← ADD THIS — already returned by useViewerPdf
+    currentPdfPageRef,
   });
 
   // ── Perimeter offset state ────────────────────────────────────────────────
@@ -514,25 +483,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     activeDrawingId,
   });
 
-  // Currently selected measurement (if valid offset source)
   const offsetSourceMeasurement = useMemo(() => {
     if (activeTool !== 'perimeter-offset') return null;
     if (!selectedId) return null;
     return measurements.find(m => m.id === selectedId) ?? null;
   }, [activeTool, selectedId, measurements]);
 
-  // Inscribed circle radius for collapse warning
   const offsetCollapseRadius = useMemo(() => {
     if (!offsetSourceMeasurement) return 0;
     if (!isValidOffsetSource(offsetSourceMeasurement)) return 0;
     return getCollapseRadius(offsetSourceMeasurement);
   }, [offsetSourceMeasurement, isValidOffsetSource, getCollapseRadius]);
 
-  // ── offsetEligiblePolygons ────────────────────────────────────────────────
   const offsetEligiblePolygons = useMemo((): OffsetEligibleShape[] | null => {
     if (activeTool !== 'perimeter-offset') return null;
     const result: OffsetEligibleShape[] = [];
-
     const scaleW = stablePdfDimensions?.w ?? 1;
     const scaleH = stablePdfDimensions?.h ?? 1;
 
@@ -559,14 +524,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         result.push({ id: m.id, pts, isClosed, isPolygonType });
       }
     }
-
     return result.length > 0 ? result : null;
   }, [
     activeTool, measurements, isValidOffsetSource, isValidOffsetOpenSource,
     activeDrawingId, stablePdfDimensions,
   ]);
 
-  // Tessellated source polygon for donut ring clipping in ViewerCanvas
   const offsetSourcePolygon = useMemo((): Array<{ x: number; y: number }> | null => {
     if (!offsetSourceMeasurement) return null;
     if (!offsetEligiblePolygons)  return null;
@@ -574,7 +537,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return shape?.pts ?? null;
   }, [offsetSourceMeasurement, offsetEligiblePolygons]);
 
-  // offsetIsOpenPath: true ONLY when source is open AND endStyle === 'none'
   const offsetIsOpenPath = useMemo(() => {
     if (!offsetSourceMeasurement) return false;
     if (!isValidOffsetOpenSource(offsetSourceMeasurement)) return false;
@@ -584,7 +546,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   // ── Shared offset hit-finder ───────────────────────────────────────────────
   const findOffsetHit = useCallback((nx: number, ny: number): TakeoffRow | undefined => {
     const zoomAdjustedRadius = HIT_RADIUS / Math.max(0.25, scale);
-
     const dim    = pdfDimensionsRef.current;
     const scaleW = dim?.w ?? 1;
     const scaleH = dim?.h ?? 1;
@@ -610,7 +571,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       });
   }, [measurements, isValidOffsetSource, isValidOffsetOpenSource, activeDrawingId, scale, pdfDimensionsRef]);
 
-  // ── Offset canvas click ────────────────────────────────────────────────────
   const handleOffsetCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
     const dim  = pdfDimensionsRef.current;
@@ -621,7 +581,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     if (hit) setSelectedId(hit.id);
   }, [findOffsetHit, setSelectedId, pdfDimensionsRef]);
 
-  // ── Offset canvas hover ────────────────────────────────────────────────────
   const handleOffsetCanvasPointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
     wrappedPointerMove(e);
     const rect = e.currentTarget.getBoundingClientRect();
@@ -633,19 +592,14 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     setHoveredOffsetId(hit?.id ?? null);
   }, [wrappedPointerMove, findOffsetHit, pdfDimensionsRef]);
 
-  // ── handleOffsetCommit ────────────────────────────────────────────────────
   const handleOffsetCommit = useCallback((params: CommitOffsetParams): CommitOffsetResult => {
     const result = commitOffset(params);
     setOffsetCommitError(result.error);
     setOffsetCommitWarn(result.warning);
-    if (!result.error) {
-      setOffsetPreviewPolygons(null);
-      setActiveTool('select' as ToolType);
-    }
+    if (!result.error) { setOffsetPreviewPolygons(null); setActiveTool('select' as ToolType); }
     return result;
   }, [commitOffset, setActiveTool]);
 
-  // ── handleOffsetBatchCommit ───────────────────────────────────────────────
   const handleOffsetBatchCommit = useCallback((
     params:   CommitOffsetParams[],
     options?: BatchCommitOptions,
@@ -653,22 +607,15 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     const result = batchCommitOffsets(params, options);
     setOffsetCommitError(result.error);
     setOffsetCommitWarn(result.warning);
-    if (!result.error) {
-      setOffsetPreviewPolygons(null);
-      setActiveTool('select' as ToolType);
-    }
+    if (!result.error) { setOffsetPreviewPolygons(null); setActiveTool('select' as ToolType); }
     return result;
   }, [batchCommitOffsets, setActiveTool]);
 
-  // ── handleOffsetOpenCommit ─────────────────────────────────────────────────
   const handleOffsetOpenCommit = useCallback((params: CommitOpenPathParams): CommitOffsetResult => {
     const result = commitOpenPathOffset(params);
     setOffsetCommitError(result.error);
     setOffsetCommitWarn(result.warning);
-    if (!result.error) {
-      setOffsetPreviewPolygons(null);
-      setActiveTool('select' as ToolType);
-    }
+    if (!result.error) { setOffsetPreviewPolygons(null); setActiveTool('select' as ToolType); }
     return result;
   }, [commitOpenPathOffset, setActiveTool]);
 
@@ -774,9 +721,10 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
     showPins, setShowPins,
     snapThreshold, setSnapThreshold,
-    confidenceFilter, setConfidenceFilter, analysisStatus,
-    analysisPage: analysisPage ?? null,
-    currentPageCorners: pageData.get(pageNumber - 1)?.corners.length ?? 0,
+    confidenceFilter, setConfidenceFilter,
+    analysisStatus: pdfStage === 'done' ? 'done' : pdfStage === 'error' ? 'done' : 'analyzing' as const,
+    analysisPage:   null,
+    currentPageCorners: resolvedSnapPoints.filter(p => p.type === 'endpoint').length,
     pdf, pageNumber,
     fitToScreen: () => fitToScreen(),
     handleManualScale,
@@ -788,7 +736,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     snapEnabled, showSnapSettings,
     showPins, setShowPins,
     snapThreshold, confidenceFilter,
-    analysisStatus, analysisPage, pageData, pageNumber, pdf,
+    pdfStage, resolvedSnapPoints,
+    pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
     safePolyarcMode, togglePolyarcMode, tempPoints,
   ]);
@@ -799,42 +748,32 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (activeTool === 'magic-fill' && mfStagedCount > 0) {
-          handleMagicAbortSession(); return;
-        }
-        if (activeTool === 'perimeter-offset') {
-          handleOffsetCancel(); return;
-        }
+        if (activeTool === 'magic-fill' && mfStagedCount > 0) { handleMagicAbortSession(); return; }
+        if (activeTool === 'perimeter-offset') { handleOffsetCancel(); return; }
       }
       if (e.key === 'Enter' && activeTool === 'perimeter-offset') return;
 
       const tag = (e.target as HTMLElement).tagName;
       if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
         if (e.key.toLowerCase() === 'a' && activeTool === 'polyarc') {
-          e.preventDefault();
-          togglePolyarcMode();
-          return;
+          e.preventDefault(); togglePolyarcMode(); return;
         }
-
         const map: Record<string, ToolType> = {
           v: 'select',    l: 'linear',   r: 'rectangle',
           p: 'polygon',   n: 'count',    t: 'point',
           b: 'arc',       g: 'grid-count',
-          y: 'polyarc',
-          o: 'perimeter-offset',
+          y: 'polyarc',   o: 'perimeter-offset',
         };
         if (map[e.key.toLowerCase()]) {
-          e.preventDefault();
-          handleSetActiveTool(map[e.key.toLowerCase()]);
-          return;
+          e.preventDefault(); handleSetActiveTool(map[e.key.toLowerCase()]); return;
         }
       }
       const cm = e.ctrlKey || e.metaKey;
-      if (cm && (e.key === '+' || e.key === '='))                   { e.preventDefault(); setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key === '-')                                       { e.preventDefault(); setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY)); return; }
-      if (cm && e.key === '0')                                       { e.preventDefault(); fitToScreen(); return; }
-      if (cm && e.key === 'z' && !e.shiftKey)                       { e.preventDefault(); handleUndo(); return; }
-      if (cm && (e.key === 'y' || (e.key === 'z' && e.shiftKey)))   { e.preventDefault(); handleRedo(); return; }
+      if (cm && (e.key === '+' || e.key === '='))                 { e.preventDefault(); setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key === '-')                                     { e.preventDefault(); setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY)); return; }
+      if (cm && e.key === '0')                                     { e.preventDefault(); fitToScreen(); return; }
+      if (cm && e.key === 'z' && !e.shiftKey)                     { e.preventDefault(); handleUndo(); return; }
+      if (cm && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); handleRedo(); return; }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -871,7 +810,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     ? magicFills.filter(f => f.groupId === mfSelectedGroup)
     : [];
 
-  // ── Polyarc status helpers ────────────────────────────────────────────────
   const polyarcSegments   = activeTool === 'polyarc' ? splitPolyarcSegments(tempPoints) : [];
   const polyarcHasContent = polyarcSegments.some(s =>
     (s.type === 'line' && s.points.length >= 2) ||
@@ -882,15 +820,19 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
 
   // ── Snap status text ──────────────────────────────────────────────────────
   const snapStatusText = useMemo(() => {
-    if (svgLoading)               return 'Loading snap layout…';
-    if (!svgUrl)                  return 'No snap layout — pass svgUrl prop to enable snapping';
-    if (!svgContent)              return 'Snap layout failed to load';
-    if (!snapEnabled)             return 'Snap disabled';
-    if (svgSnapPoints.length > 0) return `${svgSnapPoints.length} snap pts · ${svgLines.length} segs — hover to snap`;
-    return 'Parsing snap data…';
-  }, [svgLoading, svgUrl, svgContent, snapEnabled, svgSnapPoints.length, svgLines.length]);
+    if (pdfStage === 'idle')               return 'No drawing loaded';
+    if (pdfStage === 'reading-file'   ||
+        pdfStage === 'parsing-pdf'    ||
+        pdfStage === 'rendering-page' ||
+        pdfStage === 'extracting-geometry' ||
+        pdfStage === 'computing-snaps')    return 'Extracting snap geometry…';
+    if (pdfStage === 'error')              return 'Snap extraction failed';
+    if (!snapEnabled)                      return 'Snap disabled';
+    if (resolvedSnapPoints.length > 0)
+      return `${resolvedSnapPoints.length} snap pts · ${pdfLines.length} segs — hover to snap`;
+    return 'No snap geometry found in PDF';
+  }, [pdfStage, snapEnabled, resolvedSnapPoints.length, pdfLines.length]);
 
-  // ── PDF.js version ────────────────────────────────────────────────────────
   const [pdfLibVersion] = useState<string>(() =>
     typeof window !== 'undefined' ? getPdfLibVersion() : '?'
   );
@@ -908,8 +850,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             showSnapSettings={showSnapSettings} setShowSnapSettings={setShowSnapSettings}
             showPins={showPins} setShowPins={setShowPins}
             scaleFactor={scaleFactor} handleManualScale={handleManualScale}
-            analysisStatus={analysisStatus} analysisPage={analysisPage ?? null}
-            currentPageCorners={pageData.get(pageNumber - 1)?.corners.length ?? 0}
+            analysisStatus={pdfStage === 'done' ? 'done' : pdfStage === 'error' ? 'done' : 'analyzing'}
+            analysisPage={null}
+            currentPageCorners={resolvedSnapPoints.filter(p => p.type === 'endpoint').length}
             scale={scale} setScale={setScale} fitToScreen={() => fitToScreen()}
             MIN_ZOOM={MIN_ZOOM} MAX_ZOOM={MAX_ZOOM} ZOOM_SENSITIVITY={ZOOM_SENSITIVITY}
             polyarcMode={safePolyarcMode}
@@ -1011,7 +954,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               offsetOpenEndStyle={offsetOpenEndStyle}
               offsetOpenOutputType={offsetOpenOutputType}
             >
-              {/* FIX: onPolygonLasso (was onBatchRect) and activeColor now correctly passed */}
               <MagicFillCanvas
                 pdfDimensions={pdfDimensions}
                 active={isMagicFillTool}
@@ -1081,7 +1023,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
           />
         </div>
 
-        {/* ── Perimeter Offset panel ── */}
         {isOffsetTool && (
           <PerimeterOffsetPanel
             sourceMeasurement={offsetSourceMeasurement}
@@ -1199,7 +1140,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 {' '}· Press A to toggle · Drag for arc · Double-click or Enter to finish
               </span>
             ) : (
-              <span className={svgLoading ? 'text-amber-400' : !svgContent ? 'text-zinc-600' : ''}>
+              <span className={
+                pdfStage !== 'done' && pdfStage !== 'idle' && pdfStage !== 'error'
+                  ? 'text-amber-400'
+                  : pdfStage === 'idle' || resolvedSnapPoints.length === 0
+                  ? 'text-zinc-600'
+                  : ''
+              }>
                 {snapStatusText}
               </span>
             )}

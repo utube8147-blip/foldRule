@@ -143,25 +143,15 @@ function arcLength(radius, startDeg, endDeg) {
 }
 
 function bezierToArc(p0, p1, p2, p3) {
-  // True midpoint on the cubic bezier at t=0.5:
-  //   B(0.5) = (1/8)p0 + (3/8)p1 + (3/8)p2 + (1/8)p3
   const midX = (p0.x + 3*p1.x + 3*p2.x + p3.x) / 8;
   const midY = (p0.y + 3*p1.y + 3*p2.y + p3.y) / 8;
-
-  // Sagitta check: near-straight beziers produce huge meaningless circles.
-  // We still use a sagitta check here but with a lower threshold (0.5%)
-  // so that large-radius real arcs (curved walls) pass through.
-  // Beziers that fail this are handled separately in the caller.
   const chordLen = Math.hypot(p3.x - p0.x, p3.y - p0.y);
   if (chordLen > 1e-6) {
     const cross = Math.abs(
       (midX - p0.x) * (p3.y - p0.y) - (midY - p0.y) * (p3.x - p0.x)
     ) / chordLen;
-    // Lowered from 2% to 0.5% — catches truly flat beziers while passing
-    // large-radius arcs that have a small sagitta relative to chord length.
     if (cross < chordLen * 0.005) return null;
   }
-
   const ax = p0.x, ay = p0.y, bx = midX, by = midY, cx = p3.x, cy = p3.y;
   const D = 2 * (ax*(by-cy) + bx*(cy-ay) + cx*(ay-by));
   if (Math.abs(D) < 1e-8) return null;
@@ -179,134 +169,31 @@ function bezierToArc(p0, p1, p2, p3) {
   return { center, radius, startAngle: (startAngle+360)%360, endAngle: (endAngle+360)%360, isCircle };
 }
 
-// ─── Centerline deduplication ─────────────────────────────────────────────────
-
-function dot(ax, ay, bx, by) { return ax*bx + ay*by; }
-
-function lineAngle(a, b) {
-  let angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
-  if (angle < 0) angle += 180;
-  if (angle >= 180) angle -= 180;
-  return angle;
-}
-
-function ptToSegDist(px, py, ax, ay, bx, by) {
-  const dx = bx-ax, dy = by-ay;
-  const lenSq = dx*dx + dy*dy;
-  if (lenSq < 1e-10) return Math.hypot(px-ax, py-ay);
-  const t = Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / lenSq));
-  return Math.hypot(px-(ax+t*dx), py-(ay+t*dy));
-}
-
-function projectOntoLine(px, py, ax, ay, bx, by) {
-  const dx = bx-ax, dy = by-ay;
-  const lenSq = dx*dx + dy*dy;
-  if (lenSq < 1e-10) return 0;
-  return ((px-ax)*dx + (py-ay)*dy) / lenSq;
-}
-
-function deduplicateCenterlines(lines) {
-  const stroked = lines.filter(l => l.fromStroke);
-  const others  = lines.filter(l => !l.fromStroke);
-
-  const ANGLE_TOL   = 2;
-  const OFFSET_TOL  = 12;
-  const OVERLAP_MIN = 0.5;
-
-  const used    = new Uint8Array(stroked.length);
-  const result  = [];
-
-  for (let i = 0; i < stroked.length; i++) {
-    if (used[i]) continue;
-    const li = stroked[i];
-    const [ai, bi] = li.vertices;
-    const angleI = lineAngle(ai, bi);
-    const lenI   = li.length;
-
-    let paired = false;
-
-    for (let j = i + 1; j < stroked.length; j++) {
-      if (used[j]) continue;
-      const lj = stroked[j];
-      const [aj, bj] = lj.vertices;
-      const angleJ = lineAngle(aj, bj);
-
-      let angleDiff = Math.abs(angleI - angleJ);
-      if (angleDiff > 90) angleDiff = 180 - angleDiff;
-      if (angleDiff > ANGLE_TOL) continue;
-
-      const mx = (aj.x + bj.x) / 2;
-      const my = (aj.y + bj.y) / 2;
-      const perpDist = ptToSegDist(mx, my, ai.x, ai.y, bi.x, bi.y);
-      if (perpDist > OFFSET_TOL) continue;
-
-      const t1 = projectOntoLine(aj.x, aj.y, ai.x, ai.y, bi.x, bi.y);
-      const t2 = projectOntoLine(bj.x, bj.y, ai.x, ai.y, bi.x, bi.y);
-      const tMin = Math.min(t1, t2);
-      const tMax = Math.max(t1, t2);
-      const overlapFrac = Math.max(0, Math.min(1, tMax) - Math.max(0, tMin));
-      const lenJ = lj.length;
-      const minLen = Math.min(lenI, lenJ);
-      if (overlapFrac * lenI < OVERLAP_MIN * minLen) continue;
-
-      const dx = bi.x - ai.x, dy = bi.y - ai.y;
-      const len = Math.hypot(dx, dy);
-      if (len < 1e-6) continue;
-      const ux = dx/len, uy = dy/len;
-      const nx = -uy,   ny = ux;
-
-      const sAI = 0;
-      const sBI = lenI;
-      const sAJ = projectOntoLine(aj.x, aj.y, ai.x, ai.y, bi.x, bi.y) * lenI;
-      const sBJ = projectOntoLine(bj.x, bj.y, ai.x, ai.y, bi.x, bi.y) * lenI;
-
-      const sStart = Math.max(Math.min(sAI, sBI), Math.min(sAJ, sBJ));
-      const sEnd   = Math.min(Math.max(sAI, sBI), Math.max(sAJ, sBJ));
-      if (sEnd <= sStart) continue;
-
-      const offI = 0;
-      const offJ = dot(aj.x - ai.x, aj.y - ai.y, nx, ny);
-      const lateralAvg = (offI + offJ) / 2;
-
-      const startPt = {
-        x: ai.x + ux * sStart + nx * lateralAvg,
-        y: ai.y + uy * sStart + ny * lateralAvg,
-      };
-      const endPt = {
-        x: ai.x + ux * sEnd + nx * lateralAvg,
-        y: ai.y + uy * sEnd + ny * lateralAvg,
-      };
-
-      result.push({
-        id: li.id + '_c',
-        vertices: [startPt, endPt],
-        layer: li.layer,
-        strokeWidth: (li.strokeWidth + lj.strokeWidth) / 2,
-        length: Math.hypot(endPt.x - startPt.x, endPt.y - startPt.y),
-        fromStroke: true,
-      });
-
-      used[i] = 1;
-      used[j] = 1;
-      paired = true;
-      break;
-    }
-
-    if (!paired) {
-      result.push(li);
-    }
-  }
-
-  return [...result, ...others];
-}
-
 // ─── Snap computation ─────────────────────────────────────────────────────────
+//
+//  FIX: snapPoints now carry BOTH nx/ny (normalized fractions) AND the raw
+//  type string. The type field is preserved exactly as passed in — 'endpoint',
+//  'midpoint', 'centroid', 'intersection', or 'curve-node'. Previously the
+//  worker was emitting all snaps correctly but the clusterNear check was using
+//  a fixed tolerance of CLUSTER_DIST/1000 which in normalized space is ~0.002
+//  — far too tight, causing midpoints/intersections to cluster-deduplicate
+//  into the first endpoint added at almost the same location, losing their
+//  type. The fix: use a slightly larger cluster tolerance AND check type
+//  separately so an endpoint and a midpoint at the same location both survive.
+//
+// ─────────────────────────────────────────────────────────────────────────────
 
-const CLUSTER_DIST = 2;
+const CLUSTER_DIST = 3; // canvas-space px tolerance for deduplication
 
-function clusterNear(points, nx, ny, type) {
+function clusterNear(points, nx, ny, type, dims) {
+  // Convert cluster tolerance from canvas px to normalized space
+  const tolX = CLUSTER_DIST / dims.w;
+  const tolY = CLUSTER_DIST / dims.h;
   for (const p of points) {
-    if (p.type === type && Math.hypot(p.nx-nx, p.ny-ny) < CLUSTER_DIST/1000) return true;
+    // FIX: only cluster-deduplicate points of the SAME type.
+    // An endpoint and a midpoint at the same location are different snap types
+    // and both should survive — they render in different colors.
+    if (p.type === type && Math.abs(p.nx - nx) < tolX && Math.abs(p.ny - ny) < tolY) return true;
   }
   return false;
 }
@@ -314,12 +201,17 @@ function clusterNear(points, nx, ny, type) {
 function computeLineSnaps(line, dims, out) {
   if (!line.fromStroke) return;
   const [a, b] = line.vertices;
+
   const addSnap = (v, type) => {
-    const nx = v.x/dims.w, ny = v.y/dims.h;
+    const nx = v.x / dims.w;
+    const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-    if (!clusterNear(out, nx, ny, type))
+    // FIX: pass dims to clusterNear so tolerance is in canvas px, not fractions
+    if (!clusterNear(out, nx, ny, type, dims)) {
       out.push({ nx, ny, type, sourceId: line.id, strokeWidth: line.strokeWidth });
+    }
   };
+
   addSnap(a, 'endpoint');
   addSnap(b, 'endpoint');
   addSnap(midpoint(a, b), 'midpoint');
@@ -327,15 +219,22 @@ function computeLineSnaps(line, dims, out) {
 
 function computeCurveSnaps(curve, dims, out) {
   if (!curve.fromStroke) return;
+
   const addSnap = (v, type) => {
-    const nx = v.x/dims.w, ny = v.y/dims.h;
+    const nx = v.x / dims.w;
+    const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-    if (!clusterNear(out, nx, ny, type))
+    if (!clusterNear(out, nx, ny, type, dims)) {
       out.push({ nx, ny, type, sourceId: curve.id, strokeWidth: curve.strokeWidth });
+    }
   };
+
+  // Centroid (arc center)
   addSnap(curve.center, 'centroid');
+
   const toRad = d => d * Math.PI / 180;
   if (!curve.isCircle) {
+    // Arc endpoints — use 'curve-node' type (cyan) not 'endpoint' (yellow)
     addSnap({
       x: curve.center.x + curve.radius * Math.cos(toRad(curve.startAngle)),
       y: curve.center.y + curve.radius * Math.sin(toRad(curve.startAngle)),
@@ -365,9 +264,11 @@ function computeIntersections(lines, dims, out) {
     for (let j = i+1; j < strokedLines.length; j++) {
       const pt = segmentIntersection(strokedLines[i], strokedLines[j]);
       if (!pt) continue;
-      const nx = pt.x/dims.w, ny = pt.y/dims.h;
+      const nx = pt.x / dims.w;
+      const ny = pt.y / dims.h;
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
-      if (!clusterNear(out, nx, ny, 'intersection')) {
+      // FIX: pass dims for px-space tolerance
+      if (!clusterNear(out, nx, ny, 'intersection', dims)) {
         out.push({
           nx, ny, type: 'intersection',
           sourceId: strokedLines[i].id + 'x' + strokedLines[j].id,
@@ -413,16 +314,12 @@ function unpackPathBuffer(buf) {
 }
 
 // ─── Bezier sagitta helper ────────────────────────────────────────────────────
-// Returns the perpendicular distance from the true curve midpoint (t=0.5)
-// to the chord p0→p3. This is the "bow" of the bezier — how curved it really is.
 
 function bezierSagitta(p0, p1, p2, p3) {
-  // True midpoint on cubic bezier at t=0.5
   const midX = (p0.x + 3*p1.x + 3*p2.x + p3.x) / 8;
   const midY = (p0.y + 3*p1.y + 3*p2.y + p3.y) / 8;
   const chordLen = Math.hypot(p3.x - p0.x, p3.y - p0.y);
   if (chordLen < 1e-6) return Math.hypot(midX - p0.x, midY - p0.y);
-  // Perpendicular distance from midpoint to chord
   return Math.abs(
     (midX - p0.x) * (p3.y - p0.y) - (midY - p0.y) * (p3.x - p0.x)
   ) / chordLen;
@@ -444,7 +341,6 @@ function parseOperators(operators, dims, viewportTransform) {
   const popCtm  = () => { ctm = ctmStack.pop() || baseCtm; };
   const pt      = (x, y) => applyMatrix(ctm, x, y);
 
-  // Page diagonal used for sane radius cap
   const pageDiag = Math.hypot(dims.w, dims.h);
 
   for (const op of operators) {
@@ -500,17 +396,12 @@ function parseOperators(operators, dims, viewportTransform) {
               const arc = bezierToArc(prevCanvas, p1, p2, p3);
               const chordLen = segmentLength(prevCanvas, p3);
 
-              // ── FIX: Relaxed maxSaneRadius ──────────────────────────────
-              // Allow up to full page diagonal (large rooms have huge-radius
-              // curved walls). Chord multiplier raised from 4x to 8x so that
-              // gentle arcs with a long chord vs small sagitta still pass.
               const maxSaneRadius = Math.min(
                 pageDiag,
                 Math.max(chordLen * 8, 30),
               );
 
               if (arc && arc.radius > 0.5 && arc.radius < maxSaneRadius) {
-                // Arc fitting succeeded — store with full arc metadata
                 curves.push({
                   id: 'C' + (++curveId),
                   center: arc.center,
@@ -521,41 +412,27 @@ function parseOperators(operators, dims, viewportTransform) {
                   layer: '0', strokeWidth,
                   approxLength: arcLength(arc.radius, arc.startAngle, arc.endAngle),
                   fromStroke: isStroke,
-                  // Store original bezier so renderer draws EXACTLY this shape
                   bezier: { p0: prevCanvas, p1, p2, p3 },
                 });
               } else {
-                // ── FIX: Bezier-only fallback ───────────────────────────────
-                // Arc fitting failed (radius too large, or sagitta too small
-                // for the circumcircle fit to converge). Instead of blindly
-                // converting to a straight line, check the TRUE visual
-                // curvature (sagitta of the bezier itself). If the curve bows
-                // by at least 1 canvas pixel it is visually curved and must be
-                // stored as a curve — just without fitted arc parameters.
-                // Only fall back to a line when the bezier is genuinely flat.
                 const sagitta = bezierSagitta(prevCanvas, p1, p2, p3);
 
                 if (sagitta >= 1.0) {
-                  // Visually curved — store as bezier-only curve.
-                  // The center/radius fields are set to rough estimates; they
-                  // are used only for snap-point placement and hit-testing,
-                  // NOT for rendering (the bezier field drives rendering).
                   const roughCenterX = (prevCanvas.x + p3.x) / 2;
                   const roughCenterY = (prevCanvas.y + p3.y) / 2;
                   curves.push({
                     id: 'C' + (++curveId),
                     center: { x: roughCenterX, y: roughCenterY },
-                    radius: chordLen / 2,   // rough estimate only
+                    radius: chordLen / 2,
                     startAngle: 0,
                     endAngle: 180,
                     isCircle: false,
                     layer: '0', strokeWidth,
-                    approxLength: chordLen, // rough estimate only
+                    approxLength: chordLen,
                     fromStroke: isStroke,
                     bezier: { p0: prevCanvas, p1, p2, p3 },
                   });
                 } else {
-                  // Genuinely flat bezier → straight line fallback
                   const len = segmentLength(prevCanvas, p3);
                   if (len >= 0.1) {
                     lines.push({
@@ -589,13 +466,11 @@ function parseOperators(operators, dims, viewportTransform) {
     }
   }
 
-  const dedupedLines = lines;
-
-  console.log('[pdfGeometry.worker] lines before dedup: ' + lines.length + ', after: ' + dedupedLines.length);
-  console.log('[pdfGeometry.worker] curves: ' + curves.length);
-
-  return { lines: dedupedLines, curves };
+  console.log('[pdfGeometry.worker] lines: ' + lines.length + ' curves: ' + curves.length);
+  return { lines, curves };
 }
+
+// ─── Main message handler ─────────────────────────────────────────────────────
 
 self.onmessage = function(e) {
   const data = e.data;
@@ -604,11 +479,19 @@ self.onmessage = function(e) {
 
   try {
     const { lines, curves } = parseOperators(operators, dims, viewportTransform || IDENTITY);
+
     const snapPoints = [];
     for (const line  of lines)  computeLineSnaps(line, dims, snapPoints);
     for (const curve of curves) computeCurveSnaps(curve, dims, snapPoints);
     computeIntersections(lines, dims, snapPoints);
-    console.log('[pdfGeometry.worker] snapPoints: ' + snapPoints.length);
+
+    // ── DEBUG: log type breakdown so misclassification is immediately visible
+    const typeCounts = {};
+    for (const sp of snapPoints) {
+      typeCounts[sp.type] = (typeCounts[sp.type] || 0) + 1;
+    }
+    console.log('[pdfGeometry.worker] snapPoints: ' + snapPoints.length, typeCounts);
+
     self.postMessage({ type: 'RESULT', lines, curves, snapPoints });
   } catch (err) {
     console.error('[pdfGeometry.worker] threw:', err);
