@@ -10,6 +10,8 @@ export const metadata: Metadata = {
   alternates: { canonical: '/' },
 };
 
+// 
+
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
