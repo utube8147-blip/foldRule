@@ -174,7 +174,7 @@ export function Landing() {
         </section>
 
         {/* Features Section */}
-        <section id="features" className="w-full max-w-6xl py-24 border-t border-[#2E353C]">
+        <section id="features" className="w-full max-w-7xl py-24 border-t border-[#2E353C]">
           <div className="mb-16">
             <h2 className="text-4xl md:text-5xl font-sans font-medium text-white mb-4 uppercase tracking-tight">
               Built for the field,<br />
