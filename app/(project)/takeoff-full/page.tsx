@@ -14,6 +14,11 @@
 import React, { useState, useMemo } from 'react';
 import { exportProjectToExcel } from '@/lib/export/clientExport';
 import { useProjectHref } from '@/lib/nav/projectHref';
+import { useConfirm } from '@/components/common/ConfirmDialog';
+import { AnimatePresence } from 'motion/react';
+import { Library } from 'lucide-react';
+import type { Material } from '@/types';
+import { MaterialLibrary } from '@/components/features/takeoff/MaterialLibrary';
 import { useRouter } from 'next/navigation';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import {
@@ -160,6 +165,7 @@ export default function TakeoffFullPage() {
   const router = useRouter();
   const href = useProjectHref();
   const [exporting, setExporting] = useState(false);
+  const { alert: showAlert } = useConfirm();
 
   const {
     projectState: ps,
@@ -167,6 +173,9 @@ export default function TakeoffFullPage() {
     updateMeasurement,
     deleteMeasurement,
     toggleVisibility,
+    setProjectState,
+    materialLibraryOpen,
+    setMaterialLibraryOpen,
   } = useTakeoffData();
 
   const [search, setSearch] = useState('');
@@ -341,15 +350,19 @@ export default function TakeoffFullPage() {
             <ArrowLeft className="w-3 h-3" />
             Workspace
           </button>
-          <button className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 border border-zinc-700 px-3 py-1.5 hover:bg-zinc-900 transition-all">
-            <Share2 className="w-3 h-3" />
-            Share
+          <button
+            type="button"
+            onClick={() => setMaterialLibraryOpen(true)}
+            className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 border border-zinc-700 px-3 py-1.5 hover:bg-zinc-900 hover:text-amber-400 transition-all"
+          >
+            <Library className="w-3 h-3" />
+            Material bank
           </button>
           <button
             onClick={() => {
               setExporting(true);
               exportProjectToExcel(ps)
-                .catch(err => window.alert(`Export failed: ${err instanceof Error ? err.message : err}`))
+                .catch(err => showAlert({ title: 'Export failed', message: err instanceof Error ? err.message : String(err), tone: 'danger', confirmText: 'OK' }))
                 .finally(() => setExporting(false));
             }}
             className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-950 bg-amber-500 hover:bg-amber-400 px-4 py-1.5 transition-all active:scale-95"
@@ -946,6 +959,15 @@ export default function TakeoffFullPage() {
         </aside>
 
       </div>
+      <AnimatePresence>
+        {materialLibraryOpen && (
+          <MaterialLibrary
+            materials={ps.materials as Material[]}
+            onUpdateMaterials={(mats: Material[]) => setProjectState(prev => ({ ...prev, materials: mats }))}
+            onClose={() => setMaterialLibraryOpen(false)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

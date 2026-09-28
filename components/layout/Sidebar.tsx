@@ -2,8 +2,11 @@ import React, { useState } from 'react';
 import {
   FileText, FolderOpen, Filter, Search, Settings2, Plus, PanelLeftClose,
   Database, Info, Layers, Building2, FileCheck2, Users2,
-  BookOpen, ChevronDown, ChevronRight, AlertTriangle, Ban,
+  BookOpen, ChevronDown, ChevronRight, AlertTriangle, Ban, Trash2, X,
 } from 'lucide-react';
+import { useTakeoffData } from '@/context/TakeoffContext';
+import { getPageScale } from '@/lib/takeoff/scale';
+import { useConfirm } from '@/components/common/ConfirmDialog';
 import { cn } from '@/lib/utils';
 import { Material } from '@/types';
 import {
@@ -165,6 +168,48 @@ function SidebarImpl({
   onUpdateProjectMeta,
 }: SidebarProps) {
   const [activeTab, setActiveTab] = useState<'drawings' | 'specs'>('drawings');
+  const { activePage, goToPage, removeDrawing, projectState: fullProject } = useTakeoffData();
+  const [searchOpen,  setSearchOpen]  = useState(false);
+  const [query,       setQuery]       = useState('');
+  const [needsScale,  setNeedsScale]  = useState(false);
+
+  // Per-drawing calibration summary (cheap: page counts are small).
+  const pageInfo = React.useMemo(() => {
+    const out = new Map<string, { pages: number; calibrated: boolean[] }>();
+    for (const d of fullProject.drawings) {
+      const pages = Math.max(1, d.pageCount || 1);
+      out.set(d.id, { pages, calibrated: Array.from({ length: pages }, (_, i) => getPageScale(d, i + 1) !== null) });
+    }
+    return out;
+  }, [fullProject.drawings]);
+
+  const visibleDrawings = React.useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return fullProject.drawings.filter(d =>
+      (!q || d.name.toLowerCase().includes(q)) &&
+      (!needsScale || (pageInfo.get(d.id)?.calibrated.some(c => !c) ?? true)));
+  }, [fullProject.drawings, query, needsScale, pageInfo]);
+
+  const totals = React.useMemo(() => {
+    let pages = 0, done = 0;
+    for (const info of pageInfo.values()) { pages += info.pages; done += info.calibrated.filter(Boolean).length; }
+    const measured = fullProject.measurements.filter(m => !m.isGroupHeader).length;
+    return { pages, done, measured };
+  }, [pageInfo, fullProject.measurements]);
+
+  const { confirm } = useConfirm();
+  const confirmRemoveDrawing = async (id: string, name: string) => {
+    const count = fullProject.measurements.filter(m => m.drawingId === id && !m.isGroupHeader).length;
+    const ok = await confirm({
+      title: 'Remove drawing',
+      message: <>Remove <span className="text-zinc-100 font-bold">{name}</span> from this project?</>,
+      detail: count
+        ? `Its ${count} measurement${count === 1 ? '' : 's'} will be deleted too. This can’t be undone.`
+        : 'This can’t be undone.',
+      confirmText: 'Remove',
+    });
+    if (ok) removeDrawing(id);
+  };
 
   // Collapsible section state
   const [open, setOpen] = useState({
@@ -219,10 +264,22 @@ function SidebarImpl({
           Project Explorer
         </span>
         <div className="flex gap-2">
-          <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
+          <button
+            type="button"
+            onClick={() => { setNeedsScale(v => !v); setActiveTab('drawings'); }}
+            aria-pressed={needsScale}
+            title={needsScale ? 'Show all drawings' : 'Show only drawings with pages that need a scale'}
+            className={cn('transition-colors', needsScale ? 'text-amber-accent' : 'text-zinc-600 hover:text-zinc-300')}
+          >
             <Filter className="w-3.5 h-3.5" />
           </button>
-          <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
+          <button
+            type="button"
+            onClick={() => { setSearchOpen(v => !v); if (searchOpen) setQuery(''); setActiveTab('drawings'); }}
+            aria-pressed={searchOpen}
+            title="Search drawings"
+            className={cn('transition-colors', searchOpen ? 'text-amber-accent' : 'text-zinc-600 hover:text-zinc-300')}
+          >
             <Search className="w-3.5 h-3.5" />
           </button>
           {onCollapse && (
@@ -241,6 +298,27 @@ function SidebarImpl({
           )}
         </div>
       </div>
+
+      {searchOpen && (
+        <div className="px-3 py-2 border-b border-industrial-border bg-stone-900/40 flex items-center gap-2 shrink-0">
+          <Search className="w-3 h-3 text-zinc-500 shrink-0" aria-hidden />
+          <input
+            autoFocus
+            type="search"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Escape') { setQuery(''); setSearchOpen(false); } }}
+            placeholder="Search drawings…"
+            aria-label="Search drawings"
+            className="flex-1 min-w-0 bg-transparent text-[11px] text-zinc-200 placeholder:text-zinc-600 outline-none"
+          />
+          {query && (
+            <button type="button" onClick={() => setQuery('')} aria-label="Clear search" className="text-zinc-500 hover:text-zinc-200">
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* ── Tabs ── */}
       <div className="flex border-b border-industrial-border shrink-0">
@@ -286,23 +364,70 @@ function SidebarImpl({
                   </p>
                 </div>
               )}
-              {projectState.drawings.map(file => (
-                <button
-                  key={file.id}
-                  onClick={() => onSelectDrawing(file.id)}
-                  className={cn(
-                    "w-full flex items-center gap-3 px-4 py-3 text-left transition-all border-l-2",
-                    file.id === projectState.activeDrawingId
-                      ? "bg-zinc-800/50 border-amber-accent text-amber-accent"
-                      : "border-transparent text-zinc-400 hover:bg-zinc-800/30 hover:text-zinc-200"
-                  )}
-                >
-                  <FileText className="w-4 h-4 shrink-0" />
-                  <span className="text-[11px] truncate font-medium uppercase tracking-tight">
-                    {file.name}
-                  </span>
-                </button>
-              ))}
+              {projectState.drawings.length > 0 && visibleDrawings.length === 0 && (
+                <p className="px-4 py-6 text-[10px] text-zinc-500 uppercase tracking-widest text-center">
+                  {needsScale && !query ? 'Every page has a scale' : 'No drawings match'}
+                </p>
+              )}
+              {visibleDrawings.map(file => {
+                const active = file.id === projectState.activeDrawingId;
+                const info = pageInfo.get(file.id);
+                const missing = info ? info.calibrated.filter(c => !c).length : 0;
+                return (
+                  <div key={file.id} className={cn('group border-l-2', active ? 'bg-zinc-800/50 border-amber-accent' : 'border-transparent hover:bg-zinc-800/30')}>
+                    <div className="flex items-center">
+                      <button
+                        type="button"
+                        onClick={() => onSelectDrawing(file.id)}
+                        aria-current={active ? 'true' : undefined}
+                        className={cn(
+                          'flex-1 min-w-0 flex items-center gap-3 pl-4 pr-2 py-3 text-left transition-colors',
+                          active ? 'text-amber-accent' : 'text-zinc-400 hover:text-zinc-200',
+                        )}
+                      >
+                        <FileText className="w-4 h-4 shrink-0" />
+                        <span className="text-[11px] truncate font-medium uppercase tracking-tight">{file.name}</span>
+                        {missing > 0 && (
+                          <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" title={`${missing} page${missing === 1 ? '' : 's'} without a scale`} />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void confirmRemoveDrawing(file.id, file.name)}
+                        title="Remove drawing"
+                        aria-label={`Remove ${file.name}`}
+                        className="mr-2 p-1.5 text-zinc-700 group-hover:text-zinc-500 hover:!text-red-400 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    {active && info && info.pages > 1 && (
+                      <div className="flex flex-wrap gap-1 pl-11 pr-3 pb-3" role="group" aria-label="Pages">
+                        {info.calibrated.map((ok, i) => {
+                          const page = i + 1;
+                          const current = page === activePage;
+                          return (
+                            <button
+                              key={page}
+                              type="button"
+                              onClick={() => goToPage(file.id, page)}
+                              aria-current={current ? 'page' : undefined}
+                              title={`Page ${page}${ok ? ' · scale set' : ' · needs a scale'}`}
+                              className={cn(
+                                'relative min-w-[26px] h-6 px-1.5 text-[10px] font-bold border transition-colors',
+                                current ? 'border-amber-accent text-amber-accent bg-amber-accent/10' : 'border-industrial-border text-zinc-400 hover:border-zinc-500 hover:text-zinc-200',
+                              )}
+                            >
+                              {page}
+                              <span className={cn('absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full', ok ? 'bg-emerald-500' : 'bg-amber-400')} aria-hidden />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             {projectState.drawings.length > 0 && (
@@ -313,7 +438,7 @@ function SidebarImpl({
                     type="file"
                     multiple
                     className="hidden"
-                    accept=".pdf,.png,.jpg,.jpeg,.dwg"
+                    accept=".pdf,application/pdf"
                     onChange={e => {
                       const files = e.target.files;
                       if (!files) return;
@@ -614,14 +739,16 @@ function SidebarImpl({
       {/* ── Footer ── */}
       <div className="p-4 bg-industrial-black border-t border-industrial-border shrink-0">
         <div className="flex items-center gap-2 mb-3">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+          <div className={cn('w-2 h-2 rounded-full', totals.pages === 0 ? 'bg-zinc-600' : totals.done === totals.pages ? 'bg-emerald-500' : 'bg-amber-400')} />
           <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
-            Workspace Industrial V2.4
+            {totals.pages === 0 ? 'No drawings yet'
+              : totals.done === totals.pages ? 'All pages have a scale'
+              : `${totals.pages - totals.done} page${totals.pages - totals.done === 1 ? '' : 's'} need${totals.pages - totals.done === 1 ? 's' : ''} a scale`}
           </span>
         </div>
         <div className="text-[10px] font-bold text-zinc-600 uppercase tracking-tighter flex justify-between">
-          <span>MEM LOAD: 4.2GB</span>
-          <span className="text-emerald-500/50">STABLE</span>
+          <span>{fullProject.drawings.length} drawing{fullProject.drawings.length === 1 ? '' : 's'} · {totals.done}/{totals.pages} pages</span>
+          <span>{totals.measured} qty</span>
         </div>
       </div>
     </aside>

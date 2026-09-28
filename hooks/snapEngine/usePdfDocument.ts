@@ -28,7 +28,9 @@ export interface UsePdfDocumentReturn {
    * Extract snap geometry for one page of an already-open document (no re-parse).
    * Used by the production viewer so snapping follows the page on screen.
    */
-  loadPage: (doc: any, pageNumber: number) => Promise<void>;
+  loadPage: (doc: any, pageNumber: number, cacheKey?: string) => Promise<void>;
+  /** Drop the current page's snap geometry (e.g. while a new page loads). */
+  clear: () => void;
   renderToCanvas: (canvas: HTMLCanvasElement, scale?: number) => Promise<void>;
 }
 
@@ -47,10 +49,12 @@ function sanitizeArgs(fn: number, raw: unknown): any[] {
   if (raw == null) return [];
   if (fn === 91 && Array.isArray(raw)) {
     const [terminalOp, pathBufHolder, minMax] = raw as [number, unknown[], number[] | null];
-    let pathBuffer: number[] = [];
+    let pathBuffer: number[] | Float32Array | Float64Array = [];
     const pb = Array.isArray(pathBufHolder) ? pathBufHolder[0] : null;
     if (pb instanceof Float32Array || pb instanceof Float64Array) {
-      pathBuffer = Array.from(pb);
+      // Keep it binary: a private copy we can hand to the worker without
+      // cloning (pdf.js may reuse its own buffer).
+      pathBuffer = pb.slice();
     } else if (Array.isArray(pb)) {
       pathBuffer = pb.filter((n) => typeof n === 'number');
     }
@@ -69,12 +73,64 @@ function sanitizeArgs(fn: number, raw: unknown): any[] {
   });
 }
 
-async function extractOperators(page: any): Promise<{ fn: number; args: any[] }[]> {
+/**
+ * PDF operator ids the geometry worker actually reads (see the `case OPS.x`
+ * branches in workers/pdfGeometry.worker.js). Everything else — text, images,
+ * colours — is ignored by the worker, so it isn't copied to it at all.
+ */
+const GEOMETRY_OPS = new Set<number>([
+  2,              // setLineWidth
+  10, 11, 12,     // save, restore, transform
+  13, 14, 15, 16, 17, 18, 19, // moveTo, lineTo, curveTo(1-3), closePath, rectangle
+  20, 21, 22, 23, 24, 25, 26, 27, 28, // stroke / fill variants, endPath
+  74, 75,         // paintFormXObjectBegin / End (nested transforms)
+  91,             // constructPath
+]);
+
+// ─── Snap geometry cache ──────────────────────────────────────────────────────
+// Re-opening a page you've already visited reuses its geometry instantly.
+// Small LRU: each entry can hold ~10k segments, so keep only a few.
+interface SnapCacheEntry {
+  lines: PdfLine[]; curves: PdfCurve[]; snapPoints: SnapPoint[];
+  dims: PdfDimensions; pageInfo: PdfPageInfo;
+}
+const SNAP_CACHE_MAX = 6;
+const snapCache = new Map<string, SnapCacheEntry>();
+function cacheGet(key: string): SnapCacheEntry | undefined {
+  const hit = snapCache.get(key);
+  if (hit) { snapCache.delete(key); snapCache.set(key, hit); }   // mark as most recent
+  return hit;
+}
+function cachePut(key: string, entry: SnapCacheEntry) {
+  snapCache.delete(key);
+  snapCache.set(key, entry);
+  while (snapCache.size > SNAP_CACHE_MAX) snapCache.delete(snapCache.keys().next().value as string);
+}
+/** True when geometry for this drawing/page is already cached. */
+export const hasSnapGeometry = (key: string) => snapCache.has(key);
+
+/** Let the browser handle input between chunks of work. */
+const yieldToBrowser = () => new Promise<void>(resolve => {
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } }).scheduler;
+  if (sched?.yield) sched.yield().then(resolve); else setTimeout(resolve, 0);
+});
+
+async function extractOperators(page: any, isStale: () => boolean = () => false): Promise<{ fn: number; args: any[] }[]> {
   const opList = await page.getOperatorList();
   const result: { fn: number; args: any[] }[] = [];
-  for (let i = 0; i < opList.fnArray.length; i++) {
-    const fn = opList.fnArray[i];
-    result.push({ fn, args: sanitizeArgs(fn, opList.argsArray[i]) });
+  const n = opList.fnArray.length;
+  const CHUNK = 4000;
+  for (let start = 0; start < n; start += CHUNK) {
+    const end = Math.min(n, start + CHUNK);
+    for (let i = start; i < end; i++) {
+      const fn = opList.fnArray[i];
+      if (!GEOMETRY_OPS.has(fn)) continue;
+      result.push({ fn, args: sanitizeArgs(fn, opList.argsArray[i]) });
+    }
+    if (end < n) {
+      await yieldToBrowser();
+      if (isStale()) return [];
+    }
   }
   return result;
 }
@@ -115,7 +171,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
   const requestIdRef = useRef(0);
 
   // Shared: extract geometry from one page and run the snap worker.
-  const extractFromPage = useCallback(async (page: any, pageNumber: number, pageCount: number, reqId: number) => {
+  const extractFromPage = useCallback(async (page: any, pageNumber: number, pageCount: number, reqId: number, cacheKey?: string) => {
     pdfPageRef.current = page;
     setPageInfo({ pageNumber, pageCount });
 
@@ -126,7 +182,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     const viewportTransform = vp.transform as number[];
 
     setStage('extracting-geometry');
-    const operators = await extractOperators(page);
+    const operators = await extractOperators(page, () => reqId !== requestIdRef.current);
     if (reqId !== requestIdRef.current) return;
 
     setStage('computing-snaps');
@@ -141,13 +197,25 @@ export function usePdfDocument(): UsePdfDocumentReturn {
           setLines(msg.lines);
           setCurves(msg.curves);
           setSnaps(msg.snapPoints);
+          if (cacheKey) {
+            cachePut(cacheKey, {
+              lines: msg.lines, curves: msg.curves, snapPoints: msg.snapPoints,
+              dims: pageDims, pageInfo: { pageNumber, pageCount },
+            });
+          }
           resolve();
         } else if (msg.type === 'ERROR') {
           reject(new Error(msg.message));
         }
       };
       worker.onerror = (err) => reject(err);
-      worker.postMessage({ type: 'PARSE', operators, dims: pageDims, viewportTransform });
+      // Transfer the path buffers (zero-copy) instead of cloning them.
+      const transfer: ArrayBuffer[] = [];
+      for (const op of operators) {
+        const buf = op.fn === 91 ? op.args[1] : null;
+        if (buf && ArrayBuffer.isView(buf) && buf.buffer instanceof ArrayBuffer) transfer.push(buf.buffer);
+      }
+      worker.postMessage({ type: 'PARSE', operators, dims: pageDims, viewportTransform }, transfer);
     });
     worker.terminate();
     if (workerRef.current === worker) workerRef.current = null;
@@ -186,14 +254,22 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     }
   }, [extractFromPage, resetForLoad]);
 
-  const loadPage = useCallback(async (doc: any, pageNumber: number) => {
+  const loadPage = useCallback(async (doc: any, pageNumber: number, cacheKey?: string) => {
     if (!doc) return;
     const reqId = resetForLoad();
+    const hit = cacheKey ? cacheGet(cacheKey) : undefined;
+    if (hit) {
+      setDims(hit.dims); setPageInfo(hit.pageInfo);
+      setLines(hit.lines); setCurves(hit.curves); setSnaps(hit.snapPoints);
+      setStage('done');
+      doc.getPage(pageNumber).then((p: any) => { if (reqId === requestIdRef.current) pdfPageRef.current = p; }).catch(() => {});
+      return;
+    }
     setStage('parsing-pdf');
     try {
       const page = await doc.getPage(pageNumber);
       if (reqId !== requestIdRef.current) return;
-      await extractFromPage(page, pageNumber, doc.numPages, reqId);
+      await extractFromPage(page, pageNumber, doc.numPages, reqId, cacheKey);
     } catch (err) {
       if (reqId !== requestIdRef.current) return;
       console.error('[usePdfDocument] page geometry error:', err);
@@ -202,6 +278,8 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     }
   }, [extractFromPage, resetForLoad]);
 
+  const clear = useCallback(() => { resetForLoad(); setStage('idle'); }, [resetForLoad]);
+
   // Clean up worker / owned document on unmount.
   useEffect(() => () => {
     requestIdRef.current++;
@@ -209,5 +287,5 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     destroyPdf(ownDocRef.current);
   }, []);
 
-  return { stage, errorMessage, fileName, dims, pageInfo, lines, curves, snapPoints, loadFile, loadPage, renderToCanvas };
+  return { stage, errorMessage, fileName, dims, pageInfo, lines, curves, snapPoints, loadFile, loadPage, clear, renderToCanvas };
 }

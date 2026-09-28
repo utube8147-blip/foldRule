@@ -34,7 +34,9 @@ import { AnimatePresence } from 'motion/react';
 import { exportProjectToExcel } from '@/lib/export/clientExport';
 import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
 import { useProjectHref } from '@/lib/nav/projectHref';
-import { SaveIndicator } from '@/components/layout/SaveIndicator';
+// Loaded on first open — they cost nothing until used.
+const AnalysisDialog  = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.AnalysisDialog),  { ssr: false });
+const ShortcutsDialog = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.ShortcutsDialog), { ssr: false });
 
 // ─── Stable color palette for presets ────────────────────────────────────────
 const PRESET_COLORS = [
@@ -84,12 +86,17 @@ export default function Workspace() {
     toggleVisibility,
     updateProjectMeta,
     activePage,
+    showLabels,
+    setShowLabels,
+    materialLibraryOpen: showMaterialLibrary,
+    setMaterialLibraryOpen: setShowMaterialLibrary,
+    focusMeasurement,
+    goToPage,
   } = useTakeoffData();
   const href = useProjectHref();
 
   const [leftCollapsed,       setLeftCollapsed]       = useState(false);
   const [rightCollapsed,      setRightCollapsed]      = useState(false);
-  const [showMaterialLibrary, setShowMaterialLibrary] = useState(false);
   const [showExportModal,     setShowExportModal]     = useState(false);
   const [showPresetDrawer,    setShowPresetDrawer]    = useState(false);
   const [toasts,              setToasts]              = useState<any[]>([]);
@@ -387,10 +394,13 @@ export default function Workspace() {
     (mats: Material[]) => setProjectState(prev => ({ ...prev, materials: mats })),
     [setProjectState],
   );
-  const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), []);
+  const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), [setShowMaterialLibrary]);
   const collapseSidebar     = useCallback(() => setLeftCollapsed(true), []);
   const expandSidebar       = useCallback(() => setLeftCollapsed(false), []);
   const collapseTable       = useCallback(() => setRightCollapsed(true), []);
+  const [showAnalysis,  setShowAnalysis]  = useState(false);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const openAnalysis        = useCallback(() => setShowAnalysis(true), []);
   const expandTable         = useCallback(() => setRightCollapsed(false), []);
 
   // [ and ] toggle the side panels (ignored while typing or with modifiers).
@@ -399,7 +409,8 @@ export default function Workspace() {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-      if (e.key === '[') { e.preventDefault(); setLeftCollapsed(v => !v); }
+      if (e.key === '?') { e.preventDefault(); setShowShortcuts(v => !v); }
+      else if (e.key === '[') { e.preventDefault(); setLeftCollapsed(v => !v); }
       else if (e.key === ']') { e.preventDefault(); setRightCollapsed(v => !v); }
     };
     window.addEventListener('keydown', onKey);
@@ -478,6 +489,8 @@ export default function Workspace() {
               scaleFactor={currentScaleFactor}
               calibrating={activeTool === 'scale'}
               onCalibrate={() => (api?.setActiveTool ? api.setActiveTool('scale') : setActiveTool('scale'))}
+              pageSizePt={api?.pageSizePt}
+              onApplyScale={handleScaleSet}
             />
           </>
         }
@@ -536,6 +549,8 @@ export default function Workspace() {
             togglePolyarcMode={api?.togglePolyarcMode}
             hideHistory
             hideScale
+            showLabels={showLabels}
+            setShowLabels={setShowLabels}
             leading={leftCollapsed ? (
               <>
                 <button
@@ -605,6 +620,7 @@ export default function Workspace() {
                 onToggleVisibility={toggleVisibility}
                 onExpand={openFullTable}
                 onCollapse={collapseTable}
+                onOpenAnalysis={openAnalysis}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={handleAddManual}
               />
@@ -699,10 +715,29 @@ export default function Workspace() {
               Page {activePage} · {isPageCalibrated ? 'calibrated' : 'not calibrated'}
             </span>
           )}
-          <SaveIndicator />
+          <button
+            type="button"
+            onClick={() => setShowShortcuts(true)}
+            className="text-[9px] font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-300"
+            title="Keyboard shortcuts (?)"
+          >
+            Shortcuts <kbd className="ml-1 border border-zinc-700 px-1 text-zinc-500">?</kbd>
+          </button>
         </div>
 
       </footer>
+
+      {showAnalysis && (
+        <AnalysisDialog
+          measurements={ps.measurements}
+          drawings={ps.drawings}
+          materials={ps.materials as Material[]}
+          onClose={() => setShowAnalysis(false)}
+          onFocus={focusMeasurement}
+          onGoToPage={goToPage}
+        />
+      )}
+      {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}
 
       <style>{`
         @keyframes bounceUp {

@@ -41,9 +41,15 @@
   background-size: 32px 32px;
 }
 
+/* Thin, on-brand scrollbars (Firefox uses the standard properties). */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #3A4148 #16191C;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
-  width: 4px;
-  height: 4px;
+  width: 6px;
+  height: 6px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
@@ -51,7 +57,8 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: #353534;
+  background: #3A4148;
+  border-radius: 3px;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {

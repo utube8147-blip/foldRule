@@ -59,10 +59,15 @@ export function useMeasurements({
   snapCandidates,
   // FIX F: forcedPolyarcMode from Viewer's handleSetActiveTool
   forcedPolyarcMode,
+  showLabels,
+  selectedIdRef,
 }: UseMeasurementsParams & {
   snapCandidates?:    Array<{ x: number; y: number; type: string }>;
   forcedPolyarcMode?: 'line' | 'arc';
+  showLabels?:        boolean;
+  selectedIdRef?:     React.RefObject<string | null>;
 }): UseMeasurementsReturn & {
+  redrawDrawingCanvas: () => void;
   polyarcMode:      'line' | 'arc';
   togglePolyarcMode: () => void;
 } {
@@ -134,6 +139,8 @@ export function useMeasurements({
     snapEnabledRef,
     // FIX D: wire snap candidates through so proximity visuals render
     snapCandidates: snapCandidates ?? [],
+    showLabels,
+    selectedIdRef,
   });
 
   redrawDrawingCanvasRef.current = canvas.redrawDrawingCanvas;
@@ -228,7 +235,11 @@ export function useMeasurements({
     [pdfDimensionsRef],
   );
 
+  // Stable function that repaints the drawing canvas (e.g. after a selection change).
+  const redrawDrawingCanvas = useCallback(() => redrawDrawingCanvasRef.current(), []);
+
   return {
+    redrawDrawingCanvas,
     cursorPoint:              canvas.cursorPoint,
     setCursorPoint:           canvas.setCursorPoint,
     pendingSnapCandidates,

@@ -3,6 +3,10 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   turbopack: {}, // ← add this to silence the error
+  env: {
+    // Identifies this build (shown under the viewer's "i" details; versions the service worker).
+    NEXT_PUBLIC_BUILD_ID: new Date().toISOString().slice(0, 16).replace('T', ' '),
+  },
   async headers() {
     return [
       {

@@ -33,6 +33,7 @@ import {
   MapPin,
   Wand2,
   CircleDot,
+  Circle,
   Spline,
 } from 'lucide-react';
 
@@ -101,7 +102,7 @@ export const VIEWER_TOOLS = [
   {
     id:       'polygon',
     label:    'Polygon',
-    shortcut: 'G',    // was P, reassigned — P now free, A was stolen by polyarc
+    shortcut: 'P',
     icon:     Pentagon,
     group:    'area' as ToolGroup,
     disabled: false,
@@ -148,6 +149,14 @@ export const VIEWER_TOOLS = [
     group:    'linear' as ToolGroup,
     disabled: false,
   },
+  {
+    id:       'radius',
+    label:    'Circle (centre, then edge)',
+    shortcut: 'C',
+    icon:     Circle,
+    group:    'linear' as ToolGroup,
+    disabled: false,
+  },
 
   // ── Group 4: Point ────────────────────────────────────────────────────────
   {
@@ -161,7 +170,7 @@ export const VIEWER_TOOLS = [
   {
     id:       'point',
     label:    'Point',
-    shortcut: 'O',
+    shortcut: 'T',
     icon:     MapPin,
     group:    'point' as ToolGroup,
     disabled: false,
@@ -194,24 +203,17 @@ export type AdvancedToolMeta = {
 
 export const ADVANCED_CANVAS_TOOLS: AdvancedToolMeta[] = [
   {
-    id:       'radius',
-    label:    'Radius / circle',
-    sub:      'Click centre then any edge point',
-    shortcut: 'R2',
-    disabled: false,
-  },
-  {
     id:       'grid-count',
     label:    'Grid count',
     sub:      'Draw polygon, grid auto-counts tiles',
-    shortcut: 'G2',
+    shortcut: 'G',
     disabled: false,
   },
   {
     id:       'perimeter-offset',
     label:    'Perimeter offset',
     sub:      'Auto-offset line from any closed polygon',
-    shortcut: 'O2',
+    shortcut: 'O',
     disabled: false,
     // badge:    'Soon',
   },
@@ -360,4 +362,6 @@ export interface ViewerToolbarAPI {
 
   // Live in-progress point count (fixes hardcoded 0 bug)
   tempPointsCount: number;
+  /** Size of the visible page in PDF points (for scale presets). */
+  pageSizePt?: { w: number; h: number } | null;
 }

@@ -654,6 +654,12 @@ function killWorker(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface UseMagicFillSessionProps {
+  /**
+   * Whether the Magic Fill tool is selected. The wall mask (an extra off-screen
+   * page render + full pixel scan) is only built while it is — and only once
+   * per page, since it's rendered at a fixed scale.
+   */
+  magicFillActive?:     boolean;
   fillCanvasRef:        React.RefObject<HTMLCanvasElement | null>;
   pdfRenderCount:       number;
   pdfCanvasRef:         React.RefObject<HTMLCanvasElement | null>;
@@ -690,6 +696,7 @@ export function fmtArea(px: number, mpp: number | null): string {
 
 export function useMagicFillSession({
   fillCanvasRef,
+  magicFillActive = true,
   pdfRenderCount,
   pdfCanvasRef,
   pdfDimensions,
@@ -734,6 +741,8 @@ export function useMagicFillSession({
 
   // ── Internal refs ─────────────────────────────────────────────────────────
   const maskRef       = useRef<Uint8Array | null>(null);
+  /** Page the current mask was built from (masks are zoom-independent). */
+  const maskPageRef = useRef<unknown>(null);
   const maskWRef      = useRef(0);
   const maskHRef      = useRef(0);
   const fillDataRef   = useRef<ImageData | null>(null);
@@ -838,10 +847,16 @@ export function useMagicFillSession({
       const id   = ctx.getImageData(0, 0, bc.width, bc.height);
       const mask = buildNormalisedWallMask(id.data, bc.width, bc.height);
       maskRef.current  = mask;
+      maskPageRef.current = null;   // zoom-dependent fallback: rebuild next time
       maskWRef.current = bc.width;
       maskHRef.current = bc.height;
       setMaskDims({ w: bc.width, h: bc.height });
     };
+
+    // Lazy + cached: build only when the tool is in use, and skip when the
+    // mask for this exact page already exists (zoom doesn't change it).
+    if (!magicFillActive) return;
+    if (maskRef.current && maskPageRef.current && maskPageRef.current === currentPdfPageRef.current) return;
 
     const page = currentPdfPageRef.current;
     if (!page) {
@@ -868,6 +883,7 @@ export function useMagicFillSession({
         const id   = offCtx.getImageData(0, 0, offW, offH);
         const mask = buildNormalisedWallMask(id.data, offW, offH);
         maskRef.current  = mask;
+        maskPageRef.current = page;
         maskWRef.current = offW;
         maskHRef.current = offH;
         setMaskDims({ w: offW, h: offH });
@@ -879,7 +895,7 @@ export function useMagicFillSession({
       });
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pdfRenderCount]);
+  }, [pdfRenderCount, magicFillActive]);
 
   // ── Single-click raster fill ──────────────────────────────────────────────
   const handleMagicSingleClick = useCallback((canvasX: number, canvasY: number) => {

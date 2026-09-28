@@ -3,6 +3,9 @@ import React, { useState, useCallback } from 'react';
 import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check, PanelRightClose } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
 import { TakeoffRow, Material } from '@/types';
+import { useTakeoffData } from '@/context/TakeoffContext';
+import { MaterialPicker } from '@/components/common/MaterialPicker';
+import { useConfirm } from '@/components/common/ConfirmDialog';
 
 interface TakeoffTableProps {
   measurements: TakeoffRow[];
@@ -14,94 +17,12 @@ interface TakeoffTableProps {
   onExpand?: () => void;
   /** Collapse the takeoff panel (button at the end of the panel header). */
   onCollapse?: () => void;
+  /** Open the project analysis (totals, unpriced rows, pages without a scale). */
+  onOpenAnalysis?: () => void;
   onAddSegmentToGroup?: (groupId: string, groupType: string) => void;
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
 
-// ─── Confirmation Dialog Component ───────────────────────────────────────────
-interface ConfirmDialogProps {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  confirmText?: string;
-  cancelText?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  type?: 'danger' | 'warning' | 'info';
-}
-
-function ConfirmDialog({
-  isOpen,
-  title,
-  message,
-  confirmText = 'Delete',
-  cancelText = 'Cancel',
-  onConfirm,
-  onCancel,
-  type = 'danger'
-}: ConfirmDialogProps) {
-  if (!isOpen) return null;
-
-  const typeStyles = {
-    danger: {
-      icon: <AlertTriangle className="w-5 h-5 text-red-500" />,
-      button: 'bg-red-600 hover:bg-red-700 text-white',
-      border: 'border-red-500/30'
-    },
-    warning: {
-      icon: <AlertTriangle className="w-5 h-5 text-amber-500" />,
-      button: 'bg-amber-600 hover:bg-amber-700 text-white',
-      border: 'border-amber-500/30'
-    },
-    info: {
-      icon: <AlertTriangle className="w-5 h-5 text-blue-500" />,
-      button: 'bg-blue-600 hover:bg-blue-700 text-white',
-      border: 'border-blue-500/30'
-    }
-  };
-
-  const style = typeStyles[type];
-
-  return (
-    <>
-      <div
-        className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 animate-in fade-in duration-200"
-        onClick={onCancel}
-      />
-      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-96 animate-in zoom-in-95 fade-in duration-200">
-        <div className={cn("bg-stone-900 border rounded-lg shadow-2xl", style.border)}>
-          <div className="flex items-center justify-between p-4 border-b border-stone-800">
-            <div className="flex items-center gap-3">
-              <div className="p-1.5 bg-stone-800/50 rounded-full">{style.icon}</div>
-              <h3 className="text-sm font-bold text-zinc-100 uppercase tracking-wider">{title}</h3>
-            </div>
-            <button onClick={onCancel} className="p-1 text-zinc-500 hover:text-zinc-300 transition-colors rounded-lg hover:bg-stone-800">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-          <div className="p-4">
-            <p className="text-xs text-zinc-400 leading-relaxed font-mono">{message}</p>
-          </div>
-          <div className="flex items-center justify-end gap-2 p-4 border-t border-stone-800 bg-stone-900/50 rounded-b-lg">
-            <button onClick={onCancel} className="px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-200 transition-colors">
-              {cancelText}
-            </button>
-            <button onClick={onConfirm} className={cn("px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest rounded transition-all", style.button)}>
-              {confirmText}
-            </button>
-          </div>
-        </div>
-      </div>
-      <style>{`
-        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
-        @keyframes zoom-in-95 { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
-        .animate-in { animation-duration: 0.2s; animation-fill-mode: both; }
-        .fade-in { animation-name: fade-in; }
-        .zoom-in-95 { animation-name: zoom-in-95; }
-      `}</style>
-    </>
-  );
-}
 
 // ─── useCopyToClipboard hook ─────────────────────────────────────────────
 function useCopyToClipboard() {
@@ -144,6 +65,7 @@ function TakeoffTableImpl({
   onToggleVisibility,
   onExpand,
   onCollapse,
+  onOpenAnalysis,
   onAddSegmentToGroup,
   batchUpdateMeasurements,
 }: TakeoffTableProps) {
@@ -151,13 +73,11 @@ function TakeoffTableImpl({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  const { selectedId, focusMeasurement, setMaterialLibraryOpen } = useTakeoffData();
+  const bodyRef = React.useRef<HTMLDivElement>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
 
-  const [confirmDialog, setConfirmDialog] = useState<{
-    isOpen: boolean;
-    groupName: string;
-    groupId: string;
-  }>({ isOpen: false, groupName: '', groupId: '' });
+  const { confirm } = useConfirm();
 
   const { copiedId, copy } = useCopyToClipboard();
 
@@ -225,6 +145,32 @@ function TakeoffTableImpl({
     type === 'quantity'
       ? items.reduce((sum, i) => sum + i.quantity, 0)
       : items.reduce((sum, i) => sum + i.quantity * i.unitRate, 0);
+
+  // Bring the selected row into view (expanding its group if needed) when the
+  // selection comes from the drawing.
+  React.useEffect(() => {
+    if (!selectedId) return;
+    for (const [key, g] of organizedData.groups) {
+      if (g.items.some(i => i.id === selectedId) && !expandedGroups.has(key)) {
+        setExpandedGroups(prev => new Set(prev).add(key));
+        break;
+      }
+    }
+    const raf = requestAnimationFrame(() => {
+      const row = bodyRef.current?.querySelector<HTMLElement>(`tr[data-row-id="${CSS.escape(selectedId)}"]`);
+      row?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    return () => cancelAnimationFrame(raf);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
+
+  // Rows without any rate (their cost is missing from the total).
+  const pricing = React.useMemo(() => {
+    const items = measurements.filter(m => !m.isGroupHeader);
+    const matRate = new Map(materials.map(mt => [mt.id, mt.unitRate]));
+    const unpriced = items.filter(m => !(m.unitRate > 0) && !((m.materialId && matRate.get(m.materialId)) || 0));
+    return { total: items.length, unpriced: unpriced.length };
+  }, [measurements, materials]);
 
   const totalCost  = React.useMemo(
     () => measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0),
@@ -344,31 +290,27 @@ function TakeoffTableImpl({
 
     if (isEditing) {
       return (
-        <select
-          autoFocus
-          defaultValue={row.materialId || ''}
-          onBlur={(e) => {
-            const selectedId = e.target.value;
-            const mat = materials.find((m) => m.id === selectedId);
+        <MaterialPicker
+          size="sm"
+          autoOpen
+          materials={materials}
+          value={row.materialId ?? null}
+          onOpenBank={() => { stopEditing(); setMaterialLibraryOpen(true); }}
+          onClose={stopEditing}
+          onChange={(id) => {
+            const mat = id ? materials.find((m) => m.id === id) : undefined;
             if (mat) {
-              const total = getMaterialTotal(mat);
-              onUpdate(row.id, { materialId: mat.id, unitRate: total, unit: mat.unit });
+              // Measured rows keep their measured unit (m, m², EA); manual rows take the material's.
+              onUpdate(row.id, {
+                materialId: mat.id,
+                unitRate: getMaterialTotal(mat),
+                ...(row.points?.length ? {} : { unit: mat.unit }),
+              });
             } else {
               onUpdate(row.id, { materialId: undefined });
             }
-            stopEditing();
           }}
-          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-          onClick={(e) => e.stopPropagation()}
-          className="w-full bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
-        >
-          <option value="">— None —</option>
-          {materials.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.code || m.id.slice(0, 6)} – {m.name} ({formatCurrency(getMaterialTotal(m))}/{m.unit})
-            </option>
-          ))}
-        </select>
+        />
       );
     }
 
@@ -409,6 +351,28 @@ function TakeoffTableImpl({
       </button>
     </div>
   );
+
+  const renderMaterialChip = (row: TakeoffRow) => {
+    const mat = getMaterial(row.materialId);
+    const open = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setExpandedRows(prev => new Set(prev).add(row.id));
+      startEditing(row.id, 'materialId', e);
+    };
+    return (
+      <button
+        type="button"
+        onClick={open}
+        title={mat ? 'Change material' : 'Assign a material from the bank'}
+        className={cn(
+          'mt-0.5 block max-w-full truncate text-left text-[9px] font-mono transition-colors',
+          mat ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 hover:text-amber-accent',
+        )}
+      >
+        {mat ? `${mat.code ? `${mat.code} · ` : ''}${mat.name}` : '+ material'}
+      </button>
+    );
+  };
 
   const renderDetailPanel = (row: TakeoffRow) => {
     const itemTotalCost = row.quantity * row.unitRate;
@@ -451,16 +415,6 @@ function TakeoffTableImpl({
 
   return (
     <aside className="w-full min-w-0 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
-      <ConfirmDialog
-        isOpen={confirmDialog.isOpen}
-        title="Delete Group"
-        message={`Are you sure you want to delete "${confirmDialog.groupName}" and all its items? This action cannot be undone.`}
-        confirmText="Delete Group"
-        cancelText="Cancel"
-        type="danger"
-        onConfirm={() => { onDelete(confirmDialog.groupId); setConfirmDialog({ isOpen: false, groupName: '', groupId: '' }); }}
-        onCancel={() => setConfirmDialog({ isOpen: false, groupName: '', groupId: '' })}
-      />
 
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center flex-shrink-0">
         <span className="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
@@ -496,7 +450,7 @@ function TakeoffTableImpl({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto custom-scrollbar">
+      <div ref={bodyRef} className="flex-1 overflow-auto custom-scrollbar">
         <table className="w-full text-[10px] border-collapse">
           <thead className="bg-stone-900/80 sticky top-0 z-20">
             <tr className="border-b border-industrial-border text-zinc-500 uppercase tracking-tighter">
@@ -636,11 +590,13 @@ function TakeoffTableImpl({
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              setConfirmDialog({
-                                isOpen: true,
-                                groupName: header.groupName || header.description || 'this group',
-                                groupId: header.id,
-                              });
+                              const name = header.groupName || header.description || 'this group';
+                              void confirm({
+                                title: 'Delete group',
+                                message: <>Delete <span className="text-zinc-100 font-bold">{name}</span> and all its items?</>,
+                                detail: 'This can’t be undone.',
+                                confirmText: 'Delete group',
+                              }).then(ok => { if (ok) onDelete(header.id); });
                             }}
                             className="text-zinc-700 hover:text-red-500 transition-colors"
                           >
@@ -656,8 +612,10 @@ function TakeoffTableImpl({
                     return (
                       <React.Fragment key={item.id}>
                         <tr
-                          className={cn('border-t border-[#1a1a1a] transition-colors cursor-pointer', isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
-                          onClick={() => toggleRowExpand(item.id)}
+                          data-row-id={item.id}
+                          className={cn('group/row border-t border-[#1a1a1a] transition-colors cursor-pointer',
+                            item.id === selectedId ? 'bg-amber-400/[0.08] shadow-[inset_2px_0_0_#F2C230]' : isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
+                          onClick={() => { toggleRowExpand(item.id); focusMeasurement(item.id); }}
                         >
                           <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[9px] whitespace-nowrap">
                             {groupIdx + 1}.{itemIdx + 1}
@@ -693,6 +651,7 @@ function TakeoffTableImpl({
                                 {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                               </span>
                             </div>
+                            {renderMaterialChip(item)}
                           </td>
                           <td className="p-2 text-right pr-1">
                             <div className="flex items-center justify-end gap-3">
@@ -714,8 +673,10 @@ function TakeoffTableImpl({
               return (
                 <React.Fragment key={row.id}>
                   <tr
-                    className={cn('border-t border-industrial-border transition-colors cursor-pointer', isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
-                    onClick={() => toggleRowExpand(row.id)}
+                    data-row-id={row.id}
+                    className={cn('group/row border-t border-industrial-border transition-colors cursor-pointer',
+                      row.id === selectedId ? 'bg-amber-400/[0.08] shadow-[inset_2px_0_0_#F2C230]' : isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
+                    onClick={() => { toggleRowExpand(row.id); focusMeasurement(row.id); }}
                   >
                     <td className="p-2 text-center border-r border-industrial-border text-zinc-600 font-bold whitespace-nowrap">
                       {(organizedData.groups.size + idx + 1).toString().padStart(2, '0')}
@@ -750,6 +711,7 @@ function TakeoffTableImpl({
                           {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                         </span>
                       </div>
+                      {renderMaterialChip(row)}
                     </td>
                     <td className="p-2 text-right pr-1">
                       <div className="flex items-center justify-end gap-3">
@@ -781,10 +743,28 @@ function TakeoffTableImpl({
             <span className="text-xl font-bold text-amber-accent tracking-tighter">{formatCurrency(totalCost)}</span>
           </div>
           <div className="h-0.5 bg-zinc-800 w-full rounded-full overflow-hidden">
-            <div className="h-full bg-amber-accent shadow-[0_0_8px_rgba(242,194,48,0.5)] w-[65%]" />
+            <div
+              className="h-full bg-amber-accent shadow-[0_0_8px_rgba(242,194,48,0.5)] transition-[width] duration-500"
+              style={{ width: `${pricing.total ? Math.round(((pricing.total - pricing.unpriced) / pricing.total) * 100) : 0}%` }}
+            />
           </div>
+          {pricing.total > 0 && (
+            <p className="mt-2 text-[10px] text-zinc-500">
+              {pricing.unpriced === 0
+                ? 'Every row is priced.'
+                : <>
+                    <span className="text-amber-300">{pricing.unpriced} of {pricing.total} rows have no rate</span>
+                    {' '}— their cost isn’t in this total.
+                  </>}
+            </p>
+          )}
         </div>
-        <button className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[10px] font-bold uppercase tracking-widest transition-all">
+        <button
+          type="button"
+          onClick={onOpenAnalysis}
+          disabled={!onOpenAnalysis}
+          className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+        >
           Generate Full Analysis
         </button>
       </div>

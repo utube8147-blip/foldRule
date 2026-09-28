@@ -68,6 +68,10 @@ interface UseDrawingCanvasParams {
   snapEnabledRef:   React.RefObject<boolean>;
   snapCandidates?:  Array<{ x: number; y: number; type: string }>;
   arcDragPreview?:  { start: {x:number;y:number}; mid: {x:number;y:number}; end: {x:number;y:number} } | null;
+  /** Draw each measurement's quantity on the drawing (cached with the shapes). */
+  showLabels?:      boolean;
+  /** Measurement to outline as selected (read per frame; no re-render needed). */
+  selectedIdRef?:   React.RefObject<string | null>;
 }
 
 interface UseDrawingCanvasReturn {
@@ -552,6 +556,8 @@ export function useDrawingCanvas({
   snapEnabledRef,
   snapCandidates = [],
   arcDragPreview,
+  showLabels = false,
+  selectedIdRef,
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
   // The cursor position is render-irrelevant (the canvas reads cursorPointRef),
   // so it lives in a ref. Previously this was useState, which re-rendered the
@@ -571,6 +577,7 @@ export function useDrawingCanvas({
     canvas: HTMLCanvasElement;
     measurements: TakeoffRow[];
     w: number; h: number; dw: number; dh: number;
+    labels: boolean;
   } | null>(null);
 
   const lastCursorRef     = useRef<{ x: number; y: number } | null>(null);
@@ -620,6 +627,40 @@ export function useDrawingCanvas({
       if (!ctx) return;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const drawLabels = (ctx: CanvasRenderingContext2D) => {
+        ctx.save();
+        ctx.font = '600 11px var(--font-jetbrains), ui-monospace, monospace';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'center';
+        for (const m of measurements) {
+          if (m.isVisible === false || m.isGroupHeader || !m.points?.length) continue;
+          if (m.type === 'Point') continue;
+          const pts = m.points.map(p => toCanvas(p.x, p.y));
+          let ax: number, ay: number;
+          const closed = m.type === 'Area' || m.type === 'Polygon' || m.type === 'Rectangle';
+          if (m.type === 'Count') {
+            ax = pts[0].x; ay = pts[0].y - 22;
+          } else if (closed) {
+            ax = pts.reduce((a, p) => a + p.x, 0) / pts.length;
+            ay = pts.reduce((a, p) => a + p.y, 0) / pts.length;
+          } else {
+            const i = Math.max(0, Math.floor((pts.length - 1) / 2));
+            const a = pts[i], b = pts[Math.min(i + 1, pts.length - 1)];
+            ax = (a.x + b.x) / 2; ay = (a.y + b.y) / 2 - 14;
+          }
+          const q = Number.isFinite(m.quantity) ? m.quantity : 0;
+          const text = `${q.toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: m.type === 'Count' ? 0 : 2 })} ${m.unit ?? ''}`.trim();
+          const w = ctx.measureText(text).width + 10;
+          ctx.fillStyle = 'rgba(29,33,37,0.88)';
+          ctx.fillRect(ax - w / 2, ay - 9, w, 18);
+          ctx.fillStyle = m.color || '#F2C230';
+          ctx.fillRect(ax - w / 2, ay - 9, 2, 18);
+          ctx.fillStyle = '#F4F5F6';
+          ctx.fillText(text, ax + 1, ay + 0.5);
+        }
+        ctx.restore();
+      };
 
       const drawCommitted = (ctx: CanvasRenderingContext2D) => {
       for (const m of measurements) {
@@ -697,7 +738,8 @@ export function useDrawingCanvas({
           !layer ||
           layer.measurements !== measurements ||
           layer.w !== canvas.width || layer.h !== canvas.height ||
-          layer.dw !== dim.w || layer.dh !== dim.h;
+          layer.dw !== dim.w || layer.dh !== dim.h ||
+          layer.labels !== showLabels;
         if (stale) {
           const off = layer?.canvas ?? document.createElement('canvas');
           if (off.width !== canvas.width || off.height !== canvas.height) {
@@ -707,14 +749,41 @@ export function useDrawingCanvas({
           if (octx) {
             octx.clearRect(0, 0, off.width, off.height);
             drawCommitted(octx);
+            if (showLabels) drawLabels(octx);
           }
-          layer = { canvas: off, measurements, w: canvas.width, h: canvas.height, dw: dim.w, dh: dim.h };
+          layer = { canvas: off, measurements, w: canvas.width, h: canvas.height, dw: dim.w, dh: dim.h, labels: showLabels };
           committedLayerRef.current = layer;
         }
         ctx.drawImage(layer!.canvas, 0, 0);
       } else {
         committedLayerRef.current = null;
         drawCommitted(ctx);
+        if (showLabels) drawLabels(ctx);
+      }
+
+      // ── Selection outline (per frame, cheap: one shape) ───────────────────
+      const selId = selectedIdRef?.current;
+      if (selId) {
+        const sel = measurements.find(m => m.id === selId);
+        if (sel && sel.isVisible !== false && sel.points?.length) {
+          const pts = sel.points.map(p => toCanvas(p.x, p.y));
+          const closed = sel.type === 'Area' || sel.type === 'Polygon' || sel.type === 'Rectangle';
+          ctx.save();
+          if (pts.length === 1 || sel.type === 'Count' || sel.type === 'Point') {
+            for (const p of pts) {
+              ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
+              ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(242,194,48,0.95)'; ctx.stroke();
+            }
+          } else {
+            ctx.beginPath();
+            pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+            if (closed) ctx.closePath();
+            ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+            ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(242,194,48,0.28)'; ctx.stroke();
+            ctx.lineWidth = 2;  ctx.setLineDash([8, 5]); ctx.strokeStyle = 'rgba(242,194,48,1)'; ctx.stroke();
+          }
+          ctx.restore();
+        }
       }
 
       const candidates = snapCandidatesRef.current;
@@ -1349,6 +1418,7 @@ export function useDrawingCanvas({
     [
       drawingCanvasRef, pdfDimensionsRef, measurements, tempPoints,
       activeTool, scaleFactor, pendingBreak, toCanvas, cursorPointRef,
+      showLabels, selectedIdRef,
     ],
   );
 

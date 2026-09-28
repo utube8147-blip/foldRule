@@ -19,6 +19,21 @@ import {
 } from 'react';
 import pdfjsLib from "@/lib/pdf/pdfClient";
 import { destroyPdf } from '@/lib/pdf/destroyPdf';
+
+// ─── Parsed-document cache ────────────────────────────────────────────────────
+// Switching back to a recently opened plan reuses its parsed PDF (no re-read,
+// no re-parse, fonts already loaded). Older documents are released.
+const DOC_CACHE_MAX = 3;
+const docCache = new Map<string, PDFDocumentProxy>();
+function keepDoc(key: string, doc: PDFDocumentProxy) {
+  docCache.delete(key);
+  docCache.set(key, doc);
+  while (docCache.size > DOC_CACHE_MAX) {
+    const [oldKey, oldDoc] = docCache.entries().next().value as [string, PDFDocumentProxy];
+    docCache.delete(oldKey);
+    if (oldDoc !== doc) destroyPdf(oldDoc);
+  }
+}
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
@@ -248,8 +263,11 @@ export function useViewerPdf({
       return;
     }
 
+    const cacheKey = `${activeDrawingId}|${activeDrawingUrl}`;
+
     const onLoad = async (doc: PDFDocumentProxy) => {
-      if (!mounted) { destroyPdf(doc); return; }
+      keepDoc(cacheKey, doc);               // cached even if we switched away meanwhile
+      if (!mounted) return;
       loadedDocRef.current = doc;
       const page = await doc.getPage(1);
       const vp   = page.getViewport({ scale: 1 });
@@ -267,16 +285,17 @@ export function useViewerPdf({
       setCommittedScale(fit);
       // NEW: bump pageChangeCount on new document load.
       setPageChangeCount(c => c + 1);
-      setTimeout(() => {
+      // Next frames (not fixed delays): let layout settle, then centre.
+      requestAnimationFrame(() => {
         if (!mounted) return;
         onPdfLoaded?.(doc, activeDrawingFileRef.current);
-        setTimeout(() => {
+        requestAnimationFrame(() => {
           if (mounted) {
             centerDocumentInViewport();
             setLoading(false);
           }
-        }, 150);
-      }, 50);
+        });
+      });
     };
 
     const onErr = (err: any) => {
@@ -284,27 +303,22 @@ export function useViewerPdf({
       if (mounted) setLoading(false);
     };
 
+    const cached = docCache.get(cacheKey);
     const file = activeDrawingFileRef.current;
-    if (file) {
-      const r = new FileReader();
-      r.onload = () => {
-        if (!mounted) return;
-        pdfjsLib!
-          .getDocument({ data: new Uint8Array(r.result as ArrayBuffer) })
-          .promise.then(onLoad)
-          .catch(onErr);
-      };
-      r.readAsArrayBuffer(file);
+    if (cached) {
+      void onLoad(cached);
+    } else if (file) {
+      file.arrayBuffer()
+        .then(buf => (mounted ? pdfjsLib!.getDocument({ data: new Uint8Array(buf) }).promise.then(onLoad) : undefined))
+        .catch(onErr);
     } else {
       pdfjsLib!.getDocument(activeDrawingUrl!).promise.then(onLoad).catch(onErr);
     }
 
     return () => {
       mounted = false;
-      // Release the previous document (pages, fonts, worker memory).
-      const old = loadedDocRef.current;
+      // The document stays in docCache; the cache releases old ones itself.
       loadedDocRef.current = null;
-      if (old) setTimeout(() => destroyPdf(old), 0);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDrawingId, activeDrawingUrl]);

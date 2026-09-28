@@ -1,12 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { DoorOpen, Wind, Fan, Zap, Plug } from 'lucide-react';
+import { DoorOpen, Wind, Fan, Zap, Plug, Library } from 'lucide-react';
+import { useTakeoffData } from '@/context/TakeoffContext';
+import { formatCurrency } from '@/lib/utils';
+import type { Material } from '@/types';
+import { MaterialPicker, materialRate } from '@/components/common/MaterialPicker';
 
 interface MeasurementDetailsDialogProps {
   isOpen: boolean;
   defaultName: string;
   defaultMaterial: string;
   measurementType?: string;
-  onConfirm: (name: string, material: string, icon?: string) => void;
+  /** `materialId` is the id of a material from the bank, or '' for none. */
+  onConfirm: (name: string, materialId: string, icon?: string) => void;
   onSkip: () => void;
 }
 
@@ -30,6 +35,9 @@ export function MeasurementDetailsDialog({
   const [material, setMaterial] = useState(defaultMaterial);
   const [selectedIcon, setSelectedIcon] = useState<string | undefined>(undefined);
   const isCountType = measurementType === 'Count';
+  const { projectState, setMaterialLibraryOpen } = useTakeoffData();
+  const materials = projectState.materials as Material[];
+  const rateOf = (m: Material) => (m.materialCost ?? 0) + (m.laborCost ?? 0) + (m.equipmentCost ?? 0) || m.unitRate || 0;
 
   useEffect(() => {
     if (isOpen) {
@@ -66,20 +74,50 @@ export function MeasurementDetailsDialog({
             />
           </div>
           
-          {!isCountType && (
-            <div>
-              <label className="block text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
-                Material
-              </label>
-              <input
-                type="text"
-                value={material}
-                onChange={e => setMaterial(e.target.value)}
-                className="w-full bg-zinc-800 border border-industrial-border px-3 py-2 text-sm font-mono text-zinc-200 focus:outline-none focus:border-amber-400 transition-colors"
-                placeholder="e.g., Concrete, Steel, Wood, etc."
-              />
-            </div>
-          )}
+          <div>
+            <label htmlFor="md-material" className="block text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
+              Material <span className="normal-case tracking-normal font-normal text-zinc-600">(optional — sets the rate)</span>
+            </label>
+            {materials.length > 0 ? (
+              <>
+                <MaterialPicker
+                  id="md-material"
+                  materials={materials}
+                  value={material || null}
+                  onChange={id => setMaterial(id ?? '')}
+                  onOpenBank={() => setMaterialLibraryOpen(true)}
+                />
+                {(() => {
+                  const chosen = materials.find(m => m.id === material);
+                  if (!chosen || materialRate(chosen) > 0) return null;
+                  return (
+                    <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-mono text-zinc-400">
+                      <span><span className="text-amber-400">No rate set</span> for this material yet — its cost won’t be counted until it has one.</span>
+                      <button
+                        type="button"
+                        onClick={() => setMaterialLibraryOpen(true)}
+                        className="font-bold uppercase tracking-widest text-[10px] text-amber-400 hover:text-amber-300"
+                      >
+                        Set rate
+                      </button>
+                      <span className="text-zinc-600">or continue without it.</span>
+                    </p>
+                  );
+                })()}
+              </>
+            ) : (
+              <div className="flex items-center justify-between gap-3 border border-dashed border-industrial-border px-3 py-2">
+                <span className="text-[11px] font-mono text-zinc-500">Your material bank is empty.</span>
+                <button
+                  type="button"
+                  onClick={() => setMaterialLibraryOpen(true)}
+                  className="shrink-0 flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300"
+                >
+                  <Library className="w-3.5 h-3.5" /> Open material bank
+                </button>
+              </div>
+            )}
+          </div>
 
           {isCountType && (
             <div>

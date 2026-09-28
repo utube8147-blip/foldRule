@@ -49,6 +49,9 @@ import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
 
 
 interface ViewerToolbarProps {
+  /** Quantity labels on the drawing (toggle shown when provided). */
+  showLabels?: boolean;
+  setShowLabels?: (v: boolean) => void;
   /** Rendered after the zoom controls (e.g. the workspace's "show takeoff panel" button). */
   trailing?: React.ReactNode;
   /** Rendered before the tool buttons (e.g. the workspace's "expand sidebar" button). */
@@ -146,10 +149,99 @@ export function HistoryControls({
   );
 }
 
+const SCALE_RATIOS = [1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 200, 250, 500, 1000, 1250, 2500];
+/** Long side of ISO paper sizes, in mm. */
+const PAPER_LONG_MM: Record<string, number> = { A0: 1189, A1: 841, A2: 594, A3: 420, A4: 297 };
+const MM_PER_PT = 25.4 / 72;
+
+/**
+ * Metres per PDF point for a drawing at 1:N. If the drawing was drawn for a
+ * paper size different from the PDF page (e.g. an A1 sheet printed to A3),
+ * the ratio of the long sides corrects for it.
+ */
+export function presetScaleFactor(ratio: number, paper: string, pageLongPt: number | null): number {
+  let fit = 1;
+  const target = PAPER_LONG_MM[paper];
+  if (target && pageLongPt && pageLongPt > 0) fit = target / (pageLongPt * MM_PER_PT);
+  return (ratio * MM_PER_PT * fit) / 1000;
+}
+
+function ScalePresets({ pageSizePt, onApply }: {
+  pageSizePt: { w: number; h: number } | null | undefined;
+  onApply: (factor: number) => void;
+}) {
+  const [open,  setOpen]  = React.useState(false);
+  const [ratio, setRatio] = React.useState(100);
+  const [paper, setPaper] = React.useState('actual');
+  const boxRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
+    const onKey  = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false); };
+    window.addEventListener('pointerdown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('pointerdown', onDown); window.removeEventListener('keydown', onKey); };
+  }, [open]);
+
+  const pageLongPt = pageSizePt ? Math.max(pageSizePt.w, pageSizePt.h) : null;
+  const pageLabel = pageLongPt
+    ? (Object.entries(PAPER_LONG_MM).find(([, mm]) => Math.abs(mm - pageLongPt * MM_PER_PT) < 8)?.[0] ?? `${Math.round(pageLongPt * MM_PER_PT)} mm`)
+    : null;
+
+  return (
+    <div className="relative" ref={boxRef}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        disabled={!pageSizePt}
+        title={pageSizePt ? 'Set the scale from the drawing’s stated scale (e.g. 1:100)' : 'Open a drawing first'}
+        className="text-[10px] font-mono font-bold uppercase tracking-widest px-2 py-1 border border-industrial-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        1:N ▾
+      </button>
+      {open && (
+        <div className="absolute right-0 top-9 z-[80] w-64 bg-industrial-panel border border-industrial-border shadow-2xl p-4 font-mono text-[11px] text-zinc-300 space-y-3">
+          <p className="text-[10px] uppercase tracking-widest text-zinc-500">Scale from the title block</p>
+          <label className="flex items-center justify-between gap-2">
+            <span>Drawing scale</span>
+            <select value={ratio} onChange={e => setRatio(Number(e.target.value))}
+              className="bg-stone-900 border border-industrial-border px-2 py-1 text-amber-400 font-bold">
+              {SCALE_RATIOS.map(r => <option key={r} value={r}>1:{r}</option>)}
+            </select>
+          </label>
+          <label className="flex items-center justify-between gap-2">
+            <span>Drawn for paper</span>
+            <select value={paper} onChange={e => setPaper(e.target.value)}
+              className="bg-stone-900 border border-industrial-border px-2 py-1 text-amber-400 font-bold">
+              <option value="actual">This PDF{pageLabel ? ` (${pageLabel})` : ''}</option>
+              {Object.keys(PAPER_LONG_MM).map(p => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+          <p className="text-[10px] leading-relaxed text-zinc-500">
+            Use “Drawn for paper” when the sheet says e.g. “1:100 @ A1” but this PDF is a different size.
+            Check one known dimension afterwards.
+          </p>
+          <button
+            type="button"
+            onClick={() => { onApply(presetScaleFactor(ratio, paper, pageLongPt)); setOpen(false); }}
+            className="w-full bg-amber-400 hover:bg-amber-300 text-black font-bold uppercase tracking-widest py-2 text-[10px]"
+          >
+            Apply to this page
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ScaleControls({
-  scaleFactor, calibrating, onCalibrate,
+  scaleFactor, calibrating, onCalibrate, pageSizePt, onApplyScale,
 }: {
   scaleFactor: number; calibrating: boolean; onCalibrate: () => void;
+  pageSizePt?: { w: number; h: number } | null;
+  onApplyScale?: (factor: number) => void;
 }) {
   const { displayUnit, setDisplayUnit } = useTakeoffData();
   return (
@@ -196,6 +288,7 @@ export function ScaleControls({
     >
       CALIBRATE
     </button>
+    {onApplyScale && <ScalePresets pageSizePt={pageSizePt} onApply={onApplyScale} />}
     </div>
   );
 }
@@ -216,6 +309,8 @@ function ViewerToolbarImpl({
   hideScale = false,
   leading,
   trailing,
+  showLabels,
+  setShowLabels,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
 
@@ -403,6 +498,23 @@ function ViewerToolbarImpl({
           <Target className="w-3 h-3" />
           {showPins ? 'PINS ON' : 'PINS OFF'}
         </button>
+
+        {setShowLabels && (
+          <button
+            type="button"
+            onClick={() => setShowLabels(!showLabels)}
+            aria-pressed={!!showLabels}
+            className={cn(
+              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+              showLabels
+                ? 'bg-amber-400/10 border-amber-400/50 text-amber-300 hover:bg-amber-400/20'
+                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+            )}
+            title="Show each quantity on the drawing"
+          >
+            {showLabels ? 'LABELS ON' : 'LABELS OFF'}
+          </button>
+        )}
 
         {!hideScale && (
           <>

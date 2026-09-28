@@ -35,8 +35,9 @@
 import React, {
   createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
-import { TakeoffRow, Drawing } from '@/types';
+import { TakeoffRow, Drawing, Material } from '@/types';
 import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/scale';
+import { defaultMaterialBank } from '@/data/materials';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
   saveProjectState, requestPersistentStorage, newId,
@@ -143,6 +144,32 @@ interface TakeoffContextValue {
 
   addDrawing:          (name: string, fileUrl: string, file?: File) => void;
   removeDrawing:       (id: string) => void;
+  /** Record how many pages a drawing's PDF has (set when it loads). */
+  setDrawingPageCount: (id: string, pageCount: number) => void;
+
+  // ── Navigation / linking ─────────────────────────────────────────────────
+  /** A page the viewer should switch to (consumed by the Viewer). */
+  pendingPage:         number | null;
+  clearPendingPage:    () => void;
+  /** Open a drawing at a page. */
+  goToPage:            (drawingId: string, page: number) => void;
+  /** Select a measurement and bring it into view (switches drawing/page if needed). */
+  focusMeasurement:    (id: string) => void;
+  /** Increments on every focusMeasurement call so the viewer can re-centre. */
+  focusSeq:            number;
+
+  // ── Material bank ─────────────────────────────────────────────────────────
+  materialLibraryOpen:    boolean;
+  setMaterialLibraryOpen: (open: boolean) => void;
+  /**
+   * Material to attach to the next measurement(s) committed (set by the naming
+   * dialog just before it finishes a shape). Pass null to clear.
+   */
+  setNextMaterial:        (materialId: string | null) => void;
+
+  // ── Display preferences ───────────────────────────────────────────────────
+  showLabels:          boolean;
+  setShowLabels:       (v: boolean) => void;
   setActiveDrawingId:  (id: string) => void;
   /** Calibrate one page of a drawing. Rescales that page's existing measurements. */
   updateDrawingScale:  (id: string, factor: number, page?: number) => void;
@@ -205,7 +232,7 @@ const defaultProject = (): ProjectState => ({
   drawings:        [],
   activeDrawingId: null,
   measurements:    [],
-  materials:       [],
+  materials:       defaultMaterialBank(),
   projectLocation:  undefined,
   projectPhase:     undefined,
   kitchenType:      undefined,
@@ -259,6 +286,22 @@ export function TakeoffProvider({
   const [lastSavedAt,  setLastSavedAt]  = useState<number | null>(null);
   const [activeTool,   setActiveTool]   = useState<string>('select');
   const [selectedId,   setSelectedId]   = useState<string | null>(null);
+  const [pendingPage,  setPendingPage]  = useState<number | null>(null);
+  const [focusSeq,     setFocusSeq]     = useState(0);
+  const [showLabels,   setShowLabelsState] = useState(false);
+  useEffect(() => {
+    try { setShowLabelsState(localStorage.getItem('foldrule:show-labels') === '1'); } catch { /* ignore */ }
+  }, []);
+  const setShowLabels = useCallback((v: boolean) => {
+    setShowLabelsState(v);
+    try { localStorage.setItem('foldrule:show-labels', v ? '1' : '0'); } catch { /* ignore */ }
+  }, []);
+  const clearPendingPage = useCallback(() => setPendingPage(null), []);
+  const [materialLibraryOpen, setMaterialLibraryOpen] = useState(false);
+  const nextMaterialRef = useRef<string | null>(null);
+  const materialsRef    = useRef<Material[]>(projectState.materials as Material[]);
+  useLayoutEffect(() => { materialsRef.current = projectState.materials as Material[]; }, [projectState.materials]);
+  const setNextMaterial = useCallback((id: string | null) => { nextMaterialRef.current = id; }, []);
 
   const [tempPoints,          setTempPoints]          = useState<InProgressPoint[]>([]);
   const [pendingMeasurement,  setPendingMeasurement]  = useState<PendingMeasurement | null>(null);
@@ -277,8 +320,38 @@ export function TakeoffProvider({
     future: undoFutureRef.current.length,
   }), []);
   const drawingsRef = useRef<Drawing[]>([]);
+  const activeDrawingIdRef = useRef<string | null>(null);
   const activePageRef = useRef(1);
   useLayoutEffect(() => { activePageRef.current = activePage; }, [activePage]);
+  /**
+   * Give new standalone rows distinguishable names: a second "Point" on the
+   * same drawing becomes "Point 2", and so on. Group children are already numbered.
+   */
+  const uniqueName = useCallback((m: TakeoffRow): TakeoffRow => {
+    if (m.isGroupHeader || m.parentId || !m.description) return m;
+    const base = m.description.replace(/\s+\d+$/, '');
+    const taken = new Set(
+      measurementsRef.current
+        .filter(x => x.drawingId === m.drawingId && !x.parentId)
+        .map(x => x.description),
+    );
+    if (!taken.has(m.description)) return m;
+    let n = 2;
+    while (taken.has(`${base} ${n}`)) n++;
+    const name = `${base} ${n}`;
+    return { ...m, description: name, label: m.label === m.description ? name : m.label };
+  }, []);
+
+  /** Attach the material chosen in the naming dialog (rate from the bank). */
+  const applyNextMaterial = useCallback((m: TakeoffRow): TakeoffRow => {
+    const id = nextMaterialRef.current;
+    if (!id || m.isGroupHeader || m.materialId) return m;
+    const mat = materialsRef.current.find(x => x.id === id);
+    if (!mat) return m;
+    const rate = (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
+    return { ...m, materialId: mat.id, unitRate: m.unitRate > 0 ? m.unitRate : rate };
+  }, []);
+
   /** Every measurement is tied to the page it was drawn on. */
   const stampPage = useCallback((m: TakeoffRow): TakeoffRow =>
     (m.pageNumber != null ? m : { ...m, pageNumber: activePageRef.current }), []);
@@ -291,6 +364,7 @@ export function TakeoffProvider({
       const next = typeof updater === 'function' ? (updater as (p: ProjectState) => ProjectState)(prev) : updater;
       measurementsRef.current = next.measurements;
       drawingsRef.current     = next.drawings;
+      activeDrawingIdRef.current = next.activeDrawingId;
       return next;
     });
   }, []);
@@ -470,7 +544,7 @@ export function TakeoffProvider({
 
   // ── commitMeasurement ──────────────────────────────────────────────────────
   const commitMeasurement = useCallback((m: TakeoffRow) => {
-    m = stampPage(m);
+    m = applyNextMaterial(uniqueName(stampPage(m)));
     const mBefore = measurementsRef.current;
     let mAfter = [...mBefore, m];
 
@@ -498,7 +572,7 @@ export function TakeoffProvider({
   // ── batchCommitMeasurements ────────────────────────────────────────────────
   const batchCommitMeasurements = useCallback((measurements: TakeoffRow[]) => {
     if (measurements.length === 0) return;
-    measurements = measurements.map(stampPage);
+    measurements = measurements.map(r => applyNextMaterial(stampPage(r)));
 
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
@@ -535,7 +609,7 @@ export function TakeoffProvider({
 
   // ── addMeasurement ─────────────────────────────────────────────────────────
   const addMeasurement = useCallback((m: TakeoffRow) => {
-    m = stampPage(m);
+    m = applyNextMaterial(uniqueName(stampPage(m)));
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
     let mAfter  = [...mBefore, m];
@@ -804,6 +878,32 @@ export function TakeoffProvider({
     });
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
+  const setDrawingPageCount = useCallback((id: string, pageCount: number) => {
+    if (!(pageCount > 0)) return;
+    if (drawingsRef.current.find(d => d.id === id)?.pageCount === pageCount) return;
+    syncedSetProjectState(prev => ({
+      ...prev,
+      drawings: prev.drawings.map(d => (d.id === id ? { ...d, pageCount } : d)),
+    }));
+  }, [syncedSetProjectState]);
+
+  const goToPage = useCallback((drawingId: string, page: number) => {
+    const current = drawingsRef.current.find(d => d.id === drawingId);
+    if (!current) return;
+    syncedSetProjectState(prev => (prev.activeDrawingId === drawingId ? prev : { ...prev, activeDrawingId: drawingId }));
+    setPendingPage(Math.max(1, page));
+  }, [syncedSetProjectState]);
+
+  const focusMeasurement = useCallback((id: string) => {
+    const m = measurementsRef.current.find(x => x.id === id);
+    setSelectedId(id);
+    setFocusSeq(n => n + 1);
+    if (!m || m.isGroupHeader || !m.points?.length) return;
+    const page = m.pageNumber ?? 1;
+    const sameDrawing = activeDrawingIdRef.current === m.drawingId;
+    if (!sameDrawing || activePageRef.current !== page) goToPage(m.drawingId, page);
+  }, [goToPage]);
+
   const updateDrawingScale = useCallback((id: string, factor: number, page: number = 1) => {
     if (!(factor > 0) || !Number.isFinite(factor)) return;
     const dBefore = drawingsRef.current;
@@ -868,6 +968,8 @@ export function TakeoffProvider({
         const next: ProjectState = {
           ...defaultProject(),
           ...rec.state,
+          // Projects saved with an empty material bank get the built-in catalogue.
+          materials: rec.state.materials?.length ? rec.state.materials : defaultMaterialBank(),
           drawings,
           activeDrawingId: rec.state.activeDrawingId && drawings.some(d => d.id === rec.state.activeDrawingId)
             ? rec.state.activeDrawingId
@@ -875,6 +977,7 @@ export function TakeoffProvider({
         };
         measurementsRef.current = next.measurements;
         drawingsRef.current     = next.drawings;
+        activeDrawingIdRef.current = next.activeDrawingId;
         tempPointsRef.current   = [];
         setProjectState(next);
         setTempPoints([]);
@@ -955,6 +1058,17 @@ export function TakeoffProvider({
     setSelectedId,
     addDrawing,
     removeDrawing,
+    setDrawingPageCount,
+    pendingPage,
+    clearPendingPage,
+    goToPage,
+    focusMeasurement,
+    focusSeq,
+    showLabels,
+    setShowLabels,
+    materialLibraryOpen,
+    setMaterialLibraryOpen,
+    setNextMaterial,
     activePage,
     setActivePage,
     projectId,
@@ -989,6 +1103,7 @@ export function TakeoffProvider({
     setDisplayUnit,
   }), [
     projectState, syncedSetProjectState, activeTool, selectedId, addDrawing, removeDrawing,
+    setDrawingPageCount, pendingPage, clearPendingPage, goToPage, focusMeasurement, focusSeq, showLabels, setShowLabels, materialLibraryOpen, setNextMaterial,
     activePage, projectId, loadStatus, loadError, saveNow,
     setActiveDrawingId, updateDrawingScale, addMeasurement, updateMeasurement, deleteMeasurement,
     clearAll, toggleVisibility, createGroup, deleteGroup, ungroupMeasurements, toggleGroupExpanded,

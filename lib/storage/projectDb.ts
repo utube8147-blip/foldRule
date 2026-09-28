@@ -16,6 +16,7 @@
 
 import type { ProjectState } from '@/context/TakeoffContext';
 import type { Drawing } from '@/types';
+import { defaultMaterialBank } from '@/data/materials';
 
 // NOTE: internal IDs predate the Foldrule rename. Do not change them — the
 // database name and backup format string identify existing users' data.
@@ -128,7 +129,7 @@ export function emptyProjectState(name: string, number = ''): StoredProjectState
     drawings:        [],
     activeDrawingId: null,
     measurements:    [],
-    materials:       [],
+    materials:       defaultMaterialBank(),
     currency:        'LKR',
     vatPercent:      0,
     documentDate:    new Date().toISOString().slice(0, 10),

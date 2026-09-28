@@ -12,6 +12,7 @@ import {
 import * as motion from 'motion/react-m';
 import { getProfile, clearProfile, initials, type LocalProfile } from '@/lib/profile';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
+import { useConfirm } from '@/components/common/ConfirmDialog';
 import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog } from '@/components/pwa/FolderControls';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
@@ -53,6 +54,7 @@ export default function Dashboard() {
   const [usage,    setUsage]    = useState<{ used: number; quota: number } | null>(null);
   const [profile,  setProfile]  = useState<LocalProfile | null>(null);
   const [showStorage, setShowStorage] = useState(false);
+  const { confirm } = useConfirm();
   const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setProfile(getProfile()); }, []);
@@ -110,10 +112,13 @@ export default function Dashboard() {
     finally { setBusyId(null); }
   };
 
-  const handleDelete = (p: ProjectSummary) => {
-    const ok = window.confirm(
-      `Delete “${p.name}”?\n\nIts drawings and ${p.measurementCount} measurements will be removed from this browser (and from your projects folder, if you use one). This can’t be undone — download a backup first if you might need it.`,
-    );
+  const handleDelete = async (p: ProjectSummary) => {
+    const ok = await confirm({
+      title: 'Delete project',
+      message: <>Delete <span className="text-zinc-100 font-bold">{p.name}</span>?</>,
+      detail: `Its drawings and ${p.measurementCount} measurement${p.measurementCount === 1 ? '' : 's'} will be removed from this browser (and from your projects folder, if you use one). This can’t be undone — download a backup first if you might need it.`,
+      confirmText: 'Delete project',
+    });
     if (ok) void run(p.id, async () => { await deleteProject(p.id); await removeProjectFromFolder(p.id); }, 'Couldn’t delete the project');
   };
 
@@ -350,7 +355,7 @@ export default function Dashboard() {
                         <IconButton label="Duplicate" onClick={() => void run(project.id, () => duplicateProject(project.id), 'Couldn’t duplicate')} icon={<Copy className="w-3.5 h-3.5" />} />
                         <IconButton label="Download backup" onClick={() => void handleBackup(project)} icon={<Download className="w-3.5 h-3.5" />} />
                         <span className="flex-1" />
-                        <IconButton label="Delete" danger onClick={() => handleDelete(project)} icon={<Trash2 className="w-3.5 h-3.5" />} />
+                        <IconButton label="Delete" danger onClick={() => void handleDelete(project)} icon={<Trash2 className="w-3.5 h-3.5" />} />
                       </div>
                     </div>
                   </motion.div>

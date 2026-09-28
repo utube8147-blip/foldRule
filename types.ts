@@ -26,6 +26,10 @@ export interface Material {
   equipmentCost: number;  // ← ADD
   supplier?: string;
   sku?: string;
+  /** Two-digit MasterFormat division ("06"). Derived from `category` when missing. */
+  division?: string;
+  /** Came from the built-in catalogue (data/materials.ts). */
+  builtIn?: boolean;
 }
 
 export type MaterialSpec = Material;

@@ -23,7 +23,7 @@ import { ToolType, TakeoffRow } from '@/types';
 import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
-import { usePdfDocument }    from '@/hooks/snapEngine/usePdfDocument';
+import { usePdfDocument, hasSnapGeometry } from '@/hooks/snapEngine/usePdfDocument';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
@@ -135,8 +135,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     clearTempPoints, retagTempPoints,
     undo, redo, canUndo, canRedo,
     selectedId, setSelectedId, projectState, updateMeasurement,
-    setActivePage,
+    setActivePage, showLabels, pendingPage, clearPendingPage,
+    setDrawingPageCount, focusSeq, setNextMaterial,
   } = useTakeoffContext();
+  const selectedIdRef = useRef<string | null>(selectedId);
+  selectedIdRef.current = selectedId;
+  const [showTechInfo, setShowTechInfo] = useState(false);
+  const [dragOver,     setDragOver]     = useState(false);
 
   const undoRedoRef = useRef<UndoRedoRefValue>({ setCursorPoint: () => {} });
   const handleUndo  = useCallback(() => { undo();  undoRedoRef.current.setCursorPoint(null); }, [undo]);
@@ -157,6 +162,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   //
   const {
     loadPage:    loadPdfPage,
+    clear:       clearSnapGeometry,
     lines:       pdfLines,
     curves:      pdfCurves,
     snapPoints:  pdfSnapPoints,
@@ -203,10 +209,58 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   // Tell the rest of the app which page is showing (per-page scale, new rows).
   useEffect(() => { setActivePage(pageNumber); }, [pageNumber, setActivePage]);
 
-  // Snap geometry follows the visible page, reusing the already-open document.
+  // Record the real page count of the open PDF on its drawing.
+  const pdfOwnerRef = useRef<string | null>(null);
   useEffect(() => {
-    if (pdf) void loadPdfPage(pdf, pageNumber);
-  }, [pdf, pageNumber, loadPdfPage]);
+    pdfOwnerRef.current = pdf ? activeDrawingId : null;
+    if (pdf && activeDrawingId) setDrawingPageCount(activeDrawingId, pdf.numPages);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdf]);
+
+  // Jump to a page requested elsewhere (page chips, table row clicks).
+  // Only once the PDF on screen belongs to the requested drawing.
+  useEffect(() => {
+    if (pendingPage == null || !pdf || pdfOwnerRef.current !== activeDrawingId) return;
+    setPageNumber(Math.min(Math.max(1, pendingPage), pdf.numPages));
+    clearPendingPage();
+  }, [pendingPage, pdf, activeDrawingId, setPageNumber, clearPendingPage]);
+
+  // Snap geometry follows the visible page, reusing the already-open document.
+  // It's heavy, so it waits until the page has finished drawing and the
+  // browser is idle — the drawing is usable (pan, zoom, click) meanwhile.
+  const snapWaitRef = useRef<{ key: string; renderAt: number; done: boolean }>({ key: '', renderAt: -1, done: false });
+  useEffect(() => {
+    if (!pdf) return;
+    const key = `${activeDrawingId}:${pageNumber}`;
+    const w = snapWaitRef.current;
+    if (w.key !== key) {
+      // Seen this page before: its geometry is cached — use it right away.
+      if (hasSnapGeometry(key)) {
+        snapWaitRef.current = { key, renderAt: pdfRenderCount, done: true };
+        void loadPdfPage(pdf, pageNumber, key);
+        return;
+      }
+      // New page: forget the previous page's snap points right away, then
+      // wait for this page's first render to finish.
+      snapWaitRef.current = { key, renderAt: pdfRenderCount, done: false };
+      clearSnapGeometry();
+      return;
+    }
+    if (w.done || pdfRenderCount <= w.renderAt) return;
+    w.done = true;
+    let ran = false;
+    const run = () => { ran = true; void loadPdfPage(pdf, pageNumber, key); };
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    if (win.requestIdleCallback) {
+      const id = win.requestIdleCallback(run, { timeout: 1200 });
+      return () => { if (!ran) { win.cancelIdleCallback?.(id); w.done = false; } };
+    }
+    const t = window.setTimeout(run, 50);
+    return () => { if (!ran) { clearTimeout(t); w.done = false; } };
+  }, [pdf, pageNumber, activeDrawingId, pdfRenderCount, loadPdfPage, clearSnapGeometry]);
 
   // ── Stable pan ────────────────────────────────────────────────────────────
   const stablePan = useMemo(
@@ -350,6 +404,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     finishMeasurement, handleCanvasClick, handleContextMenu,
     handleCanvasPointerMove, handleCanvasPointerDown,
     handleCanvasPointerUp, toCanvas, setCursorPoint,
+    redrawDrawingCanvas,
   } = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
@@ -370,6 +425,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     polyarcMode,
     togglePolyarcMode,
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
+    showLabels,
+    selectedIdRef,
   } as any);
 
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
@@ -446,6 +503,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleMagicFinish, handleMfNameConfirm, handleMfNameSkip,
   } = useMagicFillSession({
     fillCanvasRef,
+    magicFillActive: activeTool === 'magic-fill',
     pdfRenderCount,
     pdfCanvasRef,
     pdfDimensions,
@@ -697,13 +755,19 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     setShowMeasurementDialog(true);
   }, [tempPoints.length, activeTool, finishMeasurement, propAppendToGroupId, onAppendComplete]);
 
-  const handleDialogConfirm = useCallback((name: string, _: string, icon?: string) => {
+  const handleDialogConfirm = useCallback((name: string, materialId: string, icon?: string) => {
     setShowMeasurementDialog(false);
-    finishMeasurement(undefined, {
-      label: name.trim() || `New ${pendingMeasurementData?.type || 'Measurement'}`,
-      icon,
-    });
-  }, [finishMeasurement, pendingMeasurementData]);
+    // The chosen material (and its rate) is attached to the rows committed now.
+    setNextMaterial(materialId || null);
+    try {
+      finishMeasurement(undefined, {
+        label: name.trim() || `New ${pendingMeasurementData?.type || 'Measurement'}`,
+        icon,
+      });
+    } finally {
+      setNextMaterial(null);
+    }
+  }, [finishMeasurement, pendingMeasurementData, setNextMaterial]);
 
   const handleDialogSkip = useCallback(() => {
     setShowMeasurementDialog(false);
@@ -739,6 +803,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     canUndo, canRedo, handleUndo, handleRedo,
     polyarcMode: safePolyarcMode, togglePolyarcMode,
     tempPointsCount: tempPoints.length,
+    pageSizePt: pdfDimensions ? { w: pdfDimensions.w / (dimsScaleRef.current || 1), h: pdfDimensions.h / (dimsScaleRef.current || 1) } : null,
   }), [
     activeTool, handleSetActiveTool, scale, scaleFactor,
     snapEnabled, showSnapSettings,
@@ -748,7 +813,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
     safePolyarcMode, togglePolyarcMode, tempPoints.length,
-  ]);
+  , pdfDimensions]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
 
@@ -772,12 +837,15 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         if (e.key.toLowerCase() === 'a' && activeTool === 'polyarc') {
           e.preventDefault(); togglePolyarcMode(); return;
         }
+        if (e.key.toLowerCase() === 's') {
+          e.preventDefault(); setSnapEnabled(!snapEnabled); return;
+        }
         const map: Record<string, ToolType> = {
           v: 'select',    l: 'linear',   r: 'rectangle',
           p: 'polygon',   n: 'count',    t: 'point',
           b: 'arc',       g: 'grid-count',
           y: 'polyarc',   o: 'perimeter-offset',
-          m: 'magic-fill', k: 'scale',
+          m: 'magic-fill', k: 'scale',  c: 'radius',
         };
         if (map[e.key.toLowerCase()]) {
           e.preventDefault(); handleSetActiveTool(map[e.key.toLowerCase()]); return;
@@ -796,8 +864,82 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
     handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
-    setScale, togglePolyarcMode, tempPoints.length,
+    setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled,
   ]);
+
+  // ── Selection ↔ table linking ─────────────────────────────────────────────
+  // Repaint the selection outline when the selection changes (cheap: the
+  // committed shapes come from the cached layer).
+  useEffect(() => { redrawDrawingCanvas(); }, [selectedId, redrawDrawingCanvas]);
+
+  // When a row asks for focus, scroll the drawing so the shape is in view.
+  const centeredSeqRef = useRef(0);
+  useEffect(() => {
+    if (focusSeq === centeredSeqRef.current || !selectedId) return;
+    const m = measurements.find(x => x.id === selectedId);
+    const dim = pdfDimensions;
+    const canvas = drawingCanvasRef.current;
+    const box = containerRef.current;
+    if (!m || !m.points?.length || !dim || !canvas || !box) return;  // wait for page/drawing
+    centeredSeqRef.current = focusSeq;
+    const xs = m.points.map(p => p.x), ys = m.points.map(p => p.y);
+    const cx = ((Math.min(...xs) + Math.max(...xs)) / 2);
+    const cy = ((Math.min(...ys) + Math.max(...ys)) / 2);
+    const cr = canvas.getBoundingClientRect();
+    const br = box.getBoundingClientRect();
+    box.scrollTo({
+      left: box.scrollLeft + (cr.left - br.left) + cx * cr.width  - box.clientWidth  / 2,
+      top:  box.scrollTop  + (cr.top  - br.top)  + cy * cr.height - box.clientHeight / 2,
+      behavior: 'smooth',
+    });
+  }, [focusSeq, selectedId, measurements, pdfDimensions]);
+
+  // Select tool: clicking a shape selects it (and its table row); clicking
+  // empty drawing clears the selection.
+  const findShapeAt = useCallback((nx: number, ny: number): TakeoffRow | undefined => {
+    const radius = HIT_RADIUS / Math.max(0.25, scale);
+    const dim = pdfDimensionsRef.current;
+    const w = dim?.w ?? 1, h = dim?.h ?? 1;
+    return [...measurements].reverse().find(m => {
+      if (m.isGroupHeader || !(m.isVisible ?? true) || !m.points?.length) return false;
+      const closed = m.type === 'Polygon' || m.type === 'Rectangle' || m.type === 'Area' || isEffectivelyClosed(m, measurements);
+      const pts = tessellatePoints(getEffectivePoints(m, measurements), w, h);
+      if (pts.length === 1) {
+        return Math.hypot((pts[0].x - nx) * w, (pts[0].y - ny) * h) <= radius * 1.6;
+      }
+      return pts.length >= 2 && hitTestMeasurement(nx, ny, pts, closed, radius);
+    });
+  }, [measurements, scale, pdfDimensionsRef]);
+
+  const handleCanvasClickWithSelect = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (activeTool === 'select') {
+      const r = e.currentTarget.getBoundingClientRect();
+      const hit = findShapeAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+      setSelectedId(hit ? (hit.parentId && !hit.points?.length ? hit.parentId : hit.id) : null);
+      return;
+    }
+    handleCanvasClick(e);
+  }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick]);
+
+  // ── Drag & drop PDFs onto the drawing area ────────────────────────────────
+  const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (!dragOver) setDragOver(true);
+  }, [dragOver]);
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+    setDragOver(false);
+  }, []);
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    setDragOver(false);
+    const pdfs = Array.from(e.dataTransfer.files).filter(f => f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+    pdfs.forEach(f => onDrawingAdded(f.name, URL.createObjectURL(f), f));
+  }, [onDrawingAdded]);
 
   // ── Pan handler ───────────────────────────────────────────────────────────
   const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
@@ -849,7 +991,19 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
-    <div className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full">
+    <div
+      className="flex-1 relative bg-industrial-black blueprint-grid flex flex-col overflow-hidden h-full"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div className="absolute inset-3 z-[80] pointer-events-none border-2 border-dashed border-amber-accent bg-amber-accent/10 flex items-center justify-center">
+          <span className="bg-industrial-panel border border-amber-accent/60 px-4 py-2 font-mono text-xs font-bold uppercase tracking-widest text-amber-accent">
+            Drop PDF to add it as a drawing
+          </span>
+        </div>
+      )}
       {!hideToolbar && (
         <div className="relative z-30 flex-shrink-0">
           <ViewerToolbar
@@ -936,7 +1090,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               tempPoints={tempPoints} measurements={measurements} activeDrawingId={activeDrawingId}
               snapFlashes={snapFlashes.map(f => ({ ...f, id: String(f.id) }))} toCanvas={toCanvas}
               readyToDraw={true}
-              handleCanvasClick={isOffsetTool ? handleOffsetCanvasClick : handleCanvasClick}
+              handleCanvasClick={isOffsetTool ? handleOffsetCanvasClick : handleCanvasClickWithSelect}
               handleContextMenu={handleContextMenu}
               handleCanvasPointerMove={isOffsetTool ? handleOffsetCanvasPointerMove : wrappedPointerMove}
               handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
@@ -1157,10 +1311,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   ? 'text-zinc-600'
                   : ''
               }>
-                {snapStatusText}
+                {showTechInfo || (pdfStage !== 'done' && pdfStage !== 'idle')
+                  ? snapStatusText
+                  : snapEnabled ? 'Snapping to drawing lines' : 'Snap off — press S to turn on'}
               </span>
             )}
-            <span>RENDER_ENGINE: PDF.JS V{pdfLibVersion}</span>
+            {showTechInfo && <span>RENDER_ENGINE: PDF.JS V{pdfLibVersion} · BUILD {process.env.NEXT_PUBLIC_BUILD_ID ?? 'dev'}</span>}
+            <button
+              type="button"
+              onClick={() => setShowTechInfo(v => !v)}
+              aria-pressed={showTechInfo}
+              title={showTechInfo ? 'Hide technical details' : 'Show technical details'}
+              className="w-4 h-4 inline-flex items-center justify-center border border-zinc-700 text-[9px] text-zinc-500 hover:text-zinc-200 hover:border-zinc-500"
+            >
+              i
+            </button>
           </div>
         </div>
       )}
@@ -1176,7 +1341,10 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       />
       <MeasurementDetailsWired
         show={showMfNameDialog} pendingMeasurementData={pendingMfData}
-        onConfirm={(name: string) => handleMfNameConfirm(name)}
+        onConfirm={(name: string, materialId: string) => {
+          setNextMaterial(materialId || null);
+          try { handleMfNameConfirm(name); } finally { setNextMaterial(null); }
+        }}
         onSkip={handleMfNameSkip}
       />
       <PresetDrawerWired

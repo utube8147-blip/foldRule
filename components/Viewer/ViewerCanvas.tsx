@@ -456,14 +456,27 @@ export function ViewerCanvas({
               IMPORT PROJECT DRAWING
             </h2>
             <p className="text-xs text-zinc-500 font-mono leading-relaxed uppercase tracking-widest">
-              DRAG AND DROP OR SELECT A PDF, DWG, OR IMAGE FILE TO BEGIN MEASURING QUANTITIES.
+              DRAG AND DROP A PDF HERE, OR SELECT ONE TO BEGIN MEASURING QUANTITIES.
             </p>
           </div>
+          <ol className="grid grid-cols-3 gap-3 w-full text-left font-mono">
+            {[
+              ['01', 'Add a PDF', 'Multi-page sets are fine.'],
+              ['02', 'Set the scale', 'Calibrate (K) on a known dimension.'],
+              ['03', 'Measure', 'Areas, lengths and counts. Export to Excel.'],
+            ].map(([n, t, d]) => (
+              <li key={n} className="border border-industrial-border bg-industrial-black/40 p-3">
+                <span className="text-[10px] font-bold text-amber-400">{n}</span>
+                <p className="mt-1 text-[11px] font-bold uppercase tracking-widest text-zinc-200">{t}</p>
+                <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{d}</p>
+              </li>
+            ))}
+          </ol>
           <label className="bg-amber-400 hover:bg-amber-300 text-black px-10 py-3 font-mono font-bold text-xs uppercase tracking-widest cursor-pointer transition-all shadow-xl shadow-amber-400/10 active:scale-95">
             Select File(s)
             <input
               type="file" multiple className="hidden"
-              accept=".pdf,.png,.jpg,.jpeg,.dwg"
+              accept=".pdf,application/pdf"
               onChange={handleFileUpload}
             />
           </label>

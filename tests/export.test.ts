@@ -68,10 +68,16 @@ describe('Takeoff sheet', () => {
     expect(String(ws.getCell('A3').value)).toMatch(/calibrated/);
   });
 
-  it('adds the BOQ sheets when a material library exists', async () => {
-    const i = input();
-    i.materials = [{ id: 'm1', name: 'MDF 18mm', code: 'MDF18', category: 'Board', unit: 'm²', unitRate: 10, materialCost: 8, laborCost: 2, equipmentCost: 0 }];
-    const wb = await buildProjectWorkbook(i);
+  it('adds the BOQ sheets only when measurements use materials', async () => {
+    const mat = { id: 'm1', name: 'MDF 18mm', code: 'MDF18', category: 'Board', unit: 'm²', unitRate: 10, materialCost: 8, laborCost: 2, equipmentCost: 0 };
+    const unused = input();
+    unused.materials = [mat];
+    expect((await buildProjectWorkbook(unused)).worksheets.map(w => w.name)).toEqual(['Takeoff']);
+
+    const used = input();
+    used.materials = [mat];
+    used.measurements[1] = { ...used.measurements[1], materialId: 'm1' };
+    const wb = await buildProjectWorkbook(used);
     expect(wb.worksheets.length).toBeGreaterThan(1);
     expect(wb.worksheets[0].name).toBe('Takeoff');
   });

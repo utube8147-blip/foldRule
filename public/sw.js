@@ -5,9 +5,10 @@
  *    their URLs change whenever their content does.
  *  • /api/* is never cached (Excel export needs the server).
  *
- * Bump VERSION to drop old caches after a breaking change.
+ * VERSION comes from the build id in the registration URL (/sw.js?v=…), so
+ * each build gets its own caches and the old ones are deleted on activate.
  */
-const VERSION = 'foldrule-v1';
+const VERSION = `foldrule-${new URL(self.location.href).searchParams.get('v') || 'v1'}`;
 const PAGES   = `${VERSION}-pages`;
 const ASSETS  = `${VERSION}-assets`;
 const SHELL   = ['/', '/dashboard', '/workspace', '/takeoff-full', '/presets', '/open', '/pdf.worker.min.js', '/manifest.webmanifest'];

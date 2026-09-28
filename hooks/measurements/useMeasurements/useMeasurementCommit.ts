@@ -620,7 +620,7 @@ export function useMeasurementCommit({
 
     if (activeTool === 'point') {
       if (pts.length < 1) { clearTempPoints(); setCursorPoint(null); return; }
-      const label = meta?.label || 'Point Marker';
+      const label = meta?.label || 'Point';
       commitMeasurement({
         id: crypto.randomUUID(), drawingId: activeDrawingId || '',
         description: label, label, type: 'Point',

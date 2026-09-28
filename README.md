@@ -60,7 +60,7 @@ app/api/export/route.ts         validated POST → .xlsx
 ### Keyboard shortcuts (owned by `Viewer.tsx`)
 
 `V` select · `P` polygon · `R` rectangle · `M` magic fill · `L` linear ·
-`B` arc · `Y` polyarc · `N` count · `T` point · `G` grid count ·
+`B` arc · `Y` polyarc · `C` circle · `N` count · `T` point · `G` grid count ·
 `O` perimeter offset · `K` set scale · `Esc` cancel / back to select ·
 `Ctrl/⌘ Z` undo · `Ctrl/⌘ Shift Z` or `Ctrl/⌘ Y` redo ·
 `Ctrl/⌘ + / − / 0` zoom in / out / fit.
@@ -90,6 +90,21 @@ Materials / Cost breakdown sheets are added after it.
   `app/apple-icon.png`, `public/icons/*` and `public/brand/*` from the mark.
 * Storage keys (`quantity-savior` database, backup format id) intentionally
   keep their old names so existing projects and backups keep working.
+
+## Workspace features
+
+* **Row ↔ shape linking** — click a takeoff row to select its shape (switching
+  drawing/page and scrolling to it); with the Select tool, click a shape to
+  select its row.
+* **Labels** — `LABELS ON/OFF` in the toolbar draws each quantity on the drawing
+  (cached with the shapes, so it costs nothing while you draw).
+* **Scale presets** — `1:N ▾` next to Calibrate sets the scale from the title
+  block (e.g. "1:100 @ A1"), correcting for PDFs printed on a different sheet.
+* **Project Explorer** — search drawings, filter to pages that need a scale,
+  page chips (● = scale set) for multi-page PDFs, remove a drawing.
+* **Analysis** — "Generate Full Analysis": quantities by type, cost by group,
+  unpriced rows and pages without a scale (click to jump to each).
+* Drag PDFs onto the drawing area; press `?` for all keyboard shortcuts.
 
 ## Performance notes
 

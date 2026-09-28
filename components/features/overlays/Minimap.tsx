@@ -50,8 +50,11 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
   useEffect(() => {
     if (!pdf || !thumbCanvasRef.current) return;
     let cancelled = false;
+    let task: { cancel?: () => void } | null = null;
 
-    (async () => {
+    // Low priority: draw the thumbnail once the main page is done and the
+    // browser is idle, so it never competes with the drawing you're using.
+    const draw = async () => {
       try {
         const page    = await pdf.getPage(pageNumber);
         if (cancelled) return;
@@ -63,11 +66,23 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
         cvs.height = Math.round(vp.height);
         const ctx = cvs.getContext('2d');
         if (!ctx || cancelled) return;
-        await (page.render({ canvasContext: ctx, viewport: vp } as any).promise as Promise<void>);
-      } catch { /* ignore */ }
-    })();
+        task = page.render({ canvasContext: ctx, viewport: vp } as any);
+        await ((task as unknown as { promise: Promise<void> }).promise);
+      } catch { /* ignore (cancelled or failed) */ }
+    };
+    const win = window as Window & {
+      requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number;
+      cancelIdleCallback?: (id: number) => void;
+    };
+    const idleId = win.requestIdleCallback ? win.requestIdleCallback(() => void draw(), { timeout: 2500 }) : null;
+    const timer  = idleId == null ? window.setTimeout(() => void draw(), 400) : null;
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      if (idleId != null) win.cancelIdleCallback?.(idleId);
+      if (timer != null) clearTimeout(timer);
+      task?.cancel?.();
+    };
   }, [pdf, pageNumber]);
 
   // ── Overlay draw loop — only runs when panel is visible ───────────────────

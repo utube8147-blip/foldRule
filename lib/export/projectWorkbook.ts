@@ -1,8 +1,9 @@
 // ─── lib/export/projectWorkbook.ts ───────────────────────────────────────────
 //  Server-side entry point: project data → Excel workbook.
 //    1. "Takeoff" sheet — always; built from the user's measurements.
-//    2. Summary / BOQ matrix / Materials / Cost breakdown — only when the
-//       project has a material library (those sheets are driven by it).
+//    2. Summary / BOQ matrix / Materials / Cost breakdown — only when some
+//       measurements use materials, and only with the materials actually used
+//       (the bank holds the whole catalogue, most of it unused per project).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as ExcelJS from 'exceljs';
@@ -18,7 +19,10 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
 
   addTakeoffSheet(workbook, input);
 
-  if (input.materials.length > 0) {
+  const usedIds = new Set(input.measurements.map(m => m.materialId).filter(Boolean) as string[]);
+  const usedMaterials = input.materials.filter(m => usedIds.has(m.id));
+
+  if (usedMaterials.length > 0) {
     const boq = contextToBOQData({
       projectName:     input.projectName,
       projectLocation: input.location,
@@ -28,7 +32,7 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
       currency:        input.currency,
       vatPercent:      input.vatPercent,
       measurements:    input.measurements,
-      materials:       input.materials,
+      materials:       usedMaterials,
     }) as unknown as BOQData;
     await buildWorkbook(boq, workbook);
   }
