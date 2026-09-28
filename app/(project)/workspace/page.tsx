@@ -12,7 +12,7 @@ import { Navbar } from '@/components/layout/Navbar';
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
-import { ViewerToolbar } from '@/components/Viewer/ViewerToolbar';
+import { ViewerToolbar, HistoryControls, ScaleControls } from '@/components/Viewer/ViewerToolbar';
 
 const Viewer = dynamic(
   () => import('@/components/Viewer/Viewer').then(m => m.Viewer),
@@ -27,7 +27,7 @@ import type { PresetTemplate } from '@/components/presets/PresetTemplates';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import {
   PanelRightClose,
-  Sidebar as SidebarIcon,
+  PanelLeftOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
@@ -388,6 +388,8 @@ export default function Workspace() {
     [setProjectState],
   );
   const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), []);
+  const collapseSidebar     = useCallback(() => setLeftCollapsed(true), []);
+  const expandSidebar       = useCallback(() => setLeftCollapsed(false), []);
   const openFullTable       = useCallback(() => router.push(href('/takeoff-full')), [router, href]);
   const handleAddManual     = useCallback(() => handleAddMeasurement({
                   id:          crypto.randomUUID(),
@@ -447,12 +449,30 @@ export default function Workspace() {
         onProjectNameChange={handleProjectNameChange}
         onExport={handleExport}
         onOpenPresets={openPresetDrawer}
+        center={
+          <>
+            <HistoryControls
+              canUndo={api?.canUndo ?? false}
+              canRedo={api?.canRedo ?? false}
+              handleUndo={() => api?.handleUndo?.()}
+              handleRedo={() => api?.handleRedo?.()}
+              tempPointsCount={api?.tempPointsCount ?? 0}
+            />
+            <div className="w-px h-6 bg-industrial-border" aria-hidden />
+            <ScaleControls
+              scaleFactor={currentScaleFactor}
+              calibrating={activeTool === 'scale'}
+              onCalibrate={() => (api?.setActiveTool ? api.setActiveTool('scale') : setActiveTool('scale'))}
+            />
+          </>
+        }
       />
 
       <div className="flex flex-1 overflow-hidden mt-14">
 
         <Sidebar
           isCollapsed={leftCollapsed}
+          onCollapse={collapseSidebar}
           projectState={sidebarProjectState}
           onUpdateMaterials={handleUpdateMaterials}
           onOpenMaterialLibrary={openMaterialLibrary}
@@ -460,16 +480,6 @@ export default function Workspace() {
           onSelectDrawing={setActiveDrawingId}
           onUpdateProjectMeta={updateProjectMeta}
         />
-
-        <div className="absolute left-0 bottom-10 z-[60] ml-2 flex flex-col gap-2">
-          <button
-            onClick={() => setLeftCollapsed(!leftCollapsed)}
-            className="bg-industrial-panel border border-industrial-border p-1.5 text-zinc-500 hover:text-amber-accent transition-colors shadow-lg"
-            title={leftCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
-          >
-            <SidebarIcon className={cn('w-4 h-4 transition-transform', leftCollapsed && 'rotate-180')} />
-          </button>
-        </div>
 
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
@@ -509,6 +519,22 @@ export default function Workspace() {
             ZOOM_SENSITIVITY={0.1}
             polyarcMode={api?.polyarcMode}
             togglePolyarcMode={api?.togglePolyarcMode}
+            hideHistory
+            hideScale
+            leading={leftCollapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={expandSidebar}
+                  title="Show Project Explorer"
+                  aria-label="Show Project Explorer"
+                  className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
+                >
+                  <PanelLeftOpen className="w-4 h-4" />
+                </button>
+                <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" aria-hidden />
+              </>
+            ) : undefined}
           />
 
           <div className="flex flex-1 overflow-hidden relative min-h-0">

@@ -11,6 +11,8 @@ import {
 } from 'lucide-react';
 import * as motion from 'motion/react-m';
 import { getProfile, clearProfile, initials, type LocalProfile } from '@/lib/profile';
+import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
+import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog } from '@/components/pwa/FolderControls';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/brand/Logo';
@@ -50,12 +52,16 @@ export default function Dashboard() {
   const [busyId,   setBusyId]   = useState<string | null>(null);
   const [usage,    setUsage]    = useState<{ used: number; quota: number } | null>(null);
   const [profile,  setProfile]  = useState<LocalProfile | null>(null);
+  const [showStorage, setShowStorage] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { setProfile(getProfile()); }, []);
 
   const refresh = useCallback(async () => {
     try {
+      // Pull in / push out folder copies first (no-op without folder access).
+      await initFolderSync();
+      await syncFolder();
       setProjects(await listProjects());
       setError(null);
       const est = await navigator.storage?.estimate?.();
@@ -106,9 +112,9 @@ export default function Dashboard() {
 
   const handleDelete = (p: ProjectSummary) => {
     const ok = window.confirm(
-      `Delete “${p.name}”?\n\nIts drawings and ${p.measurementCount} measurements will be removed from this browser. This can’t be undone — download a backup first if you might need it.`,
+      `Delete “${p.name}”?\n\nIts drawings and ${p.measurementCount} measurements will be removed from this browser (and from your projects folder, if you use one). This can’t be undone — download a backup first if you might need it.`,
     );
-    if (ok) void run(p.id, () => deleteProject(p.id), 'Couldn’t delete the project');
+    if (ok) void run(p.id, async () => { await deleteProject(p.id); await removeProjectFromFolder(p.id); }, 'Couldn’t delete the project');
   };
 
   const handleBackup = (p: ProjectSummary) =>
@@ -172,6 +178,7 @@ export default function Dashboard() {
         </div>
 
         <div className="flex items-center gap-4">
+          <InstallAppButton />
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden />
             <input
@@ -214,6 +221,8 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <FolderPermissionStrip onAfterResume={() => void refresh()} />
+
       <main className="flex-1 overflow-auto p-8 max-w-screen-2xl mx-auto w-full">
         <div className="flex flex-wrap justify-between items-end gap-4 mb-8">
           <div>
@@ -231,6 +240,7 @@ export default function Dashboard() {
               className="hidden"
               onChange={e => void handleImport(e.target.files?.[0])}
             />
+            <StorageButton onClick={() => setShowStorage(true)} />
             <button
               type="button"
               onClick={() => setSortBy(s => (s === 'recent' ? 'name' : 'recent'))}
@@ -359,6 +369,10 @@ export default function Dashboard() {
           </>
         )}
       </main>
+
+      {showStorage && (
+        <StorageDialog onClose={() => setShowStorage(false)} onChanged={() => void refresh()} />
+      )}
 
       {creating && (
         <NewProjectDialog

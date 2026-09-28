@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  FileText, FolderOpen, Filter, Search, Settings2, Plus,
+  FileText, FolderOpen, Filter, Search, Settings2, Plus, PanelLeftClose,
   Database, Info, Layers, Building2, FileCheck2, Users2,
   BookOpen, ChevronDown, ChevronRight, AlertTriangle, Ban,
 } from 'lucide-react';
@@ -48,6 +48,8 @@ interface ProjectState {
 
 interface SidebarProps {
   isCollapsed:            boolean;
+  /** Collapse the sidebar (button in the Project Explorer strip). */
+  onCollapse?:            () => void;
   projectState:           ProjectState;
   onUpdateMaterials:      (materials: Material[]) => void;
   onOpenMaterialLibrary?: () => void;
@@ -154,6 +156,7 @@ function Divider() {
 
 function SidebarImpl({
   isCollapsed,
+  onCollapse,
   projectState,
   onUpdateMaterials,
   onOpenMaterialLibrary,
@@ -222,6 +225,20 @@ function SidebarImpl({
           <button className="text-zinc-600 hover:text-zinc-300 transition-colors">
             <Search className="w-3.5 h-3.5" />
           </button>
+          {onCollapse && (
+            <>
+              <span className="w-px h-3.5 bg-industrial-border self-center" aria-hidden />
+              <button
+                type="button"
+                onClick={onCollapse}
+                title="Collapse sidebar"
+                aria-label="Collapse sidebar"
+                className="text-zinc-600 hover:text-amber-accent transition-colors"
+              >
+                <PanelLeftClose className="w-3.5 h-3.5" />
+              </button>
+            </>
+          )}
         </div>
       </div>
 

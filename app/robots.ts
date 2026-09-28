@@ -10,7 +10,7 @@ export default function robots(): MetadataRoute.Robots {
       allow:     '/',
       disallow:  [
         '/api/', '/dashboard', '/workspace', '/takeoff-full', '/presets',
-        '/login', '/register', '/magicFill', '/PdfCVMatchPage', '/Snap',
+        '/login', '/register', '/open', '/magicFill', '/PdfCVMatchPage', '/Snap',
       ],
     }],
     sitemap: `${BRAND.siteUrl}/sitemap.xml`,

@@ -107,6 +107,34 @@ Materials / Cost breakdown sheets are added after it.
   `motion/react`); `LazyMotion` is set up in `components/MotionProvider.tsx`
   and throws in dev if the full `motion` component is used.
 
+## Install as an app, save to a folder, open files
+
+**Install.** In Edge/Chrome an **Install app** button appears in the dashboard
+header when the browser allows it (and in the address bar). The installed app
+has its own window, works offline after first use (`public/sw.js`, production
+builds only), and opens files from File Explorer: double-click a `.foldrule`
+backup, or right-click a PDF → *Open with → Foldrule* (handled by `/open`).
+
+**Save to a folder** (Edge/Chrome). Dashboard → *Save location* → *Choose
+folder*. Browser storage stays the working copy; the folder is a mirror of real
+files, one sub-folder per project:
+
+```
+<your folder>/Colombo-Residence__1a2b3c4d/project.json
+<your folder>/Colombo-Residence__1a2b3c4d/drawings/A-101__9f8e7d6c.pdf
+```
+
+Every save is pushed to the folder; opening the dashboard syncs both ways (the
+newer copy wins), so a OneDrive/Google Drive folder keeps two computers in step.
+Code: `lib/storage/folderSync.ts`, UI: `components/pwa/FolderControls.tsx`.
+
+**Permission, without nagging.** Browsers only grant folder access from a click.
+First time: the folder picker grants it. Later, in a normal tab the browser may
+forget it; saving then pauses (work still saves in the browser) and a single
+inline "Allow access" strip appears — "Not now" hides it for the session. In the
+installed app, Edge/Chrome offer *Allow on every visit*, so it isn't asked again.
+Nothing opens a dialog on its own.
+
 ## Log in / Sign up
 
 `/login` and `/register` are live. There is no account server yet, so signing

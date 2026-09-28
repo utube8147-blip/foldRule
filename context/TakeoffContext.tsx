@@ -41,6 +41,7 @@ import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
   saveProjectState, requestPersistentStorage, newId,
 } from '@/lib/storage/projectDb';
+import { initFolderSync, pushProjectToFolder } from '@/lib/storage/folderSync';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
@@ -766,7 +767,7 @@ export function TakeoffProvider({
     setActivePage(1);
     const pid = projectIdRef.current;
     if (pid && file) {
-      saveDrawingFile(pid, id, file).catch(err => {
+      saveDrawingFile(pid, id, file).then(() => pushProjectToFolder(pid)).catch(err => {
         console.error('[storage] failed to store drawing file', err);
         setSaveStatus('error');
       });
@@ -840,6 +841,7 @@ export function TakeoffProvider({
   useEffect(() => {
     hydratedRef.current = false;
     if (!projectId) { setLoadStatus('idle'); return; }
+    void initFolderSync();
 
     let cancelled = false;
     setLoadStatus('loading');
@@ -913,6 +915,8 @@ export function TakeoffProvider({
       const at = await saveProjectState(pid, latestStateRef.current);
       setLastSavedAt(at);
       setSaveStatus('saved');
+      // Mirror to the user's folder if they chose one (never prompts, never blocks).
+      void pushProjectToFolder(pid);
     } catch (err) {
       console.error('[storage] autosave failed', err);
       setSaveStatus('error');

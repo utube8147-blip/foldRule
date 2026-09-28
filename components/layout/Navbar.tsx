@@ -11,12 +11,14 @@ interface NavbarProps {
   onProjectNameChange: (name: string) => void;
   onExport: () => void;
   onOpenPresets?: () => void;
+  /** Project-level controls shown in the middle of the header (undo/redo, scale). */
+  center?: React.ReactNode;
 }
 
-function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets }: NavbarProps) {
+function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets, center }: NavbarProps) {
   return (
-    <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-6 z-50 fixed top-0 w-full">
-      <div className="flex items-center gap-6 h-full">
+    <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between gap-6 px-6 z-50 fixed top-0 w-full">
+      <div className="flex items-center gap-6 h-full min-w-0">
         <Link
           href="/dashboard"
           title="All projects"
@@ -34,12 +36,18 @@ function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets 
             type="text"
             value={projectName}
             onChange={(e) => onProjectNameChange(e.target.value)}
-            className="bg-transparent border-none p-0 m-0 text-sm font-mono font-bold text-zinc-200 focus:ring-0 focus:text-amber-accent transition-colors w-64"
+            className="bg-transparent border-none p-0 m-0 text-sm font-mono font-bold text-zinc-200 focus:ring-0 focus:text-amber-accent transition-colors w-40 xl:w-64"
           />
         </div>
       </div>
 
-      <div className="flex items-center gap-4">
+      {center && (
+        <div className="flex flex-1 items-center justify-center gap-3 min-w-0">
+          {center}
+        </div>
+      )}
+
+      <div className="flex items-center gap-4 flex-shrink-0">
         <SaveIndicator />
 
         <button

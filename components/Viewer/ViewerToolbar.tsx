@@ -49,6 +49,12 @@ import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
 
 
 interface ViewerToolbarProps {
+  /** Rendered before the tool buttons (e.g. the workspace's "expand sidebar" button). */
+  leading?: React.ReactNode;
+  /** Leave out Undo/Redo (the workspace shows them in the page header). */
+  hideHistory?: boolean;
+  /** Leave out Scale · Unit · Calibrate (shown in the page header instead). */
+  hideScale?: boolean;
   activeTool:      ToolType;
   setActiveTool:   (tool: ToolType) => void;
   canUndo:         boolean;
@@ -79,6 +85,119 @@ interface ViewerToolbarProps {
 
 // ─── Toolbar component ────────────────────────────────────────────────────────
 
+// ─── Extracted groups (also placed in the workspace header) ─────────────────
+
+export function HistoryControls({
+  canUndo, canRedo, handleUndo, handleRedo, tempPointsCount = 0,
+}: {
+  canUndo: boolean; canRedo: boolean;
+  handleUndo: () => void; handleRedo: () => void;
+  tempPointsCount?: number;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+    {/* Undo */}
+    <button
+      onClick={handleUndo}
+      disabled={!canUndo}
+      className={cn(
+        'w-9 h-9 flex items-center justify-center transition-all relative group border',
+        canUndo
+          ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
+          : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
+      )}
+      title="Undo (Ctrl+Z)"
+      aria-label="Undo"
+    >
+      <Undo2 className="w-4 h-4" />
+      {canUndo && (
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+          Undo [Ctrl+Z]
+          {tempPointsCount > 0 && (
+            <span className="text-amber-400 ml-1">· pop point</span>
+          )}
+        </div>
+      )}
+    </button>
+
+    {/* Redo */}
+    <button
+      onClick={handleRedo}
+      disabled={!canRedo}
+      className={cn(
+        'w-9 h-9 flex items-center justify-center transition-all relative group border',
+        canRedo
+          ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
+          : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
+      )}
+      title="Redo (Ctrl+Y)"
+      aria-label="Redo"
+    >
+      <Redo2 className="w-4 h-4" />
+      {canRedo && (
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+          Redo [Ctrl+Y]
+        </div>
+      )}
+    </button>
+    </div>
+  );
+}
+
+export function ScaleControls({
+  scaleFactor, calibrating, onCalibrate,
+}: {
+  scaleFactor: number; calibrating: boolean; onCalibrate: () => void;
+}) {
+  const { displayUnit, setDisplayUnit } = useTakeoffData();
+  return (
+    <div className="flex items-center gap-2">
+    {/* Scale display */}
+    <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
+      <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
+      <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
+        {scaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${scaleFactor.toFixed(4)}m`}
+      </span>
+    </div>
+
+    {/* Unit selector */}
+    <div
+      className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-1 py-0.5"
+      title="Display unit"
+    >
+      <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-tighter pl-1">Unit:</span>
+      <select
+        aria-label="Display unit"
+        value={displayUnit}
+        onChange={e => setDisplayUnit(e.target.value as DisplayUnit)}
+        className="h-6 px-1 text-[10px] font-mono font-bold bg-transparent border-none text-amber-400 focus:outline-none cursor-pointer"
+      >
+        {UNIT_OPTIONS.map(u => (
+          <option key={u.value} value={u.value} className="bg-zinc-900 text-zinc-200">
+            {u.label}
+          </option>
+        ))}
+      </select>
+    </div>
+
+    {/* Calibration */}
+    <button
+      onClick={onCalibrate}
+      aria-pressed={calibrating}
+      title="Set the scale for this page (K)"
+      className={cn(
+        'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
+        calibrating
+          ? 'bg-amber-400 text-black border-amber-400'
+          : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
+      )}
+    >
+      CALIBRATE
+    </button>
+    </div>
+  );
+}
+
 function ViewerToolbarImpl({
   activeTool, setActiveTool,
   canUndo, canRedo, handleUndo, handleRedo, tempPointsCount,
@@ -91,9 +210,11 @@ function ViewerToolbarImpl({
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
   polyarcMode,
   togglePolyarcMode,
+  hideHistory = false,
+  hideScale = false,
+  leading,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
-  const { displayUnit, setDisplayUnit } = useTakeoffData();
 
   // Whether switching linear↔arc mid-draw would upgrade to polyarc
   const canUpgradeToPolyarc =
@@ -199,6 +320,7 @@ function ViewerToolbarImpl({
 
       {/* ── Left: tool buttons ── */}
       <div className="flex gap-1 items-center">
+        {leading}
 
         {toolButtons}
 
@@ -226,52 +348,16 @@ function ViewerToolbarImpl({
           setActiveTool={setActiveTool}
         />
 
-        {divider('div-before-undo')}
-
-        {/* Undo */}
-        <button
-          onClick={handleUndo}
-          disabled={!canUndo}
-          className={cn(
-            'w-9 h-9 flex items-center justify-center transition-all relative group border',
-            canUndo
-              ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
-              : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
-          )}
-          title="Undo (Ctrl+Z)"
-          aria-label="Undo"
-        >
-          <Undo2 className="w-4 h-4" />
-          {canUndo && (
-            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-              Undo [Ctrl+Z]
-              {tempPointsCount > 0 && (
-                <span className="text-amber-400 ml-1">· pop point</span>
-              )}
-            </div>
-          )}
-        </button>
-
-        {/* Redo */}
-        <button
-          onClick={handleRedo}
-          disabled={!canRedo}
-          className={cn(
-            'w-9 h-9 flex items-center justify-center transition-all relative group border',
-            canRedo
-              ? 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200 hover:border-zinc-700'
-              : 'bg-transparent border-transparent text-zinc-700 cursor-not-allowed',
-          )}
-          title="Redo (Ctrl+Y)"
-          aria-label="Redo"
-        >
-          <Redo2 className="w-4 h-4" />
-          {canRedo && (
-            <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
-              Redo [Ctrl+Y]
-            </div>
-          )}
-        </button>
+        {!hideHistory && (
+          <>
+            {divider('div-before-undo')}
+            <HistoryControls
+              canUndo={canUndo} canRedo={canRedo}
+              handleUndo={handleUndo} handleRedo={handleRedo}
+              tempPointsCount={tempPointsCount}
+            />
+          </>
+        )}
       </div>
 
       {/* ── Centre: status / config ── */}
@@ -315,47 +401,16 @@ function ViewerToolbarImpl({
           {showPins ? 'PINS ON' : 'PINS OFF'}
         </button>
 
-        <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
-
-        {/* Scale display */}
-        <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
-          <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
-          <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
-            {scaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${scaleFactor.toFixed(4)}m`}
-          </span>
-        </div>
-
-        {/* Unit selector */}
-        <div
-          className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-1 py-0.5"
-          title="Display unit"
-        >
-          <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-tighter pl-1">Unit:</span>
-          <select
-            value={displayUnit}
-            onChange={e => setDisplayUnit(e.target.value as DisplayUnit)}
-            className="h-6 px-1 text-[10px] font-mono font-bold bg-transparent border-none text-amber-400 focus:outline-none cursor-pointer"
-          >
-            {UNIT_OPTIONS.map(u => (
-              <option key={u.value} value={u.value} className="bg-zinc-900 text-zinc-200">
-                {u.label}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Calibration */}
-        <button
-          onClick={() => setActiveTool('scale')}
-          className={cn(
-            'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
-            activeTool === 'scale'
-              ? 'bg-amber-400 text-black border-amber-400'
-              : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
-          )}
-        >
-          CALIBRATE
-        </button>
+        {!hideScale && (
+          <>
+            <div className="w-px h-4 bg-zinc-700/60 mx-0.5" />
+            <ScaleControls
+              scaleFactor={scaleFactor}
+              calibrating={activeTool === 'scale'}
+              onCalibrate={() => setActiveTool('scale')}
+            />
+          </>
+        )}
       </div>
 
       {/* ── Right: zoom controls ── */}

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useTakeoffData, useSaveStatus } from '@/context/TakeoffContext';
+import { FolderSaveHint } from '@/components/pwa/FolderControls';
 
 function ago(ts: number, now: number): string {
   const s = Math.max(0, Math.round((now - ts) / 1000));
@@ -49,9 +50,12 @@ export function SaveIndicator() {
     saveStatus === 'saving' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-500';
 
   return (
-    <span role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500">
-      <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
-      {label}
+    <span className="flex items-center gap-1.5">
+      <span role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500">
+        <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
+        {label}
+      </span>
+      <FolderSaveHint />
     </span>
   );
 }

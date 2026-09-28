@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { Inter, JetBrains_Mono, Archivo } from 'next/font/google';
 import './globals.css';
 import { MotionProvider } from '@/components/MotionProvider';
+import { PwaProvider } from '@/components/pwa/PwaProvider';
 import { BRAND } from '@/lib/brand';
 
 // App typography (unchanged from the original design): Inter + JetBrains Mono.
@@ -72,6 +73,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="antialiased font-sans">
         <MotionProvider>{children}</MotionProvider>
+        <PwaProvider />
       </body>
     </html>
   );

@@ -20,9 +20,10 @@ import type { Drawing } from '@/types';
 // NOTE: internal IDs predate the Foldrule rename. Do not change them — the
 // database name and backup format string identify existing users' data.
 const DB_NAME    = 'quantity-savior';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // v2: adds the `settings` store (folder handle, tombstones)
 const PROJECTS   = 'projects';
 const FILES      = 'files';
+const SETTINGS   = 'settings';
 
 export const SCHEMA_VERSION = 1;
 
@@ -74,8 +75,16 @@ function openDb(): Promise<IDBDatabase> {
         const files = db.createObjectStore(FILES, { keyPath: 'key' });
         files.createIndex('projectId', 'projectId', { unique: false });
       }
+      if (!db.objectStoreNames.contains(SETTINGS)) {
+        db.createObjectStore(SETTINGS);
+      }
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // Another tab upgraded the schema: release this connection so it can.
+      db.onversionchange = () => { db.close(); dbPromise = null; };
+      resolve(db);
+    };
     req.onerror   = () => { dbPromise = null; reject(req.error); };
     req.onblocked = () => reject(new Error('Database upgrade blocked — close other tabs of this app'));
   });
@@ -361,4 +370,64 @@ export function downloadBlob(blob: Blob, filename: string): void {
   a.remove();
   // Revoke later — revoking synchronously can cancel the download in some browsers.
   setTimeout(() => URL.revokeObjectURL(url), 30_000);
+}
+
+// ── Settings (small key/value store: folder handle, tombstones, prefs) ──────
+
+export async function getSetting<T>(key: string): Promise<T | undefined> {
+  const db = await openDb();
+  const tx = db.transaction(SETTINGS, 'readonly');
+  return reqToPromise(tx.objectStore(SETTINGS).get(key) as IDBRequest<T | undefined>);
+}
+
+export async function setSetting(key: string, value: unknown): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(SETTINGS, 'readwrite');
+  tx.objectStore(SETTINGS).put(value, key);
+  await txDone(tx);
+}
+
+export async function deleteSetting(key: string): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(SETTINGS, 'readwrite');
+  tx.objectStore(SETTINGS).delete(key);
+  await txDone(tx);
+}
+
+/**
+ * Write a complete project record (keeping its id and updatedAt) plus any
+ * drawing files — used when pulling a newer copy in from a synced folder.
+ */
+export async function putProjectRecord(record: ProjectRecord, files: Map<string, File>): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction([PROJECTS, FILES], 'readwrite');
+  tx.objectStore(PROJECTS).put(record);
+  for (const [drawingId, file] of files) {
+    tx.objectStore(FILES).put({
+      key: `${record.id}:${drawingId}`, projectId: record.id, drawingId,
+      name: file.name, type: file.type || 'application/pdf', blob: file,
+    } satisfies FileRecord);
+  }
+  await txDone(tx);
+}
+
+/** New project containing the given PDFs as drawings (used by "Open with Foldrule"). */
+export async function createProjectFromPdfs(pdfs: File[]): Promise<ProjectRecord> {
+  const first = pdfs[0];
+  const name  = first.name.replace(/\.pdf$/i, '') || 'New project';
+  const rec   = await createProject(name);
+  const files = new Map<string, File>();
+  const drawings: StoredDrawing[] = pdfs.map(f => {
+    const id = newId();
+    files.set(id, f);
+    return { id, name: f.name, scaleFactor: 1, pageScales: {}, pageCount: 1 };
+  });
+  const full: ProjectRecord = {
+    ...rec,
+    drawingCount: drawings.length,
+    updatedAt: Date.now(),
+    state: { ...rec.state, drawings, activeDrawingId: drawings[0].id },
+  };
+  await putProjectRecord(full, files);
+  return full;
 }
