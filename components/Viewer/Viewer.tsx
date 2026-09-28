@@ -802,14 +802,10 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   // ── Pan handler ───────────────────────────────────────────────────────────
   const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
     if (activeTool === 'grid-count') return;
-    if (
-      e.button === 1 ||
-      (e.button === 0 && spaceHeldRef.current) ||
-      (e.button === 0 && activeTool === 'select')
-    ) {
-      pdfContainerPointerDown(e);
-    }
-  }, [activeTool, spaceHeldRef, pdfContainerPointerDown]);
+    // Select tool: left-drag on empty drawing pans (after a small move, so a
+    // click still selects). Middle button / Space+drag pan with any tool.
+    pdfContainerPointerDown(e, activeTool === 'select');
+  }, [activeTool, pdfContainerPointerDown]);
 
   // ── File upload ───────────────────────────────────────────────────────────
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) =>

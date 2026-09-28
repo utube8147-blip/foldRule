@@ -23,8 +23,6 @@
     @apply bg-industrial-black text-white font-sans antialiased;
   }
 
-  .fade-up { animation: fade-up 480ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-  @keyframes fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
   /* Respect users who ask for less motion. */
   @media (prefers-reduced-motion: reduce) {

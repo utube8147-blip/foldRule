@@ -66,7 +66,7 @@ export interface UseViewerPdfReturn {
   fitToScreen:      (doc?: PDFDocumentProxy, pageNum?: number) => Promise<void>;
   centerDocumentInViewport: () => void;
   handleManualScale: () => void;
-  handleContainerPointerDown: (e: React.PointerEvent) => void;
+  handleContainerPointerDown: (e: React.PointerEvent, leftDragPans?: boolean) => void;
   handleContainerPointerMove: (e: React.PointerEvent) => void;
   handleContainerPointerUp:   () => void;
   handleDrawingCanvasPointerDown: (e: React.PointerEvent<HTMLCanvasElement>) => void;
@@ -507,32 +507,62 @@ export function useViewerPdf({
   }, [containerRef]);
 
   // ── Pan helpers ────────────────────────────────────────────────────────────
-  const startPan = useCallback((e: React.PointerEvent, target: HTMLElement) => {
-    if (!pdfRef.current) return;
-    e.preventDefault();
-    target.setPointerCapture(e.pointerId);
+  // Pan state lives in refs so the very first pointer moves are handled
+  // (React state would only update after a re-render); `isPanning` state is
+  // kept for the cursor.
+  const isPanningRef  = useRef(false);
+  /** Left-button press in Select mode: pan only once the pointer really moves,
+   *  so a plain click still selects a measurement. */
+  const pendingPanRef = useRef<{ x: number; y: number; pointerId: number; target: HTMLElement } | null>(null);
+  const PAN_THRESHOLD_PX = 4;
+
+  const beginPan = useCallback((pointerId: number, target: HTMLElement) => {
+    try { target.setPointerCapture(pointerId); } catch { /* pointer already released */ }
+    isPanningRef.current = true;
     setIsPanning(true);
     if (containerRef.current) containerRef.current.style.cursor = 'grabbing';
   }, [containerRef]);
 
-  const handleContainerPointerDown = useCallback((e: React.PointerEvent) => {
-    if (
-      e.button === 1 ||
-      (e.button === 0 && spaceHeldRef.current) ||
-      (e.button === 0 && (e.currentTarget as any).__activeTool === 'select')
-    ) {
+  const startPan = useCallback((e: React.PointerEvent, target: HTMLElement) => {
+    if (!pdfRef.current) return;
+    e.preventDefault();
+    pendingPanRef.current = null;
+    beginPan(e.pointerId, target);
+  }, [beginPan]);
+
+  /**
+   * Container pointer-down. Middle button or Space+drag pan immediately;
+   * `leftDragPans` (Select tool) arms a pan that starts after a small move.
+   */
+  const handleContainerPointerDown = useCallback((e: React.PointerEvent, leftDragPans = false) => {
+    if (e.button === 1 || (e.button === 0 && spaceHeldRef.current)) {
       startPan(e, e.currentTarget as HTMLElement);
+      return;
+    }
+    if (e.button === 0 && leftDragPans && pdfRef.current && e.pointerType === 'mouse') {
+      pendingPanRef.current = {
+        x: e.clientX, y: e.clientY, pointerId: e.pointerId, target: e.currentTarget as HTMLElement,
+      };
     }
   }, [startPan]);
 
   const handleContainerPointerMove = useCallback((e: React.PointerEvent) => {
-    if (isPanning && containerRef.current) {
+    const pending = pendingPanRef.current;
+    if (pending && !isPanningRef.current) {
+      if (Math.hypot(e.clientX - pending.x, e.clientY - pending.y) < PAN_THRESHOLD_PX) return;
+      pendingPanRef.current = null;
+      beginPan(pending.pointerId, pending.target);
+    }
+    if (isPanningRef.current && containerRef.current) {
       containerRef.current.scrollLeft -= e.movementX;
       containerRef.current.scrollTop  -= e.movementY;
     }
-  }, [isPanning, containerRef]);
+  }, [beginPan, containerRef]);
 
   const handleContainerPointerUp = useCallback(() => {
+    pendingPanRef.current = null;
+    if (!isPanningRef.current) return;
+    isPanningRef.current = false;
     setIsPanning(false);
     if (containerRef.current) containerRef.current.style.cursor = '';
   }, [containerRef]);

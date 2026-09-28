@@ -33,7 +33,7 @@ export default function Register() {
         <div className="flex-1 lg:pr-24 space-y-16 hidden lg:block border-r border-zinc-800/50 h-full py-12">
           <div className="flex justify-between items-end border-b border-zinc-800/50 pb-4 pr-12">
             <h1 className="text-amber-accent font-bold tracking-widest uppercase">Foldrule</h1>
-            <span className="text-zinc-600 text-xs tracking-widest uppercase">EST. MOD // 2024</span>
+            <span className="text-zinc-600 text-xs tracking-widest uppercase">EST. MOD // 2026</span>
           </div>
 
           <div className="space-y-12 pr-12">
@@ -41,35 +41,35 @@ export default function Register() {
               <div className="absolute left-0 top-0 bottom-0 w-2 bg-amber-accent" />
               <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Precision Takeoffs</h3>
               <p className="text-zinc-400 text-sm leading-relaxed">
-                Advanced CAD-grade measurement engine with mathematical verification for every vertex.
+                Measurements snap to the real linework in your PDF, so every point lands exactly on the drawing.
               </p>
             </div>
 
             <div className="relative pl-6">
               <div className="absolute left-0 top-0 bottom-0 w-2 border border-amber-accent bg-transparent" />
-              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Auto-Scaling</h3>
+              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Per-Page Scaling</h3>
               <p className="text-zinc-400 text-sm leading-relaxed">
-                Instant ratio calibration using OCR to detect plan scales across multiple PDF sheets.
+                Calibrate each sheet from one known dimension. Mixed-scale drawing sets measure correctly.
               </p>
             </div>
             
             <div className="relative pl-6">
               <div className="absolute left-0 top-0 bottom-0 w-2 bg-zinc-700" />
-              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Excel Export</h3>
+              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Excel BOQ Export</h3>
               <p className="text-zinc-400 text-sm leading-relaxed">
-                Direct formatting into industry-standard workbooks with categorized cost codes.
+                Priced workbooks with group subtotals, VAT and totals as live Excel formulas.
               </p>
             </div>
           </div>
 
           <div className="pt-8 border-t border-zinc-800/50 pr-12 flex gap-6">
             <div className="border border-zinc-800 p-4 flex-1">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Uptime Protocol</div>
-              <div className="text-zinc-300 font-bold tracking-wide">99.982% CLUSTER</div>
+              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Install Required</div>
+              <div className="text-zinc-300 font-bold tracking-wide">NONE — RUNS IN BROWSER</div>
             </div>
             <div className="border border-zinc-800 p-4 flex-1">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Data Security</div>
-              <div className="text-zinc-300 font-bold tracking-wide">AES-256 ENCRYPTED</div>
+              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Drawing Storage</div>
+              <div className="text-zinc-300 font-bold tracking-wide">STAYS ON THIS DEVICE</div>
             </div>
           </div>
         </div>
@@ -89,7 +89,7 @@ export default function Register() {
             <div className="mb-10">
               <h2 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-3">New Account</h2>
               <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
-                Initialize user profile for professional takeoff suite.
+                Set up your profile. Your name and firm appear on your dashboard; your drawings stay on this device.
               </p>
             </div>
 
@@ -176,12 +176,12 @@ export default function Register() {
           
           <div className="flex justify-end mt-4 text-[9px] text-zinc-600 gap-6 uppercase tracking-widest">
             <div className="text-right">
-              <div>Lat: 34.0522 N</div>
-              <div>Lon: 118.2437 W</div>
+              <div>Storage: Local</div>
+              <div>Upload: None</div>
             </div>
             <div className="text-right">
-              <div>Status: ONLINE</div>
-              <div>ID: QS-99-ALPHA</div>
+              <div>Status: Ready</div>
+              <div>Build: FR-1.0</div>
             </div>
           </div>
         </div>

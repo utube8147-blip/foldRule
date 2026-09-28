@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Lock, ArrowRight, AtSign } from 'lucide-react';
 import * as motion from 'motion/react-m';
@@ -56,7 +57,7 @@ export default function Login() {
           {/* Header */}
           <div className="flex justify-between items-baseline mb-8 pb-4 border-b border-zinc-800">
             <h2 className="text-zinc-200 text-sm tracking-widest uppercase">Terminal Login</h2>
-            <span className="text-[9px] text-zinc-500 uppercase tracking-widest">Auth_Mode: Secure</span>
+            <span className="text-[9px] text-zinc-500 uppercase tracking-widest">Auth_Mode: Local</span>
           </div>
 
           {/* Form */}
@@ -100,9 +101,9 @@ export default function Login() {
             <div className="flex justify-between items-center text-[10px] tracking-widest uppercase mt-4">
               <label className="flex items-center gap-2 cursor-pointer text-zinc-500 hover:text-zinc-300">
                 <input type="checkbox" className="form-checkbox bg-[#111] border-zinc-800 rounded-none w-3 h-3 text-amber-accent focus:ring-0 focus:ring-offset-0" />
-                <span>Persist Session</span>
+                <span>Remember Me</span>
               </label>
-              <a href="#" className="text-amber-accent hover:text-amber-300">Recovery_Path</a>
+              <Link href="/register" className="text-amber-accent hover:text-amber-300">Update_Profile</Link>
             </div>
 
             <button
@@ -115,7 +116,7 @@ export default function Login() {
             </button>
             
             <div className="pt-8 border-t border-zinc-800 text-center space-y-4">
-              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">New Operator?</p>
+              <p className="text-[10px] text-zinc-500 uppercase tracking-widest">New to Foldrule?</p>
               <button 
                 onClick={() => router.push('/register')}
                 className="w-full bg-transparent border border-amber-accent text-amber-accent hover:bg-amber-accent/10 font-bold uppercase tracking-widest text-xs py-3 transition-colors"
@@ -127,7 +128,7 @@ export default function Login() {
         </motion.div>
         
         <div className="flex justify-between items-center mt-6 text-[9px] text-zinc-600 uppercase tracking-widest px-4">
-          <span>v2.0.48_BUILD_STABLE</span>
+          <span>v1.0_BUILD_STABLE</span>
           <div className="flex gap-1">
             <div className="w-1 h-1 bg-amber-accent" />
             <div className="w-1 h-1 bg-zinc-600" />
@@ -139,9 +140,9 @@ export default function Login() {
       <div className="fixed bottom-12 right-12 max-w-sm hidden lg:block">
         <h3 className="text-amber-accent text-sm font-bold tracking-widest uppercase mb-2">Precision Data Engine</h3>
         <p className="text-xs text-zinc-500 leading-relaxed">
-          System designed for professional takeoff and industrial estimation workflows. 
-          Integrity verified via 256-bit encryption. All mathematical models compliant 
-          with ISO-9001 standards.
+          Built for professional takeoff and estimation workflows. Drawings open
+          directly in your browser and are never uploaded; projects are saved
+          on this device as you work.
         </p>
       </div>
     </div>
