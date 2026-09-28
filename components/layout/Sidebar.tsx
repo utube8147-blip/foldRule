@@ -231,8 +231,8 @@ function SidebarImpl({
               <button
                 type="button"
                 onClick={onCollapse}
-                title="Collapse sidebar"
-                aria-label="Collapse sidebar"
+                title="Hide Project Explorer ([)"
+                aria-label="Hide Project Explorer"
                 className="text-zinc-600 hover:text-amber-accent transition-colors"
               >
                 <PanelLeftClose className="w-3.5 h-3.5" />

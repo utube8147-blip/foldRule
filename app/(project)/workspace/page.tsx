@@ -26,7 +26,7 @@ import { ToastContainer } from '@/components/Toast';
 import type { PresetTemplate } from '@/components/presets/PresetTemplates';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import {
-  PanelRightClose,
+  PanelRightOpen,
   PanelLeftOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -390,6 +390,21 @@ export default function Workspace() {
   const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), []);
   const collapseSidebar     = useCallback(() => setLeftCollapsed(true), []);
   const expandSidebar       = useCallback(() => setLeftCollapsed(false), []);
+  const collapseTable       = useCallback(() => setRightCollapsed(true), []);
+  const expandTable         = useCallback(() => setRightCollapsed(false), []);
+
+  // [ and ] toggle the side panels (ignored while typing or with modifiers).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (e.key === '[') { e.preventDefault(); setLeftCollapsed(v => !v); }
+      else if (e.key === ']') { e.preventDefault(); setRightCollapsed(v => !v); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const openFullTable       = useCallback(() => router.push(href('/takeoff-full')), [router, href]);
   const handleAddManual     = useCallback(() => handleAddMeasurement({
                   id:          crypto.randomUUID(),
@@ -526,13 +541,27 @@ export default function Workspace() {
                 <button
                   type="button"
                   onClick={expandSidebar}
-                  title="Show Project Explorer"
+                  title="Show Project Explorer ([)"
                   aria-label="Show Project Explorer"
                   className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
                 >
                   <PanelLeftOpen className="w-4 h-4" />
                 </button>
                 <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" aria-hidden />
+              </>
+            ) : undefined}
+            trailing={rightCollapsed ? (
+              <>
+                <div className="w-px h-4 bg-industrial-border mx-1" aria-hidden />
+                <button
+                  type="button"
+                  onClick={expandTable}
+                  title="Show takeoff panel (])"
+                  aria-label="Show takeoff panel"
+                  className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
+                >
+                  <PanelRightOpen className="w-4 h-4" />
+                </button>
               </>
             ) : undefined}
           />
@@ -565,7 +594,7 @@ export default function Workspace() {
             </div>
 
             <div className={cn(
-              'flex flex-col h-full overflow-hidden transition-all duration-300 flex-shrink-0',
+              'flex flex-col h-full overflow-hidden transition-[width] duration-300 ease-in-out flex-shrink-0',
               rightCollapsed ? 'w-0' : 'w-96',
             )}>
               <TakeoffTable
@@ -575,20 +604,12 @@ export default function Workspace() {
                 onDelete={deleteMeasurement}
                 onToggleVisibility={toggleVisibility}
                 onExpand={openFullTable}
+                onCollapse={collapseTable}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={handleAddManual}
               />
             </div>
 
-            <div className="absolute right-0 bottom-10 z-[60] mr-2">
-              <button
-                onClick={() => setRightCollapsed(!rightCollapsed)}
-                className="bg-industrial-panel border border-industrial-border p-1.5 text-zinc-500 hover:text-amber-accent transition-colors shadow-lg"
-                title={rightCollapsed ? 'Expand Data Panel' : 'Collapse Data Panel'}
-              >
-                <PanelRightClose className={cn('w-4 h-4 transition-transform', rightCollapsed && 'rotate-180')} />
-              </button>
-            </div>
           </div>
         </div>
       </div>

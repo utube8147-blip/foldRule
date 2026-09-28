@@ -1,6 +1,6 @@
 // components/TakeoffTable.tsx
 import React, { useState, useCallback } from 'react';
-import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check } from 'lucide-react';
+import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check, PanelRightClose } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
 import { TakeoffRow, Material } from '@/types';
 
@@ -12,6 +12,8 @@ interface TakeoffTableProps {
   onAddManual: () => void;
   onToggleVisibility: (id?: string) => void;
   onExpand?: () => void;
+  /** Collapse the takeoff panel (button at the end of the panel header). */
+  onCollapse?: () => void;
   onAddSegmentToGroup?: (groupId: string, groupType: string) => void;
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
@@ -141,6 +143,7 @@ function TakeoffTableImpl({
   onAddManual,
   onToggleVisibility,
   onExpand,
+  onCollapse,
   onAddSegmentToGroup,
   batchUpdateMeasurements,
 }: TakeoffTableProps) {
@@ -473,6 +476,20 @@ function TakeoffTableImpl({
               <div className="w-px h-3 bg-zinc-700" />
               <button onClick={onExpand} className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[10px] font-bold" title="Open full-page takeoff view">
                 <ExternalLink className="w-3 h-3" /> EXPAND
+              </button>
+            </>
+          )}
+          {onCollapse && (
+            <>
+              <div className="w-px h-3 bg-zinc-700" aria-hidden />
+              <button
+                type="button"
+                onClick={onCollapse}
+                title="Hide takeoff panel (])"
+                aria-label="Hide takeoff panel"
+                className="text-zinc-500 hover:text-amber-accent transition-colors"
+              >
+                <PanelRightClose className="w-3.5 h-3.5" />
               </button>
             </>
           )}

@@ -49,6 +49,8 @@ import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
 
 
 interface ViewerToolbarProps {
+  /** Rendered after the zoom controls (e.g. the workspace's "show takeoff panel" button). */
+  trailing?: React.ReactNode;
   /** Rendered before the tool buttons (e.g. the workspace's "expand sidebar" button). */
   leading?: React.ReactNode;
   /** Leave out Undo/Redo (the workspace shows them in the page header). */
@@ -213,6 +215,7 @@ function ViewerToolbarImpl({
   hideHistory = false,
   hideScale = false,
   leading,
+  trailing,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
 
@@ -443,6 +446,7 @@ function ViewerToolbarImpl({
         >
           <Maximize className="w-4 h-4" />
         </button>
+        {trailing}
       </div>
 
     </div>
