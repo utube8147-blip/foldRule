@@ -106,9 +106,11 @@ export default function Workspace() {
   const [toolbarAPI,          setToolbarAPI]          = useState<ViewerToolbarAPI | null>(null);
   const [appendToGroupId,     setAppendToGroupId]     = useState<string | null>(null);
 
-  // ── Toolbar state managed at workspace level ──────────────────────────────
-  const [snapEnabled,      setSnapEnabled]      = useState(false);
-  const [showSnapSettings, setShowSnapSettings] = useState(false);
+  // ── Toolbar state ─────────────────────────────────────────────────────────
+  // Snap on/off and the snap-settings panel live in the Viewer (it does the
+  // snapping; S toggles it) — the toolbar reads/writes them through the
+  // Viewer's toolbar API so the button always matches reality.
+  // Pins are owned here and passed down to the Viewer.
   const [showPins,         setShowPins]         = useState(false);
 
   useEffect(() => { setIsMounted(true); }, []);
@@ -532,10 +534,10 @@ export default function Workspace() {
             tempPointsCount={api?.tempPointsCount ?? 0}
             showPins={showPins}
             setShowPins={setShowPins}
-            snapEnabled={snapEnabled}
-            setSnapEnabled={setSnapEnabled}
-            showSnapSettings={showSnapSettings}
-            setShowSnapSettings={setShowSnapSettings}
+            snapEnabled={api?.snapEnabled ?? true}
+            setSnapEnabled={(v: boolean) => api?.setSnapEnabled?.(v)}
+            showSnapSettings={api?.showSnapSettings ?? false}
+            setShowSnapSettings={(v: boolean) => api?.setShowSnapSettings?.(v)}
             scaleFactor={currentScaleFactor}
             handleManualScale={() => api?.handleManualScale?.()}
             analysisStatus={api?.analysisStatus ?? 'idle'}

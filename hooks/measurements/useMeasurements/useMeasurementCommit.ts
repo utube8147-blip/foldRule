@@ -146,6 +146,36 @@ export function splitPolyarcSegments(pts: InProgressPoint[]): PolyarcSegment[] {
   return result;
 }
 
+/**
+ * Points to add for one Polyarc click. At a switch between line and arc the
+ * previous segment's last point is repeated with the new type, so the new
+ * segment starts exactly where the last one ended (no gap).
+ */
+export function polyarcClickPoints(
+  tempPoints: InProgressPoint[],
+  segmentType: 'line' | 'arc',
+  click: { x: number; y: number; snapped: boolean },
+): InProgressPoint[] {
+  const out: InProgressPoint[] = [];
+  const allReal = tempPoints.filter(p => !isArcSentinel(p) && !isRadiusSentinel(p));
+  const lastReal = allReal.length > 0 ? allReal[allReal.length - 1] : null;
+  if (lastReal) {
+    const lastType = lastReal.segmentType ?? 'line';
+    const totalArcCount     = allReal.filter(p => p.segmentType === 'arc').length;
+    const completedArcCount = splitPolyarcSegments(tempPoints).filter(s => s.type === 'arc').length * 3;
+    const arcRunLen = totalArcCount - completedArcCount;
+    const atSegmentBoundary =
+      (lastType === 'line' && segmentType === 'arc') ||
+      (lastType === 'arc'  && segmentType === 'line' && arcRunLen === 0) ||
+      (lastType === 'arc'  && segmentType === 'arc'  && arcRunLen === 0);
+    if (atSegmentBoundary) {
+      out.push({ x: lastReal.x, y: lastReal.y, snapped: lastReal.snapped, segmentType });
+    }
+  }
+  out.push({ x: click.x, y: click.y, snapped: click.snapped, segmentType });
+  return out;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface UseMeasurementCommitParams {
   pdfDimensionsRef:        React.MutableRefObject<PdfDimensions | null>;
@@ -1133,38 +1163,9 @@ export function useMeasurementCommit({
     // ── POLYARC ───────────────────────────────────────────────────────────────
     if (activeTool === 'polyarc') {
       const segmentType: 'line' | 'arc' = (e.shiftKey || polyarcMode === 'arc') ? 'arc' : 'line';
-
-      if (tempPoints.length > 0) {
-        const allReal = tempPoints.filter(
-          p => !isArcSentinel(p) && !isRadiusSentinel(p),
-        );
-        const lastReal = allReal.length > 0 ? allReal[allReal.length - 1] : null;
-
-        if (lastReal) {
-          const lastType = lastReal.segmentType ?? 'line';
-
-          const totalArcCount     = allReal.filter(p => p.segmentType === 'arc').length;
-          const completedArcCount = splitPolyarcSegments(tempPoints)
-            .filter(s => s.type === 'arc').length * 3;
-          const arcRunLen = totalArcCount - completedArcCount;
-
-          const atSegmentBoundary =
-            (lastType === 'line' && segmentType === 'arc') ||
-            (lastType === 'arc'  && segmentType === 'line' && arcRunLen === 0) ||
-            (lastType === 'arc'  && segmentType === 'arc'  && arcRunLen === 0);
-
-          if (atSegmentBoundary) {
-            pushPoint({
-              x:           lastReal.x,
-              y:           lastReal.y,
-              snapped:     lastReal.snapped,
-              segmentType,
-            });
-          }
-        }
+      for (const p of polyarcClickPoints(tempPoints, segmentType, { x: norm.x, y: norm.y, snapped: snap.snapped })) {
+        pushPoint(p);
       }
-
-      pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentType });
       return;
     }
 

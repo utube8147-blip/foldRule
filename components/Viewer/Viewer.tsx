@@ -24,10 +24,11 @@ import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
 import { usePdfDocument, hasSnapGeometry } from '@/hooks/snapEngine/usePdfDocument';
-import { CircleCentresOverlay } from './CircleCentresOverlay';
-import { RADIUS_SENTINEL } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
-import type { PdfCircle } from '@/types/snapTypes';
+import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGroup } from './CentreAnchorOverlay';
+import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
+import type { GeometryShape } from '@/types/snapTypes';
 import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
+import { buildPointGrid } from '@/lib/geometry/pointGrid';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
@@ -171,6 +172,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     curves:      pdfCurves,
     snapPoints:  pdfSnapPoints,
     circles:     pdfCircles,
+    arcs:        pdfArcs,
     stage:       pdfStage,
     dims:        pdfDocDims,
   } = usePdfDocument();
@@ -304,6 +306,43 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return pdfSnapPoints.map(sp => ({ ...sp, x: sp.nx * w, y: sp.ny * h }));
   }, [pdfSnapPoints, pdfDocDims]);
 
+  // Centre anchor for the Circle / Arc tools (see "Centre anchor actions").
+  const [anchor,   setAnchor]   = useState<Anchor | null>(null);
+  const [arcStart, setArcStart] = useState<{ x: number; y: number } | null>(null);
+
+  // Once a circle's centre is placed (or an arc centre is anchored), the next
+  // point can be anywhere — so snapping opens up to everything on the plan:
+  // ends, midpoints, crossings, points on lines and arcs.
+  const lastTemp = tempPoints[tempPoints.length - 1];
+  const pickingFromCentre =
+    (activeTool === 'radius' && tempPoints.length > 0 && !!lastTemp && !isRadiusSentinel(lastTemp)) ||
+    (activeTool === 'arc' && !!anchor);
+
+  // ── What each tool gets to see and snap to ────────────────────────────────
+  //   Circle  → circle centres (and circle edges for the 2nd click)
+  //   Linear  → straight lines only
+  //   Arc     → arcs and arc centres only
+  //   Polyarc → lines + arcs
+  //   others  → everything
+  const toolShapes = useMemo<ReadonlySet<GeometryShape> | null>(() => {
+    if (pickingFromCentre) return null;
+    switch (activeTool) {
+      case 'linear':  return new Set<GeometryShape>(['line']);
+      case 'arc':     return new Set<GeometryShape>(['arc']);
+      case 'polyarc': return new Set<GeometryShape>(['line', 'arc']);
+      case 'radius':  return new Set<GeometryShape>(['circle']);
+      default:        return null;
+    }
+  }, [activeTool, pickingFromCentre]);
+
+  const toolSnapPoints = useMemo(() => {
+    if (!toolShapes) return pageSnapPoints;
+    return pageSnapPoints.filter(sp =>
+      toolShapes.has(sp.shape ?? 'line') && (activeTool !== 'radius' || sp.type === 'centroid'));
+  }, [pageSnapPoints, toolShapes, activeTool]);
+  const toolLines  = useMemo(() => (toolShapes ? pdfLines.filter(l => toolShapes.has(l.shape ?? 'line')) : pdfLines), [pdfLines, toolShapes]);
+  const toolCurves = useMemo(() => (toolShapes ? pdfCurves.filter(c => toolShapes.has(c.shape ?? 'arc')) : pdfCurves), [pdfCurves, toolShapes]);
+
   const resolvedSnapPoints = useMemo(() => {
     if (!pdfDimensions || !pdfSnapPoints.length) return [];
     const { w, h } = pdfDimensions;
@@ -329,36 +368,127 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pinCanvasRef:    pinCanvasRef  as React.RefObject<HTMLCanvasElement | null>,
     viewportRef:     containerRef  as React.RefObject<HTMLDivElement | null>,
     snapEnabled,
-    showPins,
+    // Pins are drawn on the drawing canvas now (see findPinsNear) — the old
+    // worker pin layer mixed coordinate spaces and is kept switched off.
+    showPins: false,
     snapThreshold,
-    lines:      pdfLines,           // page units (100% zoom)
-    curves:     pdfCurves,          // page units (100% zoom)
-    snapPoints: pageSnapPoints,     // page units (see pageSnapPoints)
+    lines:      toolLines,          // page units (100% zoom), filtered for the tool
+    curves:     toolCurves,
+    snapPoints: toolSnapPoints,     // page units, filtered for the tool
     activeTool,
     proximityRadius: 80,
     zoom:            scale,
     pan:             stablePan,
   });
 
+  // ── Centre anchor (Circle / Arc tools) ────────────────────────────────────
+  // Picking a centre marker anchors it; the next clicks either take one of the
+  // drawn shapes around it exactly, or draw your own from that centre.
+  const anchorRef = useRef<Anchor | null>(null);
+  anchorRef.current = anchor;
+  const arcStartRef = useRef<{ x: number; y: number } | null>(null);
+  arcStartRef.current = arcStart;
+  const tempCountRef = useRef(0);
+  tempCountRef.current = tempPoints.length;
+
   // Canvas px ↔ page units for snapping.
+  const snapEnabledRef = useRef(snapEnabled);
+  snapEnabledRef.current = snapEnabled;
+  const snapThresholdRef = useRef(snapThreshold);
+  snapThresholdRef.current = snapThreshold;
+  const geometryIndexRef = useRef<ReturnType<typeof buildGeometryIndex> | null>(null);
+  const ownVertexGridRef = useRef<ReturnType<typeof buildPointGrid> | null>(null);
   const canvasPerPageRef = useRef(1);
   canvasPerPageRef.current = pdfDimensions && pdfDocDims?.w ? pdfDimensions.w / pdfDocDims.w : 1;
   const snapToCanvas = useCallback((cx: number, cy: number) => {
     const k = canvasPerPageRef.current || 1;
-    const r = snapToCorner(cx / k, cy / k);
+    const qx = cx / k, qy = cy / k;
+    const out = (x: number, y: number, type: string) =>
+      ({ snapped: true, point: { x: x * k, y: y * k }, type } as ReturnType<typeof snapToCorner>);
+
+    // 0. Arc tool with an anchored centre: points belong to its circle(s).
+    const aa = anchorRef.current;
+    if (aa?.kind === 'arc' && pdfDocDims) {
+      const ax = aa.nx * pdfDocDims.w, ay = aa.ny * pdfDocDims.h;
+      const tolP = 12 / k;
+      const start = arcStartRef.current;
+      if (!start) {
+        if (snapEnabledRef.current) {
+          // a drawn arc's end, then any point along a drawn arc
+          for (const arc of aa.arcs) {
+            for (const ang of [arc.start, arc.start + arc.sweep]) {
+              const ex = ax + arc.r * Math.cos(ang), ey = ay + arc.r * Math.sin(ang);
+              if (Math.hypot(qx - ex, qy - ey) < tolP) return out(ex, ey, 'endpoint');
+            }
+          }
+          const d = Math.hypot(qx - ax, qy - ay), ang = Math.atan2(qy - ay, qx - ax);
+          const on = d > 0 ? aa.arcs.find(arc => Math.abs(d - arc.r) < tolP && angleInArc(ang, arc.start, arc.sweep)) : undefined;
+          if (on) return out(ax + on.r * Math.cos(ang), ay + on.r * Math.sin(ang), 'on-curve');
+        }
+        // otherwise fall through to normal snapping (own radius)
+      } else {
+        // End point: always on the circle through the start point…
+        const sx = start.x * pdfDocDims.w, sy = start.y * pdfDocDims.h;
+        const R = Math.hypot(sx - ax, sy - ay);
+        let ang = Math.atan2(qy - ay, qx - ax);
+        // …snapping to the ends of drawn arcs on that circle.
+        if (snapEnabledRef.current) {
+          for (const arc of aa.arcs) {
+            if (Math.abs(arc.r - R) > tolP) continue;
+            for (const e of [arc.start, arc.start + arc.sweep]) {
+              let diff = ang - e;
+              diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+              if (Math.abs(diff) * R < tolP) { ang = e; return out(ax + R * Math.cos(ang), ay + R * Math.sin(ang), 'endpoint'); }
+            }
+          }
+        }
+        return out(ax + R * Math.cos(ang), ay + R * Math.sin(ang), 'on-curve');
+      }
+    }
+
+    // 1. Exact points win: ends, midpoints, crossings, centres — and the
+    //    points of your own measurements (continue exactly from a previous end).
+    const r = snapToCorner(qx, qy);
+    if (snapEnabledRef.current) {
+      const tol = (snapThresholdRef.current || 12) / (scaleRef.current || 1);
+      const own = ownVertexGridRef.current?.near({ x: qx, y: qy }, tol, 1)[0];
+      const pdfD = r.snapped && r.type !== 'line' ? Math.hypot(r.point.x - qx, r.point.y - qy) : Infinity;
+      if (own && Math.hypot(own.x - qx, own.y - qy) <= pdfD) return out(own.x, own.y, 'vertex');
+    }
+    if (r.snapped && r.type !== 'line') return { ...r, point: { x: r.point.x * k, y: r.point.y * k } };
+
+    // 2. Circle tool, centre placed: the drawn circles around that centre.
+    const a = anchorRef.current;
+    if (snapEnabledRef.current && a?.kind === 'circle' && tempCountRef.current === 1 && pdfDocDims) {
+      const ax = a.nx * pdfDocDims.w, ay = a.ny * pdfDocDims.h;
+      const d = Math.hypot(qx - ax, qy - ay);
+      const hit = d > 0 ? a.circles.find(c => Math.abs(d - c.r) < 12 / k) : undefined;
+      if (hit) return out(ax + ((qx - ax) / d) * hit.r, ay + ((qy - ay) / d) * hit.r, 'circle-edge');
+    }
+
+    // 3. Otherwise land exactly on the nearest line / arc / circle edge the
+    //    current step allows.
+    if (snapEnabledRef.current) {
+      const tol = (snapThresholdRef.current || 12) / (scaleRef.current || 1);
+      const on = geometryIndexRef.current?.nearestPoint({ x: qx, y: qy }, tol, toolShapesRef.current);
+      if (on) return out(on.point.x, on.point.y, on.entity.shape === 'line' ? 'line' : 'on-curve');
+    }
     return { ...r, point: { x: r.point.x * k, y: r.point.y * k } };
-  }, [snapToCorner]);
+  }, [snapToCorner, pdfDocDims]);
 
   // ── Extracted geometry: hover highlight + optional overlay ────────────────
   const geometryIndex = useMemo(() => buildGeometryIndex(pdfLines as never, pdfCurves as never), [pdfLines, pdfCurves]);
+  geometryIndexRef.current = geometryIndex;
   const HOVER_TOOLS = useMemo(() => new Set(['linear', 'polygon', 'rectangle', 'arc', 'polyarc', 'radius', 'count', 'point', 'scale']), []);
   const activeToolRef = useRef(activeTool);
   activeToolRef.current = activeTool;
+  const toolShapesRef = useRef(toolShapes);
+  toolShapesRef.current = toolShapes;
   // Canvas px in → nearest PDF line/arc (as canvas-px points) out.
   const findHoverGeometry = useCallback((cx: number, cy: number) => {
     if (!HOVER_TOOLS.has(activeToolRef.current as string)) return null;
     const k = canvasPerPageRef.current || 1;
-    const e = geometryIndex.nearest({ x: cx / k, y: cy / k }, 10 / k);
+    const e = geometryIndex.nearest({ x: cx / k, y: cy / k }, 10 / k, toolShapesRef.current);
     if (!e) return null;
     const pts = e.kind === 'line' ? [e.a, e.b] : e.pts;
     return { kind: e.kind, pts: pts.map(p => ({ x: p.x * k, y: p.y * k })) };
@@ -376,22 +506,55 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     const k = canvasPerPageRef.current || 1;
     ctx.save();
     ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(14,165,233,0.55)';
-    ctx.beginPath();
-    for (const e of geometryIndex.entities) {
-      if (e.kind === 'line') { ctx.moveTo(e.a.x * k, e.a.y * k); ctx.lineTo(e.b.x * k, e.b.y * k); }
+    // Only what the current tool uses; colour-coded by what it is.
+    const COLOUR: Record<GeometryShape, string> = {
+      line:   'rgba(14,165,233,0.55)',   // blue
+      arc:    'rgba(217,70,239,0.65)',   // magenta
+      circle: 'rgba(139,92,246,0.7)',    // purple
+    };
+    for (const shape of ['line', 'arc', 'circle'] as GeometryShape[]) {
+      if (toolShapes && !toolShapes.has(shape)) continue;
+      ctx.strokeStyle = COLOUR[shape];
+      ctx.beginPath();
+      for (const e of geometryIndex.entities) {
+        if (e.shape !== shape) continue;
+        if (e.kind === 'line') { ctx.moveTo(e.a.x * k, e.a.y * k); ctx.lineTo(e.b.x * k, e.b.y * k); }
+        else e.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x * k, p.y * k) : ctx.lineTo(p.x * k, p.y * k)));
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
-    ctx.strokeStyle = 'rgba(217,70,239,0.6)';
-    ctx.beginPath();
-    for (const e of geometryIndex.entities) {
-      if (e.kind !== 'curve') continue;
-      e.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x * k, p.y * k) : ctx.lineTo(p.x * k, p.y * k)));
-    }
-    ctx.stroke();
     ctx.restore();
     // pdfRenderCount: the vector canvas is resized (cleared) by page renders.
-  }, [showGeometry, geometryIndex, pdfDimensions, pdfRenderCount]);
+  }, [showGeometry, geometryIndex, pdfDimensions, pdfRenderCount, toolShapes]);
+
+  // ── Your own measurements' points are snappable too ───────────────────────
+  // So a new line / arc can start exactly where the previous one ended.
+  const ownVertexGrid = useMemo(() => {
+    if (!pdfDocDims) return buildPointGrid([]);
+    const pts: { x: number; y: number; type: string }[] = [];
+    for (const m of measurements) {
+      if (m.isVisible === false || !m.points?.length) continue;
+      for (const p of m.points) pts.push({ x: p.x * pdfDocDims.w, y: p.y * pdfDocDims.h, type: 'vertex' });
+    }
+    return buildPointGrid(pts);
+  }, [measurements, pdfDocDims]);
+  ownVertexGridRef.current = ownVertexGrid;
+
+  // ── PINS: snap points near the cursor, drawn on the drawing canvas ────────
+  // Same coordinates as everything else (page units × canvas scale), so they
+  // line up at every zoom. Shown with PINS ON, and automatically while you
+  // pick a point from a centre (Circle / Arc tools).
+  const pinGrid = useMemo(() => buildPointGrid(toolSnapPoints as never), [toolSnapPoints]);
+  const pinsVisible = showPins || pickingFromCentre;
+  const findPinsNear = useMemo(() => {
+    if (!pinsVisible) return null;
+    return (cx: number, cy: number) => {
+      const k = canvasPerPageRef.current || 1;
+      const q = { x: cx / k, y: cy / k };
+      return [...ownVertexGrid.near(q, 80 / k, 40), ...pinGrid.near(q, 80 / k)]
+        .map(p => ({ x: p.x * k, y: p.y * k, type: p.type }));
+    };
+  }, [pinsVisible, pinGrid, ownVertexGrid]);
 
   const stagedArcs = calcStagedArcCount(tempPoints);
 
@@ -402,6 +565,16 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   );
 
   // ── handleSetActiveTool — with linear↔arc→polyarc upgrade ────────────────
+  // ── Polyarc mode ──────────────────────────────────────────────────────────
+  // The segment type the next Polyarc click creates. Switching to Linear / Arc
+  // while drawing sets it directly (it used to be stored in forcedPolyarcMode,
+  // which nothing read — so after an arc, "line" clicks were still recorded as
+  // arc points and the line after an arc was lost).
+  const [polyarcMode, setPolyarcMode] = useState<'line' | 'arc'>('line');
+  const togglePolyarcMode = useCallback(() => {
+    setPolyarcMode(m => m === 'line' ? 'arc' : 'line');
+  }, []);
+
   const pendingPolyarcModeRef = useRef<'line' | 'arc' | null>(null);
   const [forcedPolyarcMode, setForcedPolyarcMode] = useState<'line' | 'arc' | null>(null);
 
@@ -412,6 +585,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       const nextMode: 'line' | 'arc' = newTool === 'linear' ? 'line' : 'arc';
       pendingPolyarcModeRef.current = nextMode;
       setForcedPolyarcMode(nextMode);
+      setPolyarcMode(nextMode);
       return;
     }
 
@@ -425,6 +599,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       const nextMode: 'line' | 'arc'        = newTool === 'linear'    ? 'line' : 'arc';
       pendingPolyarcModeRef.current = nextMode;
       setForcedPolyarcMode(nextMode);
+      setPolyarcMode(nextMode);
       retagTempPoints(pts => pts.map(p => ({ ...p, segmentType: existingSegType })));
       setActiveTool('polyarc' as ToolType);
       return;
@@ -439,14 +614,10 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     if (activeTool !== 'polyarc') {
       setForcedPolyarcMode(null);
       pendingPolyarcModeRef.current = null;
+      setPolyarcMode('line');           // a fresh Polyarc starts with a line
     }
   }, [activeTool]);
 
-  // ── Polyarc mode ──────────────────────────────────────────────────────────
-  const [polyarcMode, setPolyarcMode] = useState<'line' | 'arc'>('line');
-  const togglePolyarcMode = useCallback(() => {
-    setPolyarcMode(m => m === 'line' ? 'arc' : 'line');
-  }, []);
 
   // ── Calibration ───────────────────────────────────────────────────────────
   const handleScalePrompt = useCallback((ptLen: number) => {
@@ -496,6 +667,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     showLabels,
     selectedIdRef,
     findHoverGeometry,
+    findPinsNear,
   } as any);
 
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
@@ -824,23 +996,116 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     setShowMeasurementDialog(true);
   }, [tempPoints.length, activeTool, finishMeasurement, propAppendToGroupId, onAppendComplete]);
 
-  // ── One-click circles (Circle tool + centre markers) ───────────────────────
-  // Feed the same points the Circle tool collects (centre, edge, break), then
-  // run the normal finish flow — naming dialog, material, undo all apply.
-  const pendingCircleFinishRef = useRef(false);
-  const createCirclesFromDrawing = useCallback((circles: PdfCircle[]) => {
-    for (const c of circles) {
-      pushPoint({ x: c.nx, y: c.ny, snapped: true });
-      pushPoint({ x: c.nx + c.nrx, y: c.ny, snapped: true });
-      pushPoint({ ...RADIUS_SENTINEL });
-    }
-    pendingCircleFinishRef.current = true;
-  }, [pushPoint]);
+  // ── Centre anchor actions ─────────────────────────────────────────────────
+  // Shapes created from the anchor are fed through the normal finish flow
+  // (naming dialog, material, undo) by pushing the same points the tools use.
+  const pendingFinishRef = useRef(false);
   useEffect(() => {
-    if (!pendingCircleFinishRef.current || tempPoints.length === 0) return;
-    pendingCircleFinishRef.current = false;
+    if (!pendingFinishRef.current || tempPoints.length === 0) return;
+    pendingFinishRef.current = false;
     handleFinishMeasurement();
   }, [tempPoints, handleFinishMeasurement]);
+
+  // Anchors end with the tool, or when the circle in progress is finished/cleared.
+  useEffect(() => { setAnchor(null); setArcStart(null); }, [activeTool, activeDrawingId, pageNumber]);
+  useEffect(() => {
+    if (anchor?.kind === 'circle' && tempPoints.length === 0 && !pendingFinishRef.current) setAnchor(null);
+  }, [anchor, tempPoints.length]);
+
+  const pickCentre = useCallback((g: CentreGroup) => {
+    if (activeTool === 'radius') {
+      setAnchor({ ...g, kind: 'circle' });
+      pushPoint({ x: g.nx, y: g.ny, snapped: true });      // the centre — next click sets the radius
+    } else if (activeTool === 'arc') {
+      setAnchor({ ...g, kind: 'arc' });
+      setArcStart(null);
+    }
+  }, [activeTool, pushPoint]);
+
+  /** Push an arc (centre in page units, angles in radians) as the Arc tool's 3 points. */
+  const pushArcFromCentre = useCallback((ax: number, ay: number, r: number, a0: number, sweep: number) => {
+    if (!pdfDocDims) return;
+    const P = (a: number) => ({ x: (ax + r * Math.cos(a)) / pdfDocDims.w, y: (ay + r * Math.sin(a)) / pdfDocDims.h, snapped: true });
+    pushPoint(P(a0));
+    pushPoint(P(a0 + sweep / 2));
+    pushPoint(P(a0 + sweep));
+    pushPoint({ ...ARC_SENTINEL });
+    pendingFinishRef.current = true;
+    setAnchor(null);
+    setArcStart(null);
+  }, [pushPoint, pdfDocDims]);
+
+  // Own arc from a centre: follow the mouse round the centre (unwrapped), so
+  // the arc can go past 180° — up to a full turn — in either direction.
+  const arcSweepRef   = useRef(0);
+  const arcLastAngRef = useRef<number | null>(null);
+  const [arcSweep, setArcSweep] = useState(0);
+  useEffect(() => {
+    arcSweepRef.current = 0;
+    setArcSweep(0);
+    if (!arcStart || !anchor || !pdfDocDims) { arcLastAngRef.current = null; return; }
+    const ax = anchor.nx * pdfDocDims.w, ay = anchor.ny * pdfDocDims.h;
+    arcLastAngRef.current = Math.atan2(arcStart.y * pdfDocDims.h - ay, arcStart.x * pdfDocDims.w - ax);
+    const el = containerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onMove = (e: PointerEvent) => {
+      const c = drawingCanvasRef.current;
+      if (!c || arcLastAngRef.current === null) return;
+      const rect = c.getBoundingClientRect();
+      const px = ((e.clientX - rect.left) / rect.width) * pdfDocDims.w;
+      const py = ((e.clientY - rect.top) / rect.height) * pdfDocDims.h;
+      if (Math.hypot(px - ax, py - ay) < 1) return;
+      const a = Math.atan2(py - ay, px - ax);
+      let d = a - arcLastAngRef.current;
+      if (d > Math.PI) d -= 2 * Math.PI; else if (d <= -Math.PI) d += 2 * Math.PI;
+      arcLastAngRef.current = a;
+      const LIMIT = 2 * Math.PI - 0.002;
+      arcSweepRef.current = Math.max(-LIMIT, Math.min(LIMIT, arcSweepRef.current + d));
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setArcSweep(arcSweepRef.current));
+    };
+    el.addEventListener('pointermove', onMove);
+    return () => { cancelAnimationFrame(raf); el.removeEventListener('pointermove', onMove); };
+  }, [arcStart, anchor, pdfDocDims]);
+
+  /** Arc tool with an anchored centre: handle the click ourselves. */
+  const handleArcAnchorClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    const a = anchorRef.current;
+    if (!a || !pdfDocDims) return;
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const cx = (e.clientX - rect.left) * (canvas.width / rect.width);
+    const cy = (e.clientY - rect.top) * (canvas.height / rect.height);
+    const k = canvasPerPageRef.current || 1;
+    const ax = a.nx * pdfDocDims.w, ay = a.ny * pdfDocDims.h;
+
+    if (!arcStart) {
+      // Shift-click on a drawn arc: take the whole arc in one go.
+      if (e.shiftKey) {
+        const qx = cx / k, qy = cy / k;
+        const d = Math.hypot(qx - ax, qy - ay), ang = Math.atan2(qy - ay, qx - ax);
+        const hit = a.arcs.find(arc => Math.abs(d - arc.r) < 12 / k && angleInArc(ang, arc.start, arc.sweep));
+        if (hit) { pushArcFromCentre(ax, ay, hit.r, hit.start, hit.sweep); return; }
+      }
+      // Start point: on a drawn arc / its end (snapped), or anywhere for your own radius.
+      const s = snapToCanvas(cx, cy);
+      const p = s?.point ?? { x: cx, y: cy };
+      if (Math.hypot(p.x / k - ax, p.y / k - ay) < 1) return;   // too close to the centre
+      setArcStart({ x: p.x / k / pdfDocDims.w, y: p.y / k / pdfDocDims.h });
+      return;
+    }
+    // End point: on the same circle (snapToCanvas keeps it there, and snaps to
+    // drawn arc ends). The sweep follows how the mouse went round the centre.
+    const sx = arcStart.x * pdfDocDims.w, sy = arcStart.y * pdfDocDims.h;
+    const r = Math.hypot(sx - ax, sy - ay);
+    const a0 = Math.atan2(sy - ay, sx - ax);
+    const endPt = snapToCanvas(cx, cy)?.point ?? { x: cx, y: cy };
+    const a1 = Math.atan2(endPt.y / k - ay, endPt.x / k - ax);
+    const sweep = alignSweep(arcSweepRef.current, a0, a1);
+    if (Math.abs(sweep) < 0.01) return;
+    pushArcFromCentre(ax, ay, r, a0, sweep);
+  }, [arcStart, pdfDocDims, snapToCanvas, pushArcFromCentre]);
 
   const handleDialogConfirm = useCallback((name: string, materialId: string, icon?: string) => {
     setShowMeasurementDialog(false);
@@ -917,6 +1182,18 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       const tag = target?.tagName;
       const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!target?.isContentEditable;
       const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+      // Enter finishes the shape in progress. (This used to live on the drawing
+      // container, which can't take focus — so Enter never worked.)
+      if (e.key === 'Enter' && !isTyping && !hasModifier && !showMeasurementDialog) {
+        if (activeTool === 'magic-fill' && mfStagedCount > 0) { e.preventDefault(); handleMagicFinish(); return; }
+        if (tempPoints.length > 0) { e.preventDefault(); handleFinishMeasurement(); return; }
+      }
+      if (e.key === 'Escape' && !isTyping && anchorRef.current) {
+        // Step back: own-arc start → anchor → nothing.
+        if (arcStart) setArcStart(null);
+        else { if (anchorRef.current.kind === 'circle') clearTempPoints(); setAnchor(null); }
+        e.preventDefault(); return;
+      }
       if (e.key === 'Escape' && !isTyping && tempPoints.length === 0 && activeTool !== 'select') {
         handleSetActiveTool('select' as ToolType); return;
       }
@@ -952,12 +1229,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
     handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
     setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled,
+    arcStart, clearTempPoints, showMeasurementDialog, mfStagedCount, handleMagicFinish, handleFinishMeasurement,
   ]);
 
   // ── Selection ↔ table linking ─────────────────────────────────────────────
   // Repaint the selection outline when the selection changes (cheap: the
   // committed shapes come from the cached layer).
-  useEffect(() => { redrawDrawingCanvas(); }, [selectedId, redrawDrawingCanvas]);
+  useEffect(() => { redrawDrawingCanvas(); }, [selectedId, redrawDrawingCanvas, pinsVisible, snapEnabled]);
 
   // When a row asks for focus, scroll the drawing so the shape is in view.
   const centeredSeqRef = useRef(0);
@@ -1005,8 +1283,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       setSelectedId(hit ? (hit.parentId && !hit.points?.length ? hit.parentId : hit.id) : null);
       return;
     }
+    if (activeTool === 'arc' && anchorRef.current?.kind === 'arc') { handleArcAnchorClick(e); return; }
     handleCanvasClick(e);
-  }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick]);
+  }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick, handleArcAnchorClick]);
 
   // ── Drag & drop PDFs onto the drawing area ────────────────────────────────
   const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
@@ -1265,13 +1544,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 />
               )}
 
-              {activeTool === 'radius' && tempPoints.length === 0 && pdfDimensions && pdfCircles.length > 0 && (
-                <CircleCentresOverlay
+              {(activeTool === 'radius' || activeTool === 'arc') && pdfDimensions &&
+                (anchor || (activeTool === 'radius' ? pdfCircles.length : pdfArcs.length) > 0) && (
+                <CentreAnchorOverlay
+                  mode={activeTool === 'radius' ? 'circle' : 'arc'}
                   circles={pdfCircles}
+                  arcs={pdfArcs}
                   pdfDimensions={pdfDimensions}
                   scaleFactor={scaleFactor}
                   calibrated={isPageCalibrated}
-                  onPick={createCirclesFromDrawing}
+                  anchor={anchor}
+                  arcStart={arcStart}
+                  arcSweep={arcSweep}
+                  showMarkers={tempPoints.length === 0}
+                  onPickCentre={pickCentre}
+                  pxPerPoint={canvasPerPageRef.current}
                 />
               )}
             </ViewerCanvas>

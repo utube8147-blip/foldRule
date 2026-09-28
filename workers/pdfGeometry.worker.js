@@ -122,16 +122,28 @@ function bezierToArc(p0, p1, p2, p3) {
 
 const CLUSTER_DIST = 3; // canvas-space px tolerance for deduplication
 
-function clusterNear(points, nx, ny, type, dims) {
-  // Convert cluster tolerance from canvas px to normalized space
+// Snap-point de-duplication. A hash grid (reset per page) replaces the old
+// linear scan over every existing point, which grew quadratically. Points only
+// merge with others of the same TYPE and SHAPE (line / arc / circle), so e.g. a
+// wall end and an arc end at the same spot both survive for their own tools.
+let dedupeGrid = new Map();
+function clusterNear(points, nx, ny, type, dims, shape) {
   const tolX = CLUSTER_DIST / dims.w;
   const tolY = CLUSTER_DIST / dims.h;
-  for (const p of points) {
-    // FIX: only cluster-deduplicate points of the SAME type.
-    // An endpoint and a midpoint at the same location are different snap types
-    // and both should survive — they render in different colors.
-    if (p.type === type && Math.abs(p.nx - nx) < tolX && Math.abs(p.ny - ny) < tolY) return true;
+  const tag = type + '|' + (shape || 'line');
+  const cx = Math.floor((nx * dims.w) / CLUSTER_DIST);
+  const cy = Math.floor((ny * dims.h) / CLUSTER_DIST);
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const cell = dedupeGrid.get((cx + dx) + ',' + (cy + dy));
+      if (!cell) continue;
+      for (const p of cell) {
+        if (p.tag === tag && Math.abs(p.nx - nx) < tolX && Math.abs(p.ny - ny) < tolY) return true;
+      }
+    }
   }
+  const key = cx + ',' + cy;
+  (dedupeGrid.get(key) || dedupeGrid.set(key, []).get(key)).push({ nx, ny, tag });
   return false;
 }
 
@@ -144,8 +156,8 @@ function computeLineSnaps(line, dims, out) {
     const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
     // FIX: pass dims to clusterNear so tolerance is in canvas px, not fractions
-    if (!clusterNear(out, nx, ny, type, dims)) {
-      out.push({ nx, ny, type, sourceId: line.id, strokeWidth: line.strokeWidth });
+    if (!clusterNear(out, nx, ny, type, dims, line.shape)) {
+      out.push({ nx, ny, type, shape: line.shape || 'line', sourceId: line.id, strokeWidth: line.strokeWidth });
     }
   };
 
@@ -161,8 +173,8 @@ function computeCurveSnaps(curve, dims, out) {
     const nx = v.x / dims.w;
     const ny = v.y / dims.h;
     if (nx < 0 || nx > 1 || ny < 0 || ny > 1) return;
-    if (!clusterNear(out, nx, ny, type, dims)) {
-      out.push({ nx, ny, type, sourceId: curve.id, strokeWidth: curve.strokeWidth });
+    if (!clusterNear(out, nx, ny, type, dims, curve.shape)) {
+      out.push({ nx, ny, type, shape: curve.shape || 'arc', sourceId: curve.id, strokeWidth: curve.strokeWidth });
     }
   };
 
@@ -205,9 +217,11 @@ function computeIntersections(lines, dims, out) {
       const ny = pt.y / dims.h;
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
       // FIX: pass dims for px-space tolerance
-      if (!clusterNear(out, nx, ny, 'intersection', dims)) {
+      const sa = strokedLines[i].shape || 'line', sb = strokedLines[j].shape || 'line';
+      const ishape = sa === 'line' && sb === 'line' ? 'line' : (sa === 'circle' || sb === 'circle') ? 'circle' : 'arc';
+      if (!clusterNear(out, nx, ny, 'intersection', dims, ishape)) {
         out.push({
-          nx, ny, type: 'intersection',
+          nx, ny, type: 'intersection', shape: ishape,
           sourceId: strokedLines[i].id + 'x' + strokedLines[j].id,
           strokeWidth: (strokedLines[i].strokeWidth + strokedLines[j].strokeWidth) / 2,
         });
@@ -251,34 +265,98 @@ function fitPolylineCircle(pts, pageDiag) {
   // Angular coverage: 360° minus the biggest gap between consecutive vertices.
   const angles = pts.map(p => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
   let maxGap = angles[0] + 2 * Math.PI - angles[angles.length - 1];
-  for (let i = 1; i < angles.length; i++) maxGap = Math.max(maxGap, angles[i] - angles[i - 1]);
+  let arcStart = angles[0];                        // the arc begins right after the biggest gap
+  for (let i = 1; i < angles.length; i++) {
+    const gap = angles[i] - angles[i - 1];
+    if (gap > maxGap) { maxGap = gap; arcStart = angles[i]; }
+  }
   const sweep = 2 * Math.PI - maxGap;
   if (sweep < Math.PI / 4) return null;
-  return { center: { x: cx, y: cy }, radius: r, sweepDeg: sweep * 180 / Math.PI };
+  return { center: { x: cx, y: cy }, radius: r, sweepDeg: sweep * 180 / Math.PI, arcStart, arcSweep: sweep };
 }
 
 // ─── Full circles (for the circle tool's one-click markers) ──────────────────
 // Joins the pieces of each circle — the 4 Béziers of a PDF circle, or a
 // segmented polyline — and keeps the ones covering at least 300°.
 function collectFullCircles(curves, polyCircles) {
-  const groups = [];   // { x, y, r, span }
-  const add = (x, y, r, span) => {
+  const groups = [];   // { x, y, r, span, members }
+  const add = (x, y, r, span, member) => {
     const tol = Math.max(1, r * 0.02);
     for (const g of groups) {
       if (Math.abs(g.x - x) < tol && Math.abs(g.y - y) < tol && Math.abs(g.r - r) < tol) {
-        g.span += span; return;
+        g.span += span; if (member) g.members.push(member); return;
       }
     }
-    groups.push({ x, y, r, span });
+    groups.push({ x, y, r, span, members: member ? [member] : [] });
   };
   for (const c of curves) {
     if (!c.fromStroke || c.approximate || !(c.radius > 2)) continue;
     let span = c.isCircle ? 360 : ((c.endAngle - c.startAngle) % 360 + 360) % 360;
     if (!c.isCircle) span = Math.min(span, 360 - span);   // direction-independent
-    add(c.center.x, c.center.y, c.radius, span);
+    add(c.center.x, c.center.y, c.radius, span, c);
   }
-  for (const pc of polyCircles) add(pc.center.x, pc.center.y, pc.radius, pc.sweepDeg || 0);
-  return groups.filter(g => g.span >= 300);
+  for (const pc of polyCircles) add(pc.center.x, pc.center.y, pc.radius, pc.sweepDeg || 0, null);
+  const full = groups.filter(g => g.span >= 300);
+  // Curves that make up a full circle are 'circle'; every other curve is an arc.
+  for (const c of curves) c.shape = 'arc';
+  for (const g of full) for (const m of g.members) m.shape = 'circle';
+  return full;
+}
+
+// ─── Arcs (for the arc tool's centre markers) ────────────────────────────────
+// Every non-full-circle arc as { cx, cy, r, start, sweep } — start in radians,
+// sweep ≥ 0 counter-clockwise in page coordinates (y down). Pieces of the same
+// arc (e.g. two Béziers of a 180° arc) are merged into one.
+function collectArcs(curves, polyCircles) {
+  const TAU = Math.PI * 2;
+  const norm = a => ((a % TAU) + TAU) % TAU;
+  const GAP = 2 * Math.PI / 180;
+  const groups = [];   // { x, y, r, intervals: [a, b] }
+  const add = (x, y, r, a0, sw) => {
+    let start = sw >= 0 ? norm(a0) : norm(a0 + sw);
+    // An arc starting at 0° can come out as 359.99° from rounding; treat as 0.
+    if (start > TAU - GAP) start -= TAU;
+    const len = Math.abs(sw);
+    const tol = Math.max(1, r * 0.02);
+    let g = groups.find(g => Math.abs(g.x - x) < tol && Math.abs(g.y - y) < tol && Math.abs(g.r - r) < tol);
+    if (!g) { g = { x, y, r, intervals: [] }; groups.push(g); }
+    g.intervals.push([start, start + len]);
+  };
+  for (const c of curves) {
+    if (c.shape !== 'arc' || c.approximate || !c.bezier || !(c.radius > 2)) continue;
+    const { p0, p3 } = c.bezier;
+    const mid = { x: (p0.x + 3 * c.bezier.p1.x + 3 * c.bezier.p2.x + p3.x) / 8, y: (p0.y + 3 * c.bezier.p1.y + 3 * c.bezier.p2.y + p3.y) / 8 };
+    const a0 = Math.atan2(p0.y - c.center.y, p0.x - c.center.x);
+    const am = Math.atan2(mid.y - c.center.y, mid.x - c.center.x);
+    const a1 = Math.atan2(p3.y - c.center.y, p3.x - c.center.x);
+    // Signed sweep through the midpoint.
+    const ccw = norm(a1 - a0), toMid = norm(am - a0);
+    const sw = toMid <= ccw ? ccw : -(TAU - ccw);
+    add(c.center.x, c.center.y, c.radius, a0, sw);
+  }
+  for (const pc of polyCircles) {
+    if (pc.shape === 'arc' && pc.arcSweep) add(pc.center.x, pc.center.y, pc.radius, pc.arcStart, pc.arcSweep);
+  }
+  const out = [];
+  for (const g of groups) {
+    const iv = g.intervals.sort((p, q) => p[0] - q[0]);
+    const merged = [];
+    for (const [a, b] of iv) {
+      const last = merged[merged.length - 1];
+      if (last && a <= last[1] + GAP) last[1] = Math.max(last[1], b);
+      else merged.push([a, b]);
+    }
+    // Join an interval that wraps past 0 with one starting at 0.
+    if (merged.length > 1 && merged[0][0] <= GAP && merged[merged.length - 1][1] >= TAU - GAP) {
+      const first = merged.shift();
+      merged[merged.length - 1][1] = first[1] + TAU;
+    }
+    for (const [a, b] of merged) {
+      const sweep = b - a;
+      if (sweep >= Math.PI / 12 && sweep < TAU * (300 / 360)) out.push({ x: g.x, y: g.y, r: g.r, start: a, sweep });
+    }
+  }
+  return out;
 }
 
 // ─── Path unpacking ───────────────────────────────────────────────────────────
@@ -378,6 +456,7 @@ function parseOperators(operators, dims, viewportTransform) {
           const firstCanvas = prevCanvas;
           // Vertices of an all-straight subpath, for circle detection.
           const polyPts = [firstCanvas];
+          const firstLineIdx = lines.length;
           let allLines  = true;
 
           for (const seg of sp.segs) {
@@ -475,7 +554,11 @@ function parseOperators(operators, dims, viewportTransform) {
             const last = polyPts[polyPts.length - 1];
             if (Math.hypot(last.x - firstCanvas.x, last.y - firstCanvas.y) < 0.1) polyPts.pop();
             const fit = fitPolylineCircle(polyPts, pageDiag);
-            if (fit) polyCircles.push({ center: fit.center, radius: fit.radius, sweepDeg: fit.sweepDeg, strokeWidth });
+            if (fit) {
+              const shape = fit.sweepDeg >= 300 ? 'circle' : 'arc';
+              for (let li = firstLineIdx; li < lines.length; li++) lines[li].shape = shape;
+              polyCircles.push({ center: fit.center, radius: fit.radius, sweepDeg: fit.sweepDeg, arcStart: fit.arcStart, arcSweep: fit.arcSweep, shape, strokeWidth });
+            }
           }
         }
         break;
@@ -498,14 +581,18 @@ self.onmessage = function(e) {
   try {
     const { lines, curves, polyCircles } = parseOperators(operators, dims, viewportTransform || IDENTITY);
 
+    dedupeGrid = new Map();
+    for (const l of lines) if (!l.shape) l.shape = 'line';
+    const fullCircles = collectFullCircles(curves, polyCircles);   // also tags curve.shape
+
     const snapPoints = [];
     // Centres of circles / arcs drawn as straight segments (see fitPolylineCircle).
     for (let i = 0; i < polyCircles.length; i++) {
       const c = polyCircles[i];
       const nx = c.center.x / dims.w, ny = c.center.y / dims.h;
       if (nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
-      if (!clusterNear(snapPoints, nx, ny, 'centroid', dims)) {
-        snapPoints.push({ nx, ny, type: 'centroid', sourceId: 'PC' + i, strokeWidth: c.strokeWidth });
+      if (!clusterNear(snapPoints, nx, ny, 'centroid', dims, c.shape)) {
+        snapPoints.push({ nx, ny, type: 'centroid', shape: c.shape, sourceId: 'PC' + i, strokeWidth: c.strokeWidth });
       }
     }
     for (const line  of lines)  computeLineSnaps(line, dims, snapPoints);
@@ -519,11 +606,16 @@ self.onmessage = function(e) {
     }
 
 
-    const circles = collectFullCircles(curves, polyCircles).map(c => ({
+    const circles = fullCircles.map(c => ({
       nx: c.x / dims.w, ny: c.y / dims.h, nrx: c.r / dims.w, nry: c.r / dims.h, r: c.r,
     })).filter(c => c.nx >= 0 && c.nx <= 1 && c.ny >= 0 && c.ny <= 1);
 
-    self.postMessage({ type: 'RESULT', lines, curves, snapPoints, circles });
+    const arcs = collectArcs(curves, polyCircles).map(a => ({
+      nx: a.x / dims.w, ny: a.y / dims.h, nrx: a.r / dims.w, nry: a.r / dims.h, r: a.r,
+      start: a.start, sweep: a.sweep,
+    })).filter(a => a.nx >= 0 && a.nx <= 1 && a.ny >= 0 && a.ny <= 1);
+
+    self.postMessage({ type: 'RESULT', lines, curves, snapPoints, circles, arcs });
   } catch (err) {
     console.error('[pdfGeometry.worker] threw:', err);
     self.postMessage({ type: 'ERROR', message: String(err) });

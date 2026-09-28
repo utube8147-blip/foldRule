@@ -15,16 +15,21 @@ export type SnapPointType =
   | 'intersection'
   | 'curve-node';
 
+/** What a piece of geometry belongs to — used to show each tool only what fits it. */
+export type GeometryShape = 'line' | 'arc' | 'circle';
+
 export interface SnapPoint {
   nx: number;
   ny: number;
   type: SnapPointType;
+  shape?: GeometryShape;
   sourceId: string;
   strokeWidth: number;
 }
 
 export interface PdfLine {
   id: string;
+  shape?: GeometryShape;
   vertices: [{ x: number; y: number }, { x: number; y: number }];
   layer: string;
   strokeWidth: number;
@@ -41,6 +46,7 @@ export interface BezierPoints {
 
 export interface PdfCurve {
   id: string;
+  shape?: GeometryShape;
   center: { x: number; y: number };
   radius: number;
   startAngle: number;
@@ -95,4 +101,12 @@ export interface PdfCircle {
   nry: number;
   /** Radius in PDF points (page space at scale 1). */
   r: number;
+}
+
+/** A drawn arc (not a full circle): centre, radius, start angle and sweep. */
+export interface PdfArc extends PdfCircle {
+  /** Start angle in radians (page coordinates, y down). */
+  start: number;
+  /** Sweep in radians, counter-clockwise from `start` (always ≥ 0). */
+  sweep: number;
 }

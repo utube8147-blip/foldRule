@@ -62,11 +62,13 @@ export function useMeasurements({
   showLabels,
   selectedIdRef,
   findHoverGeometry,
+  findPinsNear,
 }: UseMeasurementsParams & {
   snapCandidates?:    Array<{ x: number; y: number; type: string }>;
   forcedPolyarcMode?: 'line' | 'arc';
   showLabels?:        boolean;
   selectedIdRef?:     React.RefObject<string | null>;
+  findPinsNear?:      ((x: number, y: number) => { x: number; y: number; type: string }[]) | null;
   findHoverGeometry?: ((x: number, y: number) => { kind: 'line' | 'curve'; pts: { x: number; y: number }[] } | null) | null;
 }): UseMeasurementsReturn & {
   redrawDrawingCanvas: () => void;
@@ -144,6 +146,7 @@ export function useMeasurements({
     showLabels,
     selectedIdRef,
     findHoverGeometry: findHoverGeometry as never,
+    findPinsNear,
   });
 
   redrawDrawingCanvasRef.current = canvas.redrawDrawingCanvas;

@@ -45,6 +45,25 @@ import type { PdfDimensions } from '@/types/viewerTypes';
 import type { DragState } from './types';
 import type { InProgressPoint } from '@/context/TakeoffContext';
 
+/** Pin colours by snap type (match the lab page / legend). */
+const PIN_COLOURS: Record<string, string> = {
+  endpoint: '#22c55e', corner: '#22c55e', midpoint: '#38bdf8', intersection: '#ef4444',
+  centroid: '#8b5cf6', 'curve-node': '#f59e0b', tangent: '#f59e0b', quadrant: '#f59e0b',
+  vertex: '#F2C230',   // your own measurements' points
+};
+
+/** Canvas can't read CSS variables — resolve the mono font family once. */
+let monoFamily: string | null = null;
+function canvasMonoFont(): string {
+  if (monoFamily === null) {
+    const v = typeof window !== 'undefined'
+      ? getComputedStyle(document.documentElement).getPropertyValue('--font-jetbrains').trim()
+      : '';
+    monoFamily = `${v ? `${v}, ` : ''}ui-monospace, monospace`;
+  }
+  return monoFamily;
+}
+
 import {
   splitArcPoints, isArcSentinel,
   splitRadiusPoints, isRadiusSentinel,
@@ -76,6 +95,8 @@ interface UseDrawingCanvasParams {
    * Finds the PDF line/arc under the cursor (canvas px in, canvas px out) so it
    * can be highlighted while drawing. Null = feature off.
    */
+  /** Snap points near the cursor (canvas px) to draw as pins; null = pins off. */
+  findPinsNear?: ((x: number, y: number) => { x: number; y: number; type: string }[]) | null;
   findHoverGeometry?: ((x: number, y: number) => { kind: 'line'; pts: { x: number; y: number }[] } | { kind: 'curve'; pts: { x: number; y: number }[] } | null) | null;
 }
 
@@ -564,7 +585,11 @@ export function useDrawingCanvas({
   showLabels = false,
   selectedIdRef,
   findHoverGeometry = null,
+  findPinsNear = null,
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
+  const pinsRef = useRef<{ x: number; y: number; type: string }[]>([]);
+  const findPinsNearRef = useRef(findPinsNear);
+  findPinsNearRef.current = findPinsNear;
   const hoverGeomRef = useRef<{ kind: string; pts: { x: number; y: number }[] } | null>(null);
   const findHoverGeometryRef = useRef(findHoverGeometry);
   findHoverGeometryRef.current = findHoverGeometry;
@@ -575,7 +600,7 @@ export function useDrawingCanvas({
   const setCursorPoint = useCallback<React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>>(
     (v) => {
       cursorStateRef.current = typeof v === 'function' ? v(cursorStateRef.current) : v;
-      if (cursorStateRef.current === null) hoverGeomRef.current = null;   // pointer left / reset
+      if (cursorStateRef.current === null) { hoverGeomRef.current = null; pinsRef.current = []; }   // pointer left / reset
     },
     [],
   );
@@ -640,7 +665,7 @@ export function useDrawingCanvas({
 
       const drawLabels = (ctx: CanvasRenderingContext2D) => {
         ctx.save();
-        ctx.font = '600 11px var(--font-jetbrains), ui-monospace, monospace';
+        ctx.font = `600 11px ${canvasMonoFont()}`;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'center';
         for (const m of measurements) {
@@ -769,6 +794,27 @@ export function useDrawingCanvas({
         committedLayerRef.current = null;
         drawCommitted(ctx);
         if (showLabels) drawLabels(ctx);
+      }
+
+      // ── PINS: snap points near the cursor, colour-coded by type ──────────
+      if (findPinsNearRef.current && pinsRef.current.length) {
+        ctx.save();
+        for (const p of pinsRef.current) {
+          const col = PIN_COLOURS[p.type] ?? '#a1a1aa';
+          ctx.fillStyle = col;
+          ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          if (p.type === 'intersection') {        // diamond
+            ctx.moveTo(p.x, p.y - 4); ctx.lineTo(p.x + 4, p.y); ctx.lineTo(p.x, p.y + 4); ctx.lineTo(p.x - 4, p.y); ctx.closePath();
+          } else if (p.type === 'midpoint') {     // triangle
+            ctx.moveTo(p.x, p.y - 4); ctx.lineTo(p.x + 4, p.y + 3); ctx.lineTo(p.x - 4, p.y + 3); ctx.closePath();
+          } else {                                // dot
+            ctx.arc(p.x, p.y, 3.5, 0, Math.PI * 2);
+          }
+          ctx.fill(); ctx.stroke();
+        }
+        ctx.restore();
       }
 
       // ── PDF line / arc under the cursor (what you're about to snap to) ────
@@ -1484,6 +1530,7 @@ export function useDrawingCanvas({
       hoverGeomRef.current   = snapEnabledRef.current && findHoverGeometryRef.current
         ? findHoverGeometryRef.current(canvasX, canvasY)
         : null;
+      pinsRef.current = findPinsNearRef.current ? findPinsNearRef.current(canvasX, canvasY) : [];
       pendingMovePointRef.current = snappedCanvas;
       if (moveRafRef.current == null) {
         moveRafRef.current = requestAnimationFrame(() => {

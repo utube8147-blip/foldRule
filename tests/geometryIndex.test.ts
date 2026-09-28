@@ -41,3 +41,32 @@ describe('geometry index', () => {
     expect(performance.now() - t0).toBeLessThan(200);   // 1000 lookups (≈ 16 s of mouse moves at 60 fps)
   });
 });
+
+describe('snap onto the nearest line / curve', () => {
+  const k = 0.5523 * 50;
+  const idx = buildGeometryIndex(
+    [{ id: 'wall', shape: 'line', vertices: [{ x: 0, y: 100 }, { x: 400, y: 100 }] }],
+    [{ id: 'q', shape: 'circle', center: { x: 500, y: 500 }, radius: 50,
+       bezier: { p0: { x: 550, y: 500 }, p1: { x: 550, y: 500 + k }, p2: { x: 500 + k, y: 550 }, p3: { x: 500, y: 550 } } }],
+  );
+
+  it('lands exactly on a line when clicking beside it', () => {
+    const hit = idx.nearestPoint({ x: 137, y: 106 }, 12)!;
+    expect(hit.point.x).toBeCloseTo(137, 6);
+    expect(hit.point.y).toBeCloseTo(100, 6);
+  });
+
+  it('lands exactly on a circle edge (true radius, not the sampled curve)', () => {
+    const hit = idx.nearestPoint({ x: 540, y: 540 }, 12)!;   // near the 45° point
+    expect(Math.hypot(hit.point.x - 500, hit.point.y - 500)).toBeCloseTo(50, 6);
+  });
+
+  it('only considers the shapes the tool allows', () => {
+    expect(idx.nearestPoint({ x: 137, y: 106 }, 12, new Set(['circle']))).toBeNull();
+    expect(idx.nearestPoint({ x: 540, y: 540 }, 12, new Set(['line']))).toBeNull();
+  });
+
+  it('does nothing when the click is too far from any line', () => {
+    expect(idx.nearestPoint({ x: 137, y: 140 }, 12)).toBeNull();
+  });
+});
