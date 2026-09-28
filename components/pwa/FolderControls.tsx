@@ -151,7 +151,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
     <div role="dialog" aria-modal="true" aria-labelledby="storage-title"
       className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 px-4"
       onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="w-full max-w-lg bg-industrial-panel border border-industrial-border font-mono text-zinc-300">
+      <div className="w-full max-w-4xl bg-industrial-panel border border-industrial-border font-mono text-zinc-300">
         <div className="flex items-center justify-between px-6 py-4 border-b border-industrial-border">
           <h2 id="storage-title" className="text-sm font-bold uppercase tracking-widest text-zinc-100">Where projects are saved</h2>
           <button type="button" onClick={onClose} aria-label="Close" className="p-1 text-zinc-500 hover:text-zinc-200">
@@ -232,7 +232,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
           </section>
 
           {f.supported && !installed && (
-            <section className="border-t border-industrial-border pt-5 flex gap-3">
+            <section className="border-t border-industrial-border  pt-8 flex gap-3">
               <MonitorDown className="w-5 h-5 text-zinc-500 shrink-0 mt-0.5" aria-hidden />
               <div className="flex-1">
                 <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-[11px]">Tip: install Foldrule</h3>
