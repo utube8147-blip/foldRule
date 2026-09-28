@@ -40,7 +40,7 @@ describe('projectDb', () => {
   it('round-trips a project through a backup file', async () => {
     const id = await seed();
     const { blob, filename } = await exportProjectBackup(id);
-    expect(filename).toBe('colombo-residence.qsproj');
+    expect(filename).toBe('colombo-residence.foldrule');
     const imported = await importProjectBackup(new File([blob], filename));
     expect(imported.id).not.toBe(id);
     expect(imported.state.measurements[0].quantity).toBe(12);
@@ -48,7 +48,7 @@ describe('projectDb', () => {
   });
 
   it('rejects files that are not backups', async () => {
-    await expect(importProjectBackup(new File(['{"hello":1}'], 'x.qsproj'))).rejects.toThrow(/not a Quantity Savior/);
+    await expect(importProjectBackup(new File(['{"hello":1}'], 'x.qsproj'))).rejects.toThrow(/not a Foldrule/);
     await expect(importProjectBackup(new File(['nope'], 'x.qsproj'))).rejects.toThrow(/not a valid/);
   });
 

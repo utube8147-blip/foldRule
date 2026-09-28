@@ -68,7 +68,7 @@ function EnterpriseModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="relative bg-[#161616] border border-amber-500/40 max-w-md w-full mx-4 p-8"
+        className="relative bg-[#1D2125] border border-amber-500/40 max-w-md w-full mx-4 p-8"
         onClick={e => e.stopPropagation()}
       >
         <Brackets active />
@@ -509,7 +509,7 @@ export default function PresetsPage() {
       </div>
 
       {/* status bar */}
-      <footer className="h-6 flex-shrink-0 bg-[#0a0a0a] border-t border-zinc-800 flex items-center justify-between px-6">
+      <footer className="h-6 flex-shrink-0 bg-[#16191C] border-t border-zinc-800 flex items-center justify-between px-6">
         <div className="flex items-center gap-6">
           <span className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold">
             {ps.projectName || 'Untitled Project'}

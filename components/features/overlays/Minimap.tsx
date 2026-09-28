@@ -125,9 +125,9 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
       const vpWidth  = Math.max(2, vw * mx);
       const vpHeight = Math.max(2, vh * my);
 
-      ctx.fillStyle = 'rgba(245,158,11,0.12)';
+      ctx.fillStyle = 'rgba(242,194,48,0.12)';
       ctx.fillRect(vpLeft, vpTop, vpWidth, vpHeight);
-      ctx.strokeStyle = 'rgba(245,158,11,0.9)';
+      ctx.strokeStyle = 'rgba(242,194,48,0.9)';
       ctx.lineWidth   = 1;
       ctx.setLineDash([]);
       ctx.strokeRect(vpLeft + 0.5, vpTop + 0.5, vpWidth - 1, vpHeight - 1);
@@ -208,10 +208,10 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
           style={{
             width: MINIMAP_W,
             border: '1px solid',
-            borderColor: locked ? 'rgba(245,158,11,0.55)' : 'rgba(63,63,70,0.85)',
+            borderColor: locked ? 'rgba(242,194,48,0.55)' : 'rgba(63,63,70,0.85)',
             background: '#09090b',
             boxShadow: locked
-              ? '0 0 0 1px rgba(245,158,11,0.12), 0 8px 32px rgba(0,0,0,0.75)'
+              ? '0 0 0 1px rgba(242,194,48,0.12), 0 8px 32px rgba(0,0,0,0.75)'
               : '0 8px 32px rgba(0,0,0,0.65)',
             transition: 'border-color 0.2s, box-shadow 0.2s',
           }}
@@ -224,7 +224,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
             <div className="flex items-center gap-1.5">
               <div
                 className="w-1.5 h-1.5 rounded-full transition-colors duration-200"
-                style={{ background: locked ? '#f59e0b' : '#3f3f46' }}
+                style={{ background: locked ? '#F2C230' : '#3f3f46' }}
               />
               <span
                 className="font-mono font-bold uppercase tracking-[0.18em] transition-colors duration-200"
@@ -253,7 +253,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
               className="absolute top-0 left-0 right-0 h-px pointer-events-none z-10 transition-all duration-300"
               style={{
                 background: locked
-                  ? 'linear-gradient(90deg,transparent 0%,rgba(245,158,11,0.5) 50%,transparent 100%)'
+                  ? 'linear-gradient(90deg,transparent 0%,rgba(242,194,48,0.5) 50%,transparent 100%)'
                   : 'linear-gradient(90deg,transparent 0%,rgba(63,63,70,0.4) 50%,transparent 100%)',
               }}
             />
@@ -306,7 +306,7 @@ export function Minimap({ pdf, pageNumber, containerRef, pdfDimensions, canvasPa
           height:        3,
           pointerEvents: 'none',
           opacity:       isCollapsed ? 1 : panelVisible ? 0 : 1,
-          background:    'linear-gradient(90deg,rgba(245,158,11,0.35) 0%,rgba(245,158,11,0.05) 100%)',
+          background:    'linear-gradient(90deg,rgba(242,194,48,0.35) 0%,rgba(242,194,48,0.05) 100%)',
         }}
       />
     </div>
@@ -322,7 +322,7 @@ interface CornerTickProps {
 
 function CornerTick({ position, active }: CornerTickProps) {
   const size  = 6;
-  const color = active ? 'rgba(245,158,11,0.65)' : 'rgba(63,63,70,0.5)';
+  const color = active ? 'rgba(242,194,48,0.65)' : 'rgba(63,63,70,0.5)';
   const style: React.CSSProperties = {
     position: 'absolute', width: size, height: size,
     pointerEvents: 'none', zIndex: 20, transition: 'border-color 0.2s',

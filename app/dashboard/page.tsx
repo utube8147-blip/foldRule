@@ -2,14 +2,18 @@
 
 // ─── Dashboard: local projects ───────────────────────────────────────────────
 //  Projects live in this browser (IndexedDB) — see lib/storage/projectDb.ts.
-//  Backups (.qsproj) move a project between browsers/devices.
+//  Backups (.foldrule files; older .qsproj files still import) move a project between browsers/devices.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  HardHat, FolderOpen, Plus, Search, Upload, Download, Copy, Trash2, Pencil, HardDrive,
+  FolderOpen, Plus, Search, Upload, Download, Copy, Trash2, Pencil, LogOut, Filter, BoxSelect,
 } from 'lucide-react';
+import * as motion from 'motion/react-m';
+import { getProfile, clearProfile, initials, type LocalProfile } from '@/lib/profile';
+import Link from 'next/link';
 import { cn } from '@/lib/utils';
+import { Logo } from '@/components/brand/Logo';
 import { projectHref } from '@/lib/nav/projectHref';
 import {
   listProjects, createProject, deleteProject, renameProject, duplicateProject,
@@ -40,11 +44,15 @@ export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [error,    setError]    = useState<string | null>(null);
   const [query,    setQuery]    = useState('');
+  const [sortBy,   setSortBy]   = useState<'recent' | 'name'>('recent');
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [busyId,   setBusyId]   = useState<string | null>(null);
   const [usage,    setUsage]    = useState<{ used: number; quota: number } | null>(null);
+  const [profile,  setProfile]  = useState<LocalProfile | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setProfile(getProfile()); }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -70,9 +78,13 @@ export default function Dashboard() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!projects) return [];
-    if (!q) return projects;
-    return projects.filter(p => p.name.toLowerCase().includes(q) || p.number.toLowerCase().includes(q));
-  }, [projects, query]);
+    const list = q
+      ? projects.filter(p => p.name.toLowerCase().includes(q) || p.number.toLowerCase().includes(q))
+      : [...projects];
+    if (sortBy === 'name') list.sort((a, b) => a.name.localeCompare(b.name));
+    else list.sort((a, b) => b.updatedAt - a.updatedAt);
+    return list;
+  }, [projects, query, sortBy]);
 
   const open = (id: string) => router.push(projectHref('/workspace', id));
 
@@ -121,48 +133,117 @@ export default function Dashboard() {
     }
   };
 
+  const handleLogout = () => {
+    clearProfile();
+    router.push('/');
+  };
+
+  const WEEK = 7 * 24 * 60 * 60 * 1000;
+
   return (
-    <div className="min-h-screen bg-industrial-black flex flex-col text-zinc-200">
-      <header className="h-16 border-b border-industrial-border bg-industrial-panel px-6 flex items-center justify-between sticky top-0 z-40 gap-4">
-        <div className="flex items-center gap-3">
-          <HardHat className="w-7 h-7 text-amber-accent" aria-hidden />
-          <span className="text-xl font-black tracking-tighter text-amber-accent font-mono uppercase">Quantity Savior</span>
+    <div className="min-h-screen bg-industrial-black flex flex-col font-mono text-zinc-200">
+      <header className="h-16 border-b border-industrial-border bg-industrial-panel px-6 flex items-center justify-between sticky top-0 z-50">
+        <div className="flex items-center gap-6 h-full">
+          <Link
+            href="/"
+            aria-label="Foldrule home"
+            className="flex items-center gap-3 border-r border-industrial-border pr-6 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+          >
+            <Logo size={24} />
+          </Link>
+
+          <nav aria-label="Dashboard sections" className="flex items-center gap-1 h-full">
+            {['Dashboard', 'Projects', 'Archives'].map((item, i) => (
+              <button
+                key={item}
+                type="button"
+                aria-current={i === 0 ? 'page' : undefined}
+                className={cn(
+                  'px-4 h-full text-xs font-bold uppercase tracking-widest flex items-center border-b-2 transition-all',
+                  i === 0
+                    ? 'border-amber-accent text-amber-accent bg-zinc-800/30'
+                    : 'border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/10',
+                )}
+              >
+                {item}
+              </button>
+            ))}
+          </nav>
         </div>
 
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden />
-          <input
-            type="search"
-            value={query}
-            onChange={e => setQuery(e.target.value)}
-            placeholder="Search projects"
-            aria-label="Search projects"
-            className="bg-stone-900 border border-industrial-border pl-9 pr-4 py-1.5 text-xs outline-none focus:border-amber-accent w-56"
-          />
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" aria-hidden />
+            <input
+              type="search"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search projects..."
+              aria-label="Search projects"
+              className="bg-stone-900 border border-industrial-border pl-9 pr-4 py-1.5 text-xs focus:border-amber-accent outline-none w-48 transition-all focus:w-64"
+            />
+          </div>
+
+          <div className="w-px h-6 bg-industrial-border mx-2" />
+
+          {profile ? (
+            <div className="flex items-center gap-3">
+              <div className="text-right flex flex-col">
+                <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-widest leading-none">{profile.name}</span>
+                <span className="text-[9px] text-zinc-500 uppercase tracking-widest">{profile.firm || 'Local profile'}</span>
+              </div>
+              <div className="w-8 h-8 bg-zinc-800 border border-industrial-border flex items-center justify-center font-bold text-amber-accent" aria-hidden>
+                {initials(profile.name)}
+              </div>
+              <button
+                type="button"
+                onClick={handleLogout}
+                className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors ml-2"
+                title="Logout"
+                aria-label="Log out"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest">
+              <Link href="/login" className="text-zinc-400 hover:text-zinc-200">Login</Link>
+              <Link href="/register" className="border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-3 py-1.5">Sign up</Link>
+            </div>
+          )}
         </div>
       </header>
 
-      <main className="flex-1 p-6 md:p-8 max-w-screen-2xl mx-auto w-full">
+      <main className="flex-1 overflow-auto p-8 max-w-screen-2xl mx-auto w-full">
         <div className="flex flex-wrap justify-between items-end gap-4 mb-8">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Projects</h1>
-            <p className="mt-1 text-sm text-zinc-500">
-              Saved in this browser.{' '}
-              {usage && <span>Using {formatBytes(usage.used)} of {formatBytes(usage.quota)} available.</span>}
+            <h1 className="text-3xl font-black tracking-tight uppercase mb-2">Active Projects</h1>
+            <p className="text-[11px] text-zinc-500 tracking-widest uppercase">
+              System holds {projects?.length ?? 0} records
+              {usage && <> · {formatBytes(usage.used)} of {formatBytes(usage.quota)} used in this browser</>}
             </p>
           </div>
           <div className="flex items-center gap-3">
             <input
               ref={importRef}
               type="file"
-              accept=".qsproj,application/json"
+              accept=".foldrule,.qsproj,application/json"
               className="hidden"
               onChange={e => void handleImport(e.target.files?.[0])}
             />
             <button
               type="button"
+              onClick={() => setSortBy(s => (s === 'recent' ? 'name' : 'recent'))}
+              title="Change sort order"
+              className="flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
+            >
+              <Filter className="w-3.5 h-3.5" aria-hidden />
+              {sortBy === 'recent' ? 'Filter: Recent' : 'Filter: A–Z'}
+            </button>
+            <button
+              type="button"
               onClick={() => importRef.current?.click()}
-              className="flex items-center gap-2 text-xs font-semibold border border-industrial-border px-3 py-2 text-zinc-300 hover:border-zinc-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+              className="flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
             >
               <Upload className="w-3.5 h-3.5" aria-hidden />
               Import backup
@@ -170,82 +251,112 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => setCreating(true)}
-              className="flex items-center gap-2 text-xs font-bold bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300"
+              className="flex items-center gap-2 text-[10px] font-bold bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 uppercase tracking-widest transition-all"
             >
               <Plus className="w-3.5 h-3.5" aria-hidden />
-              New project
+              New Project
             </button>
           </div>
         </div>
 
         {error && (
-          <div role="alert" className="mb-6 flex items-start justify-between gap-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          <div role="alert" className="mb-6 flex items-start justify-between gap-4 border border-red-500/40 bg-red-500/10 px-4 py-3 text-xs text-red-200">
             <span>{error}</span>
             <button type="button" onClick={() => setError(null)} className="text-red-300 hover:text-white" aria-label="Dismiss">✕</button>
           </div>
         )}
 
         {projects === null ? (
-          <p className="text-sm text-zinc-500">Loading projects…</p>
-        ) : projects.length === 0 ? (
-          <EmptyState onCreate={() => setCreating(true)} onImport={() => importRef.current?.click()} />
-        ) : filtered.length === 0 ? (
-          <p className="text-sm text-zinc-500">No projects match “{query}”.</p>
+          <p className="text-xs text-zinc-500 uppercase tracking-widest">Loading projects…</p>
         ) : (
-          <ul className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
-            {filtered.map(p => (
-              <li
-                key={p.id}
-                className={cn(
-                  'group bg-industrial-panel border border-industrial-border hover:border-amber-accent/50 flex flex-col',
-                  busyId === p.id && 'opacity-60',
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => open(p.id)}
-                  className="h-28 bg-stone-900 border-b border-industrial-border relative overflow-hidden flex items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-300"
-                  aria-label={`Open ${p.name}`}
-                >
-                  <span className="absolute inset-0 blueprint-grid opacity-30 group-hover:opacity-50" aria-hidden />
-                  <FolderOpen className="w-9 h-9 text-zinc-700 group-hover:text-amber-accent/60 z-10" aria-hidden />
-                </button>
-
-                <div className="p-4 flex-1 flex flex-col">
-                  {renaming === p.id ? (
-                    <RenameField
-                      initial={p.name}
-                      onCancel={() => setRenaming(null)}
-                      onSave={name => { setRenaming(null); void run(p.id, () => renameProject(p.id, name), 'Couldn’t rename'); }}
-                    />
-                  ) : (
+          <>
+            {query && filtered.length === 0 && (
+              <p className="mb-6 text-xs text-zinc-500 uppercase tracking-widest">No projects match “{query}”.</p>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+              {filtered.map((project, i) => {
+                const active = Date.now() - project.updatedAt < WEEK;
+                return (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i, 12) * 0.05 }}
+                    key={project.id}
+                    className={cn(
+                      'group bg-industrial-panel border border-industrial-border hover:border-amber-accent/50 transition-all hover:shadow-2xl flex flex-col',
+                      busyId === project.id && 'opacity-60',
+                    )}
+                  >
                     <button
                       type="button"
-                      onClick={() => open(p.id)}
-                      className="text-left font-semibold text-sm text-zinc-100 group-hover:text-amber-accent truncate"
-                      title={p.name}
+                      onClick={() => open(project.id)}
+                      aria-label={`Open ${project.name}`}
+                      className="h-32 bg-stone-900 border-b border-industrial-border relative overflow-hidden flex items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-300"
                     >
-                      {p.name}
+                      <span className="absolute inset-0 blueprint-grid opacity-30 group-hover:opacity-50 transition-opacity" aria-hidden />
+                      <FolderOpen className="w-10 h-10 text-zinc-700 group-hover:text-amber-accent/50 transition-colors z-10" aria-hidden />
+                      {active && (
+                        <span className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase tracking-widest">
+                          <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                          Active
+                        </span>
+                      )}
                     </button>
-                  )}
-                  <p className="mt-1 text-xs text-zinc-500">
-                    {p.number ? `No. ${p.number} · ` : ''}Edited {formatWhen(p.updatedAt)}
-                  </p>
-                  <p className="mt-3 text-xs text-zinc-400">
-                    {p.drawingCount} {p.drawingCount === 1 ? 'drawing' : 'drawings'}, {p.measurementCount} {p.measurementCount === 1 ? 'measurement' : 'measurements'}
-                  </p>
 
-                  <div className="mt-4 pt-3 border-t border-industrial-border/60 flex items-center gap-1">
-                    <IconButton label="Rename" onClick={() => setRenaming(p.id)} icon={<Pencil className="w-3.5 h-3.5" />} />
-                    <IconButton label="Duplicate" onClick={() => void run(p.id, () => duplicateProject(p.id), 'Couldn’t duplicate')} icon={<Copy className="w-3.5 h-3.5" />} />
-                    <IconButton label="Download backup" onClick={() => void handleBackup(p)} icon={<Download className="w-3.5 h-3.5" />} />
-                    <span className="flex-1" />
-                    <IconButton label="Delete" danger onClick={() => handleDelete(p)} icon={<Trash2 className="w-3.5 h-3.5" />} />
-                  </div>
-                </div>
-              </li>
-            ))}
-          </ul>
+                    <div className="p-4 flex-1 flex flex-col justify-between">
+                      <div>
+                        {renaming === project.id ? (
+                          <RenameField
+                            initial={project.name}
+                            onCancel={() => setRenaming(null)}
+                            onSave={name => { setRenaming(null); void run(project.id, () => renameProject(project.id, name), 'Couldn’t rename'); }}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => open(project.id)}
+                            className="block text-left font-bold text-sm tracking-tight text-zinc-100 uppercase group-hover:text-amber-accent transition-colors max-w-full truncate"
+                            title={project.name}
+                          >
+                            {project.name}
+                          </button>
+                        )}
+                        <div className="flex items-center gap-2 mt-2 text-[10px] text-zinc-500 tracking-widest uppercase">
+                          <span>Created: {new Date(project.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
+                          {project.number && <span>· No. {project.number}</span>}
+                        </div>
+                      </div>
+
+                      <div className="mt-6 pt-4 border-t border-industrial-border/50 flex justify-between items-center text-[10px] uppercase font-bold tracking-widest">
+                        <span className="text-zinc-600 flex items-center gap-1.5">
+                          <BoxSelect className="w-3.5 h-3.5" aria-hidden />
+                          {project.measurementCount} Quantities
+                        </span>
+                        <span className="text-amber-accent/70">{formatWhen(project.updatedAt)}</span>
+                      </div>
+
+                      <div className="mt-3 flex items-center gap-1">
+                        <IconButton label="Rename" onClick={() => setRenaming(project.id)} icon={<Pencil className="w-3.5 h-3.5" />} />
+                        <IconButton label="Duplicate" onClick={() => void run(project.id, () => duplicateProject(project.id), 'Couldn’t duplicate')} icon={<Copy className="w-3.5 h-3.5" />} />
+                        <IconButton label="Download backup" onClick={() => void handleBackup(project)} icon={<Download className="w-3.5 h-3.5" />} />
+                        <span className="flex-1" />
+                        <IconButton label="Delete" danger onClick={() => handleDelete(project)} icon={<Trash2 className="w-3.5 h-3.5" />} />
+                      </div>
+                    </div>
+                  </motion.div>
+                );
+              })}
+
+              <button
+                type="button"
+                onClick={() => setCreating(true)}
+                className="border-2 border-dashed border-industrial-border hover:border-amber-accent/40 bg-industrial-panel/30 hover:bg-amber-accent/5 flex flex-col items-center justify-center min-h-[260px] text-zinc-600 hover:text-amber-accent transition-all"
+              >
+                <Plus className="w-8 h-8 mb-4 border border-current rounded-none" aria-hidden />
+                <span className="text-sm font-bold uppercase tracking-widest">Initialize Blank Project</span>
+              </button>
+            </div>
+          </>
         )}
       </main>
 
@@ -291,27 +402,6 @@ function RenameField({ initial, onSave, onCancel }: { initial: string; onSave: (
         className="w-full bg-stone-900 border border-amber-accent px-2 py-1 text-sm outline-none"
       />
     </form>
-  );
-}
-
-function EmptyState({ onCreate, onImport }: { onCreate: () => void; onImport: () => void }) {
-  return (
-    <div className="border border-dashed border-industrial-border px-8 py-16 max-w-xl">
-      <HardDrive className="w-8 h-8 text-zinc-600" aria-hidden />
-      <h2 className="mt-4 text-lg font-semibold">Start your first takeoff</h2>
-      <p className="mt-2 text-sm leading-relaxed text-zinc-400">
-        Create a project, add a PDF drawing, set the scale, and measure. Everything is saved in this browser
-        as you work. Download a backup to move a project to another computer.
-      </p>
-      <div className="mt-6 flex gap-3">
-        <button type="button" onClick={onCreate} className="bg-amber-accent hover:bg-amber-400 text-black text-xs font-bold px-4 py-2">
-          New project
-        </button>
-        <button type="button" onClick={onImport} className="border border-industrial-border text-xs font-semibold px-4 py-2 text-zinc-300 hover:border-zinc-500">
-          Import backup
-        </button>
-      </div>
-    </div>
   );
 }
 

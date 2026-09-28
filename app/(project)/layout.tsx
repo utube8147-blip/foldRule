@@ -2,8 +2,14 @@
 // Reads ?project=<id>, loads that project from local storage (IndexedDB) and
 // autosaves it while you work. The URL segment is unaffected by the (project) group.
 
+import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import { ProjectSession } from './ProjectSession';
+
+export const metadata: Metadata = {
+  title:  'Workspace',
+  robots: { index: false, follow: false },
+};
 
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
   return (

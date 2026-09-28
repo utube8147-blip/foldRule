@@ -913,16 +913,16 @@ export default function TakeoffFullPage() {
                   {[50, 85].map((y, i) => (
                     <rect key={i} x="20" y={y} width="200" height="5" fill="#1c1917" stroke="#52525b" strokeWidth="0.8" strokeDasharray="4,2" />
                   ))}
-                  <line x1="30" y1="130" x2="70" y2="130" stroke="#f59e0b" strokeWidth="1" />
-                  <line x1="30" y1="127" x2="30" y2="133" stroke="#f59e0b" strokeWidth="1" />
-                  <line x1="70" y1="127" x2="70" y2="133" stroke="#f59e0b" strokeWidth="1" />
-                  <text x="47" y="129" fill="#f59e0b" fontSize="6" fontFamily="monospace" textAnchor="middle">{studSpacing}mm</text>
+                  <line x1="30" y1="130" x2="70" y2="130" stroke="#F2C230" strokeWidth="1" />
+                  <line x1="30" y1="127" x2="30" y2="133" stroke="#F2C230" strokeWidth="1" />
+                  <line x1="70" y1="127" x2="70" y2="133" stroke="#F2C230" strokeWidth="1" />
+                  <text x="47" y="129" fill="#F2C230" fontSize="6" fontFamily="monospace" textAnchor="middle">{studSpacing}mm</text>
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
                   <div className="text-[9px] font-bold bg-zinc-950/80 px-2 py-1 border border-zinc-800 text-zinc-300 uppercase tracking-widest">
                     SECTION A-A: STUDS @ {studSpacing}MM
                   </div>
-                  <div className="mt-2 w-20 h-px bg-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]" />
+                  <div className="mt-2 w-20 h-px bg-amber-500 shadow-[0_0_8px_rgba(242,194,48,0.5)]" />
                 </div>
               </div>
             </div>

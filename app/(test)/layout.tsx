@@ -2,7 +2,10 @@
 // Build and try features here, then wire them into the production workspace.
 // Hidden (404) in production builds unless NEXT_PUBLIC_ENABLE_LABS=true.
 
+import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+
+export const metadata: Metadata = { robots: { index: false, follow: false } };
 import { LABS_ENABLED } from '@/lib/config/labs';
 
 export default function LabsLayout({ children }: { children: React.ReactNode }) {

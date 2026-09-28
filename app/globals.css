@@ -3,17 +3,28 @@
 @theme {
   --font-sans: var(--font-inter), "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-jetbrains), "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
-  
-  --color-industrial-black: #0D0D0D;
-  --color-industrial-panel: #161616;
-  --color-industrial-border: #262626;
-  --color-amber-accent: #F59E0B;
+
+  /* Foldrule brand (see lib/brand.ts). The industrial-* / amber-accent names
+     are kept so existing class names pick up the new palette. */
+  --color-graphite: #1D2125;
+  --color-rule:     #F2C230;
+  --color-paper:    #E6E9EC;
+  --color-steel:    #56606B;
+  --color-marker:   #B8322A;
+
+  --color-industrial-black:  #16191C;
+  --color-industrial-panel:  #1D2125;
+  --color-industrial-border: #2E353C;
+  --color-amber-accent:      #F2C230;
 }
 
 @layer base {
   body {
     @apply bg-industrial-black text-white font-sans antialiased;
   }
+
+  .fade-up { animation: fade-up 480ms cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+  @keyframes fade-up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 
   /* Respect users who ask for less motion. */
   @media (prefers-reduced-motion: reduce) {
@@ -27,8 +38,8 @@
 
 .blueprint-grid {
   background-image: 
-    linear-gradient(to right, #262626 1px, transparent 1px),
-    linear-gradient(to bottom, #262626 1px, transparent 1px);
+    linear-gradient(to right, #2E353C 1px, transparent 1px),
+    linear-gradient(to bottom, #2E353C 1px, transparent 1px);
   background-size: 32px 32px;
 }
 
@@ -38,7 +49,7 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-track {
-  background: #0D0D0D;
+  background: #16191C;
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb {
@@ -46,7 +57,7 @@
 }
 
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #F59E0B;
+  background: #F2C230;
 }
 
 /* Snap pulse animation for corner snapping */

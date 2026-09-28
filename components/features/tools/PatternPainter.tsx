@@ -482,8 +482,8 @@ export function PatternPainterSidebar({
 
         {/* Worker status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10, background: 'rgba(56,189,248,0.06)', border: '1px solid #38bdf822', padding: '4px 8px' }}>
-          <div style={{ width: 7, height: 7, borderRadius: '50%', background: painter.workerReady ? '#22c55e' : '#f59e0b', flexShrink: 0 }} />
-          <span style={{ fontSize: 7, color: painter.workerReady ? '#22c55e' : '#f59e0b', textTransform: 'uppercase', letterSpacing: '.07em', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div style={{ width: 7, height: 7, borderRadius: '50%', background: painter.workerReady ? '#22c55e' : '#F2C230', flexShrink: 0 }} />
+          <span style={{ fontSize: 7, color: painter.workerReady ? '#22c55e' : '#F2C230', textTransform: 'uppercase', letterSpacing: '.07em', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {painter.workerPhase || (painter.workerReady ? 'Ready' : 'Loading…')}
           </span>
           {anyRunning && (
@@ -576,7 +576,7 @@ export function PatternPainterSidebar({
                 onKeyDown={e => { if (e.key === 'Enter') handleConfirm(); if (e.key === 'Escape') onCancelDraw(); }}
                 style={{
                   flex:          1,
-                  background:    '#0a0a0a',
+                  background:    '#16191C',
                   border:        `1px solid ${COL}88`,
                   color:         '#e5e5e5',
                   fontSize:      9,

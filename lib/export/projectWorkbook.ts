@@ -12,7 +12,7 @@ import { buildWorkbook, type BOQData } from './excelExport';
 
 export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<ExcelJS.Workbook> {
   const workbook = new ExcelJS.Workbook();
-  workbook.creator  = 'Quantity Savior';
+  workbook.creator  = 'Foldrule';
   workbook.created  = new Date();
   workbook.modified = new Date();
 

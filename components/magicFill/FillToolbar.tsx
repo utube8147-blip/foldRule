@@ -21,9 +21,9 @@ export const uploadStyle: React.CSSProperties = {
 export function tbBtn(active: boolean): React.CSSProperties {
   return {
     fontSize: 8, textTransform: 'uppercase', letterSpacing: '.07em',
-    border: `1px solid ${active ? '#f59e0b' : '#2a2a2a'}`,
-    background: active ? 'rgba(245,158,11,.07)' : 'transparent',
-    color: active ? '#f59e0b' : '#777',
+    border: `1px solid ${active ? '#F2C230' : '#2a2a2a'}`,
+    background: active ? 'rgba(242,194,48,.07)' : 'transparent',
+    color: active ? '#F2C230' : '#777',
     padding: '3px 7px', cursor: 'pointer', fontFamily: 'inherit',
     whiteSpace: 'nowrap', flexShrink: 0,
   };
@@ -52,7 +52,7 @@ function ScaleBar({ pxPerM, onChange }: { pxPerM: number | null; onChange: (v: n
           onChange={e => setRaw(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key==='Enter') commit(); if (e.key==='Escape') setEditing(false); }}
-          style={{ width:52, fontSize:8, fontFamily:'inherit', background:'#111', color:'#f59e0b', border:'1px solid #f59e0b', padding:'2px 4px', textAlign:'right' }}
+          style={{ width:52, fontSize:8, fontFamily:'inherit', background:'#111', color:'#F2C230', border:'1px solid #F2C230', padding:'2px 4px', textAlign:'right' }}
           placeholder="e.g. 120"
         />
       ) : (
@@ -198,9 +198,9 @@ export function FillToolbar({
       <input
         type="range" min={10} max={100} step={1} value={fillOpacity}
         onChange={e => setFillOpacity(+e.target.value)}
-        style={{ width:60, accentColor:'#f59e0b' }}
+        style={{ width:60, accentColor:'#F2C230' }}
       />
-      <span style={{ fontSize:8, color:'#f59e0b', fontWeight:700, minWidth:28 }}>{fillOpacity}%</span>
+      <span style={{ fontSize:8, color:'#F2C230', fontWeight:700, minWidth:28 }}>{fillOpacity}%</span>
       <Sep/>
 
       {/* Outline toggle */}
@@ -226,7 +226,7 @@ export function FillToolbar({
 
       {/* Status */}
       <span style={{ fontSize:8, color:'#555', textTransform:'uppercase', letterSpacing:'.07em', maxWidth:300, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-        {isFilling && <span style={{ color:'#f59e0b', marginRight:4 }}>●</span>}
+        {isFilling && <span style={{ color:'#F2C230', marginRight:4 }}>●</span>}
         {status}
       </span>
       <Sep/>

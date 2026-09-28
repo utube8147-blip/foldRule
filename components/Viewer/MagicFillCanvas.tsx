@@ -385,7 +385,7 @@ export function MagicFillCanvas({
       if (cursorRef.current) {
         const { x, y } = cursorRef.current;
         const alpha = 0.28 + 0.18 * Math.sin(pulseRef.current);
-        const [r, g, b] = hexToRgb(isLassoing ? activeColor : '#f59e0b');
+        const [r, g, b] = hexToRgb(isLassoing ? activeColor : '#F2C230');
 
         ctx.save();
         ctx.strokeStyle = `rgba(${r},${g},${b},${alpha})`;

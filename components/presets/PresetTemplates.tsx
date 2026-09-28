@@ -197,7 +197,7 @@ function withViz(
     return (
       <div className="flex flex-row gap-4 relative" style={{ isolation: 'isolate', minHeight: '450px' }}>
         {/* ── 3D Visualizer - Left Side ── */}
-        <div style={{ flex: '0 0 45%', position: 'relative', zIndex: 20, backgroundColor: '#0a0a0a', border: '1px solid #2a2a2a' }}>
+        <div style={{ flex: '0 0 45%', position: 'relative', zIndex: 20, backgroundColor: '#16191C', border: '1px solid #2a2a2a' }}>
           <Preset3DVisualizer
             presetId={props.template.id}
             formData={props.formData}

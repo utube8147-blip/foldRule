@@ -741,7 +741,7 @@ export default function Preset3DVisualizer({
       borderRadius: '8px', 
       overflow: 'hidden', 
       border: '1px solid #2a2a2a', 
-      background: '#0a0a0a',
+      background: '#16191C',
       height: '100%',
       display: 'flex',
       flexDirection: 'column',

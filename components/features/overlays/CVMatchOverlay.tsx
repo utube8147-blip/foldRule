@@ -25,7 +25,7 @@ const C = {
   rubberBand: '#38bdf8',
   worker:     '#a78bfa',
   snap: {
-    endpoint: '#f59e0b',
+    endpoint: '#F2C230',
     midpoint: '#10b981',
     centroid: '#8b5cf6',
   } as Record<string, string>,
@@ -220,7 +220,7 @@ export function CVWorkerBanner({ isSearching, workerPhase, workerDetail }: CVWor
   const isCoarse    = workerPhase.toLowerCase().includes('coarse');
   const isFine      = workerPhase.toLowerCase().includes('fine');
   const isTextPhase = workerPhase.toLowerCase().includes('text');
-  const phaseColor  = isTextPhase ? '#f59e0b' : isFine ? '#22c55e' : isCoarse ? '#38bdf8' : C.worker;
+  const phaseColor  = isTextPhase ? '#F2C230' : isFine ? '#22c55e' : isCoarse ? '#38bdf8' : C.worker;
 
   return (
     <div style={{
@@ -237,7 +237,7 @@ export function CVWorkerBanner({ isSearching, workerPhase, workerDetail }: CVWor
         </span>
       </div>
       {workerDetail && (
-        <span style={{ fontSize:7,color:isTextPhase?'#f59e0b':'#888',textTransform:'uppercase',letterSpacing:'.07em',fontFamily:"'Courier New',monospace" }}>
+        <span style={{ fontSize:7,color:isTextPhase?'#F2C230':'#888',textTransform:'uppercase',letterSpacing:'.07em',fontFamily:"'Courier New',monospace" }}>
           {workerDetail}
         </span>
       )}
@@ -372,7 +372,7 @@ export function CVSamplerSidebar({
   fineStep, onFineStep,
 }: CVSamplerSidebarProps) {
   const COL    = '#38bdf8';
-  const SNAP_C = { endpoint: '#f59e0b', midpoint: '#10b981', centroid: '#8b5cf6' };
+  const SNAP_C = { endpoint: '#F2C230', midpoint: '#10b981', centroid: '#8b5cf6' };
 
   // Worker log
   const [log, setLog] = useState<WorkerLogEntry[]>([]);
@@ -414,8 +414,8 @@ export function CVSamplerSidebar({
 
         {/* Ready indicator */}
         <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:10,background:'rgba(56,189,248,0.06)',border:'1px solid #38bdf822',padding:'4px 8px' }}>
-          <div style={{ width:7,height:7,borderRadius:'50%',background:matcher.isReady?'#22c55e':'#f59e0b',flexShrink:0 }} />
-          <span style={{ fontSize:7,color:matcher.isReady?'#22c55e':'#f59e0b',textTransform:'uppercase',letterSpacing:'.07em' }}>
+          <div style={{ width:7,height:7,borderRadius:'50%',background:matcher.isReady?'#22c55e':'#F2C230',flexShrink:0 }} />
+          <span style={{ fontSize:7,color:matcher.isReady?'#22c55e':'#F2C230',textTransform:'uppercase',letterSpacing:'.07em' }}>
             {matcher.isReady ? 'OpenCV ready' : 'Loading…'}
           </span>
         </div>
@@ -462,7 +462,7 @@ export function CVSamplerSidebar({
             const col   = templateColor(ti);
             const count = tmplMatchCount[ti] ?? 0;
             return (
-              <div key={ti} style={{ display:'flex',alignItems:'center',gap:6,marginBottom:5,background:'#0a0a0a',border:`1px solid ${col}33`,padding:'4px 6px' }}>
+              <div key={ti} style={{ display:'flex',alignItems:'center',gap:6,marginBottom:5,background:'#16191C',border:`1px solid ${col}33`,padding:'4px 6px' }}>
                 {/* Colour swatch */}
                 <div style={{ width:8,height:8,borderRadius:1,background:col,flexShrink:0 }} />
                 {/* Thumbnail */}
@@ -629,11 +629,11 @@ export function CVSamplerSidebar({
         </div>
 
         {/* Pass count summary */}
-        <div style={{ padding:'4px 6px',background:'#0a0a0a',border:'1px solid #1a1a1a',fontSize:7,color:'#3a3a3a',letterSpacing:'.05em',lineHeight:1.8 }}>
+        <div style={{ padding:'4px 6px',background:'#16191C',border:'1px solid #1a1a1a',fontSize:7,color:'#3a3a3a',letterSpacing:'.05em',lineHeight:1.8 }}>
           <div>Templates: <span style={{ color:'#555' }}>{matcher.templates.length}</span></div>
           <div>Stage 1: <span style={{ color:'#555' }}>{totalCoarse} coarse pass{totalCoarse!==1?'es':''} / tmpl</span></div>
           <div>Stage 2: <span style={{ color:'#22c55e' }}>{finePerCand} fine passes / candidate</span></div>
-          {totalCoarse > 16 && <div style={{ color:'#f59e0b' }}>⚠ many coarse passes — may be slow</div>}
+          {totalCoarse > 16 && <div style={{ color:'#F2C230' }}>⚠ many coarse passes — may be slow</div>}
         </div>
       </div>
 
@@ -650,10 +650,10 @@ export function CVSamplerSidebar({
           )}
         </div>
         {matcher.workerPhase && (
-          <div style={{ background:'#0a0a0a',border:`1px solid ${C.worker}22`,padding:'3px 6px',marginBottom:4 }}>
+          <div style={{ background:'#16191C',border:`1px solid ${C.worker}22`,padding:'3px 6px',marginBottom:4 }}>
             <div style={{ fontSize:7,color:C.worker,letterSpacing:'.06em',textTransform:'uppercase' }}>{matcher.workerPhase}</div>
             {matcher.workerDetail && (
-              <div style={{ fontSize:7,color:'#f59e0b',letterSpacing:'.05em',marginTop:2 }}>{matcher.workerDetail}</div>
+              <div style={{ fontSize:7,color:'#F2C230',letterSpacing:'.05em',marginTop:2 }}>{matcher.workerDetail}</div>
             )}
           </div>
         )}
@@ -662,7 +662,7 @@ export function CVSamplerSidebar({
             const isCoarse = entry.phase.toLowerCase().includes('coarse');
             const isFine   = entry.phase.toLowerCase().includes('fine');
             const isText   = entry.phase.toLowerCase().includes('text');
-            const col      = isText ? '#f59e0b' : isFine ? '#22c55e' : isCoarse ? '#38bdf8' : '#3a3a3a';
+            const col      = isText ? '#F2C230' : isFine ? '#22c55e' : isCoarse ? '#38bdf8' : '#3a3a3a';
             const isLast   = i === log.length - 1;
             return (
               <div key={entry.ts} style={{ display:'flex',alignItems:'baseline',gap:4,marginBottom:1,opacity:isLast?1:0.4 }}>
@@ -705,7 +705,7 @@ export function CVSamplerSidebar({
                 ? `${match.rotation}°`
                 : `${match.rotation.toFixed(1)}°`;
               return (
-                <div key={match.id} style={{ border:`1px solid ${col}33`,padding:'6px 8px',marginBottom:4,background:'#0a0a0a' }}>
+                <div key={match.id} style={{ border:`1px solid ${col}33`,padding:'6px 8px',marginBottom:4,background:'#16191C' }}>
                   <div style={{ display:'flex',alignItems:'center',gap:6,marginBottom:4 }}>
                     <div style={{ width:8,height:8,borderRadius:1,background:col,flexShrink:0 }} />
                     <span style={{ fontSize:7,color:'#555',textTransform:'uppercase',letterSpacing:'.05em' }}>T{tIdx+1}</span>

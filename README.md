@@ -1,12 +1,14 @@
-# Quantity Savior
+# Foldrule
 
-Construction quantity takeoff in the browser: open a PDF drawing, calibrate the
+![Foldrule](public/brand/foldrule-app-icon.svg)
+
+PDF takeoff and BOQ, in your browser: open a PDF drawing, calibrate the
 scale, measure lengths, areas and counts, group them, and export a priced BOQ
 to Excel.
 
 Projects are stored **locally in the browser** (IndexedDB) — no account or
 database is needed. Use **Download backup** on the dashboard to move a project
-between computers.
+between computers. (Backups are `.foldrule` files; older `.qsproj` backups still import.)
 
 ## Quick start
 
@@ -72,6 +74,23 @@ every measurement with live formulas for amounts, group subtotals, VAT and the
 total. When the project has a material library, the Summary / BOQ matrix /
 Materials / Cost breakdown sheets are added after it.
 
+## Brand, SEO and icons
+
+* Brand constants (name, tagline, description, colours): `lib/brand.ts`.
+  Logo components: `components/brand/Logo.tsx` (`<Logo />`, `<FoldruleMark />`, `<Wordmark />`).
+* Colours are Tailwind tokens in `app/globals.css`: `graphite`, `rule`
+  (yellow), `paper`, `steel`, `marker` (red). The older `industrial-*` and
+  `amber-accent` names map to the same palette.
+* Fonts: Inter (UI) and JetBrains Mono (labels, values) — the original app fonts — via `next/font`. Archivo is used only for the wordmark.
+* SEO: metadata in `app/layout.tsx`, `app/robots.ts`, `app/sitemap.ts`,
+  `app/manifest.ts`, generated social image `app/opengraph-image.tsx`, and
+  JSON-LD on the landing page. Project screens, labs and auth placeholders are
+  `noindex`. Set `NEXT_PUBLIC_SITE_URL` in production.
+* Icons: `npm run icons` regenerates `app/icon.svg`, `app/favicon.ico`,
+  `app/apple-icon.png`, `public/icons/*` and `public/brand/*` from the mark.
+* Storage keys (`quantity-savior` database, backup format id) intentionally
+  keep their old names so existing projects and backups keep working.
+
 ## Performance notes
 
 * **Context split** — `useTakeoffData()` gives project data + actions;
@@ -88,12 +107,18 @@ Materials / Cost breakdown sheets are added after it.
   `motion/react`); `LazyMotion` is set up in `components/MotionProvider.tsx`
   and throws in dev if the full `motion` component is used.
 
+## Log in / Sign up
+
+`/login` and `/register` are live. There is no account server yet, so signing
+up or logging in saves a **local profile** (name, firm, email — never the
+password) in this browser via `lib/profile.ts`; it appears in the dashboard
+header, and Logout clears it. Replace with real auth when the backend lands.
+
 ## Lab / test-bench pages
 
 `/magicFill`, `/PdfCVMatchPage` and `/Snap` (in `app/(test)/`) are for building
-and trying features before wiring them into the workspace. They, the
-`/login` & `/register` placeholders, the Roboflow proxy (`/api/roboflow`) and
-the sample-workbook `GET /api/export` are:
+and trying features before wiring them into the workspace. They, the Roboflow
+proxy (`/api/roboflow`) and the sample-workbook `GET /api/export` are:
 
 * **enabled** in `npm run dev`
 * **404** in production builds, unless `NEXT_PUBLIC_ENABLE_LABS=true`
@@ -123,6 +148,5 @@ swap or sync the implementation — the UI and context call only those. See
 * Data lives in one browser profile. Clearing site data deletes projects —
   download backups. The app asks the browser for persistent storage.
 * The `(project)` screens need `?project=<id>`; open them from the dashboard.
-* Landing-page footer links (`Terms`, `Privacy`, …) are placeholders.
 * ~450 lint warnings (mostly `any` and unused variables in older code) are
   left as warnings to fix incrementally.

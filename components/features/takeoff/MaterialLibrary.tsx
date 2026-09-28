@@ -84,12 +84,12 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: 20 }}
-      className="fixed inset-0 z-[100] bg-[#0D0D0D] text-zinc-200 font-mono flex flex-col"
+      className="fixed inset-0 z-[100] bg-[#16191C] text-zinc-200 font-mono flex flex-col"
     >
       <div className="absolute inset-0 z-0 opacity-20 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle, #fff 1px, transparent 1px)', backgroundSize: '64px 64px' }} />
 
       {/* TopNavBar */}
-      <header className="fixed top-0 w-full border-b border-zinc-800 bg-[#0D0D0D] text-amber-500 font-mono tracking-widest z-50 flex justify-between items-center h-12 px-4 shadow-sm select-none">
+      <header className="fixed top-0 w-full border-b border-zinc-800 bg-[#16191C] text-amber-500 font-mono tracking-widest z-50 flex justify-between items-center h-12 px-4 shadow-sm select-none">
         <div className="flex items-center gap-6 h-full">
           <span className="text-xl font-black text-amber-accent flex-shrink-0 uppercase">KINETIC_PRECISION</span>
           <nav className="hidden md:flex gap-4 h-full items-center uppercase text-[10px] font-bold">
@@ -115,7 +115,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
 
       <div className="flex flex-1 pt-12 overflow-hidden relative z-10">
         {/* SideNavBar */}
-        <aside className="w-64 border-r border-zinc-800 bg-[#161616] flex flex-col py-4 shrink-0 font-mono uppercase">
+        <aside className="w-64 border-r border-zinc-800 bg-[#1D2125] flex flex-col py-4 shrink-0 font-mono uppercase">
           <div className="px-4 mb-6">
             <div className="text-amber-accent font-bold text-sm">PROJECT_ALPHA</div>
             <div className="text-zinc-500 text-[10px] tracking-widest">EST-2024-001</div>
@@ -142,7 +142,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
           <div className="mt-auto px-4 pt-4 border-t border-zinc-800 space-y-4">
             <button 
               onClick={onClose}
-              className="w-full py-2 bg-amber-accent text-black font-bold tracking-widest text-[10px] uppercase hover:bg-amber-400 transition-all active:scale-95 shadow-[0_0_15px_rgba(245,158,11,0.15)]"
+              className="w-full py-2 bg-amber-accent text-black font-bold tracking-widest text-[10px] uppercase hover:bg-amber-400 transition-all active:scale-95 shadow-[0_0_15px_rgba(242,194,48,0.15)]"
             >
               Export Takeoff
             </button>
@@ -160,14 +160,14 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
         </aside>
 
         {/* Main Workspace */}
-        <main className="flex-1 flex flex-col p-6 lg:p-8 bg-[#0D0D0D]/50 gap-6 min-w-0">
+        <main className="flex-1 flex flex-col p-6 lg:p-8 bg-[#16191C]/50 gap-6 min-w-0">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-zinc-800 pb-4 uppercase tracking-widest">
             <div>
               <h1 className="text-2xl font-bold text-amber-accent mb-1">{`Division ${activeCategory}`}</h1>
               <p className="text-[10px] text-zinc-400 font-bold">Material Rates and Master Specifications</p>
             </div>
-            <div className="flex bg-[#161616] p-1 border border-zinc-800 text-[10px] font-bold shadow-sm">
-              <button className="px-4 py-2 text-[#161616] bg-amber-accent shadow-sm">Project_Specific_Rates</button>
+            <div className="flex bg-[#1D2125] p-1 border border-zinc-800 text-[10px] font-bold shadow-sm">
+              <button className="px-4 py-2 text-[#1D2125] bg-amber-accent shadow-sm">Project_Specific_Rates</button>
               <button className="px-4 py-2 text-zinc-500 hover:text-zinc-300 transition-colors">Global_Company_Library</button>
             </div>
           </div>
@@ -180,7 +180,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                 <input 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full bg-[#161616] border border-zinc-800 py-2.5 pl-10 pr-4 text-xs text-amber-accent placeholder-zinc-700 focus:outline-none focus:border-amber-accent uppercase tracking-widest" 
+                  className="w-full bg-[#1D2125] border border-zinc-800 py-2.5 pl-10 pr-4 text-xs text-amber-accent placeholder-zinc-700 focus:outline-none focus:border-amber-accent uppercase tracking-widest" 
                   placeholder="Search materials by code or name..." 
                 />
               </div>
@@ -200,7 +200,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
 
           <div className="flex flex-1 min-h-0 gap-6">
             {/* Table Area */}
-            <div className="flex-1 bg-[#161616] border border-zinc-800 flex flex-col min-w-0 shadow-xl">
+            <div className="flex-1 bg-[#1D2125] border border-zinc-800 flex flex-col min-w-0 shadow-xl">
               <div className="flex-1 overflow-auto custom-scrollbar">
                 <table className="w-full text-left border-collapse whitespace-nowrap min-w-max">
                   <thead className="sticky top-0 bg-[#1C1C1C] z-10 text-[10px] uppercase tracking-widest text-zinc-500 font-bold shadow-md">
@@ -249,7 +249,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                   </tbody>
                 </table>
               </div>
-              <div className="p-3 border-t border-zinc-800 bg-[#0D0D0D] flex justify-between items-center text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
+              <div className="p-3 border-t border-zinc-800 bg-[#16191C] flex justify-between items-center text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
                 <span>Last Sync: {new Date().toISOString().replace('T', ' ').substring(0,19)}</span>
                 <div className="flex gap-4">
                   <span className="hover:text-amber-accent cursor-pointer transition-colors">Prev</span>
@@ -261,7 +261,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
 
             {/* Detail Panel */}
             {selectedMaterial && (
-              <aside className="w-80 shrink-0 bg-[#161616] border border-zinc-800 flex flex-col p-4 shadow-xl overflow-y-auto custom-scrollbar">
+              <aside className="w-80 shrink-0 bg-[#1D2125] border border-zinc-800 flex flex-col p-4 shadow-xl overflow-y-auto custom-scrollbar">
                 <div className="flex justify-between items-start mb-4">
                   <span className="text-amber-accent font-bold uppercase tracking-widest text-xs">Material Specification</span>
                   <div className="flex gap-2">
@@ -274,7 +274,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                   </div>
                 </div>
 
-                <div className="aspect-square bg-[#0D0D0D] border border-zinc-800 mb-4 relative overflow-hidden group shrink-0">
+                <div className="aspect-square bg-[#16191C] border border-zinc-800 mb-4 relative overflow-hidden group shrink-0">
                   <img 
                     className="w-full h-full object-cover grayscale opacity-50 group-hover:opacity-100 transition-opacity" 
                     src="https://images.unsplash.com/photo-1541888086425-d81bb19040d1?q=80&w=600&auto=format&fit=crop" 
@@ -321,7 +321,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                     <h4 className="text-[11px] text-amber-accent font-bold uppercase tracking-widest">Rate Breakdown</h4>
                     
                     <div className="space-y-2 text-xs font-bold w-full uppercase">
-                      <div className="flex justify-between items-center bg-[#0D0D0D] border border-zinc-800 p-2">
+                      <div className="flex justify-between items-center bg-[#16191C] border border-zinc-800 p-2">
                         <span className="text-zinc-500 tracking-widest text-[9px]">Material</span>
                         <div className="flex items-center text-zinc-200">
                           <span className="text-zinc-500 mr-1">$</span>
@@ -334,7 +334,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                         </div>
                       </div>
                       
-                      <div className="flex justify-between items-center bg-[#0D0D0D] border border-zinc-800 p-2">
+                      <div className="flex justify-between items-center bg-[#16191C] border border-zinc-800 p-2">
                         <span className="text-zinc-500 tracking-widest text-[9px]">Labor</span>
                         <div className="flex items-center text-zinc-200">
                           <span className="text-zinc-500 mr-1">$</span>
@@ -347,7 +347,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                         </div>
                       </div>
                       
-                      <div className="flex justify-between items-center bg-[#0D0D0D] border border-zinc-800 p-2">
+                      <div className="flex justify-between items-center bg-[#16191C] border border-zinc-800 p-2">
                         <span className="text-zinc-500 tracking-widest text-[9px]">Equipment</span>
                         <div className="flex items-center text-zinc-200">
                           <span className="text-zinc-500 mr-1">$</span>
@@ -361,7 +361,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                       </div>
                     </div>
 
-                    <div className="flex justify-between items-center text-xs font-bold bg-[#0D0D0D] border-l-2 border-amber-accent p-2">
+                    <div className="flex justify-between items-center text-xs font-bold bg-[#16191C] border-l-2 border-amber-accent p-2">
                       <span className="text-amber-accent uppercase tracking-widest text-[9px]">Total Rate</span>
                       <span className="text-amber-accent text-[13px]">{formatCurrency(selectedMaterial.materialCost + selectedMaterial.laborCost + selectedMaterial.equipmentCost)}</span>
                     </div>
@@ -373,7 +373,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                       <span className="text-zinc-500">Recycled Content</span>
                       <span className="text-zinc-200 font-bold">85%</span>
                     </div>
-                    <div className="w-full bg-[#0D0D0D] h-1">
+                    <div className="w-full bg-[#16191C] h-1">
                       <div className="h-full bg-amber-accent" style={{ width: '85%' }}></div>
                     </div>
                     <div className="flex justify-between items-center text-[10px]">

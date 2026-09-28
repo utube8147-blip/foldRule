@@ -1,252 +1,249 @@
-'use client';
+// Public landing page — a server component, so it ships almost no JavaScript
+// and is fully indexable. Every claim here describes what the app really does.
 
-import React from 'react';
-import { useRouter } from 'next/navigation';
-import { HardHat, ArrowRight, Layers, FileSpreadsheet, Maximize } from 'lucide-react';
-import * as motion from 'motion/react-m';
-import { cn } from '../lib/utils';
+import type { Metadata } from 'next';
+import Link from 'next/link';
+import { ArrowRight, Crosshair, Ruler, Layers, FileSpreadsheet, ShieldCheck, Shapes } from 'lucide-react';
+import { Logo } from '@/components/brand/Logo';
+import { BRAND } from '@/lib/brand';
+
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+};
+
+const FEATURES = [
+  {
+    icon: Crosshair,
+    title: 'Snaps to the drawing',
+    body: 'Endpoints, corners and arcs are read from the PDF’s own vector geometry, so every point lands exactly on the line you meant.',
+  },
+  {
+    icon: Shapes,
+    title: 'The tools a takeoff needs',
+    body: 'Lengths, arcs, rectangles, polygons, counts and grid counts, plus magic fill for rooms and perimeter offsets for skirting and edges.',
+  },
+  {
+    icon: Ruler,
+    title: 'Scale per page',
+    body: 'Calibrate each sheet from a known dimension. Recalibrate later and the quantities already measured on that page update with it.',
+  },
+  {
+    icon: Layers,
+    title: 'Groups, rates and presets',
+    body: 'Organise measurements into groups, attach unit rates and materials, and reuse presets for the items you price again and again.',
+  },
+  {
+    icon: FileSpreadsheet,
+    title: 'Excel BOQ with live formulas',
+    body: 'Export a takeoff sheet with amounts, group subtotals, VAT and totals as real formulas, plus a BOQ matrix when you use a material library.',
+  },
+  {
+    icon: ShieldCheck,
+    title: 'Your drawings stay with you',
+    body: 'PDFs never leave your computer. Projects are saved in your browser as you work, and a backup file moves them to another machine.',
+  },
+] as const;
+
+const STEPS = [
+  { title: 'Open a PDF',    body: 'Add one or more drawings to a project. Multi-page sets are fine.' },
+  { title: 'Set the scale', body: 'Click two points on a known dimension and type its length.' },
+  { title: 'Measure',       body: 'Trace lengths, areas and counts. Group them as you go.' },
+  { title: 'Export',        body: 'Download a priced BOQ workbook, ready to send or adjust.' },
+] as const;
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: BRAND.name,
+  applicationCategory: 'BusinessApplication',
+  applicationSubCategory: 'Construction quantity takeoff',
+  operatingSystem: 'Web browser',
+  description: BRAND.description,
+  url: BRAND.siteUrl,
+  image: `${BRAND.siteUrl}/opengraph-image`,
+  featureList: FEATURES.map(f => f.title),
+};
+
+function PlanIllustration() {
+  // A floor plan with a measured room, a measured wall and a count — drawn
+  // inline so the hero needs no image download.
+  return (
+    <svg viewBox="0 0 720 440" className="block w-full h-auto" role="img"
+      aria-label="A floor plan with one room measured as an area, a wall measured as a length, and doors counted">
+      <rect width="720" height="440" fill="#F7F8F9" />
+      <g stroke="#C9CFD5" strokeWidth="1">
+        {Array.from({ length: 17 }).map((_, i) => <line key={`v${i}`} x1={i * 45} y1="0" x2={i * 45} y2="440" />)}
+        {Array.from({ length: 10 }).map((_, i) => <line key={`h${i}`} x1="0" y1={i * 45} x2="720" y2={i * 45} />)}
+      </g>
+      <path d="M90 70 H430 V250 H90 Z" fill="#F2C230" fillOpacity="0.35" />
+      <g fill="none" stroke="#1D2125" strokeWidth="6" strokeLinejoin="round">
+        <path d="M90 70 H630 V370 H90 Z" />
+        <path d="M430 70 V250 H90" />
+        <path d="M430 250 V370" />
+        <path d="M530 70 V200 H630" />
+      </g>
+      <g fill="#F7F8F9" stroke="none">
+        <rect x="250" y="246" width="54" height="8" />
+        <rect x="426" y="290" width="8" height="46" />
+        <rect x="560" y="196" width="46" height="8" />
+      </g>
+      <path d="M90 70 H430 V250 H90 Z" fill="none" stroke="#1D2125" strokeWidth="2" strokeDasharray="6 5" />
+      {[[90, 70], [430, 70], [430, 250], [90, 250]].map(([x, y]) => (
+        <circle key={`${x}-${y}`} cx={x} cy={y} r="7" fill="#F2C230" stroke="#1D2125" strokeWidth="2" />
+      ))}
+      <path d="M90 400 H630" stroke="#B8322A" strokeWidth="3" />
+      <path d="M90 392 V408 M630 392 V408" stroke="#B8322A" strokeWidth="3" />
+      {[[277, 250], [430, 313], [583, 200]].map(([x, y], i) => (
+        <g key={i}>
+          <circle cx={x} cy={y} r="14" fill="#1D2125" />
+          <text x={x} y={y + 5} textAnchor="middle" fontSize="14" fontWeight="600" fill="#F2C230"
+            fontFamily="var(--font-jetbrains), ui-monospace, monospace">{i + 1}</text>
+        </g>
+      ))}
+      <g fontFamily="var(--font-jetbrains), ui-monospace, monospace" fontSize="17" fontWeight="600">
+        <rect x="186" y="140" width="148" height="40" rx="3" fill="#1D2125" />
+        <text x="260" y="166" textAnchor="middle" fill="#F2C230">30.60 m²</text>
+        <rect x="296" y="412" width="128" height="26" rx="3" fill="#B8322A" />
+        <text x="360" y="431" textAnchor="middle" fill="#FFFFFF" fontSize="15">12.00 m</text>
+      </g>
+    </svg>
+  );
+}
 
 export default function Landing() {
-  const router = useRouter();
-
-  const navLinks = ['FEATURES', 'HOW IT WORKS', 'PRICING', 'ENTERPRISE'];
-
+  const year = new Date().getFullYear();
   return (
-    <div className="min-h-screen bg-[#0A0A0A] text-zinc-200 font-mono overflow-y-auto selection:bg-amber-500/30">
-      {/* Background Grids */}
-      <div className="fixed inset-0 blueprint-grid opacity-10 pointer-events-none" />
+    <div className="min-h-screen bg-industrial-black text-zinc-200">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }} />
+      <a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:bg-rule focus:px-3 focus:py-2 focus:text-graphite">
+        Skip to content
+      </a>
 
-      {/* Header */}
-      <header className="h-20 border-b border-[#262626] bg-[#0A0A0A]/90 backdrop-blur-md px-8 flex items-center justify-between sticky top-0 z-50">
-        <div className="flex items-center gap-3">
-          <span className="text-xl font-black tracking-tighter text-[#F59E0B] uppercase font-['Space_Grotesk']">Quantity Savior</span>
-        </div>
-        
-        <nav className="hidden md:flex items-center gap-8 text-[10px] font-bold uppercase tracking-[0.15em]">
-          {navLinks.map((link, i) => (
-            <a 
-              key={link} 
-              href="#" 
-              className={cn(
-                "hover:text-[#F59E0B] transition-colors py-2 border-b-2",
-                i === 0 ? "border-[#F59E0B] text-[#F59E0B]" : "border-transparent text-zinc-400"
-              )}
+      <header className="sticky top-0 z-50 border-b border-industrial-border bg-industrial-black/90 backdrop-blur">
+        <div className="mx-auto flex h-16 max-w-6xl items-center justify-between gap-6 px-6">
+          <Link href="/" aria-label={`${BRAND.name} home`} className="focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-rule">
+            <Logo size={22} />
+          </Link>
+          <nav aria-label="Page sections" className="hidden items-center gap-8 text-sm text-zinc-400 md:flex">
+            <a href="#features" className="hover:text-white">Features</a>
+            <a href="#how-it-works" className="hover:text-white">How it works</a>
+            <a href="#privacy" className="hover:text-white">Privacy</a>
+          </nav>
+          <div className="flex items-center gap-5">
+            <Link href="/login" className="text-sm font-semibold text-zinc-300 hover:text-white">
+              Log in
+            </Link>
+            <Link
+              href="/register"
+              className="inline-flex h-11 items-center rounded bg-rule px-5 text-sm font-bold text-graphite hover:bg-[#F6CF55] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule"
             >
-              {link}
-            </a>
-          ))}
-        </nav>
-
-        <div className="flex items-center gap-6">
-          <button 
-            onClick={() => router.push('/dashboard')}
-            className="bg-[#F59E0B] hover:bg-amber-400 text-black px-6 py-2.5 text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(245,158,11,0.1)]"
-          >
-            Open projects
-          </button>
+              Sign up
+            </Link>
+          </div>
         </div>
       </header>
 
-      <main className="flex flex-col items-center relative z-10 px-4 md:px-8">
-        {/* Hero Section */}
-        <section className="flex flex-col items-center text-center mt-20 md:mt-32 max-w-4xl mx-auto w-full">
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="flex items-center gap-2 border border-[#262626] rounded-full px-4 py-1.5 mb-8 bg-[#161616]"
-          >
-            <span className="w-1.5 h-1.5 bg-[#F59E0B]" />
-            <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-widest">V2.4.0 Engine Active</span>
-          </motion.div>
-          
-          <motion.h1 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-5xl md:text-7xl font-sans font-medium tracking-tight leading-[1.1] mb-6"
-          >
-            ESTIMATION AT THE <br />
-            <span className="text-[#F59E0B]">SPEED OF LIGHT</span>
-          </motion.h1>
-          
-          <motion.p 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="text-base text-zinc-400 max-w-2xl mx-auto mb-10 font-sans leading-relaxed"
-          >
-            Industrial-grade precision for modern estimators. Auto-count, auto-scale, and export to Excel in seconds.
-          </motion.p>
-
-          <motion.div 
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-            className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full"
-          >
-            <button 
-              onClick={() => router.push('/dashboard')}
-              className="w-full sm:w-auto bg-[#F59E0B] hover:bg-amber-400 text-black px-8 py-4 text-[11px] font-bold uppercase tracking-widest transition-all"
-            >
-              Start a takeoff
-            </button>
-            <button 
-              className="w-full sm:w-auto border border-[#262626] hover:border-zinc-600 bg-[#161616] px-8 py-4 text-[11px] font-bold uppercase tracking-widest text-zinc-300 hover:text-white transition-all"
-            >
-              Book a Demo
-            </button>
-          </motion.div>
-        </section>
-
-        {/* Hero Image Mockup */}
-        <motion.section 
-          initial={{ opacity: 0, y: 40 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="mt-24 w-full max-w-6xl relative"
-        >
-          <div className="relative aspect-[16/10] bg-[#161616] border border-[#262626] shadow-2xl p-4 md:p-8 flex flex-col justify-end overflow-hidden group">
-            {/* Fake UI Header */}
-            <div className="absolute top-4 left-4 flex gap-1.5 opacity-50">
-              <div className="w-2 h-2 bg-zinc-600" />
-              <div className="w-2 h-2 bg-zinc-600" />
-              <div className="w-2 h-2 bg-zinc-600" />
-            </div>
-            
-            {/* Screen Image Content */}
-            <div className="w-full h-full border border-[#262626] bg-[#0A0A0A] relative overflow-hidden mt-6">
-              <img 
-                src="https://images.unsplash.com/photo-1503387762-592deb58ef4e?q=80&w=2831&auto=format&fit=crop" 
-                alt="App interface" 
-                className="w-full h-full object-cover opacity-30 grayscale mix-blend-screen"
-              />
-              <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-[#0A0A0A] to-transparent pointer-events-none" />
-            </div>
-
-            {/* Floating Widget */}
-            <div className="absolute -bottom-6 -right-6 md:bottom-8 md:right-[-24px] bg-[#161616] border border-[#262626] p-6 shadow-2xl z-20 w-64 group-hover:-translate-y-2 transition-transform duration-500">
-              <div className="flex justify-between items-start mb-2">
-                <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">Calculated Area</span>
-                <span className="w-2 h-2 bg-[#F59E0B]" />
-              </div>
-              <div className="text-2xl font-sans font-medium text-white mb-3">1,450.82 M²</div>
-              <div className="w-full h-1 bg-[#262626]">
-                <div className="w-[85%] h-full bg-[#F59E0B]" />
-              </div>
+      <main id="main">
+        <section className="mx-auto grid max-w-6xl items-center gap-12 px-6 pb-20 pt-16 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] md:pt-24">
+          <div className="fade-up">
+            <p className="mb-5 font-mono text-sm text-rule">Quantity takeoff for estimators and QS</p>
+            <h1 className="text-[2.6rem] font-bold leading-[1.05] tracking-tight text-white md:text-6xl">
+              Measure the drawing.<br />Price the job.
+            </h1>
+            <p className="mt-6 max-w-xl text-lg leading-relaxed text-zinc-400">
+              Open a PDF, set the scale, and trace lengths, areas and counts that snap to the drawing.
+              Export a priced bill of quantities to Excel. It runs in your browser, with nothing to install.
+            </p>
+            <div className="mt-9 flex flex-col gap-3 sm:flex-row">
+              <Link
+                href="/dashboard"
+                className="inline-flex h-12 items-center justify-center gap-2 rounded bg-rule px-6 text-base font-bold text-graphite hover:bg-[#F6CF55] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule"
+              >
+                Start a takeoff <ArrowRight className="h-4 w-4" aria-hidden />
+              </Link>
+              <a
+                href="#how-it-works"
+                className="inline-flex h-12 items-center justify-center rounded border border-industrial-border px-6 text-base font-semibold text-zinc-200 hover:border-zinc-500"
+              >
+                See how it works
+              </a>
             </div>
           </div>
-          
-          {/* Monitor Stand (decorative) */}
-          <div className="w-1/3 h-16 md:h-24 bg-gradient-to-b from-[#161616] to-[#0A0A0A] mx-auto border-x border-[#262626]" />
-          <div className="w-1/2 h-2 bg-zinc-800 mx-auto rounded-full blur-[2px]" />
-        </motion.section>
-
-        {/* Trusted By */}
-        <section className="mt-32 w-full border-t border-[#262626] pt-16 pb-16">
-          <p className="text-center text-[10px] font-bold text-zinc-600 uppercase tracking-[0.2em] mb-10">
-            Trusted by 500+ Engineering Firms
-          </p>
-          <div className="flex flex-wrap justify-center gap-12 md:gap-24 opacity-50 grayscale">
-            {['STRUCTURA', 'CORE BUILD', 'PRIME ENG', 'AXIS ARCH'].map((name, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <HardHat className="w-5 h-5" />
-                <span className="text-[11px] font-bold uppercase tracking-widest">{name}</span>
-              </div>
-            ))}
+          <div className="fade-up overflow-hidden rounded-md border border-industrial-border shadow-2xl [animation-delay:120ms]">
+            <PlanIllustration />
           </div>
         </section>
 
-        {/* Features Section */}
-        <section className="w-full max-w-6xl py-24 border-t border-[#262626]">
-          <div className="mb-16">
-            <h2 className="text-4xl md:text-5xl font-sans font-medium text-white mb-4 uppercase tracking-tight">
-              Built for the field,<br />
-              <span className="text-[#F59E0B]">Refined for the office</span>
+        <section id="features" aria-labelledby="features-title" className="border-t border-industrial-border">
+          <div className="mx-auto max-w-6xl px-6 py-20">
+            <h2 id="features-title" className="max-w-2xl text-3xl font-bold tracking-tight text-white md:text-4xl">
+              Built around how a takeoff is really done
             </h2>
-            <div className="w-16 h-1 bg-[#F59E0B]" />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-            {[
-              { 
-                icon: Layers, 
-                title: 'Precision Takeoffs', 
-                desc: 'Vector-based accuracy that snaps to your PDF geometry. No more guessing pixel-by-pixel. Precision within 0.001mm.' 
-              },
-              { 
-                icon: Maximize, 
-                title: 'Auto-Scaling', 
-                desc: 'OCR-powered ratio detection instantly recognizes drawing scales. Calibrate once, and let the engine handle the rest.' 
-              },
-              { 
-                icon: FileSpreadsheet, 
-                title: 'One-Click Excel Export', 
-                desc: 'Industry-standard formatting that integrates directly with your existing cost databases. Clean, structured, and audit-ready.' 
-              }
-            ].map((feat, i) => (
-              <div key={i} className="relative p-8 bg-[#161616] group transition-colors hover:bg-zinc-900 border border-[#262626]">
-                {/* Corner Accents */}
-                <div className="absolute top-0 left-0 w-2 h-2 border-t border-l border-zinc-500" />
-                <div className="absolute top-0 right-0 w-2 h-2 border-t border-r border-zinc-500" />
-                <div className="absolute bottom-0 left-0 w-2 h-2 border-b border-l border-zinc-500" />
-                <div className="absolute bottom-0 right-0 w-2 h-2 border-b border-r border-zinc-500" />
-
-                <div className="w-10 h-10 border border-[#404040] flex items-center justify-center mb-6 text-[#F59E0B] group-hover:bg-[#F59E0B] group-hover:text-black transition-colors">
-                  <feat.icon className="w-4 h-4" />
-                </div>
-                <h3 className="text-[13px] font-bold text-white uppercase tracking-widest mb-4">{feat.title}</h3>
-                <p className="text-sm font-sans text-zinc-400 leading-relaxed mb-8">{feat.desc}</p>
-                <a href="#" className="inline-flex items-center gap-2 text-[10px] font-bold text-[#F59E0B] uppercase tracking-widest hover:text-amber-400 group/link">
-                  Learn More
-                  <ArrowRight className="w-3 h-3 transition-transform group-hover/link:translate-x-1" />
-                </a>
-              </div>
-            ))}
+            <ul className="mt-12 grid gap-px overflow-hidden rounded-md border border-industrial-border bg-industrial-border sm:grid-cols-2 lg:grid-cols-3">
+              {FEATURES.map(({ icon: Icon, title, body }) => (
+                <li key={title} className="bg-industrial-panel p-7">
+                  <Icon className="h-6 w-6 text-rule" aria-hidden />
+                  <h3 className="mt-5 text-lg font-semibold text-white">{title}</h3>
+                  <p className="mt-2 leading-relaxed text-zinc-400">{body}</p>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
 
-        {/* Workflow Section */}
-        <section className="w-full py-24 border-t border-[#262626] flex flex-col items-center">
-          <div className="text-center mb-16">
-            <h3 className="text-sm font-bold text-white uppercase tracking-widest mb-2">Scan. Measure. Estimate.</h3>
-            <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em]">Simplified Workflow</p>
+        <section id="how-it-works" aria-labelledby="how-title" className="border-t border-industrial-border bg-industrial-panel">
+          <div className="mx-auto max-w-6xl px-6 py-20">
+            <h2 id="how-title" className="text-3xl font-bold tracking-tight text-white md:text-4xl">
+              From PDF to BOQ in four steps
+            </h2>
+            <ol className="mt-12 grid gap-10 sm:grid-cols-2 lg:grid-cols-4">
+              {STEPS.map((s, i) => (
+                <li key={s.title}>
+                  <span className="font-mono text-sm text-rule">Step {i + 1}</span>
+                  <h3 className="mt-2 text-xl font-semibold text-white">{s.title}</h3>
+                  <p className="mt-2 leading-relaxed text-zinc-400">{s.body}</p>
+                </li>
+              ))}
+            </ol>
           </div>
+        </section>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-8 max-w-6xl w-full">
-            {[
-              { title: 'Upload', desc: 'Drag and drop your PDF blueprints. Our engine parses vector data instantly.' },
-              { title: 'Identify', desc: 'Mark areas, count fixtures, and measure lengths with smart snapping tools.' },
-              { title: 'Quantify', desc: 'Automatic generation of BOQs with intelligent classification and grouping.' },
-              { title: 'Export', desc: 'Finalize and export to XLS or CSV formatted for your procurement ERP.', filled: true },
-            ].map((step, i) => (
-              <div key={i} className="flex flex-col items-center text-center">
-                <div className={cn(
-                  "w-14 h-14 flex items-center justify-center mb-6 font-mono font-medium text-lg",
-                  step.filled ? "bg-[#F59E0B] text-black" : "border border-[#F59E0B] text-[#F59E0B]"
-                )}>
-                  0{i + 1}
-                </div>
-                <h4 className="text-[11px] font-bold text-white uppercase tracking-widest mb-3">{step.title}</h4>
-                <p className="text-[11px] font-sans text-zinc-500 leading-relaxed px-4">{step.desc}</p>
-              </div>
-            ))}
+        <section id="privacy" aria-labelledby="privacy-title" className="border-t border-industrial-border">
+          <div className="mx-auto grid max-w-6xl gap-10 px-6 py-20 md:grid-cols-2">
+            <h2 id="privacy-title" className="text-3xl font-bold tracking-tight text-white md:text-4xl">
+              Client drawings stay on your computer
+            </h2>
+            <div className="space-y-4 text-lg leading-relaxed text-zinc-400">
+              <p>
+                {BRAND.name} opens PDFs directly in your browser. They aren’t uploaded, and projects are saved on this device as you work.
+              </p>
+              <p>
+                To move a project to another computer, or keep a copy, download a backup file from your projects page.
+                Clearing your browser’s site data removes local projects, so keep backups of anything important.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section className="border-t border-industrial-border">
+          <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-6 px-6 py-16 md:flex-row md:items-center">
+            <p className="text-2xl font-bold text-white md:text-3xl">
+              Your next takeoff starts with a PDF.
+            </p>
+            <Link
+              href="/dashboard"
+              className="inline-flex h-12 items-center gap-2 rounded bg-rule px-6 text-base font-bold text-graphite hover:bg-[#F6CF55] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-rule"
+            >
+              Start a takeoff <ArrowRight className="h-4 w-4" aria-hidden />
+            </Link>
           </div>
         </section>
       </main>
 
-      {/* Footer */}
-      <footer className="w-full border-t border-[#262626] bg-[#0A0A0A] py-8 px-8 flex flex-col md:flex-row justify-between items-center gap-6 z-20 relative">
-        <div className="flex flex-col gap-2">
-          <span className="text-sm font-black tracking-tighter text-white uppercase font-['Space_Grotesk']">Quantity Savior</span>
-          <span className="text-[9px] font-bold text-zinc-600 uppercase tracking-[0.1em]">
-            © 2026 Quantity Savior. Precision built for estimators.
-          </span>
-        </div>
-        <div className="flex items-center gap-6 text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
-          <a href="#" className="hover:text-white transition-colors">Terms of Service</a>
-          <a href="#" className="hover:text-white transition-colors">Privacy Policy</a>
-          <a href="#" className="hover:text-white transition-colors">Documentation</a>
-          <a href="#" className="hover:text-white transition-colors">Support</a>
+      <footer className="border-t border-industrial-border">
+        <div className="mx-auto flex max-w-6xl flex-col justify-between gap-4 px-6 py-8 text-sm text-zinc-500 md:flex-row md:items-center">
+          <Logo size={18} />
+          <p>© {year} {BRAND.name}. {BRAND.tagline}.</p>
         </div>
       </footer>
     </div>

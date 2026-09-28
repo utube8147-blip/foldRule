@@ -239,7 +239,7 @@ export async function buildWorkbook(
   };
 
   // Validate required data before building sheets
-  workbook.creator = 'Quantity Savior';
+  workbook.creator = 'Foldrule';
   workbook.created = new Date();
 
   try {

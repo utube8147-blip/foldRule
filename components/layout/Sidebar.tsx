@@ -121,7 +121,7 @@ function TextInput({
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
-      className="w-full bg-[#0D0D0D] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase placeholder:normal-case placeholder:text-zinc-700 placeholder:font-normal"
+      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase placeholder:normal-case placeholder:text-zinc-700 placeholder:font-normal"
     />
   );
 }
@@ -141,7 +141,7 @@ function NumberInput({
       value={value ?? ''}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
-      className="w-full bg-[#0D0D0D] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 placeholder:font-normal"
+      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 placeholder:font-normal"
     />
   );
 }
@@ -396,7 +396,7 @@ function SidebarImpl({
                         type="date"
                         value={projectState.documentDate ?? ''}
                         onChange={e => onUpdateProjectMeta({ documentDate: e.target.value || undefined })}
-                        className="w-full bg-[#0D0D0D] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors"
+                        className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors"
                       />
                     </Field>
                     <Field label="Revision">
@@ -477,7 +477,7 @@ function SidebarImpl({
                         type="text"
                         value={ref}
                         onChange={e => updateDrawingRef(i, e.target.value)}
-                        className="flex-1 bg-[#0D0D0D] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase"
+                        className="flex-1 bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase"
                       />
                       <button
                         onClick={() => removeDrawingRef(i)}
@@ -582,7 +582,7 @@ function SidebarImpl({
                   </p>
                   <button
                     onClick={() => onOpenMaterialLibrary?.()}
-                    className="w-full bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest text-[10px] py-3.5 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(245,158,11,0.15)] hover:shadow-[0_0_20px_rgba(245,158,11,0.25)] active:scale-95"
+                    className="w-full bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest text-[10px] py-3.5 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(242,194,48,0.15)] hover:shadow-[0_0_20px_rgba(242,194,48,0.25)] active:scale-95"
                   >
                     <Database className="w-3.5 h-3.5" /> Open Master Library
                   </button>

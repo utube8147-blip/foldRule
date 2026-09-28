@@ -96,7 +96,7 @@ export function MagicFillProgressOverlay({
             className="absolute inset-0 rounded-full"
             style={{
               border:         '1.5px solid transparent',
-              borderTopColor: '#f59e0b',
+              borderTopColor: '#F2C230',
               animation:      'mf-spin .7s linear infinite',
             }}
           />
@@ -130,8 +130,8 @@ export function MagicFillProgressOverlay({
                   className="h-full rounded-full"
                   style={{
                     width:      `${pct}%`,
-                    background: 'linear-gradient(90deg,#f59e0b,#fbbf24)',
-                    boxShadow:  '0 0 8px rgba(245,158,11,0.6)',
+                    background: 'linear-gradient(90deg,#F2C230,#fbbf24)',
+                    boxShadow:  '0 0 8px rgba(242,194,48,0.6)',
                     transition: 'width 0.15s ease',
                   }}
                 />

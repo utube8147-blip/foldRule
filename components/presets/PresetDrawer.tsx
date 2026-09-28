@@ -82,7 +82,7 @@ function EnterpriseUpgradeModal({ onClose }: { onClose: () => void }) {
       onClick={onClose}
     >
       <div
-        className="bg-[#161616] border border-amber-500/40 max-w-md w-full mx-4 p-6 relative"
+        className="bg-[#1D2125] border border-amber-500/40 max-w-md w-full mx-4 p-6 relative"
         onClick={e => e.stopPropagation()}
       >
         <BlueprintBrackets amber />
@@ -136,7 +136,7 @@ function TemplateCard({
       onClick={isLocked ? onUpgradeClick : onClick}
       disabled={isLocked}
       className={cn(
-        'group bg-[#161616] border relative flex flex-col text-left transition-all duration-150',
+        'group bg-[#1D2125] border relative flex flex-col text-left transition-all duration-150',
         isLocked
           ? 'border-[#2a2a2a] opacity-60 cursor-not-allowed'
           : isSelected

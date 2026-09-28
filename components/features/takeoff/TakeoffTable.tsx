@@ -764,10 +764,10 @@ function TakeoffTableImpl({
             <span className="text-xl font-bold text-amber-accent tracking-tighter">{formatCurrency(totalCost)}</span>
           </div>
           <div className="h-0.5 bg-zinc-800 w-full rounded-full overflow-hidden">
-            <div className="h-full bg-amber-accent shadow-[0_0_8px_rgba(245,158,11,0.5)] w-[65%]" />
+            <div className="h-full bg-amber-accent shadow-[0_0_8px_rgba(242,194,48,0.5)] w-[65%]" />
           </div>
         </div>
-        <button className="w-full bg-[#262626] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[10px] font-bold uppercase tracking-widest transition-all">
+        <button className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[10px] font-bold uppercase tracking-widest transition-all">
           Generate Full Analysis
         </button>
       </div>

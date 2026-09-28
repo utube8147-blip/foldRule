@@ -17,6 +17,8 @@
 import type { ProjectState } from '@/context/TakeoffContext';
 import type { Drawing } from '@/types';
 
+// NOTE: internal IDs predate the Foldrule rename. Do not change them — the
+// database name and backup format string identify existing users' data.
 const DB_NAME    = 'quantity-savior';
 const DB_VERSION = 1;
 const PROJECTS   = 'projects';
@@ -263,7 +265,7 @@ export async function loadDrawingFiles(projectId: string): Promise<Map<string, F
   return out;
 }
 
-// ── Backup (export / import a whole project as one .qsproj file) ─────────────
+// ── Backup (export / import a whole project as one .foldrule file) ──────────
 
 interface BackupFile {
   format:        'quantity-savior-project';
@@ -308,7 +310,7 @@ export async function exportProjectBackup(id: string): Promise<{ blob: Blob; fil
   const safe = rec.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'project';
   return {
     blob:     new Blob([JSON.stringify(payload)], { type: 'application/json' }),
-    filename: `${safe}.qsproj`,
+    filename: `${safe}.foldrule`,
   };
 }
 
@@ -320,7 +322,7 @@ export async function importProjectBackup(file: File): Promise<ProjectRecord> {
     throw new Error('This file is not a valid project backup');
   }
   if (payload?.format !== 'quantity-savior-project' || !payload.project?.state) {
-    throw new Error('This file is not a Quantity Savior project backup');
+    throw new Error('This file is not a Foldrule project backup');
   }
   if (payload.schemaVersion > SCHEMA_VERSION) {
     throw new Error('This backup was made by a newer version of the app');

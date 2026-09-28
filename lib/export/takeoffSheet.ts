@@ -256,5 +256,11 @@ export function addTakeoffSheet(workbook: ExcelJS.Workbook, input: TakeoffExport
   }
   ws.getRow(r - 1).getCell(C.amount).border = { top: { style: 'thin' }, bottom: { style: 'double' } };
 
+  // Footer credit
+  r += 1;
+  ws.mergeCells(`A${r}:J${r}`);
+  ws.getCell(`A${r}`).value = `Prepared with Foldrule · ${new Date().toISOString().slice(0, 10)}`;
+  ws.getCell(`A${r}`).font  = { size: 9, color: { argb: MUTED } };
+
   return ws;
 }

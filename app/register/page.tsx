@@ -1,15 +1,26 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
 import * as motion from 'motion/react-m';
+import { saveProfile, nameFromEmail } from '@/lib/profile';
 
 export default function Register() {
   const router = useRouter();
+  const [name,  setName]  = useState('');
+  const [firm,  setFirm]  = useState('');
+  const [email, setEmail] = useState('');
+
+  const handleRegister = () => {
+    const cleanEmail = email.trim();
+    const cleanName  = name.trim() || (cleanEmail ? nameFromEmail(cleanEmail) : '');
+    if (cleanName) saveProfile({ name: cleanName, firm: firm.trim() || undefined, email: cleanEmail || undefined });
+    router.push('/dashboard');
+  };
 
   return (
-    <div className="min-h-screen bg-[#0A0A0A] flex relative overflow-hidden font-mono">
+    <div className="min-h-screen bg-[#16191C] flex relative overflow-hidden font-mono">
       {/* Background decoration */}
       <div className="absolute inset-0" style={{ 
         backgroundImage: 'radial-gradient(circle, #333 1px, transparent 1px)', 
@@ -21,7 +32,7 @@ export default function Register() {
         {/* Left Column */}
         <div className="flex-1 lg:pr-24 space-y-16 hidden lg:block border-r border-zinc-800/50 h-full py-12">
           <div className="flex justify-between items-end border-b border-zinc-800/50 pb-4 pr-12">
-            <h1 className="text-amber-accent font-bold tracking-widest uppercase">Quantity Savior</h1>
+            <h1 className="text-amber-accent font-bold tracking-widest uppercase">Foldrule</h1>
             <span className="text-zinc-600 text-xs tracking-widest uppercase">EST. MOD // 2024</span>
           </div>
 
@@ -85,51 +96,66 @@ export default function Register() {
             {/* Form */}
             <div className="space-y-6">
               <div className="space-y-2">
-                <label className="text-xs text-zinc-300 tracking-wide block">
+                <label htmlFor="reg-name" className="text-xs text-zinc-300 tracking-wide block">
                   Full Name
                 </label>
                 <input
+                  id="reg-name"
                   type="text"
+                  autoComplete="name"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
                   placeholder="ENTER OPERATOR NAME"
                   className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-300 tracking-wide block">
+                <label htmlFor="reg-firm" className="text-xs text-zinc-300 tracking-wide block">
                   Company
                 </label>
                 <input
+                  id="reg-firm"
                   type="text"
+                  autoComplete="organization"
+                  value={firm}
+                  onChange={e => setFirm(e.target.value)}
                   placeholder="ENTER FIRM IDENTIFIER"
                   className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-300 tracking-wide block">
+                <label htmlFor="reg-email" className="text-xs text-zinc-300 tracking-wide block">
                   Email Address
                 </label>
                 <input
+                  id="reg-email"
                   type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
                   placeholder="SYSTEM@DOMAIN.TLD"
                   className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
                 />
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs text-zinc-300 tracking-wide block">
+                <label htmlFor="reg-password" className="text-xs text-zinc-300 tracking-wide block">
                   Password
                 </label>
                 <input
+                  id="reg-password"
                   type="password"
+                  autoComplete="new-password"
                   placeholder="••••••••••••"
                   className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
                 />
               </div>
               
               <button
-                onClick={() => router.push('/dashboard')}
+                type="button"
+                onClick={handleRegister}
                 className="w-full bg-amber-accent hover:bg-amber-400 text-[#111] font-bold tracking-widest text-xs py-4 flex items-center justify-center gap-3 transition-colors mt-8 uppercase"
               >
                 <Lock className="w-3.5 h-3.5" />

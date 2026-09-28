@@ -90,7 +90,7 @@ export function FillSidebar({
       </div>
 
       {/* Quick help */}
-      <div style={{ padding:'6px 10px', borderBottom:'1px solid #1a1a1a', background:'#0a0a0a' }}>
+      <div style={{ padding:'6px 10px', borderBottom:'1px solid #1a1a1a', background:'#16191C' }}>
         <div style={{ fontSize:7, color:'#2e2e2e', textTransform:'uppercase', letterSpacing:'.07em', lineHeight:2 }}>
           {isSvgMode ? (
             <>Click · fill vector shape<br/>Drag · pan canvas<br/>Space+drag · batch select shapes</>
@@ -143,11 +143,11 @@ export function FillSidebar({
               key={f.id}
               onClick={() => { setSelectedId(f.id); setSelectedGroup(null); }}
               style={{
-                border: `1px solid ${isInSel ? (isGrouped ? '#60a5fa' : '#f59e0b') : hoveredId === f.id ? '#555' : '#1e1e1e'}`,
+                border: `1px solid ${isInSel ? (isGrouped ? '#60a5fa' : '#F2C230') : hoveredId === f.id ? '#555' : '#1e1e1e'}`,
                 padding: '5px 6px', fontSize:9,
                 opacity: hiddenIds.has(f.id) ? .35 : 1,
                 cursor: 'pointer',
-                background: isInSel ? (isGrouped ? 'rgba(96,165,250,.04)' : 'rgba(245,158,11,.04)') : hoveredId === f.id ? 'rgba(255,255,255,.02)' : 'transparent',
+                background: isInSel ? (isGrouped ? 'rgba(96,165,250,.04)' : 'rgba(242,194,48,.04)') : hoveredId === f.id ? 'rgba(255,255,255,.02)' : 'transparent',
                 transition: 'border-color .1s,background .1s',
               }}
             >
@@ -205,8 +205,8 @@ export function FillSidebar({
         <div style={{ padding:8, borderTop:'1px solid #1a1a1a', flexShrink:0, display:'flex', flexDirection:'column', gap:4 }}>
           <button
             onClick={handleExport}
-            style={{ width:'100%', fontSize:8, textTransform:'uppercase', letterSpacing:'.07em', border:'1px solid rgba(245,158,11,.4)', color:'#f59e0b', background:'transparent', padding:'7px 0', cursor:'pointer', fontFamily:'inherit' }}
-            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(245,158,11,.07)')}
+            style={{ width:'100%', fontSize:8, textTransform:'uppercase', letterSpacing:'.07em', border:'1px solid rgba(242,194,48,.4)', color:'#F2C230', background:'transparent', padding:'7px 0', cursor:'pointer', fontFamily:'inherit' }}
+            onMouseEnter={e => (e.currentTarget.style.background = 'rgba(242,194,48,.07)')}
             onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
             ↓ Export PNG
           </button>

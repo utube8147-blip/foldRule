@@ -69,3 +69,19 @@ export interface SelectedEntity {
   approxLength?: number;
   snapType?: SnapPointType;
 }
+
+/**
+ * A closed region extracted from drawing vector geometry, used by the
+ * symbol-clustering lab code (lib/shapes, hooks/viewer/useSymbolSelection).
+ * Coordinates are normalized (0–1) page fractions.
+ */
+export interface SvgArea {
+  id: string;
+  nx: number;
+  ny: number;
+  points: { nx: number; ny: number }[];
+  bounds: { minNX: number; minNY: number; maxNX: number; maxNY: number };
+  vertexCount?: number;
+  hasArc?: boolean;
+  [key: string]: unknown;
+}

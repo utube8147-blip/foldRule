@@ -2,7 +2,8 @@
 
 import React from 'react';
 import Link from 'next/link';
-import { Download, HardHat } from 'lucide-react';
+import { Download } from 'lucide-react';
+import { Logo } from '@/components/brand/Logo';
 import { SaveIndicator } from '@/components/layout/SaveIndicator';
 
 interface NavbarProps {
@@ -19,10 +20,10 @@ function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets 
         <Link
           href="/dashboard"
           title="All projects"
+          aria-label="Foldrule — all projects"
           className="flex items-center gap-2 border-r border-industrial-border pr-6 h-8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
         >
-          <HardHat className="w-6 h-6 text-amber-accent" />
-          <span className="text-xl font-black tracking-tighter text-amber-accent font-mono">QUANTITY SAVIOR</span>
+          <Logo size={20} />
         </Link>
         
         <div className="flex flex-col">
