@@ -86,6 +86,7 @@ export function MeasurementDetailsDialog({
                   value={material || null}
                   onChange={id => setMaterial(id ?? '')}
                   onOpenBank={() => setMaterialLibraryOpen(true)}
+                  measurementType={measurementType}
                 />
                 {(() => {
                   const chosen = materials.find(m => m.id === material);

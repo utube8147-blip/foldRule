@@ -170,6 +170,9 @@ interface TakeoffContextValue {
   // ── Display preferences ───────────────────────────────────────────────────
   showLabels:          boolean;
   setShowLabels:       (v: boolean) => void;
+  /** Overlay the lines/arcs extracted from the PDF (what snapping uses). */
+  showGeometry:        boolean;
+  setShowGeometry:     (v: boolean) => void;
   setActiveDrawingId:  (id: string) => void;
   /** Calibrate one page of a drawing. Rescales that page's existing measurements. */
   updateDrawingScale:  (id: string, factor: number, page?: number) => void;
@@ -289,8 +292,16 @@ export function TakeoffProvider({
   const [pendingPage,  setPendingPage]  = useState<number | null>(null);
   const [focusSeq,     setFocusSeq]     = useState(0);
   const [showLabels,   setShowLabelsState] = useState(false);
+  const [showGeometry, setShowGeometryState] = useState(false);
   useEffect(() => {
-    try { setShowLabelsState(localStorage.getItem('foldrule:show-labels') === '1'); } catch { /* ignore */ }
+    try {
+      setShowLabelsState(localStorage.getItem('foldrule:show-labels') === '1');
+      setShowGeometryState(localStorage.getItem('foldrule:show-geometry') === '1');
+    } catch { /* ignore */ }
+  }, []);
+  const setShowGeometry = useCallback((v: boolean) => {
+    setShowGeometryState(v);
+    try { localStorage.setItem('foldrule:show-geometry', v ? '1' : '0'); } catch { /* ignore */ }
   }, []);
   const setShowLabels = useCallback((v: boolean) => {
     setShowLabelsState(v);
@@ -1066,6 +1077,8 @@ export function TakeoffProvider({
     focusSeq,
     showLabels,
     setShowLabels,
+    showGeometry,
+    setShowGeometry,
     materialLibraryOpen,
     setMaterialLibraryOpen,
     setNextMaterial,
@@ -1103,7 +1116,7 @@ export function TakeoffProvider({
     setDisplayUnit,
   }), [
     projectState, syncedSetProjectState, activeTool, selectedId, addDrawing, removeDrawing,
-    setDrawingPageCount, pendingPage, clearPendingPage, goToPage, focusMeasurement, focusSeq, showLabels, setShowLabels, materialLibraryOpen, setNextMaterial,
+    setDrawingPageCount, pendingPage, clearPendingPage, goToPage, focusMeasurement, focusSeq, showLabels, setShowLabels, showGeometry, setShowGeometry, materialLibraryOpen, setNextMaterial,
     activePage, projectId, loadStatus, loadError, saveNow,
     setActiveDrawingId, updateDrawingScale, addMeasurement, updateMeasurement, deleteMeasurement,
     clearAll, toggleVisibility, createGroup, deleteGroup, ungroupMeasurements, toggleGroupExpanded,

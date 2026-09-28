@@ -61,11 +61,13 @@ export function useMeasurements({
   forcedPolyarcMode,
   showLabels,
   selectedIdRef,
+  findHoverGeometry,
 }: UseMeasurementsParams & {
   snapCandidates?:    Array<{ x: number; y: number; type: string }>;
   forcedPolyarcMode?: 'line' | 'arc';
   showLabels?:        boolean;
   selectedIdRef?:     React.RefObject<string | null>;
+  findHoverGeometry?: ((x: number, y: number) => { kind: 'line' | 'curve'; pts: { x: number; y: number }[] } | null) | null;
 }): UseMeasurementsReturn & {
   redrawDrawingCanvas: () => void;
   polyarcMode:      'line' | 'arc';
@@ -141,6 +143,7 @@ export function useMeasurements({
     snapCandidates: snapCandidates ?? [],
     showLabels,
     selectedIdRef,
+    findHoverGeometry: findHoverGeometry as never,
   });
 
   redrawDrawingCanvasRef.current = canvas.redrawDrawingCanvas;

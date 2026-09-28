@@ -2,6 +2,7 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { destroyPdf } from '@/lib/pdf/destroyPdf';
+import type { PdfCircle } from '@/types/snapTypes';
 import type { PdfLine, PdfCurve, SnapPoint, PdfDimensions, PdfPageInfo } from '@/types/snapTypes';
 
 export type PdfLoadStage =
@@ -23,6 +24,8 @@ export interface UsePdfDocumentReturn {
   lines: PdfLine[];
   curves: PdfCurve[];
   snapPoints: SnapPoint[];
+  /** Full circles on the page (circle tool markers). */
+  circles: PdfCircle[];
   loadFile: (file: File) => Promise<void>;
   /**
    * Extract snap geometry for one page of an already-open document (no re-parse).
@@ -91,7 +94,7 @@ const GEOMETRY_OPS = new Set<number>([
 // Re-opening a page you've already visited reuses its geometry instantly.
 // Small LRU: each entry can hold ~10k segments, so keep only a few.
 interface SnapCacheEntry {
-  lines: PdfLine[]; curves: PdfCurve[]; snapPoints: SnapPoint[];
+  lines: PdfLine[]; curves: PdfCurve[]; snapPoints: SnapPoint[]; circles: PdfCircle[];
   dims: PdfDimensions; pageInfo: PdfPageInfo;
 }
 const SNAP_CACHE_MAX = 6;
@@ -153,6 +156,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
   const [lines, setLines]       = useState<PdfLine[]>([]);
   const [curves, setCurves]     = useState<PdfCurve[]>([]);
   const [snapPoints, setSnaps]  = useState<SnapPoint[]>([]);
+  const [circles,    setCircles] = useState<PdfCircle[]>([]);
 
   const pdfPageRef = useRef<any>(null);
   const workerRef  = useRef<Worker | null>(null);
@@ -197,9 +201,10 @@ export function usePdfDocument(): UsePdfDocumentReturn {
           setLines(msg.lines);
           setCurves(msg.curves);
           setSnaps(msg.snapPoints);
+          setCircles(msg.circles ?? []);
           if (cacheKey) {
             cachePut(cacheKey, {
-              lines: msg.lines, curves: msg.curves, snapPoints: msg.snapPoints,
+              lines: msg.lines, curves: msg.curves, snapPoints: msg.snapPoints, circles: msg.circles ?? [],
               dims: pageDims, pageInfo: { pageNumber, pageCount },
             });
           }
@@ -226,7 +231,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     workerRef.current?.terminate();
     workerRef.current = null;
     setErr(null);
-    setLines([]); setCurves([]); setSnaps([]);
+    setLines([]); setCurves([]); setSnaps([]); setCircles([]);
     setDims(null); setPageInfo(null);
     pdfPageRef.current = null;
     return ++requestIdRef.current;
@@ -260,7 +265,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     const hit = cacheKey ? cacheGet(cacheKey) : undefined;
     if (hit) {
       setDims(hit.dims); setPageInfo(hit.pageInfo);
-      setLines(hit.lines); setCurves(hit.curves); setSnaps(hit.snapPoints);
+      setLines(hit.lines); setCurves(hit.curves); setSnaps(hit.snapPoints); setCircles(hit.circles);
       setStage('done');
       doc.getPage(pageNumber).then((p: any) => { if (reqId === requestIdRef.current) pdfPageRef.current = p; }).catch(() => {});
       return;
@@ -287,5 +292,5 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     destroyPdf(ownDocRef.current);
   }, []);
 
-  return { stage, errorMessage, fileName, dims, pageInfo, lines, curves, snapPoints, loadFile, loadPage, clear, renderToCanvas };
+  return { stage, errorMessage, fileName, dims, pageInfo, lines, curves, snapPoints, circles, loadFile, loadPage, clear, renderToCanvas };
 }

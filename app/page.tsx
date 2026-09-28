@@ -3,7 +3,7 @@
 // structured data, which a client component can't export.
 
 import type { Metadata } from 'next';
-import { Landing } from '@/components/landing/landing';
+import { Landing } from '@/components/landing/Landing';
 import { BRAND } from '@/lib/brand';
 
 export const metadata: Metadata = {

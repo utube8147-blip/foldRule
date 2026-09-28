@@ -85,9 +85,21 @@ function bezierToArc(p0, p1, p2, p3) {
   const center = { x: ux, y: uy };
   const radius = Math.hypot(ax - ux, ay - uy);
   if (radius < 1e-6 || !isFinite(radius)) return null;
-  const d1 = Math.hypot(p1.x-ux, p1.y-uy);
-  const d2 = Math.hypot(p2.x-ux, p2.y-uy);
-  if (Math.abs(d1-radius)/radius > 0.12 || Math.abs(d2-radius)/radius > 0.12) return null;
+  // Check that the curve really is circular by testing points ON the curve
+  // (t = ¼ and ¾). The control points can't be used for this: for a circular
+  // arc they lie outside the circle (≈14% for a quarter arc), which made every
+  // real circle fail this check before.
+  const bez = (t) => {
+    const u = 1 - t;
+    return {
+      x: u*u*u*p0.x + 3*u*u*t*p1.x + 3*u*t*t*p2.x + t*t*t*p3.x,
+      y: u*u*u*p0.y + 3*u*u*t*p1.y + 3*u*t*t*p2.y + t*t*t*p3.y,
+    };
+  };
+  const q1 = bez(0.25), q3 = bez(0.75);
+  const e1 = Math.abs(Math.hypot(q1.x-ux, q1.y-uy) - radius) / radius;
+  const e3 = Math.abs(Math.hypot(q3.x-ux, q3.y-uy) - radius) / radius;
+  if (e1 > 0.02 || e3 > 0.02) return null;
   const startAngle = (Math.atan2(ay-uy, ax-ux) * 180) / Math.PI;
   const endAngle   = (Math.atan2(cy-uy, cx-ux) * 180) / Math.PI;
   const isCircle = Math.hypot(p3.x-p0.x, p3.y-p0.y) < radius * 0.01;
@@ -154,8 +166,8 @@ function computeCurveSnaps(curve, dims, out) {
     }
   };
 
-  // Centroid (arc center)
-  addSnap(curve.center, 'centroid');
+  // Centroid (arc center) — only for curves that really are circular arcs.
+  if (!curve.approximate) addSnap(curve.center, 'centroid');
 
   const toRad = d => d * Math.PI / 180;
   if (!curve.isCircle) {
@@ -202,6 +214,71 @@ function computeIntersections(lines, dims, out) {
       }
     }
   }
+}
+
+// ─── Circles drawn as straight segments ──────────────────────────────────────
+// CAD exports often draw circles and arcs as many short lines instead of
+// curves, so they never get a centre snap. For a polyline of 8+ points, fit a
+// circle (least squares) and accept it when every vertex lies within 3% of
+// the radius and the points sweep at least 45°. Returns { center, radius } or null.
+function fitPolylineCircle(pts, pageDiag) {
+  const n = pts.length;
+  if (n < 8) return null;
+  let mx = 0, my = 0;
+  for (const p of pts) { mx += p.x; my += p.y; }
+  mx /= n; my /= n;
+  // Kåsa fit in centred coordinates: u² + v² + D·u + E·v + F = 0
+  let suu = 0, svv = 0, suv = 0, su = 0, sv = 0, suuu = 0, svvv = 0, suvv = 0, svuu = 0;
+  for (const p of pts) {
+    const u = p.x - mx, v = p.y - my;
+    const uu = u * u, vv = v * v;
+    suu += uu; svv += vv; suv += u * v; su += u; sv += v;
+    suuu += uu * u; svvv += vv * v; suvv += u * vv; svuu += v * uu;
+  }
+  const det = suu * svv - suv * suv;
+  if (Math.abs(det) < 1e-9) return null;               // collinear
+  const bu = 0.5 * (suuu + suvv), bv = 0.5 * (svvv + svuu);
+  const uc = (bu * svv - bv * suv) / det;
+  const vc = (bv * suu - bu * suv) / det;
+  const cx = uc + mx, cy = vc + my;
+  let r = 0;
+  for (const p of pts) r += Math.hypot(p.x - cx, p.y - cy);
+  r /= n;
+  if (!(r > 2) || r > pageDiag / 2) return null;
+  for (const p of pts) {
+    if (Math.abs(Math.hypot(p.x - cx, p.y - cy) - r) > r * 0.03) return null;
+  }
+  // Angular coverage: 360° minus the biggest gap between consecutive vertices.
+  const angles = pts.map(p => Math.atan2(p.y - cy, p.x - cx)).sort((a, b) => a - b);
+  let maxGap = angles[0] + 2 * Math.PI - angles[angles.length - 1];
+  for (let i = 1; i < angles.length; i++) maxGap = Math.max(maxGap, angles[i] - angles[i - 1]);
+  const sweep = 2 * Math.PI - maxGap;
+  if (sweep < Math.PI / 4) return null;
+  return { center: { x: cx, y: cy }, radius: r, sweepDeg: sweep * 180 / Math.PI };
+}
+
+// ─── Full circles (for the circle tool's one-click markers) ──────────────────
+// Joins the pieces of each circle — the 4 Béziers of a PDF circle, or a
+// segmented polyline — and keeps the ones covering at least 300°.
+function collectFullCircles(curves, polyCircles) {
+  const groups = [];   // { x, y, r, span }
+  const add = (x, y, r, span) => {
+    const tol = Math.max(1, r * 0.02);
+    for (const g of groups) {
+      if (Math.abs(g.x - x) < tol && Math.abs(g.y - y) < tol && Math.abs(g.r - r) < tol) {
+        g.span += span; return;
+      }
+    }
+    groups.push({ x, y, r, span });
+  };
+  for (const c of curves) {
+    if (!c.fromStroke || c.approximate || !(c.radius > 2)) continue;
+    let span = c.isCircle ? 360 : ((c.endAngle - c.startAngle) % 360 + 360) % 360;
+    if (!c.isCircle) span = Math.min(span, 360 - span);   // direction-independent
+    add(c.center.x, c.center.y, c.radius, span);
+  }
+  for (const pc of polyCircles) add(pc.center.x, pc.center.y, pc.radius, pc.sweepDeg || 0);
+  return groups.filter(g => g.span >= 300);
 }
 
 // ─── Path unpacking ───────────────────────────────────────────────────────────
@@ -255,6 +332,7 @@ function bezierSagitta(p0, p1, p2, p3) {
 function parseOperators(operators, dims, viewportTransform) {
   const lines  = [];
   const curves = [];
+  const polyCircles = [];
   const baseCtm   = viewportTransform || IDENTITY;
   const ctmStack  = [baseCtm];
   let ctm         = baseCtm;
@@ -298,6 +376,9 @@ function parseOperators(operators, dims, viewportTransform) {
         for (const sp of subpaths) {
           let prevCanvas  = pt(sp.start.x, sp.start.y);
           const firstCanvas = prevCanvas;
+          // Vertices of an all-straight subpath, for circle detection.
+          const polyPts = [firstCanvas];
+          let allLines  = true;
 
           for (const seg of sp.segs) {
             if (seg.type === 'line') {
@@ -312,8 +393,10 @@ function parseOperators(operators, dims, viewportTransform) {
                 });
               }
               prevCanvas = v;
+              if (len >= 0.1) polyPts.push(v);
 
             } else if (seg.type === 'curve') {
+              allLines = false;
               const p1 = pt(seg.x1, seg.y1);
               const p2 = pt(seg.x2, seg.y2);
               const p3 = pt(seg.x,  seg.y);
@@ -356,6 +439,9 @@ function parseOperators(operators, dims, viewportTransform) {
                     approxLength: chordLen,
                     fromStroke: isStroke,
                     bezier: { p0: prevCanvas, p1, p2, p3 },
+                    // Not a circular arc: its "center" is only the chord midpoint,
+                    // so it must not become a centre snap.
+                    approximate: true,
                   });
                 } else {
                   const len = segmentLength(prevCanvas, p3);
@@ -384,6 +470,13 @@ function parseOperators(operators, dims, viewportTransform) {
               prevCanvas = firstCanvas;
             }
           }
+          if (allLines && isStroke && polyPts.length >= 8) {
+            // Drop a repeated closing vertex so it isn't counted twice.
+            const last = polyPts[polyPts.length - 1];
+            if (Math.hypot(last.x - firstCanvas.x, last.y - firstCanvas.y) < 0.1) polyPts.pop();
+            const fit = fitPolylineCircle(polyPts, pageDiag);
+            if (fit) polyCircles.push({ center: fit.center, radius: fit.radius, sweepDeg: fit.sweepDeg, strokeWidth });
+          }
         }
         break;
       }
@@ -392,7 +485,7 @@ function parseOperators(operators, dims, viewportTransform) {
   }
 
 
-  return { lines, curves };
+  return { lines, curves, polyCircles };
 }
 
 // ─── Main message handler ─────────────────────────────────────────────────────
@@ -403,9 +496,18 @@ self.onmessage = function(e) {
   const { operators, dims, viewportTransform } = data;
 
   try {
-    const { lines, curves } = parseOperators(operators, dims, viewportTransform || IDENTITY);
+    const { lines, curves, polyCircles } = parseOperators(operators, dims, viewportTransform || IDENTITY);
 
     const snapPoints = [];
+    // Centres of circles / arcs drawn as straight segments (see fitPolylineCircle).
+    for (let i = 0; i < polyCircles.length; i++) {
+      const c = polyCircles[i];
+      const nx = c.center.x / dims.w, ny = c.center.y / dims.h;
+      if (nx < 0 || nx > 1 || ny < 0 || ny > 1) continue;
+      if (!clusterNear(snapPoints, nx, ny, 'centroid', dims)) {
+        snapPoints.push({ nx, ny, type: 'centroid', sourceId: 'PC' + i, strokeWidth: c.strokeWidth });
+      }
+    }
     for (const line  of lines)  computeLineSnaps(line, dims, snapPoints);
     for (const curve of curves) computeCurveSnaps(curve, dims, snapPoints);
     computeIntersections(lines, dims, snapPoints);
@@ -417,7 +519,11 @@ self.onmessage = function(e) {
     }
 
 
-    self.postMessage({ type: 'RESULT', lines, curves, snapPoints });
+    const circles = collectFullCircles(curves, polyCircles).map(c => ({
+      nx: c.x / dims.w, ny: c.y / dims.h, nrx: c.r / dims.w, nry: c.r / dims.h, r: c.r,
+    })).filter(c => c.nx >= 0 && c.nx <= 1 && c.ny >= 0 && c.ny <= 1);
+
+    self.postMessage({ type: 'RESULT', lines, curves, snapPoints, circles });
   } catch (err) {
     console.error('[pdfGeometry.worker] threw:', err);
     self.postMessage({ type: 'ERROR', message: String(err) });

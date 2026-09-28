@@ -21,6 +21,32 @@ import { groupMaterialsByDivision } from '@/data/materials';
 export const materialRate = (m: Material) =>
   (m.materialCost ?? 0) + (m.laborCost ?? 0) + (m.equipmentCost ?? 0) || m.unitRate || 0;
 
+// ── Unit compatibility ───────────────────────────────────────────────────────
+type UnitKind = 'length' | 'area' | 'volume' | 'count' | 'other';
+
+export function unitKind(unit: string | undefined): UnitKind {
+  const u = (unit || '').trim().toLowerCase().replace(/\s|\./g, '');
+  if (['m', 'lm', 'rm', 'metre', 'meter', 'lin.m', 'linm', 'mm'].includes(u)) return 'length';
+  if (['m²', 'm2', 'sqm', 'sq.m', 'sqm2'].includes(u)) return 'area';
+  if (['m³', 'm3', 'cum', 'cu.m'].includes(u)) return 'volume';
+  if (['ea', 'nr', 'no', 'nos', 'pcs', 'pc', 'each', 'set', 'pair', 'unit', 'units'].includes(u)) return 'count';
+  return 'other';
+}
+
+/** Which unit kind a measurement of this type is priced in. */
+export function kindForMeasurement(type: string | undefined): UnitKind | null {
+  switch (type) {
+    case 'Length':                                  return 'length';
+    case 'Area': case 'Polygon': case 'Rectangle':  return 'area';
+    case 'Count': case 'Point':                     return 'count';
+    default:                                        return null;
+  }
+}
+
+const KIND_LABEL: Record<UnitKind, string> = {
+  length: 'per metre', area: 'per m²', volume: 'per m³', count: 'per piece / set', other: '',
+};
+
 interface MaterialPickerProps {
   materials:   Material[];
   value:       string | null | undefined;
@@ -34,12 +60,18 @@ interface MaterialPickerProps {
   size?:       'md' | 'sm';
   id?:         string;
   className?:  string;
+  /**
+   * Type of the measurement being priced ('Length', 'Area', 'Count' …). When
+   * given, only materials in a matching unit are listed (a length shows
+   * per-metre items, not m²), with a one-click "show all units".
+   */
+  measurementType?: string;
 }
 
-type Row =
-  | { kind: 'header'; label: string }
+type Entry =
   | { kind: 'none' }
-  | { kind: 'item'; m: Material };
+  | { kind: 'header'; label: string; count: number; open: boolean }
+  | { kind: 'item'; m: Material; group: string };
 
 const MAX_LIST_H = 320;
 const EDGE = 12;
@@ -59,6 +91,7 @@ function Highlight({ text, query }: { text: string; query: string }) {
 
 export function MaterialPicker({
   materials, value, onChange, onOpenBank, autoOpen = false, onClose, size = 'md', id, className,
+  measurementType,
 }: MaterialPickerProps) {
   const listId   = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -71,27 +104,46 @@ export function MaterialPicker({
 
   const selected = useMemo(() => materials.find(m => m.id === value) ?? null, [materials, value]);
 
-  // ── Filtering (memoised; ~250 items is cheap) ──────────────────────────────
-  const { rows, options } = useMemo(() => {
+  // ── Unit filter ────────────────────────────────────────────────────────────
+  const wantKind = kindForMeasurement(measurementType);
+  const [allUnits, setAllUnits] = useState(false);
+  const unitFiltered = useMemo(() => {
+    if (!wantKind || allUnits) return materials;
+    return materials.filter(m => unitKind(m.unit) === wantKind || m.id === value);
+  }, [materials, wantKind, allUnits, value]);
+
+  // ── Groups: collapsed; hovering (or clicking) a division opens it ──────────
+  const selectedGroup = useMemo(() => {
+    if (!selected) return null;
+    return groupMaterialsByDivision([selected])[0]?.label ?? null;
+  }, [selected]);
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Entries (memoised; ~250 items is cheap) ────────────────────────────────
+  const entries = useMemo<Entry[]>(() => {
     const q = query.trim().toLowerCase();
+    const searching = q.length > 0;
     const match = (m: Material) =>
       !q || m.name.toLowerCase().includes(q) || (m.code || '').toLowerCase().includes(q) ||
       (m.category || '').toLowerCase().includes(q);
-    const out: Row[] = [];
-    const opts: (Material | null)[] = [];
-    if (!q) { out.push({ kind: 'none' }); opts.push(null); }
-    for (const g of groupMaterialsByDivision(materials.filter(match))) {
-      out.push({ kind: 'header', label: g.label });
-      for (const m of g.items) { out.push({ kind: 'item', m }); opts.push(m); }
+    const out: Entry[] = [];
+    if (!searching) out.push({ kind: 'none' });
+    for (const g of groupMaterialsByDivision(unitFiltered.filter(match))) {
+      const open = searching || g.label === openGroup;
+      out.push({ kind: 'header', label: g.label, count: g.items.length, open });
+      if (open) for (const m of g.items) out.push({ kind: 'item', m, group: g.label });
     }
-    return { rows: out, options: opts };
-  }, [materials, query]);
+    return out;
+  }, [unitFiltered, query, openGroup]);
+  const matchCount = useMemo(() => entries.reduce((n, e) => n + (e.kind === 'header' ? e.count : 0), 0), [entries]);
 
   // ── Open / close ───────────────────────────────────────────────────────────
   const openList = useCallback(() => {
     setQuery('');
+    setOpenGroup(selectedGroup);          // show where the current choice lives
     setOpen(true);
-  }, []);
+  }, [selectedGroup]);
 
   const closeList = useCallback(() => {
     setOpen(false);
@@ -113,9 +165,20 @@ export function MaterialPicker({
   // Start on the current value (or the first match while typing).
   useEffect(() => {
     if (!open) return;
-    const idx = query ? 0 : Math.max(0, options.findIndex(o => (o?.id ?? null) === (value ?? null)));
-    setActive(idx);
-  }, [open, query, options, value]);
+    if (query) { setActive(entries.findIndex(e => e.kind === 'item')); return; }
+    const idx = entries.findIndex(e => (e.kind === 'item' && e.m.id === value) || (e.kind === 'none' && !value));
+    setActive(Math.max(0, idx));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, query]);
+
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
+  const hoverGroup = (label: string) => {
+    if (query) return;
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    // Small hover intent delay so sweeping the pointer across headings doesn't flicker.
+    hoverTimer.current = setTimeout(() => setOpenGroup(label), 110);
+  };
+  const toggleGroup = (label: string) => setOpenGroup(g => (g === label ? null : label));
 
   // ── Position: below the field, or above if there's no room ────────────────
   const place = useCallback(() => {
@@ -125,12 +188,12 @@ export function MaterialPicker({
     const below = window.innerHeight - r.bottom - EDGE;
     const above = r.top - EDGE;
     const up = below < 220 && above > below;
-    const FOOTER = 40; // the hint / material-bank row under the list
+    const FOOTER = 40 + (wantKind ? 30 : 0); // footer row (+ unit bar)
     const maxH = Math.max(140, Math.min(MAX_LIST_H, (up ? above : below) - 6 - FOOTER));
     const width = Math.max(r.width, 320);
     const left = Math.min(Math.max(EDGE, r.left), window.innerWidth - width - EDGE);
     setPos({ left, top: up ? r.top - 6 : r.bottom + 6, width, maxH, up });
-  }, []);
+  }, [wantKind]);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -164,11 +227,24 @@ export function MaterialPicker({
       e.preventDefault(); openList(); return;
     }
     if (!open) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => Math.min(options.length - 1, i + 1)); }
+    const cur = entries[active];
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActive(i => Math.min(entries.length - 1, i + 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive(i => Math.max(0, i - 1)); }
     else if (e.key === 'Home') { e.preventDefault(); setActive(0); }
-    else if (e.key === 'End') { e.preventDefault(); setActive(options.length - 1); }
-    else if (e.key === 'Enter') { e.preventDefault(); if (options.length) pick(options[active] ?? null); }
+    else if (e.key === 'End') { e.preventDefault(); setActive(entries.length - 1); }
+    else if (e.key === 'ArrowRight' && cur?.kind === 'header' && !query) { e.preventDefault(); setOpenGroup(cur.label); }
+    else if (e.key === 'ArrowLeft' && !query && (cur?.kind === 'header' || cur?.kind === 'item')) {
+      e.preventDefault();
+      const label = cur.kind === 'header' ? cur.label : cur.group;
+      setOpenGroup(null);
+      setActive(Math.max(0, entries.findIndex(x => x.kind === 'header' && x.label === label)));
+    }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!cur) return;
+      if (cur.kind === 'header') { if (!query) toggleGroup(cur.label); }
+      else pick(cur.kind === 'item' ? cur.m : null);
+    }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeList(); }
     else if (e.key === 'Tab') { closeList(); }
   };
@@ -176,8 +252,6 @@ export function MaterialPicker({
   const selectedLabel = selected ? selected.name : '';
   const selectedRate  = selected ? materialRate(selected) : 0;
   const h = size === 'sm' ? 'h-8 text-[11px]' : 'h-10 text-sm';
-
-  let optIndex = -1;
 
   return (
     <div ref={wrapRef} className={cn('relative', className)}>
@@ -197,7 +271,7 @@ export function MaterialPicker({
           aria-expanded={open}
           aria-controls={listId}
           aria-autocomplete="list"
-          aria-activedescendant={open && options.length ? `${listId}-opt-${active}` : undefined}
+          aria-activedescendant={open && entries.length ? `${listId}-opt-${active}` : undefined}
           value={open ? query : selectedLabel}
           placeholder={open ? 'Type to search materials…' : 'No material'}
           onChange={e => { if (!open) setOpen(true); setQuery(e.target.value); }}
@@ -236,42 +310,71 @@ export function MaterialPicker({
           className="z-[150] bg-industrial-panel border border-industrial-border shadow-2xl font-mono flex flex-col"
           onMouseDown={e => e.preventDefault() /* keep focus in the search box */}
         >
+          {wantKind && (
+            <div className="flex items-center justify-between gap-3 border-b border-industrial-border px-3 py-1.5 text-[10px] text-zinc-500">
+              <span>
+                {allUnits ? 'All units' : <>Materials priced <span className="text-zinc-300">{KIND_LABEL[wantKind]}</span></>}
+              </span>
+              <button
+                type="button"
+                onClick={() => setAllUnits(v => !v)}
+                className="font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300"
+              >
+                {allUnits ? `Only ${KIND_LABEL[wantKind]}` : 'Show all units'}
+              </button>
+            </div>
+          )}
           <div id={listId} role="listbox" aria-label="Materials" style={{ maxHeight: pos.maxH }} className="overflow-y-auto custom-scrollbar py-1">
-            {options.length === 0 && (
+            {matchCount === 0 && (
               <p className="px-3 py-6 text-center text-[11px] text-zinc-500">
-                No materials match “{query}”.
+                {query ? <>No materials match “{query}”.</> : 'No materials in this unit yet.'}
+                {wantKind && !allUnits && (
+                  <button type="button" onClick={() => setAllUnits(true)} className="block mx-auto mt-2 font-bold uppercase tracking-widest text-[10px] text-amber-400 hover:text-amber-300">
+                    Show all units
+                  </button>
+                )}
               </p>
             )}
-            {rows.map((row, i) => {
-              if (row.kind === 'header') {
+            {entries.map((e, idx) => {
+              const isActive = idx === active;
+              if (e.kind === 'header') {
                 return (
-                  <div key={`h-${row.label}`} className="sticky top-0 z-10 bg-industrial-panel/95 backdrop-blur px-3 pt-2.5 pb-1 text-[9px] font-bold uppercase tracking-widest text-zinc-500 border-b border-industrial-border/60">
-                    {row.label}
+                  <div
+                    key={`h-${e.label}`} id={`${listId}-opt-${idx}`} data-opt={idx}
+                    role="option" aria-selected={false} aria-expanded={e.open}
+                    onMouseEnter={() => { setActive(idx); hoverGroup(e.label); }}
+                    onClick={() => { if (!query) toggleGroup(e.label); }}
+                    className={cn(
+                      'flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-[10px] font-bold uppercase tracking-widest border-b border-industrial-border/40',
+                      e.open ? 'text-amber-300 bg-zinc-800/40' : 'text-zinc-400',
+                      isActive && 'bg-amber-400/10 text-zinc-100',
+                    )}
+                  >
+                    <ChevronDown className={cn('w-3 h-3 shrink-0 transition-transform', !e.open && '-rotate-90')} aria-hidden />
+                    <span className="flex-1 min-w-0 truncate">{e.label}</span>
+                    <span className="text-zinc-600 tabular-nums">{e.count}</span>
                   </div>
                 );
               }
-              optIndex += 1;
-              const idx = optIndex;
-              const isActive = idx === active;
-              if (row.kind === 'none') {
+              if (e.kind === 'none') {
                 return (
                   <div
                     key="none" id={`${listId}-opt-${idx}`} data-opt={idx} role="option" aria-selected={!value}
                     onMouseEnter={() => setActive(idx)} onClick={() => pick(null)}
-                    className={cn('px-3 py-2 text-[11px] cursor-pointer text-zinc-400', isActive && 'bg-amber-400/10 text-zinc-100')}
+                    className={cn('px-3 py-2 text-[11px] cursor-pointer text-zinc-400 border-b border-industrial-border/40', isActive && 'bg-amber-400/10 text-zinc-100')}
                   >
                     — No material —
                   </div>
                 );
               }
-              const m = row.m;
+              const m = e.m;
               const rate = materialRate(m);
               return (
                 <div
-                  key={m.id + i} id={`${listId}-opt-${idx}`} data-opt={idx} role="option" aria-selected={m.id === value}
+                  key={m.id} id={`${listId}-opt-${idx}`} data-opt={idx} role="option" aria-selected={m.id === value}
                   onMouseEnter={() => setActive(idx)} onClick={() => pick(m)}
                   className={cn(
-                    'flex items-center gap-3 px-3 py-1.5 cursor-pointer border-l-2',
+                    'flex items-center gap-3 pl-7 pr-3 py-1.5 cursor-pointer border-l-2',
                     isActive ? 'bg-amber-400/10 border-amber-400' : 'border-transparent',
                     m.id === value && !isActive && 'bg-zinc-800/60',
                   )}
@@ -294,7 +397,7 @@ export function MaterialPicker({
             })}
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-industrial-border px-3 py-2 text-[10px] text-zinc-500">
-            <span className="hidden sm:inline">↑↓ move · Enter choose · Esc close</span>
+            <span className="hidden sm:inline">Type to search · ↑↓ move · → open · Enter choose</span>
             {onOpenBank && (
               <button
                 type="button"

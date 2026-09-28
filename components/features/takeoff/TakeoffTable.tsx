@@ -295,6 +295,7 @@ function TakeoffTableImpl({
           autoOpen
           materials={materials}
           value={row.materialId ?? null}
+          measurementType={row.points?.length ? row.type : undefined}
           onOpenBank={() => { stopEditing(); setMaterialLibraryOpen(true); }}
           onClose={stopEditing}
           onChange={(id) => {

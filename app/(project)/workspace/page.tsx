@@ -88,6 +88,8 @@ export default function Workspace() {
     activePage,
     showLabels,
     setShowLabels,
+    showGeometry,
+    setShowGeometry,
     materialLibraryOpen: showMaterialLibrary,
     setMaterialLibraryOpen: setShowMaterialLibrary,
     focusMeasurement,
@@ -551,6 +553,8 @@ export default function Workspace() {
             hideScale
             showLabels={showLabels}
             setShowLabels={setShowLabels}
+            showGeometry={showGeometry}
+            setShowGeometry={setShowGeometry}
             leading={leftCollapsed ? (
               <>
                 <button

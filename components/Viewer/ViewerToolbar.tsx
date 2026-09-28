@@ -52,6 +52,9 @@ interface ViewerToolbarProps {
   /** Quantity labels on the drawing (toggle shown when provided). */
   showLabels?: boolean;
   setShowLabels?: (v: boolean) => void;
+  /** Overlay of the PDF's extracted lines/arcs (toggle shown when provided). */
+  showGeometry?: boolean;
+  setShowGeometry?: (v: boolean) => void;
   /** Rendered after the zoom controls (e.g. the workspace's "show takeoff panel" button). */
   trailing?: React.ReactNode;
   /** Rendered before the tool buttons (e.g. the workspace's "expand sidebar" button). */
@@ -311,6 +314,8 @@ function ViewerToolbarImpl({
   trailing,
   showLabels,
   setShowLabels,
+  showGeometry,
+  setShowGeometry,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
 
@@ -513,6 +518,23 @@ function ViewerToolbarImpl({
             title="Show each quantity on the drawing"
           >
             {showLabels ? 'LABELS ON' : 'LABELS OFF'}
+          </button>
+        )}
+
+        {setShowGeometry && (
+          <button
+            type="button"
+            onClick={() => setShowGeometry(!showGeometry)}
+            aria-pressed={!!showGeometry}
+            className={cn(
+              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+              showGeometry
+                ? 'bg-sky-400/10 border-sky-400/50 text-sky-300 hover:bg-sky-400/20'
+                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+            )}
+            title="Show the lines and arcs read from the PDF — what snapping uses"
+          >
+            {showGeometry ? 'GEOMETRY ON' : 'GEOMETRY OFF'}
           </button>
         )}
 

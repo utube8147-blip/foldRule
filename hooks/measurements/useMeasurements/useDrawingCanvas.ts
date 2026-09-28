@@ -72,6 +72,11 @@ interface UseDrawingCanvasParams {
   showLabels?:      boolean;
   /** Measurement to outline as selected (read per frame; no re-render needed). */
   selectedIdRef?:   React.RefObject<string | null>;
+  /**
+   * Finds the PDF line/arc under the cursor (canvas px in, canvas px out) so it
+   * can be highlighted while drawing. Null = feature off.
+   */
+  findHoverGeometry?: ((x: number, y: number) => { kind: 'line'; pts: { x: number; y: number }[] } | { kind: 'curve'; pts: { x: number; y: number }[] } | null) | null;
 }
 
 interface UseDrawingCanvasReturn {
@@ -558,7 +563,11 @@ export function useDrawingCanvas({
   arcDragPreview,
   showLabels = false,
   selectedIdRef,
+  findHoverGeometry = null,
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
+  const hoverGeomRef = useRef<{ kind: string; pts: { x: number; y: number }[] } | null>(null);
+  const findHoverGeometryRef = useRef(findHoverGeometry);
+  findHoverGeometryRef.current = findHoverGeometry;
   // The cursor position is render-irrelevant (the canvas reads cursorPointRef),
   // so it lives in a ref. Previously this was useState, which re-rendered the
   // whole Viewer tree on every pointer move.
@@ -566,6 +575,7 @@ export function useDrawingCanvas({
   const setCursorPoint = useCallback<React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>>(
     (v) => {
       cursorStateRef.current = typeof v === 'function' ? v(cursorStateRef.current) : v;
+      if (cursorStateRef.current === null) hoverGeomRef.current = null;   // pointer left / reset
     },
     [],
   );
@@ -759,6 +769,22 @@ export function useDrawingCanvas({
         committedLayerRef.current = null;
         drawCommitted(ctx);
         if (showLabels) drawLabels(ctx);
+      }
+
+      // ── PDF line / arc under the cursor (what you're about to snap to) ────
+      const hv = hoverGeomRef.current;
+      if (hv && hv.pts.length >= 2) {
+        ctx.save();
+        ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+        ctx.beginPath();
+        hv.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+        ctx.strokeStyle = 'rgba(56,189,248,0.25)'; ctx.lineWidth = 7; ctx.stroke();
+        ctx.strokeStyle = 'rgba(56,189,248,0.95)'; ctx.lineWidth = 2; ctx.stroke();
+        for (const p of [hv.pts[0], hv.pts[hv.pts.length - 1]]) {
+          ctx.fillStyle = '#38bdf8';
+          ctx.fillRect(p.x - 3, p.y - 3, 6, 6);
+        }
+        ctx.restore();
       }
 
       // ── Selection outline (per frame, cheap: one shape) ───────────────────
@@ -1455,6 +1481,9 @@ export function useDrawingCanvas({
       lastCursorRef.current  = snappedCanvas;
       cursorPointRef.current = snappedCanvas;
       cursorStateRef.current = snappedCanvas;
+      hoverGeomRef.current   = snapEnabledRef.current && findHoverGeometryRef.current
+        ? findHoverGeometryRef.current(canvasX, canvasY)
+        : null;
       pendingMovePointRef.current = snappedCanvas;
       if (moveRafRef.current == null) {
         moveRafRef.current = requestAnimationFrame(() => {

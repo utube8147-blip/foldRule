@@ -85,3 +85,14 @@ export interface SvgArea {
   hasArc?: boolean;
   [key: string]: unknown;
 }
+
+/** A full circle found on the page (centre + radius, normalised to page size). */
+export interface PdfCircle {
+  nx: number;
+  ny: number;
+  /** Radius as a fraction of page width / height. */
+  nrx: number;
+  nry: number;
+  /** Radius in PDF points (page space at scale 1). */
+  r: number;
+}

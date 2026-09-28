@@ -24,6 +24,10 @@ import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
 import { usePdfDocument, hasSnapGeometry } from '@/hooks/snapEngine/usePdfDocument';
+import { CircleCentresOverlay } from './CircleCentresOverlay';
+import { RADIUS_SENTINEL } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
+import type { PdfCircle } from '@/types/snapTypes';
+import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
@@ -136,7 +140,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     undo, redo, canUndo, canRedo,
     selectedId, setSelectedId, projectState, updateMeasurement,
     setActivePage, showLabels, pendingPage, clearPendingPage,
-    setDrawingPageCount, focusSeq, setNextMaterial,
+    setDrawingPageCount, focusSeq, setNextMaterial, showGeometry,
   } = useTakeoffContext();
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
@@ -166,6 +170,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     lines:       pdfLines,
     curves:      pdfCurves,
     snapPoints:  pdfSnapPoints,
+    circles:     pdfCircles,
     stage:       pdfStage,
     dims:        pdfDocDims,
   } = usePdfDocument();
@@ -289,6 +294,16 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   //  pdfLines / pdfCurves: vertices already in absolute px — pass through as-is.
   //  pdfSnapPoints: nx/ny are normalized fractions — multiply by dims once here.
   //
+  // The snap engine works in PAGE UNITS (the page at 100%, the space the
+  // geometry worker outputs lines/curves in, and what the pin layer expects).
+  // The drawing canvas is at the committed zoom, so snapToCanvas() below
+  // converts the cursor into page units and the result back.
+  const pageSnapPoints = useMemo(() => {
+    if (!pdfDocDims || !pdfSnapPoints.length) return [];
+    const { w, h } = pdfDocDims;
+    return pdfSnapPoints.map(sp => ({ ...sp, x: sp.nx * w, y: sp.ny * h }));
+  }, [pdfSnapPoints, pdfDocDims]);
+
   const resolvedSnapPoints = useMemo(() => {
     if (!pdfDimensions || !pdfSnapPoints.length) return [];
     const { w, h } = pdfDimensions;
@@ -316,14 +331,67 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     snapEnabled,
     showPins,
     snapThreshold,
-    lines:      pdfLines,           // absolute canvas-space px — no conversion needed
-    curves:     pdfCurves,          // absolute canvas-space px — no conversion needed
-    snapPoints: resolvedSnapPoints, // converted from nx/ny fractions → absolute px
+    lines:      pdfLines,           // page units (100% zoom)
+    curves:     pdfCurves,          // page units (100% zoom)
+    snapPoints: pageSnapPoints,     // page units (see pageSnapPoints)
     activeTool,
     proximityRadius: 80,
     zoom:            scale,
     pan:             stablePan,
   });
+
+  // Canvas px ↔ page units for snapping.
+  const canvasPerPageRef = useRef(1);
+  canvasPerPageRef.current = pdfDimensions && pdfDocDims?.w ? pdfDimensions.w / pdfDocDims.w : 1;
+  const snapToCanvas = useCallback((cx: number, cy: number) => {
+    const k = canvasPerPageRef.current || 1;
+    const r = snapToCorner(cx / k, cy / k);
+    return { ...r, point: { x: r.point.x * k, y: r.point.y * k } };
+  }, [snapToCorner]);
+
+  // ── Extracted geometry: hover highlight + optional overlay ────────────────
+  const geometryIndex = useMemo(() => buildGeometryIndex(pdfLines as never, pdfCurves as never), [pdfLines, pdfCurves]);
+  const HOVER_TOOLS = useMemo(() => new Set(['linear', 'polygon', 'rectangle', 'arc', 'polyarc', 'radius', 'count', 'point', 'scale']), []);
+  const activeToolRef = useRef(activeTool);
+  activeToolRef.current = activeTool;
+  // Canvas px in → nearest PDF line/arc (as canvas-px points) out.
+  const findHoverGeometry = useCallback((cx: number, cy: number) => {
+    if (!HOVER_TOOLS.has(activeToolRef.current as string)) return null;
+    const k = canvasPerPageRef.current || 1;
+    const e = geometryIndex.nearest({ x: cx / k, y: cy / k }, 10 / k);
+    if (!e) return null;
+    const pts = e.kind === 'line' ? [e.a, e.b] : e.pts;
+    return { kind: e.kind, pts: pts.map(p => ({ x: p.x * k, y: p.y * k })) };
+  }, [geometryIndex, HOVER_TOOLS]);
+
+  // GEOMETRY ON: draw every extracted line/arc faintly on the vector layer.
+  // Redrawn only when the page, its geometry or the zoom level changes.
+  useEffect(() => {
+    const c = vectorCanvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, c.width, c.height);
+    if (!showGeometry || !pdfDimensions || !geometryIndex.entities.length) return;
+    const k = canvasPerPageRef.current || 1;
+    ctx.save();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(14,165,233,0.55)';
+    ctx.beginPath();
+    for (const e of geometryIndex.entities) {
+      if (e.kind === 'line') { ctx.moveTo(e.a.x * k, e.a.y * k); ctx.lineTo(e.b.x * k, e.b.y * k); }
+    }
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(217,70,239,0.6)';
+    ctx.beginPath();
+    for (const e of geometryIndex.entities) {
+      if (e.kind !== 'curve') continue;
+      e.pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x * k, p.y * k) : ctx.lineTo(p.x * k, p.y * k)));
+    }
+    ctx.stroke();
+    ctx.restore();
+    // pdfRenderCount: the vector canvas is resized (cleared) by page renders.
+  }, [showGeometry, geometryIndex, pdfDimensions, pdfRenderCount]);
 
   const stagedArcs = calcStagedArcCount(tempPoints);
 
@@ -418,7 +486,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
-    isPanning, snapToCorner: snapToCorner as any, getScaledCorners: () => [],
+    isPanning, snapToCorner: snapToCanvas as any, getScaledCorners: () => [],
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
     snapCandidates: [],
@@ -427,6 +495,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
     showLabels,
     selectedIdRef,
+    findHoverGeometry,
   } as any);
 
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
@@ -754,6 +823,24 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     setPendingMeasurementData({ id: `temp-${Date.now()}`, type, description: `New ${type}` });
     setShowMeasurementDialog(true);
   }, [tempPoints.length, activeTool, finishMeasurement, propAppendToGroupId, onAppendComplete]);
+
+  // ── One-click circles (Circle tool + centre markers) ───────────────────────
+  // Feed the same points the Circle tool collects (centre, edge, break), then
+  // run the normal finish flow — naming dialog, material, undo all apply.
+  const pendingCircleFinishRef = useRef(false);
+  const createCirclesFromDrawing = useCallback((circles: PdfCircle[]) => {
+    for (const c of circles) {
+      pushPoint({ x: c.nx, y: c.ny, snapped: true });
+      pushPoint({ x: c.nx + c.nrx, y: c.ny, snapped: true });
+      pushPoint({ ...RADIUS_SENTINEL });
+    }
+    pendingCircleFinishRef.current = true;
+  }, [pushPoint]);
+  useEffect(() => {
+    if (!pendingCircleFinishRef.current || tempPoints.length === 0) return;
+    pendingCircleFinishRef.current = false;
+    handleFinishMeasurement();
+  }, [tempPoints, handleFinishMeasurement]);
 
   const handleDialogConfirm = useCallback((name: string, materialId: string, icon?: string) => {
     setShowMeasurementDialog(false);
@@ -1175,6 +1262,16 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   fill={mfSelectedFill}
                   metersPerPixel={mfMetersPerPixel}
                   holesClosed={mfHolesClosed}
+                />
+              )}
+
+              {activeTool === 'radius' && tempPoints.length === 0 && pdfDimensions && pdfCircles.length > 0 && (
+                <CircleCentresOverlay
+                  circles={pdfCircles}
+                  pdfDimensions={pdfDimensions}
+                  scaleFactor={scaleFactor}
+                  calibrated={isPageCalibrated}
+                  onPick={createCirclesFromDrawing}
                 />
               )}
             </ViewerCanvas>
