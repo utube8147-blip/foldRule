@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { useRouter } from 'next/navigation';
-import { HardHat, ArrowRight, Layers, FileSpreadsheet, Maximize, ArrowUpRight } from 'lucide-react';
-import { motion } from 'motion/react';
+import { HardHat, ArrowRight, Layers, FileSpreadsheet, Maximize } from 'lucide-react';
+import * as motion from 'motion/react-m';
 import { cn } from '../lib/utils';
 
 export default function Landing() {
@@ -39,16 +39,10 @@ export default function Landing() {
 
         <div className="flex items-center gap-6">
           <button 
-            onClick={() => router.push('/login')}
-            className="text-[10px] font-bold uppercase tracking-widest text-zinc-300 hover:text-white transition-colors"
-          >
-            Login
-          </button>
-          <button 
-            onClick={() => router.push('/register')}
+            onClick={() => router.push('/dashboard')}
             className="bg-[#F59E0B] hover:bg-amber-400 text-black px-6 py-2.5 text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_15px_rgba(245,158,11,0.1)]"
           >
-            Get Started
+            Open projects
           </button>
         </div>
       </header>
@@ -91,10 +85,10 @@ export default function Landing() {
             className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full"
           >
             <button 
-              onClick={() => router.push('/register')}
+              onClick={() => router.push('/dashboard')}
               className="w-full sm:w-auto bg-[#F59E0B] hover:bg-amber-400 text-black px-8 py-4 text-[11px] font-bold uppercase tracking-widest transition-all"
             >
-              Get Started Free
+              Start a takeoff
             </button>
             <button 
               className="w-full sm:w-auto border border-[#262626] hover:border-zinc-600 bg-[#161616] px-8 py-4 text-[11px] font-bold uppercase tracking-widest text-zinc-300 hover:text-white transition-all"

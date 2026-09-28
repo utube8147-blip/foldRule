@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState } from 'react';
-import { PresetTemplate } from '@/components/presets/PresetTemplates';
+import type { PresetTemplate } from '@/components/presets/PresetTemplates';
 
 type FormFieldValue = string | number | boolean | null | undefined;
 

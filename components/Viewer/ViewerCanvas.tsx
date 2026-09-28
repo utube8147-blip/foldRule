@@ -11,7 +11,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useId, useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { FolderOpen, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType, TakeoffRow } from '@/types';
@@ -22,7 +22,6 @@ import { CountPinOverlay } from '@/components/features/overlays/CountPinOverlay'
 import { GridCountOverlay } from './GridCountOverlay';
 
 import {
-  splitArcPoints, isArcSentinel,
   splitRadiusPoints,
   splitPolyarcSegments,
 } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';

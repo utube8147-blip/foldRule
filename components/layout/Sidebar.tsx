@@ -152,7 +152,7 @@ function Divider() {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function Sidebar({
+function SidebarImpl({
   isCollapsed,
   projectState,
   onUpdateMaterials,
@@ -610,3 +610,6 @@ export function Sidebar({
     </aside>
   );
 }
+
+/** Memoized: skips re-rendering when its props are unchanged. */
+export const Sidebar = React.memo(SidebarImpl);

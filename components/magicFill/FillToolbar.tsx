@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
-import { COLORS, fmtArea, fmtPerim, Fill, LoadStage } from '@/hooks/fill/magicFill/usePdfFill';
+import { COLORS, Fill, LoadStage } from '@/hooks/fill/magicFill/usePdfFill';
 
 
 // ── Shared micro-styles ───────────────────────────────────────────────────────

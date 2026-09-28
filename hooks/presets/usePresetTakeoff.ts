@@ -1,7 +1,7 @@
 // hooks/usePresetTakeoff.ts
 import { useCallback } from 'react';
 import { TakeoffRow, Drawing } from '@/types';
-import { PresetTemplate } from '@/components/presets/PresetTemplates';
+import type { PresetTemplate } from '@/components/presets/PresetTemplates';
 
 interface UsePresetTakeoffProps {
   activeDrawing: Drawing | null;

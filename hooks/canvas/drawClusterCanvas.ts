@@ -7,7 +7,7 @@
 //   • Selected cluster instances → bright solid border + stronger fill
 //   • All other clusters         → dimmed to 15% opacity (emphasis by contrast)
 
-import type { ShapeCluster, NormBounds } from '@/hooks/detection/useShapeCluster';
+import type { ShapeCluster } from '@/hooks/detection/useShapeCluster';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
 // ─── Colour palette ───────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState } from 'react';
+import { useProjectHref } from '@/lib/nav/projectHref';
 import { useRouter } from 'next/navigation';
 import {
   ArrowLeft, ChevronRight, RotateCcw, Check,
@@ -8,13 +9,14 @@ import {
   Square, Hash, CircleDot,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
+import * as motion from 'motion/react-m';
 import {
   ELEMENT_PRESETS,
   PRESET_FORM_MAP,
   PresetTemplate,
 } from '@/components/presets/PresetTemplates';
-import { useTakeoffContext } from '@/context/TakeoffContext';
+import { useTakeoffData } from '@/context/TakeoffContext';
 import { usePresetContext } from '@/context/PresetContext';
 import { Drawing } from '@/types';
 import { ToastContainer } from '@/components/Toast';
@@ -184,6 +186,7 @@ function TemplateCard({
 
 export default function PresetsPage() {
   const router = useRouter();
+  const href = useProjectHref();
 
   // ── toast state ────────────────────────────────────────────────────────────
   const [toasts, setToasts] = useState<{ id: string; message: string; type: 'success' | 'info' }[]>([]);
@@ -195,7 +198,7 @@ export default function PresetsPage() {
   };
 
   // ── project data from takeoff context
-  const { projectState: ps, addMeasurement, batchCommitMeasurements } = useTakeoffContext();
+  const { projectState: ps, addMeasurement, batchCommitMeasurements } = useTakeoffData();
 
   // all preset UI state from preset context
   const {
@@ -272,7 +275,7 @@ export default function PresetsPage() {
       <div className="h-14 flex-shrink-0 bg-[#111] border-b border-zinc-800 flex items-center justify-between px-6 z-40">
         <div className="flex items-center gap-4">
           <button
-            onClick={() => router.push('/workspace')}
+            onClick={() => router.push(href('/workspace'))}
             className="flex items-center gap-2 text-zinc-500 hover:text-zinc-200 transition-colors group"
           >
             <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />

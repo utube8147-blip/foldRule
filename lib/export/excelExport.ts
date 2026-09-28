@@ -5,10 +5,7 @@ import {
   BOQData, ProjectInfo, KitchenSection, Component, MatrixItem,
   Fixture, MaterialColumn, CalculationRules,
 } from './xl/types';
-import {
-  Colors, getColumnLetter, createFill, createFont, createAlignment,
-  createBorder, createFullBorder, createThickBorder,
-} from './xl/styles';
+
 import { buildSummarySheet }      from './xl/sheet-summary';
 import { buildBOQMatrixSheet, getDefaultUnitCategories, MAT_START } from './xl/sheet-boq-matrix';
 import { buildMaterialsListSheet } from './xl/sheet-materials-list';
@@ -150,8 +147,10 @@ interface TransformedProjectInfo extends ProjectInfo {
   additional_notes: Record<string, unknown>;
 }
 
-export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
-  const workbook = new ExcelJS.Workbook();
+export async function buildWorkbook(
+  data?: BOQData,
+  workbook: ExcelJS.Workbook = new ExcelJS.Workbook(),
+): Promise<ExcelJS.Workbook> {
   const boqData  = data || getMockBOQData();
 
   const doc             = boqData.project_info;
@@ -240,17 +239,13 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
   };
 
   // Validate required data before building sheets
-  if (sections.length === 0) {
-    console.warn('[v0] No sections found in BOQ data');
-  }
-
-  workbook.creator = 'BOQ Export System';
+  workbook.creator = 'Quantity Savior';
   workbook.created = new Date();
 
   try {
     await buildSummarySheet(workbook, transformedDoc, sections, sectionMap);
   } catch (error) {
-    console.error('[v0] Error building summary sheet:', error);
+    console.error('[export] Error building summary sheet:', error);
     throw new Error(`Failed to build summary sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 
@@ -261,7 +256,7 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
       transformedMaterialColumns, sheetAreaM2, outputOptions, unitCategories,
     );
   } catch (error) {
-    console.error('[v0] Error building BOQ matrix sheet:', error);
+    console.error('[export] Error building BOQ matrix sheet:', error);
     throw new Error(`Failed to build BOQ matrix sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 
@@ -271,7 +266,7 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
       workbook, transformedDoc, transformedMaterialColumns, gtRow, sheetAreaM2, fixtures,
     );
   } catch (error) {
-    console.error('[v0] Error building materials list sheet:', error);
+    console.error('[export] Error building materials list sheet:', error);
     throw new Error(`Failed to build materials list sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 
@@ -280,7 +275,7 @@ export async function buildWorkbook(data?: BOQData): Promise<ExcelJS.Workbook> {
       workbook, transformedDoc, transformedMaterialColumns, matListStartRow, fixtures,
     );
   } catch (error) {
-    console.error('[v0] Error building cost breakdown sheet:', error);
+    console.error('[export] Error building cost breakdown sheet:', error);
     throw new Error(`Failed to build cost breakdown sheet: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 
@@ -315,7 +310,7 @@ export async function exportToExcel(data?: BOQData): Promise<void> {
     document.body.removeChild(link);
     URL.revokeObjectURL(link.href);
   } catch (error) {
-    console.error('[v0] Error exporting to Excel:', error);
+    console.error('[export] Error exporting to Excel:', error);
     throw new Error(`Failed to export Excel file: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }

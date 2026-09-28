@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Material } from '@/types';
-import { X, Search, Filter, ArrowUpDown, Database, Download, Plus, Trash2, Settings, Bell, Info, Compass, Layers, Droplet } from 'lucide-react';
+import { X, Search, Filter, ArrowUpDown, Database, Download, Trash2, Settings, Bell, Info, Compass, Layers, Droplet } from 'lucide-react';
 import { formatCurrency, cn } from '@/lib/utils';
-import { motion } from 'motion/react';
+import * as motion from 'motion/react-m';
 
 // Extend Material type for internal use with division field
 interface MaterialWithDivision extends Material {

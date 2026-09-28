@@ -1,26 +1,8 @@
 'use client';
 // ─── workspace/page.tsx ───────────────────────────────────────────────────────
-//
-//  CHANGES vs previous version:
-//
-//  1. REMOVED 'a' KEY FROM WORKSPACE KEYBOARD HANDLER
-//     The workspace keydown handler mapped 'a' → setActiveTool('area').
-//     This fired before Viewer.tsx's handler and stole the key, making the
-//     polyarc mode toggle (and any future A-key use in canvas tools) impossible.
-//     Removed 'a' from the workspace handler entirely. Area tool can be
-//     reached via the toolbar button.
-//
-//  2. FIXED TOOLBAR WIRING — was using raw setActiveTool, now passes through
-//     the Viewer's handleSetActiveTool so the linear↔arc→polyarc upgrade
-//     logic runs when the user clicks toolbar buttons at workspace level.
-//     The toolbar in workspace now reads polyarcMode / togglePolyarcMode from
-//     toolbarAPI which Viewer exposes via onToolbarReady.
-//
-//  3. SHIFT+CLICK ARC MODE — polyarcMode / togglePolyarcMode props removed
-//     from the workspace-level ViewerToolbar render since the A-key toggle is
-//     gone and shift+click handles arc mode inline. The toolbar pill that
-//     showed LINE/ARC still lives inside Viewer's own ViewerToolbar render.
-//
+//  Main takeoff workspace. Project data comes from TakeoffContext, which is
+//  loaded from / autosaved to local storage by app/(project)/ProjectSession.
+//  Keyboard shortcuts are owned by Viewer.tsx (single registry).
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
@@ -41,17 +23,18 @@ import { TakeoffTable } from '@/components/features/takeoff/TakeoffTable';
 import { MaterialLibrary } from '@/components/features/takeoff/MaterialLibrary';
 import { ExportModal } from '@/components/features/dialogs/ExportModal';
 import { ToastContainer } from '@/components/Toast';
-import { PresetTemplate } from '@/components/presets/PresetTemplates';
-import { useTakeoffContext } from '@/context/TakeoffContext';
+import type { PresetTemplate } from '@/components/presets/PresetTemplates';
+import { useTakeoffData } from '@/context/TakeoffContext';
 import {
   PanelRightClose,
   Sidebar as SidebarIcon,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
-
-// ─── SVG snap layout URL ──────────────────────────────────────────────────────
-const SNAP_SVG_URL = '/floorplan.svg';
+import { exportProjectToExcel } from '@/lib/export/clientExport';
+import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
+import { useProjectHref } from '@/lib/nav/projectHref';
+import { SaveIndicator } from '@/components/layout/SaveIndicator';
 
 // ─── Stable color palette for presets ────────────────────────────────────────
 const PRESET_COLORS = [
@@ -100,7 +83,9 @@ export default function Workspace() {
     clearAll,
     toggleVisibility,
     updateProjectMeta,
-  } = useTakeoffContext();
+    activePage,
+  } = useTakeoffData();
+  const href = useProjectHref();
 
   const [leftCollapsed,       setLeftCollapsed]       = useState(false);
   const [rightCollapsed,      setRightCollapsed]      = useState(false);
@@ -137,9 +122,14 @@ export default function Workspace() {
     [ps.drawings, ps.activeDrawingId],
   );
 
+  // Scale is per page. Uncalibrated pages measure in drawing units (factor 1).
   const currentScaleFactor = useMemo(
-    () => (activeDrawing ? activeDrawing.scaleFactor : 1),
-    [activeDrawing],
+    () => effectivePageScale(activeDrawing, activePage),
+    [activeDrawing, activePage],
+  );
+  const isPageCalibrated = useMemo(
+    () => getPageScale(activeDrawing, activePage) !== null,
+    [activeDrawing, activePage],
   );
 
   const activeMeasurements = useMemo(
@@ -333,28 +323,6 @@ export default function Workspace() {
 
   const handleAppendComplete = useCallback(() => setAppendToGroupId(null), []);
 
-  // ── Keyboard shortcuts ────────────────────────────────────────────────────
-  // IMPORTANT: 'a' is intentionally NOT mapped here.
-  // The Viewer's internal keydown handler owns 'a' for the polyarc toggle.
-  // Mapping 'a' here caused the tool to switch away from polyarc the moment
-  // the user tried to change arc mode.
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (['input', 'textarea'].includes((e.target as HTMLElement).tagName.toLowerCase())) return;
-      switch (e.key.toLowerCase()) {
-        case 'l': setActiveTool('linear'      as ToolType); break;
-        // 'a' deliberately omitted — owned by Viewer for polyarc toggle
-        case 'c': setActiveTool('count'       as ToolType); break;
-        case 'p': setActiveTool('point'       as ToolType); break;
-        case 'v': setActiveTool('select'      as ToolType); break;
-        case 'm': setActiveTool('magic-fill'  as ToolType); break;
-        case 'escape': setActiveTool('select' as ToolType); break;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [setActiveTool]);
-
   // ── onAddMeasurement ──────────────────────────────────────────────────────
   const handleAddMeasurement = useCallback((m: any) => {
     if (!activeDrawing) {
@@ -362,6 +330,7 @@ export default function Workspace() {
       return;
     }
     addMeasurement(buildRow({
+      ...m,
       id:            m.id            || crypto.randomUUID(),
       drawingId:     activeDrawing.id,
       label:         m.label         ?? '',
@@ -391,42 +360,57 @@ export default function Workspace() {
   const handleExport = useCallback(() => setShowExportModal(true), []);
 
   const executeExport = useCallback((filename: string) => {
-    fetch('/api/export', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ filename }),
-    })
-      .then(async res => {
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: res.statusText }));
-          throw new Error(err.details || err.error || `HTTP ${res.status}`);
-        }
-        const disposition = res.headers.get('Content-Disposition');
-        const match       = disposition?.match(/filename="(.+)"/);
-        const finalName   = filename || match?.[1] || `BOQ_${new Date().toISOString().split('T')[0]}.xlsx`;
-        const blob = await res.blob();
-        return { blob, filename: finalName };
-      })
-      .then(({ blob, filename: finalName }) => {
-        const url = URL.createObjectURL(blob);
-        const a   = document.createElement('a');
-        a.href = url; a.download = finalName; a.click();
-        URL.revokeObjectURL(url);
-        addToast('TAKEOFF EXPORTED SUCCESSFULLY', 'success');
+    exportProjectToExcel(ps, filename || undefined)
+      .then(name => {
+        addToast(`Exported ${name}`, 'success');
         setShowExportModal(false);
       })
       .catch(err => {
         console.error('Export failed:', err);
-        addToast(`EXPORT FAILED — ${err.message}`, 'info');
+        addToast(`Export failed: ${err instanceof Error ? err.message : String(err)}`, 'info');
       });
-  }, [addToast]);
+  }, [ps, addToast]);
 
   const handleScaleSet = useCallback((f: number) => {
     if (activeDrawing) {
-      updateDrawingScale(activeDrawing.id, f);
-      addToast(`SCALE CALIBRATED: 1px = ${f.toFixed(4)}u`, 'info');
+      updateDrawingScale(activeDrawing.id, f, activePage);
+      addToast(`Page ${activePage} calibrated — existing measurements on this page were updated`, 'success');
     }
-  }, [activeDrawing, updateDrawingScale, addToast]);
+  }, [activeDrawing, activePage, updateDrawingScale, addToast]);
+
+  // ── Stable props for memoized children ────────────────────────────────────
+  const sidebarProjectState = useMemo(
+    () => ({ ...ps, activeDrawingId: ps.activeDrawingId ?? undefined }),
+    [ps],
+  );
+  const handleUpdateMaterials = useCallback(
+    (mats: Material[]) => setProjectState(prev => ({ ...prev, materials: mats })),
+    [setProjectState],
+  );
+  const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), []);
+  const openFullTable       = useCallback(() => router.push(href('/takeoff-full')), [router, href]);
+  const handleAddManual     = useCallback(() => handleAddMeasurement({
+                  id:          crypto.randomUUID(),
+                  drawingId:   activeDrawing?.id || '',
+                  description: 'Manual Item',
+                  type:        'Length',
+                  quantity:    0,
+                  unit:        'm',
+                  unitRate:    0,
+                  notes:       '',
+                  points:      [],
+                  childIds:    [],
+                  isOverridden: true,
+                  label:       '',
+                  color:       '#EF9F27',
+                  isVisible:   true,
+                } as TakeoffRow), [handleAddMeasurement, activeDrawing]);
+  const handleProjectNameChange = useCallback(
+    (name: string) => updateProjectMeta({ projectName: name }),
+    [updateProjectMeta],
+  );
+  const openPresetDrawer  = useCallback(() => setShowPresetDrawer(true), []);
+  const closePresetDrawer = useCallback(() => setShowPresetDrawer(false), []);
 
   const handleToolbarReady = useCallback((api: ViewerToolbarAPI) => {
     setToolbarAPI(api);
@@ -439,9 +423,9 @@ export default function Workspace() {
       <div className="flex flex-col h-screen bg-industrial-black">
         <Navbar
           projectName={ps.projectName}
-          onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
+          onProjectNameChange={handleProjectNameChange}
           onExport={handleExport}
-          onOpenPresets={() => setShowPresetDrawer(true)}
+          onOpenPresets={openPresetDrawer}
         />
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
@@ -460,18 +444,18 @@ export default function Workspace() {
 
       <Navbar
         projectName={ps.projectName}
-        onProjectNameChange={(name) => updateProjectMeta({ projectName: name })}
+        onProjectNameChange={handleProjectNameChange}
         onExport={handleExport}
-        onOpenPresets={() => setShowPresetDrawer(true)}
+        onOpenPresets={openPresetDrawer}
       />
 
       <div className="flex flex-1 overflow-hidden mt-14">
 
         <Sidebar
           isCollapsed={leftCollapsed}
-          projectState={{ ...ps, activeDrawingId: ps.activeDrawingId ?? undefined }}
-          onUpdateMaterials={(mats) => setProjectState((prev: any) => ({ ...prev, materials: mats }))}
-          onOpenMaterialLibrary={() => setShowMaterialLibrary(true)}
+          projectState={sidebarProjectState}
+          onUpdateMaterials={handleUpdateMaterials}
+          onOpenMaterialLibrary={openMaterialLibrary}
           onDrawingAdded={addDrawing}
           onSelectDrawing={setActiveDrawingId}
           onUpdateProjectMeta={updateProjectMeta}
@@ -505,7 +489,7 @@ export default function Workspace() {
             canRedo={api?.canRedo ?? false}
             handleUndo={() => api?.handleUndo?.()}
             handleRedo={() => api?.handleRedo?.()}
-            tempPointsCount={0}
+            tempPointsCount={api?.tempPointsCount ?? 0}
             showPins={showPins}
             setShowPins={setShowPins}
             snapEnabled={snapEnabled}
@@ -542,13 +526,13 @@ export default function Workspace() {
                 activeDrawing={activeDrawing}
                 onDrawingAdded={addDrawing}
                 showPresetDrawer={showPresetDrawer}
-                onClosePresetDrawer={() => setShowPresetDrawer(false)}
+                onClosePresetDrawer={closePresetDrawer}
                 onSelectPreset={handlePresetSelect}
                 hideToolbar={true}
                 onToolbarReady={handleToolbarReady}
                 appendToGroupId={appendToGroupId}
                 onAppendComplete={handleAppendComplete}
-                svgUrl={SNAP_SVG_URL}
+                isPageCalibrated={isPageCalibrated}
                 showPins={showPins}
                 onShowPinsChange={setShowPins}
               />
@@ -564,24 +548,9 @@ export default function Workspace() {
                 onUpdate={updateMeasurement}
                 onDelete={deleteMeasurement}
                 onToggleVisibility={toggleVisibility}
-                onExpand={() => router.push('/takeoff-full')}
+                onExpand={openFullTable}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
-                onAddManual={() => handleAddMeasurement({
-                  id:          crypto.randomUUID(),
-                  drawingId:   activeDrawing?.id || '',
-                  description: 'Manual Item',
-                  type:        'Length',
-                  quantity:    0,
-                  unit:        'm',
-                  unitRate:    0,
-                  notes:       '',
-                  points:      [],
-                  childIds:    [],
-                  isOverridden: true,
-                  label:       '',
-                  color:       '#EF9F27',
-                  isVisible:   true,
-                } as TakeoffRow)}
+                onAddManual={handleAddManual}
               />
             </div>
 
@@ -623,12 +592,12 @@ export default function Workspace() {
       <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
 
         <div className="flex items-center gap-6">
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            Workspace: LOGISTICS_HUB_P2
+          <span className="text-[9px] text-zinc-500 tracking-wide font-semibold truncate max-w-[220px]" title={ps.projectName}>
+            {ps.projectName}
           </span>
           <div className="w-px h-3 bg-zinc-800" />
           <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            Objects: {ps.measurements.length}
+            {ps.measurements.filter(m => !m.isGroupHeader).length} measurements
           </span>
         </div>
 
@@ -678,10 +647,12 @@ export default function Workspace() {
         </div>
 
         <div className="flex items-center gap-4 justify-end">
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
-            LAT: 34.0522 N / LON: 118.2437 W
-          </span>
-          <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+          {activeDrawing && (
+            <span className="text-[9px] text-zinc-600 tracking-wide font-semibold">
+              Page {activePage} · {isPageCalibrated ? 'calibrated' : 'not calibrated'}
+            </span>
+          )}
+          <SaveIndicator />
         </div>
 
       </footer>

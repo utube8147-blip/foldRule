@@ -1,7 +1,9 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence } from 'motion/react';
+import * as motion from 'motion/react-m';
+import { useProjectHref } from '@/lib/nav/projectHref';
 import { useRouter } from 'next/navigation';
 import {
   ChevronDown, ChevronRight, ChevronUp, X, Check, Search,
@@ -13,11 +15,10 @@ import {
   ELEMENT_PRESETS,
   PRESET_FORM_MAP,
   PresetTemplate,
-  PresetFormComponentProps,
 } from './PresetTemplates';
 import { usePresetContext } from '@/context/PresetContext';
-import { useTakeoffContext } from '@/context/TakeoffContext';
-import { TakeoffRow, Drawing } from '@/types';
+import { useTakeoffData } from '@/context/TakeoffContext';
+import { Drawing } from '@/types';
 import { usePresetTakeoff } from '@/hooks/presets/usePresetTakeoff';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -208,8 +209,9 @@ function TemplateCard({
 
 export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerProps) {
   const router = useRouter();
+  const href = useProjectHref();
 
-  const { projectState: ps, addMeasurement, batchCommitMeasurements } = useTakeoffContext();
+  const { projectState: ps, addMeasurement, batchCommitMeasurements } = useTakeoffData();
   const activeDrawing = ps.drawings.find((d: Drawing) => d.id === ps.activeDrawingId) ?? null;
 
   // USE SHARED PRESET CONTEXT (same as preset page)
@@ -291,7 +293,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
 
   const handleOpenFullPage = () => {
     onClose();
-    router.push('/presets');
+    router.push(href('/presets'));
   };
 
   const cycleHeight = () =>

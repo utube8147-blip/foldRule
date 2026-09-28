@@ -263,7 +263,7 @@ export function useSnapEngine(opts: UseSnapEngineOptions): UseSnapEngineReturn {
             : (curve.endAngle * Math.PI) / 180;
 
           // Normalise sweep to [0, 2π) then pick the shorter direction
-          let sweep = ((endRad - startRad) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+          const sweep = ((endRad - startRad) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
           const anticlockwise = !curve.isCircle && sweep > Math.PI;
 
           ctx.arc(sc.sx, sc.sy, sr, startRad, endRad, anticlockwise);

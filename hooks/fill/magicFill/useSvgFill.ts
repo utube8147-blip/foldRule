@@ -11,7 +11,7 @@ import {
   maskArea, buildPolygonFromMask, polygonPerim,
   findRegionsInRect,
   buildMaskAsync,
-  extractSvgShapes, pointInPath2D, measureSvgPath,
+  extractSvgShapes, pointInPath2D,
 } from './fillCore';
 import { measureSvgPathVector } from './parseSvgPath';
 import {

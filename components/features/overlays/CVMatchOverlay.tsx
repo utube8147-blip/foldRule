@@ -16,7 +16,7 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { CVMatchResult, UseOpenCVMatcherReturn, TemplateEntry } from '@/hooks/detection/useOpenCVMatcher';
+import type { CVMatchResult, UseOpenCVMatcherReturn } from '@/hooks/detection/useOpenCVMatcher';
 import { templateColor, TEMPLATE_PALETTE } from '@/hooks/detection/useOpenCVMatcher';
 
 // ─── Colour helpers ───────────────────────────────────────────────────────────

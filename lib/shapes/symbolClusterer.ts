@@ -4,7 +4,7 @@
 // Produces SymbolCluster[] — each cluster has an auto-label, color, and member list.
 // Rooms (large areas) are excluded by areaN threshold before this runs.
 
-import type { SvgArea } from '@/hooks/snapEngine/useSnapEngine';
+import type { SvgArea } from '@/types/snapTypes';
 import { fingerprintArea, fingerprintDistance, ShapeFingerprint } from './symbolFingerprint';
 
 // ─── Types ────────────────────────────────────────────────────────────────────

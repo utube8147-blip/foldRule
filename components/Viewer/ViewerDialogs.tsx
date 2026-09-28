@@ -16,7 +16,7 @@
 import React from 'react';
 import { Scaling } from 'lucide-react';
 import { TakeoffRow } from '@/types';
-import { PresetTemplate } from '../presets/PresetTemplates';
+import type { PresetTemplate } from '../presets/PresetTemplates';
 import { PresetDrawer } from '../presets/PresetDrawer';
 import { MeasurementDetailsDialog } from '@/components/features/measurements/MeasurementDetailsDialog';
 import { SnapCandidateDialog } from './SnapCandidateDialog';

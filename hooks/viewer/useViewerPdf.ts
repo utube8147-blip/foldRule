@@ -18,6 +18,7 @@ import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react';
 import pdfjsLib from "@/lib/pdf/pdfClient";
+import { destroyPdf } from '@/lib/pdf/destroyPdf';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
@@ -73,6 +74,7 @@ export interface UseViewerPdfReturn {
   pdfRef:            React.RefObject<PDFDocumentProxy | null>;
   pageNumberRef:     React.RefObject<number>;
   scaleRef:          React.RefObject<number>;
+  dimsScaleRef:      React.RefObject<number>;
   pdfDimensionsRef:  React.RefObject<PdfDimensions | null>;
   onScaleSetRef:     React.RefObject<(v: number) => void>;
   pan: { x: number; y: number };
@@ -119,6 +121,9 @@ export function useViewerPdf({
   const pageNumberRef     = useRef(pageNumber);
   const scaleRef          = useRef(scale);
   const pdfDimensionsRef  = useRef<PdfDimensions | null>(null);
+  /** Zoom level at which pdfDimensions were computed (see render effect). */
+  const dimsScaleRef      = useRef(1);
+  const loadedDocRef      = useRef<PDFDocumentProxy | null>(null);
   const onScaleSetRef     = useRef(onScaleSet);
   const currentPdfPageRef = useRef<PDFPageProxy | null>(null);
   const activeDrawingFileRef = useRef<File | undefined>(activeDrawingFile);
@@ -244,7 +249,8 @@ export function useViewerPdf({
     }
 
     const onLoad = async (doc: PDFDocumentProxy) => {
-      if (!mounted) return;
+      if (!mounted) { destroyPdf(doc); return; }
+      loadedDocRef.current = doc;
       const page = await doc.getPage(1);
       const vp   = page.getViewport({ scale: 1 });
       let fit = 1.5;
@@ -293,7 +299,13 @@ export function useViewerPdf({
       pdfjsLib!.getDocument(activeDrawingUrl!).promise.then(onLoad).catch(onErr);
     }
 
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+      // Release the previous document (pages, fonts, worker memory).
+      const old = loadedDocRef.current;
+      loadedDocRef.current = null;
+      if (old) setTimeout(() => destroyPdf(old), 0);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeDrawingId, activeDrawingUrl]);
 
@@ -331,10 +343,18 @@ export function useViewerPdf({
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        if (canvas.width !== physVP.width || canvas.height !== physVP.height) {
-          canvas.width  = physVP.width;
-          canvas.height = physVP.height;
-        }
+        // Render into an off-screen buffer and swap it in when finished.
+        // Resizing the visible canvas would blank it for the whole render; this
+        // way the previous bitmap stays on screen (CSS-scaled) until the sharp
+        // one is ready.
+        // A fresh buffer per render, so a cancelled render can never paint
+        // into the buffer of the next one.
+        const buffer = document.createElement('canvas');
+        buffer.width  = physVP.width;
+        buffer.height = physVP.height;
+        const bctx = buffer.getContext('2d');
+        if (!bctx) return;
+
         canvas.style.width  = `${logVP.width}px`;
         canvas.style.height = `${logVP.height}px`;
 
@@ -368,6 +388,10 @@ export function useViewerPdf({
           c.style.height = `${logVP.height}px`;
         }
 
+        // Keep dimensions and the zoom they were measured at in lock-step, so
+        // quantity maths never mixes a committed canvas size with a live zoom.
+        pdfDimensionsRef.current = { w: logVP.width, h: logVP.height };
+        dimsScaleRef.current     = committedScale;
         setPdfDimensions(prev =>
           prev?.w === logVP.width && prev?.h === logVP.height
             ? prev
@@ -375,13 +399,23 @@ export function useViewerPdf({
         );
 
         task = page.render({
-          canvasContext: ctx,
+          canvasContext: bctx,
           viewport:      physVP,
-          canvas:        canvas as any,
+          canvas:        buffer as any,
         } as any);
         await task.promise;
 
         if (active) {
+          if (canvas.width !== physVP.width || canvas.height !== physVP.height) {
+            canvas.width  = physVP.width;
+            canvas.height = physVP.height;
+          } else {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
+          ctx.drawImage(buffer, 0, 0);
+          // Release the buffer's pixel memory until the next render.
+          buffer.width = 0; buffer.height = 0;
+
           onPageRendered?.();
           setPdfRenderCount(c => c + 1);
           // NOTE: pageChangeCount is NOT bumped here — zoom re-renders go
@@ -557,6 +591,7 @@ export function useViewerPdf({
     pdfRef,
     pageNumberRef,
     scaleRef,
+    dimsScaleRef,
     pdfDimensionsRef,
     onScaleSetRef,
     pan,

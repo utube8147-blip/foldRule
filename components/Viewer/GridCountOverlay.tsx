@@ -61,7 +61,7 @@ import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from
 import { cn } from '@/lib/utils';
 import type { PdfDimensions } from '@/types/viewerTypes';
 import { useGridCount, polyBounds } from '@/hooks/measurements/useGridCount';
-import { TILE_SHAPES, MIN_VERTICES, SNAP_RADIUS_PX } from '@/types/gridCountTypes';
+import { TILE_SHAPES, MIN_VERTICES } from '@/types/gridCountTypes';
 import type { TileShape, Point } from '@/types/gridCountTypes';
 
 // ─── Props ────────────────────────────────────────────────────────────────────

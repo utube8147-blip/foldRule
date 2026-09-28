@@ -1,6 +1,9 @@
+'use client';
+
 import React from 'react';
-import { Download, HardHat, Cloud, Grid3X3 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import Link from 'next/link';
+import { Download, HardHat } from 'lucide-react';
+import { SaveIndicator } from '@/components/layout/SaveIndicator';
 
 interface NavbarProps {
   projectName: string;
@@ -9,18 +12,24 @@ interface NavbarProps {
   onOpenPresets?: () => void;
 }
 
-export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPresets }: NavbarProps) {
+function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets }: NavbarProps) {
   return (
     <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between px-6 z-50 fixed top-0 w-full">
       <div className="flex items-center gap-6 h-full">
-        <div className="flex items-center gap-2 border-r border-industrial-border pr-6 h-8">
+        <Link
+          href="/dashboard"
+          title="All projects"
+          className="flex items-center gap-2 border-r border-industrial-border pr-6 h-8 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+        >
           <HardHat className="w-6 h-6 text-amber-accent" />
           <span className="text-xl font-black tracking-tighter text-amber-accent font-mono">QUANTITY SAVIOR</span>
-        </div>
+        </Link>
         
         <div className="flex flex-col">
-          <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-1">ACTIVE PROJECT</span>
+          <label htmlFor="project-name" className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-1">Project</label>
           <input
+            id="project-name"
+            maxLength={120}
             type="text"
             value={projectName}
             onChange={(e) => onProjectNameChange(e.target.value)}
@@ -30,21 +39,8 @@ export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPrese
       </div>
 
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2 px-3 py-1 bg-stone-900 border border-industrial-border">
-          <Cloud className="w-3.5 h-3.5 text-emerald-500 animate-pulse" />
-          <span className="text-[10px] font-mono font-bold text-zinc-400">SYNCED</span>
-        </div>
-        
-        {/* {onOpenPresets && (
-          <button
-            onClick={onOpenPresets}
-            className="bg-slate-700 hover:bg-slate-600 text-amber-400 font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 border border-amber-500"
-          >
-            <Grid3X3 className="w-4 h-4" />
-            PRESETS
-          </button>
-        )}
-         */}
+        <SaveIndicator />
+
         <button
           onClick={onExport}
           className="bg-amber-accent hover:bg-amber-400 text-black font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-amber-accent/10"
@@ -56,3 +52,6 @@ export function Navbar({ projectName, onProjectNameChange, onExport, onOpenPrese
     </header>
   );
 }
+
+/** Memoized: skips re-rendering when its props are unchanged. */
+export const Navbar = React.memo(NavbarImpl);

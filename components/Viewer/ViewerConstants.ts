@@ -22,7 +22,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React from 'react';
-import pdfjsLib from "@/lib/pdf/pdfClient";
 
 import {
   MousePointer2,
@@ -32,7 +31,6 @@ import {
   Pentagon,
   Hash,
   MapPin,
-  Ruler,
   Wand2,
   CircleDot,
   Spline,
@@ -48,15 +46,7 @@ export const ZOOM_SENSITIVITY = 0.15;
 export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 8;
 
-// ─── PDF worker ───────────────────────────────────────────────────────────────
-
-export const pdfWorkerUrl = `/pdf.worker.min.js`;
-
-export function initPdfWorker() {
-  if (typeof window === "undefined") return;
-  const lib = require("pdfjs-dist/legacy/build/pdf");
-  lib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-}
+// PDF.js is configured in one place: lib/pdf/pdfClient.ts
 
 // ─── Tool group labels (used for dividers in toolbar) ─────────────────────────
 
@@ -302,6 +292,8 @@ export interface ViewerProps {
   hideToolbar?: boolean;
 
   svgUrl?: string;
+  /** False when the visible page has no scale yet — shows a calibration prompt. */
+  isPageCalibrated?: boolean;
 
   showPins?: boolean;
   onShowPinsChange?: (v: boolean) => void;

@@ -1,21 +1,52 @@
 // app/api/roboflow/route.ts
 import { NextRequest, NextResponse } from 'next/server';
+import { LABS_ENABLED } from '@/lib/config/labs';
+
+// ── Guard rails ───────────────────────────────────────────────────────────────
+// This proxy spends your Roboflow credits, so it is:
+//   • disabled in production unless NEXT_PUBLIC_ENABLE_LABS=true
+//   • restricted to the workspaces / models listed in env (comma-separated)
+//   • size-limited so nobody can push huge payloads through it
+const MAX_BASE64_CHARS = 12 * 1024 * 1024; // ~9 MB image
+const ALLOWED_WORKSPACES = (process.env.ROBOFLOW_ALLOWED_WORKSPACES ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const ALLOWED_MODELS     = (process.env.ROBOFLOW_ALLOWED_MODELS     ?? '').split(',').map(s => s.trim()).filter(Boolean);
+const SAFE_ID = /^[a-zA-Z0-9_./-]{1,120}$/;
+const DEBUG = process.env.ROBOFLOW_DEBUG === 'true';
 
 const MODEL_API_KEY    = process.env.ROBOFLOW_API_KEY          ?? '';
 const WORKFLOW_API_KEY = process.env.ROBOFLOW_WORKFLOW_API_KEY ?? MODEL_API_KEY;
 
-if (!MODEL_API_KEY)    console.error('[roboflow-proxy] ⚠️  ROBOFLOW_API_KEY is not set');
-if (!WORKFLOW_API_KEY) console.error('[roboflow-proxy] ⚠️  ROBOFLOW_WORKFLOW_API_KEY is not set');
 
 export async function POST(req: NextRequest) {
+  if (!LABS_ENABLED) return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  if (!MODEL_API_KEY) return NextResponse.json({ error: 'Roboflow is not configured' }, { status: 503 });
   try {
     const body = await req.json();
-    if (body.type === 'workflow') return proxyWorkflow(body);
-    if (body.type === 'model')    return proxyModel(body);
+    if (typeof body?.base64 !== 'string' || body.base64.length === 0 || body.base64.length > MAX_BASE64_CHARS) {
+      return NextResponse.json({ error: 'base64 image missing or too large' }, { status: 413 });
+    }
+    if (body.type === 'workflow') {
+      if (!SAFE_ID.test(String(body.workspaceSlug)) || !SAFE_ID.test(String(body.workflowId))) {
+        return NextResponse.json({ error: 'Invalid workflow id' }, { status: 400 });
+      }
+      if (ALLOWED_WORKSPACES.length && !ALLOWED_WORKSPACES.includes(body.workspaceSlug)) {
+        return NextResponse.json({ error: 'Workspace not allowed' }, { status: 403 });
+      }
+      return proxyWorkflow(body);
+    }
+    if (body.type === 'model') {
+      if (!SAFE_ID.test(String(body.id)) || !['serverless', 'detect', 'segment', 'classify'].includes(body.baseUrl)) {
+        return NextResponse.json({ error: 'Invalid model id' }, { status: 400 });
+      }
+      if (ALLOWED_MODELS.length && !ALLOWED_MODELS.includes(body.id)) {
+        return NextResponse.json({ error: 'Model not allowed' }, { status: 403 });
+      }
+      return proxyModel(body);
+    }
     return NextResponse.json({ error: 'Unknown proxy type' }, { status: 400 });
   } catch (err: any) {
     console.error('[roboflow-proxy] Error:', err.message);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    return NextResponse.json({ error: 'Proxy request failed' }, { status: 500 });
   }
 }
 
@@ -41,14 +72,14 @@ async function proxyWorkflow(body: {
 
   // ── Attempt 1: data URI ────────────────────────────────────────────────
   const dataUri = `data:image/jpeg;base64,${body.base64}`;
-  console.log(`[roboflow-proxy] workflow attempt 1: data URI`);
+  DEBUG && console.log(`[roboflow-proxy] workflow attempt 1: data URI`);
 
   const attempt1 = await fetchWorkflow(workflowUrl, dataUri, body.classes);
   if (attempt1.ok) {
     const data = await attempt1.json();
-    console.log('[roboflow-proxy] ✅ workflow succeeded with data URI');
-    console.log('[roboflow-proxy] workflow output[0] keys:', Object.keys(data?.outputs?.[0] ?? {}));
-    console.log('[roboflow-proxy] workflow output[0].predictions:', JSON.stringify(data?.outputs?.[0]?.predictions ?? null, null, 2));
+    DEBUG && console.log('[roboflow-proxy] ✅ workflow succeeded with data URI');
+    DEBUG && console.log('[roboflow-proxy] workflow output[0] keys:', Object.keys(data?.outputs?.[0] ?? {}));
+    DEBUG && console.log('[roboflow-proxy] workflow output[0].predictions:', JSON.stringify(data?.outputs?.[0]?.predictions ?? null, null, 2));
     return NextResponse.json(data);
   }
 
@@ -67,9 +98,9 @@ async function proxyWorkflow(body: {
 
   let imageUrl: string;
   try {
-    console.log(`[roboflow-proxy] workflow attempt 2: uploading to imgbb…`);
+    DEBUG && console.log(`[roboflow-proxy] workflow attempt 2: uploading to imgbb…`);
     imageUrl = await uploadToImgbb(body.base64, IMGBB_KEY);
-    console.log(`[roboflow-proxy] imgbb URL → ${imageUrl}`);
+    DEBUG && console.log(`[roboflow-proxy] imgbb URL → ${imageUrl}`);
   } catch (uploadErr: any) {
     console.error('[roboflow-proxy] imgbb upload failed:', uploadErr.message);
     return NextResponse.json({ error: `imgbb upload failed: ${uploadErr.message}` }, { status: 500 });
@@ -83,9 +114,9 @@ async function proxyWorkflow(body: {
     return NextResponse.json(data2, { status: attempt2.status });
   }
 
-  console.log('[roboflow-proxy] ✅ workflow succeeded with imgbb URL');
-  console.log('[roboflow-proxy] workflow output[0] keys:', Object.keys(data2?.outputs?.[0] ?? {}));
-  console.log('[roboflow-proxy] workflow output[0].predictions:', JSON.stringify(data2?.outputs?.[0]?.predictions ?? null, null, 2));
+  DEBUG && console.log('[roboflow-proxy] ✅ workflow succeeded with imgbb URL');
+  DEBUG && console.log('[roboflow-proxy] workflow output[0] keys:', Object.keys(data2?.outputs?.[0] ?? {}));
+  DEBUG && console.log('[roboflow-proxy] workflow output[0].predictions:', JSON.stringify(data2?.outputs?.[0]?.predictions ?? null, null, 2));
   return NextResponse.json(data2);
 }
 
@@ -155,7 +186,7 @@ async function proxyModel(body: {
       + `&max_detections=500`
       + `&class_agnostic_nms=true`;
 
-  console.log(`[roboflow-proxy] model ${body.id} confidence=${confidenceParam}% overlap=${overlapParam}%`);
+  DEBUG && console.log(`[roboflow-proxy] model ${body.id} confidence=${confidenceParam}% overlap=${overlapParam}%`);
 
   const res = await fetch(url, {
     method:  'POST',

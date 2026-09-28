@@ -29,10 +29,6 @@ import type { TakeoffRow }    from '@/types';
 
 import {
   buildNormalisedWallMask,
-  traceBoundary,
-  rdpSimplify,
-  buildAdaptivePath,
-  maskToSvgPath,
 } from '@/hooks/fill/fillMaskAndSvgPath';
 
 import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';

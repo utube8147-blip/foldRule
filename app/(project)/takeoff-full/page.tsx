@@ -12,12 +12,13 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { exportProjectToExcel } from '@/lib/export/clientExport';
+import { useProjectHref } from '@/lib/nav/projectHref';
 import { useRouter } from 'next/navigation';
-import { useTakeoffContext } from '@/context/TakeoffContext';
+import { useTakeoffData } from '@/context/TakeoffContext';
 import {
   FolderOpen, Layers, Target, Wrench, History,
-  Users, HelpCircle, Settings, Share2, Download,
-  RefreshCw, AlertTriangle, TriangleAlert, Eye, EyeOff,
+  Users, HelpCircle, Settings, Share2, Download, TriangleAlert, Eye, EyeOff,
   Trash2, Plus, Search, ChevronDown, ChevronRight,
   Package, FolderOpenDot, Pencil, ArrowLeft,
   BarChart3, Zap,
@@ -157,6 +158,8 @@ function SideNavItem({
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function TakeoffFullPage() {
   const router = useRouter();
+  const href = useProjectHref();
+  const [exporting, setExporting] = useState(false);
 
   const {
     projectState: ps,
@@ -164,7 +167,7 @@ export default function TakeoffFullPage() {
     updateMeasurement,
     deleteMeasurement,
     toggleVisibility,
-  } = useTakeoffContext();
+  } = useTakeoffData();
 
   const [search, setSearch] = useState('');
   const [activeNav, setActiveNav] = useState('Files');
@@ -332,7 +335,7 @@ export default function TakeoffFullPage() {
 
         <div className="flex items-center gap-3">
           <button
-            onClick={() => router.back()}
+            onClick={() => router.push(href('/workspace'))}
             className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 hover:text-zinc-300 border border-zinc-700 px-3 py-1.5 transition-all"
           >
             <ArrowLeft className="w-3 h-3" />
@@ -344,22 +347,15 @@ export default function TakeoffFullPage() {
           </button>
           <button
             onClick={() => {
-              fetch('/api/export', { method: 'POST' })
-                .then(res => res.blob())
-                .then(blob => {
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = 'export.xlsx';
-                  a.click();
-                  URL.revokeObjectURL(url);
-                })
-                .catch(err => console.error('Export failed:', err));
+              setExporting(true);
+              exportProjectToExcel(ps)
+                .catch(err => window.alert(`Export failed: ${err instanceof Error ? err.message : err}`))
+                .finally(() => setExporting(false));
             }}
             className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-950 bg-amber-500 hover:bg-amber-400 px-4 py-1.5 transition-all active:scale-95"
           >
             <Download className="w-3 h-3" />
-            Export BOQ
+            {exporting ? 'Exporting…' : 'Export BOQ'}
           </button>
           <div className="flex gap-1 ml-1 border-l border-zinc-800 pl-3">
             <button className="w-8 h-8 flex items-center justify-center text-zinc-500 hover:text-zinc-300 transition-colors">

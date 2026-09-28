@@ -141,8 +141,11 @@ export function useMeasurements({
   // ── FIX 5: Extract close-snap refs from canvas ─────────────────────────────
   // useDrawingCanvas must expose these two refs. If it doesn't yet, we provide
   // stable fallback refs so useMeasurementCommit never receives undefined.
-  const nearStartPointRef  = (canvas as any).nearStartPointRef  as React.RefObject<boolean>           ?? useRef(false);
-  const startPointSnapRef  = (canvas as any).startPointSnapRef  as React.RefObject<{ x: number; y: number } | null> ?? useRef(null);
+  // Hooks must run unconditionally — create the fallbacks every render.
+  const fallbackNearStartRef = useRef(false);
+  const fallbackStartSnapRef = useRef<{ x: number; y: number } | null>(null);
+  const nearStartPointRef  = (canvas.nearStartPointRef  ?? fallbackNearStartRef) as React.RefObject<boolean>;
+  const startPointSnapRef  = (canvas.startPointSnapRef  ?? fallbackStartSnapRef) as React.RefObject<{ x: number; y: number } | null>;
 
   const commit = useMeasurementCommit({
     pdfDimensionsRef,

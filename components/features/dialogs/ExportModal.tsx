@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { X, Pencil, Table, Download } from 'lucide-react';
-import { motion } from 'motion/react';
+import * as motion from 'motion/react-m';
 
 interface ExportModalProps {
   projectState: any;

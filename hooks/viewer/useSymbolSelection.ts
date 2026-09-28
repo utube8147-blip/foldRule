@@ -5,7 +5,7 @@
 // Exposes selectedAreas so ViewerCanvas can highlight them.
 
 import { useState, useCallback, useMemo } from 'react';
-import type { SvgArea } from '@/hooks/snapEngine/useSnapEngine';
+import type { SvgArea } from '@/types/snapTypes';
 import type { SymbolCluster } from '@/lib/shapes/symbolClusterer';
 import { getAreaCluster } from '@/lib/shapes/symbolClusterer';
 

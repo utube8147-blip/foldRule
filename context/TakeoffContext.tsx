@@ -33,9 +33,14 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import React, {
-  createContext, useCallback, useContext, useRef, useState,
+  createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
 import { TakeoffRow, Drawing } from '@/types';
+import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/scale';
+import {
+  getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
+  saveProjectState, requestPersistentStorage, newId,
+} from '@/lib/storage/projectDb';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
@@ -115,7 +120,13 @@ type UndoEntry = {
   measurementsAfter:  TakeoffRow[];
   tempPointsAfter:    InProgressPoint[];
   undoneMeasurement?: TakeoffRow;
+  /** Only set for entries that also change drawings (e.g. scale calibration). */
+  drawingsBefore?:    Drawing[];
+  drawingsAfter?:     Drawing[];
 };
+
+export type LoadStatus = 'idle' | 'loading' | 'ready' | 'not-found' | 'error';
+export type SaveStatus = 'saved' | 'saving' | 'unsaved' | 'error';
 
 const MAX_HISTORY = 100;
 
@@ -130,8 +141,21 @@ interface TakeoffContextValue {
   setSelectedId:       (id: string | null) => void;
 
   addDrawing:          (name: string, fileUrl: string, file?: File) => void;
+  removeDrawing:       (id: string) => void;
   setActiveDrawingId:  (id: string) => void;
-  updateDrawingScale:  (id: string, factor: number) => void;
+  /** Calibrate one page of a drawing. Rescales that page's existing measurements. */
+  updateDrawingScale:  (id: string, factor: number, page?: number) => void;
+
+  /** Page currently shown in the viewer (1-based). */
+  activePage:          number;
+  setActivePage:       (page: number) => void;
+
+  // ── Persistence ───────────────────────────────────────────────────────────
+  projectId:   string | null;
+  loadStatus:  LoadStatus;
+  loadError:   string | null;
+  /** Save status lives in a separate context — see useSaveStatus(). */
+  saveNow:     () => Promise<void>;
 
   addMeasurement:      (m: TakeoffRow) => void;
   updateMeasurement:   (id: string, updates: Partial<TakeoffRow>) => void;
@@ -203,10 +227,35 @@ const defaultProject = (): ProjectState => ({
 });
 
 // ─── Context ──────────────────────────────────────────────────────────────────
-const TakeoffContext = createContext<TakeoffContextValue | null>(null);
+/** Everything except the fast-changing drawing-interaction values. */
+export type TakeoffDataValue = Omit<TakeoffContextValue, 'tempPoints' | 'pendingMeasurement'>;
+interface InteractionValue { tempPoints: InProgressPoint[]; pendingMeasurement: PendingMeasurement | null; }
 
-export function TakeoffProvider({ children }: { children: React.ReactNode }) {
+const TakeoffContext     = createContext<TakeoffDataValue | null>(null);
+// In-progress points change on every click while drawing; only the Viewer
+// needs them, so they are published separately.
+const InteractionContext = createContext<InteractionValue>({ tempPoints: [], pendingMeasurement: null });
+
+// Save status changes several times per edit (unsaved → saving → saved). It has
+// its own context so only the save indicator re-renders, not the workspace.
+interface SaveStatusValue { saveStatus: SaveStatus; lastSavedAt: number | null; }
+const SaveStatusContext = createContext<SaveStatusValue>({ saveStatus: 'saved', lastSavedAt: null });
+export function useSaveStatus(): SaveStatusValue { return useContext(SaveStatusContext); }
+
+export function TakeoffProvider({
+  children,
+  projectId = null,
+}: {
+  children: React.ReactNode;
+  /** Local project to load/autosave. null = in-memory only (e.g. lab pages). */
+  projectId?: string | null;
+}) {
   const [projectState, setProjectState] = useState<ProjectState>(defaultProject);
+  const [activePage,   setActivePage]   = useState<number>(1);
+  const [loadStatus,   setLoadStatus]   = useState<LoadStatus>(projectId ? 'loading' : 'idle');
+  const [loadError,    setLoadError]    = useState<string | null>(null);
+  const [saveStatus,   setSaveStatus]   = useState<SaveStatus>('saved');
+  const [lastSavedAt,  setLastSavedAt]  = useState<number | null>(null);
   const [activeTool,   setActiveTool]   = useState<string>('select');
   const [selectedId,   setSelectedId]   = useState<string | null>(null);
 
@@ -216,8 +265,22 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   // ── Display unit state ────────────────────────────────────────────────────
   const [displayUnit, setDisplayUnit] = useState<DisplayUnit>('m');
 
-  const [undoPast,   setUndoPast]   = useState<UndoEntry[]>([]);
-  const [undoFuture, setUndoFuture] = useState<UndoEntry[]>([]);
+  // Undo history lives in refs and is mutated only from event handlers — never
+  // inside React state updaters (which React may run twice). `historyVersion`
+  // just triggers re-render so canUndo/canRedo stay current.
+  const undoPastRef   = useRef<UndoEntry[]>([]);
+  const undoFutureRef = useRef<UndoEntry[]>([]);
+  const [historyLen, setHistoryLen] = useState({ past: 0, future: 0 });
+  const bumpHistory = useCallback(() => setHistoryLen({
+    past:   undoPastRef.current.length,
+    future: undoFutureRef.current.length,
+  }), []);
+  const drawingsRef = useRef<Drawing[]>([]);
+  const activePageRef = useRef(1);
+  useLayoutEffect(() => { activePageRef.current = activePage; }, [activePage]);
+  /** Every measurement is tied to the page it was drawn on. */
+  const stampPage = useCallback((m: TakeoffRow): TakeoffRow =>
+    (m.pageNumber != null ? m : { ...m, pageNumber: activePageRef.current }), []);
 
   const measurementsRef = useRef<TakeoffRow[]>([]);
   const tempPointsRef   = useRef<InProgressPoint[]>([]);
@@ -226,6 +289,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     setProjectState(prev => {
       const next = typeof updater === 'function' ? (updater as (p: ProjectState) => ProjectState)(prev) : updater;
       measurementsRef.current = next.measurements;
+      drawingsRef.current     = next.drawings;
       return next;
     });
   }, []);
@@ -239,18 +303,27 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const pushEntry = useCallback((entry: UndoEntry) => {
-    setUndoPast(p => [...p.slice(-MAX_HISTORY), entry]);
-    setUndoFuture([]);
-  }, []);
+    undoPastRef.current   = [...undoPastRef.current.slice(-(MAX_HISTORY - 1)), entry];
+    undoFutureRef.current = [];
+    bumpHistory();
+  }, [bumpHistory]);
+
+  const resetHistory = useCallback(() => {
+    undoPastRef.current   = [];
+    undoFutureRef.current = [];
+    bumpHistory();
+  }, [bumpHistory]);
 
   const applySnapshot = useCallback((
     measurements: TakeoffRow[],
     tempPts:      InProgressPoint[],
+    drawings?:    Drawing[],
   ) => {
-    syncedSetProjectState(prev => {
-      measurementsRef.current = measurements;
-      return { ...prev, measurements };
-    });
+    measurementsRef.current = measurements;
+    if (drawings) drawingsRef.current = drawings;
+    syncedSetProjectState(prev => (
+      drawings ? { ...prev, measurements, drawings } : { ...prev, measurements }
+    ));
     syncedSetTempPoints(() => {
       tempPointsRef.current = tempPts;
       return tempPts;
@@ -311,64 +384,55 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   }, [syncedSetProjectState]);
 
   // ── Undo / Redo ────────────────────────────────────────────────────────────
+  const recalcAllParents = useCallback((list: TakeoffRow[]): TakeoffRow[] => {
+    const parentIds = new Set<string>();
+    for (const m of list) if (m.parentId) parentIds.add(m.parentId);
+    let out = list;
+    for (const pid of parentIds) out = recalculateParentTotal(pid, out);
+    return out;
+  }, [recalculateParentTotal]);
+
   const undo = useCallback(() => {
-    setUndoPast(past => {
-      if (past.length === 0) return past;
-      const entry = past[past.length - 1];
-      const rest  = past.slice(0, -1);
+    const past = undoPastRef.current;
+    if (past.length === 0) return;
+    const entry = past[past.length - 1];
+    undoPastRef.current   = past.slice(0, -1);
+    undoFutureRef.current = [entry, ...undoFutureRef.current];
 
-      let measurements = [...entry.measurementsBefore];
-      const tempPts = [...entry.tempPointsBefore];
+    applySnapshot(
+      recalcAllParents([...entry.measurementsBefore]),
+      [...entry.tempPointsBefore],
+      entry.drawingsBefore,
+    );
 
-      const parentIdsNeedingRecalc = new Set<string>();
-      for (const m of measurements) {
-        if (m.parentId) parentIdsNeedingRecalc.add(m.parentId);
-      }
-      for (const parentId of parentIdsNeedingRecalc) {
-        measurements = recalculateParentTotal(parentId, measurements);
-      }
-
-      applySnapshot(measurements, tempPts);
-
-      if (entry.undoneMeasurement && entry.tempPointsBefore.length > 0) {
-        setPendingMeasurement({
-          id:          entry.undoneMeasurement.id,
-          type:        entry.undoneMeasurement.type,
-          color:       entry.undoneMeasurement.color,
-          description: entry.undoneMeasurement.description,
-        });
-      } else {
-        setPendingMeasurement(null);
-      }
-
-      setUndoFuture(f => [entry, ...f]);
-      return rest;
-    });
-  }, [applySnapshot, recalculateParentTotal]);
+    if (entry.undoneMeasurement && entry.tempPointsBefore.length > 0) {
+      setPendingMeasurement({
+        id:          entry.undoneMeasurement.id,
+        type:        entry.undoneMeasurement.type,
+        color:       entry.undoneMeasurement.color,
+        description: entry.undoneMeasurement.description,
+      });
+    } else {
+      setPendingMeasurement(null);
+    }
+    bumpHistory();
+  }, [applySnapshot, recalcAllParents, bumpHistory]);
 
   const redo = useCallback(() => {
-    setUndoFuture(future => {
-      if (future.length === 0) return future;
-      const entry = future[0];
-      const rest  = future.slice(1);
+    const future = undoFutureRef.current;
+    if (future.length === 0) return;
+    const entry = future[0];
+    undoFutureRef.current = future.slice(1);
+    undoPastRef.current   = [...undoPastRef.current, entry];
 
-      let measurements = [...entry.measurementsAfter];
-      const tempPts = [...entry.tempPointsAfter];
-
-      const parentIdsNeedingRecalc = new Set<string>();
-      for (const m of measurements) {
-        if (m.parentId) parentIdsNeedingRecalc.add(m.parentId);
-      }
-      for (const parentId of parentIdsNeedingRecalc) {
-        measurements = recalculateParentTotal(parentId, measurements);
-      }
-
-      applySnapshot(measurements, tempPts);
-      setPendingMeasurement(null);
-      setUndoPast(p => [...p, entry]);
-      return rest;
-    });
-  }, [applySnapshot, recalculateParentTotal]);
+    applySnapshot(
+      recalcAllParents([...entry.measurementsAfter]),
+      [...entry.tempPointsAfter],
+      entry.drawingsAfter,
+    );
+    setPendingMeasurement(null);
+    bumpHistory();
+  }, [applySnapshot, recalcAllParents, bumpHistory]);
 
   // ── pushPoint ──────────────────────────────────────────────────────────────
   const pushPoint = useCallback((point: InProgressPoint) => {
@@ -405,6 +469,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
 
   // ── commitMeasurement ──────────────────────────────────────────────────────
   const commitMeasurement = useCallback((m: TakeoffRow) => {
+    m = stampPage(m);
     const mBefore = measurementsRef.current;
     let mAfter = [...mBefore, m];
 
@@ -432,6 +497,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   // ── batchCommitMeasurements ────────────────────────────────────────────────
   const batchCommitMeasurements = useCallback((measurements: TakeoffRow[]) => {
     if (measurements.length === 0) return;
+    measurements = measurements.map(stampPage);
 
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
@@ -468,6 +534,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
 
   // ── addMeasurement ─────────────────────────────────────────────────────────
   const addMeasurement = useCallback((m: TakeoffRow) => {
+    m = stampPage(m);
     const mBefore = measurementsRef.current;
     const tBefore = tempPointsRef.current;
     let mAfter  = [...mBefore, m];
@@ -601,7 +668,7 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
       childIds:      measurementIds,
     };
 
-    let mAfter = mBefore.map(m =>
+    const mAfter = mBefore.map(m =>
       measurementIds.includes(m.id)
         ? { ...m, groupId, parentId: groupId }
         : m
@@ -686,32 +753,196 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
   }, [syncedSetProjectState]);
 
   // ── Drawing helpers ────────────────────────────────────────────────────────
+  const projectIdRef = useRef<string | null>(projectId);
+  useEffect(() => { projectIdRef.current = projectId; }, [projectId]);
+
   const addDrawing = useCallback((name: string, fileUrl: string, file?: File) => {
-    const id: string = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = newId();
     syncedSetProjectState(prev => ({
       ...prev,
-      drawings: [...prev.drawings, { id, name, fileUrl, file, scaleFactor: 1, pageCount: 1 }],
+      drawings: [...prev.drawings, { id, name, fileUrl, file, scaleFactor: 1, pageScales: {}, pageCount: 1 }],
       activeDrawingId: id,
     }));
+    setActivePage(1);
+    const pid = projectIdRef.current;
+    if (pid && file) {
+      saveDrawingFile(pid, id, file).catch(err => {
+        console.error('[storage] failed to store drawing file', err);
+        setSaveStatus('error');
+      });
+    }
   }, [syncedSetProjectState]);
+
+  const removeDrawing = useCallback((id: string) => {
+    const target = drawingsRef.current.find(d => d.id === id);
+    const mAfter = measurementsRef.current.filter(m => m.drawingId !== id);
+    measurementsRef.current = mAfter;
+    syncedSetProjectState(prev => {
+      const drawings = prev.drawings.filter(d => d.id !== id);
+      return {
+        ...prev,
+        drawings,
+        measurements: mAfter,
+        activeDrawingId: prev.activeDrawingId === id ? (drawings[0]?.id ?? null) : prev.activeDrawingId,
+      };
+    });
+    syncedSetTempPoints(() => { tempPointsRef.current = []; return []; });
+    // Removing a drawing deletes its file; it can't be undone, so drop history.
+    resetHistory();
+    if (target?.fileUrl?.startsWith('blob:')) URL.revokeObjectURL(target.fileUrl);
+    const pid = projectIdRef.current;
+    if (pid) deleteDrawingFile(pid, id).catch(err => console.error('[storage] delete file failed', err));
+  }, [syncedSetProjectState, syncedSetTempPoints, resetHistory]);
 
   const setActiveDrawingId = useCallback((id: string) => {
     syncedSetProjectState(prev => ({ ...prev, activeDrawingId: id }));
+    setActivePage(1);
     syncedSetTempPoints(() => {
       tempPointsRef.current = [];
       return [];
     });
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
-  const updateDrawingScale = useCallback((id: string, factor: number) => {
-    syncedSetProjectState(prev => ({
-      ...prev,
-      drawings: prev.drawings.map(d => d.id === id ? { ...d, scaleFactor: factor } : d),
-    }));
-  }, [syncedSetProjectState]);
+  const updateDrawingScale = useCallback((id: string, factor: number, page: number = 1) => {
+    if (!(factor > 0) || !Number.isFinite(factor)) return;
+    const dBefore = drawingsRef.current;
+    const drawing = dBefore.find(d => d.id === id);
+    if (!drawing) return;
+
+    const oldScale = effectivePageScale(drawing, page);
+    const dAfter   = dBefore.map(d => d.id === id
+      ? { ...d, pageScales: { ...(d.pageScales ?? {}), [page]: factor } }
+      : d);
+
+    const mBefore = measurementsRef.current;
+    const mAfter  = recalcAllParents(
+      rescaleMeasurementsForPage(mBefore, id, page, oldScale, factor),
+    );
+
+    measurementsRef.current = mAfter;
+    drawingsRef.current     = dAfter;
+    syncedSetProjectState(prev => ({ ...prev, drawings: dAfter, measurements: mAfter }));
+
+    pushEntry({
+      measurementsBefore: mBefore,
+      tempPointsBefore:   tempPointsRef.current,
+      measurementsAfter:  mAfter,
+      tempPointsAfter:    tempPointsRef.current,
+      drawingsBefore:     dBefore,
+      drawingsAfter:      dAfter,
+    });
+  }, [syncedSetProjectState, pushEntry, recalcAllParents]);
+
+  // ── Load project from local storage ────────────────────────────────────────
+  const hydratedRef = useRef(false);
+  const objectUrlsRef = useRef<string[]>([]);
+
+  useEffect(() => {
+    hydratedRef.current = false;
+    if (!projectId) { setLoadStatus('idle'); return; }
+
+    let cancelled = false;
+    setLoadStatus('loading');
+    setLoadError(null);
+
+    (async () => {
+      try {
+        const rec = await getProject(projectId);
+        if (cancelled) return;
+        if (!rec) { setLoadStatus('not-found'); return; }
+
+        const files = await loadDrawingFiles(projectId);
+        if (cancelled) return;
+
+        const urls: string[] = [];
+        const drawings: Drawing[] = rec.state.drawings.map(d => {
+          const file = files.get(d.id);
+          const fileUrl = file ? URL.createObjectURL(file) : '';
+          if (fileUrl) urls.push(fileUrl);
+          return { ...d, file, fileUrl, pageScales: d.pageScales ?? {} };
+        });
+        objectUrlsRef.current = urls;
+
+        const next: ProjectState = {
+          ...defaultProject(),
+          ...rec.state,
+          drawings,
+          activeDrawingId: rec.state.activeDrawingId && drawings.some(d => d.id === rec.state.activeDrawingId)
+            ? rec.state.activeDrawingId
+            : (drawings[0]?.id ?? null),
+        };
+        measurementsRef.current = next.measurements;
+        drawingsRef.current     = next.drawings;
+        tempPointsRef.current   = [];
+        setProjectState(next);
+        setTempPoints([]);
+        setActivePage(1);
+        resetHistory();
+        setSaveStatus('saved');
+        setLastSavedAt(rec.updatedAt);
+        setLoadStatus('ready');
+        // Enable autosave only after the loaded state has been committed.
+        setTimeout(() => { if (!cancelled) hydratedRef.current = true; }, 0);
+        requestPersistentStorage();
+      } catch (err) {
+        if (cancelled) return;
+        console.error('[storage] failed to load project', err);
+        setLoadError(err instanceof Error ? err.message : String(err));
+        setLoadStatus('error');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      for (const u of objectUrlsRef.current) URL.revokeObjectURL(u);
+      objectUrlsRef.current = [];
+    };
+  }, [projectId, resetHistory]);
+
+  // ── Autosave (debounced) ───────────────────────────────────────────────────
+  const latestStateRef = useRef(projectState);
+  useLayoutEffect(() => { latestStateRef.current = projectState; }, [projectState]);
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saveNow = useCallback(async () => {
+    const pid = projectIdRef.current;
+    if (!pid || !hydratedRef.current) return;
+    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
+    setSaveStatus('saving');
+    try {
+      const at = await saveProjectState(pid, latestStateRef.current);
+      setLastSavedAt(at);
+      setSaveStatus('saved');
+    } catch (err) {
+      console.error('[storage] autosave failed', err);
+      setSaveStatus('error');
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!projectId || !hydratedRef.current) return;
+    setSaveStatus('unsaved');
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    saveTimerRef.current = setTimeout(() => { void saveNow(); }, 700);
+  }, [projectState, projectId, saveNow]);
+
+  // Flush pending changes when the tab is hidden or closed.
+  useEffect(() => {
+    const flush = () => { if (saveTimerRef.current) void saveNow(); };
+    const onVis = () => { if (document.visibilityState === 'hidden') flush(); };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', flush);
+    return () => {
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', flush);
+    };
+  }, [saveNow]);
 
   // ── Context value ──────────────────────────────────────────────────────────
-  const value: TakeoffContextValue = {
+  const canUndo = historyLen.past   > 0;
+  const canRedo = historyLen.future > 0;
+
+  const value = useMemo<TakeoffDataValue>(() => ({
     projectState,
     setProjectState: syncedSetProjectState,
     activeTool,
@@ -719,6 +950,13 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     selectedId,
     setSelectedId,
     addDrawing,
+    removeDrawing,
+    activePage,
+    setActivePage,
+    projectId,
+    loadStatus,
+    loadError,
+    saveNow,
     setActiveDrawingId,
     updateDrawingScale,
     addMeasurement,
@@ -730,8 +968,6 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     deleteGroup,
     ungroupMeasurements,
     toggleGroupExpanded,
-    tempPoints,
-    pendingMeasurement,
     setPendingMeasurement,
     pushPoint,
     commitMeasurement,
@@ -740,24 +976,54 @@ export function TakeoffProvider({ children }: { children: React.ReactNode }) {
     retagTempPoints,
     undo,
     redo,
-    canUndo:  undoPast.length   > 0,
-    canRedo:  undoFuture.length > 0,
+    canUndo,
+    canRedo,
     updateProjectMeta,
     getEffectiveQuantity,
     getEffectiveUnit,
     displayUnit,
     setDisplayUnit,
-  };
+  }), [
+    projectState, syncedSetProjectState, activeTool, selectedId, addDrawing, removeDrawing,
+    activePage, projectId, loadStatus, loadError, saveNow,
+    setActiveDrawingId, updateDrawingScale, addMeasurement, updateMeasurement, deleteMeasurement,
+    clearAll, toggleVisibility, createGroup, deleteGroup, ungroupMeasurements, toggleGroupExpanded,
+    pushPoint, commitMeasurement, batchCommitMeasurements,
+    clearTempPoints, retagTempPoints, undo, redo, canUndo, canRedo, updateProjectMeta,
+    getEffectiveQuantity, getEffectiveUnit, displayUnit,
+  ]);
+
+  const interactionValue = useMemo<InteractionValue>(
+    () => ({ tempPoints, pendingMeasurement }),
+    [tempPoints, pendingMeasurement],
+  );
+  const saveStatusValue = useMemo(() => ({ saveStatus, lastSavedAt }), [saveStatus, lastSavedAt]);
 
   return (
     <TakeoffContext.Provider value={value}>
-      {children}
+      <InteractionContext.Provider value={interactionValue}>
+        <SaveStatusContext.Provider value={saveStatusValue}>
+          {children}
+        </SaveStatusContext.Provider>
+      </InteractionContext.Provider>
     </TakeoffContext.Provider>
   );
 }
 
-export function useTakeoffContext() {
+/**
+ * Full context including in-progress drawing points. Re-renders on every
+ * drawing click — use in the Viewer. Elsewhere prefer useTakeoffData().
+ */
+export function useTakeoffContext(): TakeoffContextValue {
   const ctx = useContext(TakeoffContext);
   if (!ctx) throw new Error('useTakeoffContext must be used inside TakeoffProvider');
+  const interaction = useContext(InteractionContext);
+  return useMemo(() => ({ ...ctx, ...interaction }), [ctx, interaction]);
+}
+
+/** Project data + actions, without the per-click drawing state. */
+export function useTakeoffData(): TakeoffDataValue {
+  const ctx = useContext(TakeoffContext);
+  if (!ctx) throw new Error('useTakeoffData must be used inside TakeoffProvider');
   return ctx;
 }

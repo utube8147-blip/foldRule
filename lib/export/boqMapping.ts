@@ -8,7 +8,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { ProjectState } from '@/context/TakeoffContext';
-import { TakeoffRow }   from '@/types';
 
 // ─── BOQ output types ─────────────────────────────────────────────────────────
 
@@ -118,7 +117,7 @@ function sectionLetter(i: number): string {
 
 // ─── Main mapping function ────────────────────────────────────────────────────
 
-export function contextToBOQData(ps: ProjectState): BOQData {
+export function contextToBOQData(ps: Pick<ProjectState, 'projectName' | 'measurements' | 'materials'> & Partial<ProjectState>): BOQData {
 
   // ── 1. Material columns from library ───────────────────────────────────────
   //       MaterialLibrary stores: id, name, unit, materialCost, laborCost, equipmentCost
@@ -161,11 +160,15 @@ export function contextToBOQData(ps: ProjectState): BOQData {
     m => m.isGroupHeader && !fixtureIds.has(m.id)
   );
 
+  // Anything not inside an existing group header is standalone — including
+  // children whose header was deleted (previously these were silently dropped).
+  const headerIds = new Set(groupHeaders.map(h => h.id));
+  const childOfHeader = new Set(groupHeaders.flatMap(h => h.childIds ?? []));
   const standaloneItems = ps.measurements.filter(
     m =>
       !m.isGroupHeader &&
-      !m.parentId &&
-      !m.groupId &&
+      !(m.parentId && headerIds.has(m.parentId)) &&
+      !childOfHeader.has(m.id) &&
       !(m as any).isFixture
   );
 
@@ -255,7 +258,7 @@ export function contextToBOQData(ps: ProjectState): BOQData {
         title:       ps.documentTitle,
         date:        ps.documentDate,
         revision:    ps.revision,
-        currency:    ps.currency    ?? 'USD',
+        currency:    ps.currency    || 'LKR',
         vat_percent: ps.vatPercent  ?? 0,
       },
       stakeholders: {

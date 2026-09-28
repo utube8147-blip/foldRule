@@ -33,19 +33,16 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 import {
   ZoomIn, ZoomOut, Maximize,
   Undo2, Redo2, Target,
-  ChevronDown, Circle, Grid3x3, Ruler,
-  Box, Spline, ScanSearch, Workflow,
-  TriangleRight, Type, Crosshair,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
-import { VIEWER_TOOLS, ADVANCED_CANVAS_TOOLS } from './ViewerConstants';
-import type { AdvancedToolMeta, ToolGroup } from './ViewerConstants';
-import { useTakeoffContext } from '@/context/TakeoffContext';
+import { VIEWER_TOOLS } from './ViewerConstants';
+import type { ToolGroup } from './ViewerConstants';
+import { useTakeoffData } from '@/context/TakeoffContext';
 import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
@@ -82,7 +79,7 @@ interface ViewerToolbarProps {
 
 // ─── Toolbar component ────────────────────────────────────────────────────────
 
-export function ViewerToolbar({
+function ViewerToolbarImpl({
   activeTool, setActiveTool,
   canUndo, canRedo, handleUndo, handleRedo, tempPointsCount,
   snapEnabled, setSnapEnabled,
@@ -96,7 +93,7 @@ export function ViewerToolbar({
   togglePolyarcMode,
 }: ViewerToolbarProps) {
   const isAnalyzing = analysisStatus === 'analyzing';
-  const { displayUnit, setDisplayUnit } = useTakeoffContext();
+  const { displayUnit, setDisplayUnit } = useTakeoffData();
 
   // Whether switching linear↔arc mid-draw would upgrade to polyarc
   const canUpgradeToPolyarc =
@@ -396,3 +393,6 @@ export function ViewerToolbar({
     </div>
   );
 }
+
+/** Memoized: skips re-rendering when its props are unchanged. */
+export const ViewerToolbar = React.memo(ViewerToolbarImpl);

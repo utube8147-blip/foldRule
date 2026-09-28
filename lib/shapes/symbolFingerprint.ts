@@ -4,7 +4,7 @@
 // All inputs use NORMALIZED [0,1] coords (nx, ny).
 // Output is a compact descriptor used by symbolClusterer.ts for grouping.
 
-import type { SvgArea } from '@/hooks/snapEngine/useSnapEngine';
+import type { SvgArea } from '@/types/snapTypes';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

@@ -14,13 +14,14 @@
   body {
     @apply bg-industrial-black text-white font-sans antialiased;
   }
-  
-  /* GPU-accelerated animations for better performance */
-  .transition-all,
-  .transition-transform,
-  .transition-colors,
-  .transition-opacity {
-    will-change: transform, opacity;
+
+  /* Respect users who ask for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 

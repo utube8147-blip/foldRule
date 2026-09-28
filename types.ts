@@ -35,6 +35,8 @@ export interface TakeoffRow {
   childIds: string[];
   id: string;
   drawingId: string;
+  /** 1-based PDF page this measurement was taken on. Undefined = page 1 (legacy rows). */
+  pageNumber?: number;
   description: string;
   type: MeasurementType;
   quantity: number;
@@ -77,9 +79,16 @@ export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point' | 'Polygon' 
 export interface Drawing {
   id: string;
   name: string;
+  /** Object URL for the PDF blob. Recreated on load; never persisted. */
   fileUrl: string;
   file?: File;
+  /**
+   * Legacy single scale for the whole drawing. Kept for backward compatibility;
+   * new code reads/writes `pageScales` via getPageScale / setPageScale.
+   */
   scaleFactor: number;
+  /** Calibrated real-world units per PDF point, keyed by 1-based page number. */
+  pageScales?: Record<number, number>;
   pageCount: number;
 }
 

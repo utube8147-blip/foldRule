@@ -43,7 +43,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useRef, useCallback } from 'react';
+import { useCallback } from 'react';
 import React from 'react';
 import { TakeoffRow } from '@/types';
 import { PdfDimensions, PendingSnapCandidate } from '@/types/viewerTypes';

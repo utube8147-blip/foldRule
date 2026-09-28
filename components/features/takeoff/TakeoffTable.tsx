@@ -1,5 +1,5 @@
 // components/TakeoffTable.tsx
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
 import { TakeoffRow, Material } from '@/types';
@@ -133,7 +133,7 @@ function useCopyToClipboard() {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function TakeoffTable({
+function TakeoffTableImpl({
   measurements,
   materials,
   onUpdate,
@@ -189,19 +189,23 @@ export function TakeoffTable({
     const groups: Map<string, { header: TakeoffRow; items: TakeoffRow[] }> = new Map();
     const ungrouped: TakeoffRow[] = [];
 
-    measurements.forEach((measurement) => {
-      if (measurement.isGroupHeader && measurement.groupId) {
-        groups.set(measurement.groupId, { header: measurement, items: [] });
-      } else if (measurement.groupId && groups.has(measurement.groupId)) {
-        groups.get(measurement.groupId)!.items.push(measurement);
-      } else if (measurement.isGroupHeader && measurement.childIds) {
-        groups.set(measurement.id, { header: measurement, items: [] });
-      } else if (measurement.parentId && groups.has(measurement.parentId)) {
-        groups.get(measurement.parentId)!.items.push(measurement);
-      } else if (!measurement.isGroupHeader && !measurement.groupId && !measurement.parentId) {
-        ungrouped.push(measurement);
-      }
-    });
+    // Pass 1: register every group header (order in the array doesn't matter).
+    for (const m of measurements) {
+      if (!m.isGroupHeader) continue;
+      if (m.groupId) groups.set(m.groupId, { header: m, items: [] });
+      else if (m.childIds) groups.set(m.id, { header: m, items: [] });
+    }
+    // Pass 2: attach children; anything whose group no longer exists is shown
+    // as ungrouped instead of silently disappearing from the table.
+    for (const m of measurements) {
+      if (m.isGroupHeader) continue;
+      const g =
+        (m.groupId  && groups.get(m.groupId)) ||
+        (m.parentId && groups.get(m.parentId)) ||
+        null;
+      if (g) g.items.push(m);
+      else ungrouped.push(m);
+    }
 
     return { groups, ungrouped };
   }, [measurements]);
@@ -219,8 +223,11 @@ export function TakeoffTable({
       ? items.reduce((sum, i) => sum + i.quantity, 0)
       : items.reduce((sum, i) => sum + i.quantity * i.unitRate, 0);
 
-  const totalCost = measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0);
-  const allVisible = measurements.every((m) => m.isVisible !== false);
+  const totalCost  = React.useMemo(
+    () => measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0),
+    [measurements],
+  );
+  const allVisible = React.useMemo(() => measurements.every((m) => m.isVisible !== false), [measurements]);
 
   const batchUpdateGroup = useCallback((groupId: string, items: TakeoffRow[], updates: Partial<TakeoffRow>) => {
     if (!batchUpdateMeasurements) {
@@ -767,3 +774,6 @@ export function TakeoffTable({
     </aside>
   );
 }
+
+/** Memoized: skips re-rendering when its props are unchanged. */
+export const TakeoffTable = React.memo(TakeoffTableImpl);

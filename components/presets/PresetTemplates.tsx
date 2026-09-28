@@ -1,7 +1,21 @@
 'use client';
 
 import React from 'react';
-import Preset3DVisualizer from './Preset3DVisualizer';
+import dynamic from 'next/dynamic';
+
+// three.js (~140 KB gzipped) is only needed when a preset form with a 3D
+// preview is open, so it loads on demand instead of with the workspace.
+const Preset3DVisualizer = dynamic(() => import('./Preset3DVisualizer'), {
+  ssr: false,
+  loading: () => (
+    <div
+      className="flex h-full min-h-[450px] w-full items-center justify-center text-xs text-zinc-500"
+      role="status"
+    >
+      Loading 3D preview…
+    </div>
+  ),
+});
 
 // ─── Shared Types ──────────────────────────────────────────────────────────────
 

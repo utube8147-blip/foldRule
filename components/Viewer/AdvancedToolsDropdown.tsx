@@ -28,8 +28,7 @@ import { cn } from '@/lib/utils';
 import { ToolType } from '@/types';
 import { ADVANCED_CANVAS_TOOLS } from './ViewerConstants';
 import type { AdvancedToolMeta } from './ViewerConstants';
-import { useTakeoffContext } from '@/context/TakeoffContext';
-import { UNIT_OPTIONS } from '@/hooks/measurements/useMeasurements/unitConversion';
+import { useTakeoffData } from '@/context/TakeoffContext';
 
 // ─── Icon map ──────────────────────────────────────────────────────────────────
 //
@@ -158,7 +157,7 @@ function PitchFactorRow() {
   const [run,  setRun]  = useState('12');
   const [feedback, setFeedback] = useState<'idle' | 'applied' | 'error'>('idle');
 
-  const { selectedId, projectState, updateMeasurement } = useTakeoffContext();
+  const { selectedId, projectState, updateMeasurement } = useTakeoffData();
 
   const riseNum = parseFloat(rise) || 0;
   const runNum  = parseFloat(run)  || 1;

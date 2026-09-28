@@ -620,7 +620,7 @@ export function traceMinimumFace(
   const nb = graph.nodes[e.b];
   const cross = (nb.x - na.x) * (py - na.y) - (nb.y - na.y) * (px - na.x);
 
-  let startNodeId: number, nextNodeId: number, startEdgeId: number, startAngle: number;
+  let startNodeId: number, nextNodeId: number, startAngle: number;
   if (cross >= 0) {
     startNodeId = e.a; nextNodeId = e.b;
     startAngle = edgeAngle(na.x, na.y, nb.x, nb.y);
@@ -628,7 +628,7 @@ export function traceMinimumFace(
     startNodeId = e.b; nextNodeId = e.a;
     startAngle = edgeAngle(nb.x, nb.y, na.x, na.y);
   }
-  startEdgeId = edgeId;
+  const startEdgeId = edgeId;
 
   const faceNodes: number[] = [startNodeId];
   let curNodeId = nextNodeId, curEdgeId = startEdgeId, curAngle = startAngle, steps = 0;

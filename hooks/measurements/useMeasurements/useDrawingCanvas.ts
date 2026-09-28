@@ -38,7 +38,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useRef, useEffect, useCallback, useState } from 'react';
+import { useRef, useEffect, useCallback } from 'react';
 import React from 'react';
 import { ToolType, TakeoffRow } from '@/types';
 import type { PdfDimensions } from '@/types/viewerTypes';
@@ -553,7 +553,25 @@ export function useDrawingCanvas({
   snapCandidates = [],
   arcDragPreview,
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
-  const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
+  // The cursor position is render-irrelevant (the canvas reads cursorPointRef),
+  // so it lives in a ref. Previously this was useState, which re-rendered the
+  // whole Viewer tree on every pointer move.
+  const cursorStateRef = useRef<{ x: number; y: number } | null>(null);
+  const setCursorPoint = useCallback<React.Dispatch<React.SetStateAction<{ x: number; y: number } | null>>>(
+    (v) => {
+      cursorStateRef.current = typeof v === 'function' ? v(cursorStateRef.current) : v;
+    },
+    [],
+  );
+  const cursorPoint = cursorStateRef.current;
+
+  // Committed measurements are cached in an offscreen layer and only re-drawn
+  // when the measurement list or canvas size changes; each frame just blits it.
+  const committedLayerRef = useRef<{
+    canvas: HTMLCanvasElement;
+    measurements: TakeoffRow[];
+    w: number; h: number; dw: number; dh: number;
+  } | null>(null);
 
   const lastCursorRef     = useRef<{ x: number; y: number } | null>(null);
   const snapCandidatesRef = useRef(snapCandidates);
@@ -571,6 +589,14 @@ export function useDrawingCanvas({
   useEffect(() => { arcDragPreviewRef.current = arcDragPreview ?? null; }, [arcDragPreview]);
 
   const snapThresholdRef = useRef(14);
+
+  const moveRafRef          = useRef<number | null>(null);
+  const pendingMovePointRef = useRef<{ x: number; y: number } | null>(null);
+  const redrawRef           = useRef<(p?: { x: number; y: number }) => void>(() => {});
+  const redrawPinRef        = useRef<() => void>(() => {});
+  useEffect(() => () => {
+    if (moveRafRef.current != null) cancelAnimationFrame(moveRafRef.current);
+  }, []);
 
   const toCanvas = useCallback(
     (nx: number, ny: number): { x: number; y: number } => {
@@ -595,12 +621,7 @@ export function useDrawingCanvas({
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      const cursor =
-        overrideCursor ??
-        cursorPointRef.current ??
-        lastCursorRef.current;
-
-      // ── Committed measurements ────────────────────────────────────────────
+      const drawCommitted = (ctx: CanvasRenderingContext2D) => {
       for (const m of measurements) {
         if (!m.isVisible || !m.points?.length) continue;
         const pts = m.points.map(p => toCanvas(p.x, p.y));
@@ -660,6 +681,40 @@ export function useDrawingCanvas({
         }
 
         ctx.restore();
+      }
+      };
+
+      const cursor =
+        overrideCursor ??
+        cursorPointRef.current ??
+        lastCursorRef.current;
+
+      // ── Committed measurements (cached layer) ─────────────────────────────
+      const MAX_LAYER_PIXELS = 16_000_000; // skip caching for enormous canvases
+      if (canvas.width * canvas.height <= MAX_LAYER_PIXELS) {
+        let layer = committedLayerRef.current;
+        const stale =
+          !layer ||
+          layer.measurements !== measurements ||
+          layer.w !== canvas.width || layer.h !== canvas.height ||
+          layer.dw !== dim.w || layer.dh !== dim.h;
+        if (stale) {
+          const off = layer?.canvas ?? document.createElement('canvas');
+          if (off.width !== canvas.width || off.height !== canvas.height) {
+            off.width = canvas.width; off.height = canvas.height;
+          }
+          const octx = off.getContext('2d');
+          if (octx) {
+            octx.clearRect(0, 0, off.width, off.height);
+            drawCommitted(octx);
+          }
+          layer = { canvas: off, measurements, w: canvas.width, h: canvas.height, dw: dim.w, dh: dim.h };
+          committedLayerRef.current = layer;
+        }
+        ctx.drawImage(layer!.canvas, 0, 0);
+      } else {
+        committedLayerRef.current = null;
+        drawCommitted(ctx);
       }
 
       const candidates = snapCandidatesRef.current;
@@ -1297,6 +1352,9 @@ export function useDrawingCanvas({
     ],
   );
 
+  useEffect(() => { redrawRef.current = redrawDrawingCanvas; }, [redrawDrawingCanvas]);
+  useEffect(() => { redrawPinRef.current = redrawPinCanvas; }, [redrawPinCanvas]);
+
   useEffect(() => {
     redrawDrawingCanvas(lastCursorRef.current ?? cursorPointRef.current ?? undefined);
   }, [snapCandidates, arcDragPreview, redrawDrawingCanvas, cursorPointRef]);
@@ -1322,16 +1380,22 @@ export function useDrawingCanvas({
         }
       }
 
+      // Refs update immediately (clicks read them); painting is batched to
+      // at most once per display frame.
       lastCursorRef.current  = snappedCanvas;
       cursorPointRef.current = snappedCanvas;
-      setCursorPoint(snappedCanvas);
-      redrawDrawingCanvas(snappedCanvas);
-      redrawPinCanvas();
+      cursorStateRef.current = snappedCanvas;
+      pendingMovePointRef.current = snappedCanvas;
+      if (moveRafRef.current == null) {
+        moveRafRef.current = requestAnimationFrame(() => {
+          moveRafRef.current = null;
+          const pt = pendingMovePointRef.current;
+          if (pt) redrawRef.current(pt);
+          redrawPinRef.current();
+        });
+      }
     },
-    [
-      drawingCanvasRef, pdfDimensionsRef, snapEnabledRef,
-      snapToCorner, cursorPointRef, redrawDrawingCanvas, redrawPinCanvas,
-    ],
+    [drawingCanvasRef, pdfDimensionsRef, snapEnabledRef, snapToCorner, cursorPointRef],
   );
 
   useEffect(() => {

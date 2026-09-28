@@ -1,4 +1,27 @@
-# v0 sandbox internal files
+# dependencies
+node_modules
+
+# next.js
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# env — never commit secrets. Copy .env.example → .env.local
+.env
+.env*.local
+
+# tests / tooling
+coverage/
+.vitest/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+
+# v0 sandbox
 __v0_runtime_loader.js
 __v0_devtools.tsx
 __v0_jsx-dev-runtime.ts
@@ -6,12 +29,7 @@ __v0_jsx-dev-runtime.ts
 .v0-trash/
 .vercel/
 
-# Environment variables
-.env*.local
-
-# Common ignores
-node_modules
-.next/
-.DS_Store
-
 Backend/CV/venv/
+
+
+key

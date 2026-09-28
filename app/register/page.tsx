@@ -3,7 +3,7 @@
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
-import { motion } from 'motion/react';
+import * as motion from 'motion/react-m';
 
 export default function Register() {
   const router = useRouter();

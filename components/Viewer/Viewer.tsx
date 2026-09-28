@@ -18,6 +18,7 @@ import React, {
 } from 'react';
 import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import pdfjsLib from '@/lib/pdf/pdfClient';
 import { ToolType, TakeoffRow } from '@/types';
 import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
@@ -68,20 +69,9 @@ import type {
   OpenOutputType,
   BatchCommitOptions,
 } from '@/hooks/perimeterOffset/usePerimeterOffset';
-import type { InProgressPoint } from '@/context/TakeoffContext';
 import type { OpenEndStyle } from '@/hooks/perimeterOffset/perimeterOffsetGeometry';
 
 export type { ViewerProps, ViewerToolbarAPI } from './ViewerConstants';
-
-// ── PDF.js version helper ─────────────────────────────────────────────────────
-function getPdfLibVersion(): string {
-  try {
-    const lib = require('pdfjs-dist/legacy/build/pdf') as { version?: string };
-    return lib.version ?? '?';
-  } catch {
-    return '?';
-  }
-}
 
 interface PendingMeasurementData {
   id: string;
@@ -96,7 +86,8 @@ interface UndoRedoRefValue {
 export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const {
     activeTool, setActiveTool,
-    measurements,
+    measurements: drawingMeasurements,
+    isPageCalibrated = true,
     onAddMeasurement: onAddMeasurementProp,
     onUpdateMeasurement: onUpdateMeasurementProp,
     scaleFactor, onScaleSet, activeDrawing, onDrawingAdded,
@@ -144,6 +135,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     clearTempPoints, retagTempPoints,
     undo, redo, canUndo, canRedo,
     selectedId, setSelectedId, projectState, updateMeasurement,
+    setActivePage,
   } = useTakeoffContext();
 
   const undoRedoRef = useRef<UndoRedoRefValue>({ setCursorPoint: () => {} });
@@ -164,7 +156,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   //  Lines and curves are passed through unchanged.
   //
   const {
-    loadFile:    loadPdfFile,
+    loadPage:    loadPdfPage,
     lines:       pdfLines,
     curves:      pdfCurves,
     snapPoints:  pdfSnapPoints,
@@ -183,7 +175,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleContainerPointerMove,
     handleContainerPointerUp,
     handleDrawingCanvasPointerDown,
-    pdfRef, pageNumberRef, scaleRef, pdfDimensionsRef, onScaleSetRef,
+    pdfRef, pageNumberRef, scaleRef, dimsScaleRef, pdfDimensionsRef, onScaleSetRef,
     pan, currentPdfPageRef,
   } = useViewerPdf({
     containerRef,
@@ -195,12 +187,26 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     activeDrawingId,
     activeDrawingUrl,
     activeDrawingFile: activeDrawing?.file,
-    onPdfLoaded: (_doc: any, file: any) => { if (file) loadPdfFile(file); },
     onScaleSet,
     shouldPreserveFillCanvas: isMagicFillActiveRef,
   });
 
   const appendToGroupId = propAppendToGroupId ?? undefined;
+
+  // ── Page scoping ──────────────────────────────────────────────────────────
+  // Only measurements taken on the page on screen are drawn / hit-tested.
+  const measurements = useMemo(
+    () => drawingMeasurements.filter(m => (m.pageNumber ?? 1) === pageNumber),
+    [drawingMeasurements, pageNumber],
+  );
+
+  // Tell the rest of the app which page is showing (per-page scale, new rows).
+  useEffect(() => { setActivePage(pageNumber); }, [pageNumber, setActivePage]);
+
+  // Snap geometry follows the visible page, reusing the already-open document.
+  useEffect(() => {
+    if (pdf) void loadPdfPage(pdf, pageNumber);
+  }, [pdf, pageNumber, loadPdfPage]);
 
   // ── Stable pan ────────────────────────────────────────────────────────────
   const stablePan = useMemo(
@@ -348,7 +354,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
     pageNumberRef:    pageNumberRef    as React.RefObject<number>,
-    scaleRef:         scaleRef        as React.RefObject<number>,
+    // Quantities convert canvas px → PDF points using the zoom the canvas was
+    // laid out at (not the live, still-debouncing zoom) — see useViewerPdf.
+    scaleRef:         dimsScaleRef    as React.RefObject<number>,
     activeTool, setActiveTool: setActiveToolString,
     measurements, tempPoints, pushPoint,
     commitMeasurement, batchCommitMeasurements,
@@ -739,7 +747,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pdfStage, resolvedSnapPoints,
     pageNumber, pdf,
     fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
-    safePolyarcMode, togglePolyarcMode, tempPoints,
+    safePolyarcMode, togglePolyarcMode, tempPoints.length,
   ]);
 
   useEffect(() => { onToolbarReady?.(toolbarAPI); }, [onToolbarReady, toolbarAPI]);
@@ -753,8 +761,14 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       }
       if (e.key === 'Enter' && activeTool === 'perimeter-offset') return;
 
-      const tag = (e.target as HTMLElement).tagName;
-      if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      const isTyping = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!target?.isContentEditable;
+      const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+      if (e.key === 'Escape' && !isTyping && tempPoints.length === 0 && activeTool !== 'select') {
+        handleSetActiveTool('select' as ToolType); return;
+      }
+      if (!isTyping && !hasModifier) {
         if (e.key.toLowerCase() === 'a' && activeTool === 'polyarc') {
           e.preventDefault(); togglePolyarcMode(); return;
         }
@@ -763,11 +777,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
           p: 'polygon',   n: 'count',    t: 'point',
           b: 'arc',       g: 'grid-count',
           y: 'polyarc',   o: 'perimeter-offset',
+          m: 'magic-fill', k: 'scale',
         };
         if (map[e.key.toLowerCase()]) {
           e.preventDefault(); handleSetActiveTool(map[e.key.toLowerCase()]); return;
         }
       }
+      if (isTyping) return;
       const cm = e.ctrlKey || e.metaKey;
       if (cm && (e.key === '+' || e.key === '='))                 { e.preventDefault(); setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY)); return; }
       if (cm && e.key === '-')                                     { e.preventDefault(); setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY)); return; }
@@ -780,7 +796,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
     handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
-    setScale, togglePolyarcMode,
+    setScale, togglePolyarcMode, tempPoints.length,
   ]);
 
   // ── Pan handler ───────────────────────────────────────────────────────────
@@ -833,9 +849,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return 'No snap geometry found in PDF';
   }, [pdfStage, snapEnabled, resolvedSnapPoints.length, pdfLines.length]);
 
-  const [pdfLibVersion] = useState<string>(() =>
-    typeof window !== 'undefined' ? getPdfLibVersion() : '?'
-  );
+  const pdfLibVersion = (pdfjsLib as { version?: string } | null)?.version ?? '?';
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -1178,6 +1192,24 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         appendToGroupId={propAppendToGroupId}
         onCancel={() => onAppendComplete?.()}
       />
+
+      {pdf && !isPageCalibrated && activeTool !== 'scale' && !propAppendToGroupId && (
+        <div
+          role="status"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-[11px] text-amber-200 backdrop-blur"
+        >
+          <span>
+            Page {pageNumber} isn’t calibrated — quantities are in drawing units until you set the scale.
+          </span>
+          <button
+            type="button"
+            onClick={() => handleSetActiveTool('scale' as ToolType)}
+            className="border border-amber-400/70 px-2 py-0.5 font-semibold text-amber-300 hover:bg-amber-400 hover:text-black focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+          >
+            Set scale (K)
+          </button>
+        </div>
+      )}
 
       <style>{`
         @keyframes snapPulse {
