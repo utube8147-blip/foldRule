@@ -410,10 +410,8 @@ export function TakeoffProvider({
     syncedSetProjectState(prev => (
       drawings ? { ...prev, measurements, drawings } : { ...prev, measurements }
     ));
-    syncedSetTempPoints(() => {
-      tempPointsRef.current = tempPts;
-      return tempPts;
-    });
+    tempPointsRef.current = tempPts;
+    syncedSetTempPoints(() => tempPts);
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
   const recalculateParentTotal = useCallback((parentId: string, measurements: TakeoffRow[]): TakeoffRow[] => {
@@ -526,10 +524,12 @@ export function TakeoffProvider({
     const tBefore = tempPointsRef.current;
     const tAfter  = [...tBefore, point];
 
-    syncedSetTempPoints(() => {
-      tempPointsRef.current = tAfter;
-      return tAfter;
-    });
+    // Update the ref NOW, not inside the state updater: React may run the
+    // updater later, so several pushPoint calls in one handler (e.g. an arc's
+    // start, middle, end and break marker) would each read the same stale list
+    // and overwrite each other — only the last point survived.
+    tempPointsRef.current = tAfter;
+    syncedSetTempPoints(() => tAfter);
 
     pushEntry({
       measurementsBefore: mBefore,
@@ -546,11 +546,9 @@ export function TakeoffProvider({
   // Does NOT push an undo entry — the retag is a tool-switch side-effect, not
   // a user action that should be undoable on its own.
   const retagTempPoints = useCallback((updater: (pts: InProgressPoint[]) => InProgressPoint[]) => {
-    syncedSetTempPoints(prev => {
-      const next = updater(prev);
-      tempPointsRef.current = next;
-      return next;
-    });
+    const next = updater(tempPointsRef.current);
+    tempPointsRef.current = next;          // immediately, for calls later in the same handler
+    syncedSetTempPoints(() => next);
   }, [syncedSetTempPoints]);
 
   // ── commitMeasurement ──────────────────────────────────────────────────────
@@ -612,10 +610,8 @@ export function TakeoffProvider({
   }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
 
   const clearTempPoints = useCallback(() => {
-    syncedSetTempPoints(() => {
-      tempPointsRef.current = [];
-      return [];
-    });
+    tempPointsRef.current = [];
+    syncedSetTempPoints(() => []);
   }, [syncedSetTempPoints]);
 
   // ── addMeasurement ─────────────────────────────────────────────────────────
@@ -718,10 +714,8 @@ export function TakeoffProvider({
       measurementsRef.current = [];
       return { ...prev, measurements: [] };
     });
-    syncedSetTempPoints(() => {
-      tempPointsRef.current = [];
-      return [];
-    });
+    tempPointsRef.current = [];
+    syncedSetTempPoints(() => []);
 
     pushEntry({
       measurementsBefore: mBefore,
@@ -872,7 +866,8 @@ export function TakeoffProvider({
         activeDrawingId: prev.activeDrawingId === id ? (drawings[0]?.id ?? null) : prev.activeDrawingId,
       };
     });
-    syncedSetTempPoints(() => { tempPointsRef.current = []; return []; });
+    tempPointsRef.current = [];
+    syncedSetTempPoints(() => []);
     // Removing a drawing deletes its file; it can't be undone, so drop history.
     resetHistory();
     if (target?.fileUrl?.startsWith('blob:')) URL.revokeObjectURL(target.fileUrl);
@@ -883,10 +878,8 @@ export function TakeoffProvider({
   const setActiveDrawingId = useCallback((id: string) => {
     syncedSetProjectState(prev => ({ ...prev, activeDrawingId: id }));
     setActivePage(1);
-    syncedSetTempPoints(() => {
-      tempPointsRef.current = [];
-      return [];
-    });
+    tempPointsRef.current = [];
+    syncedSetTempPoints(() => []);
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
   const setDrawingPageCount = useCallback((id: string, pageCount: number) => {
