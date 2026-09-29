@@ -31,6 +31,7 @@ import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measure
 import type { GeometryShape } from '@/types/snapTypes';
 import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
 import { buildPointGrid } from '@/lib/geometry/pointGrid';
+import { snapOutline as snapOutlineToDrawing } from '@/lib/geometry/snapOutline';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
 import { useTakeoffContext }  from '@/context/TakeoffContext';
 import { useViewerPdf }      from '@/hooks/viewer/useViewerPdf';
@@ -727,6 +728,27 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [commitMeasurement, activeDrawingId, setActiveTool]);
 
   // ── Magic Fill session ────────────────────────────────────────────────────
+  // ── Magic Fill outlines hug the drawing ───────────────────────────────────
+  // Traced fill outlines (mask pixels) are snapped onto the PDF's own lines
+  // and arcs: corners to line ends / crossings, edges onto the nearest line
+  // or arc, sharp corners rebuilt. Available once the page geometry loaded.
+  const cornerGrid = useMemo(() => buildPointGrid(
+    pageSnapPoints.filter(p => p.type === 'endpoint' || p.type === 'intersection') as never,
+  ), [pageSnapPoints]);
+  const snapFillOutline = useMemo(() => {
+    if (!pdfDocDims || geometryIndex.entities.length === 0) return null;
+    return (poly: [number, number][], mw: number, mh: number): [number, number][] => {
+      const kx = pdfDocDims.w / mw, ky = pdfDocDims.h / mh;
+      const out = snapOutlineToDrawing(poly.map(([x, y]) => [x * kx, y * ky] as [number, number]), {
+        nearest: (x, y, tol) => geometryIndex.nearestPoint({ x, y }, tol) as never,
+        corner:  (x, y, tol) => cornerGrid.near({ x, y }, tol, 1)[0] ?? null,
+        edgeTol:   4 * kx,     // ≈ 4 mask pixels: the trace sits just inside the wall line
+        cornerTol: 3 * kx,
+      });
+      return out.map(([x, y]) => [x / kx, y / ky] as [number, number]);
+    };
+  }, [pdfDocDims, geometryIndex, cornerGrid]);
+
   const {
     allVisibleFills, magicFills, mfStagedCount,
     mfSelectedId, setMfSelectedId,
@@ -749,6 +771,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleMagicFinish, handleMfNameConfirm, handleMfNameSkip,
     mfRooms,
   } = useMagicFillSession({
+    snapOutline: snapFillOutline,
+    pageSizePt:  pdfDocDims,
     regionKey:   activeDrawingId ? `${activeDrawingId}:${pageNumber}` : null,
     regionOwner: activeDrawingId && takeoffProjectId
       ? { projectId: takeoffProjectId, drawingId: activeDrawingId, page: pageNumber }

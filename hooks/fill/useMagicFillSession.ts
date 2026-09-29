@@ -22,6 +22,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { buildWallMaskInWorker, maskCache } from './wallMaskClient';
+import { maskOutlineMeasure } from './fillArea';
 import { getPageRegions, putPageRegions, type StoredRegion } from '@/lib/storage/projectDb';
 import { REFERENCE_LONG_EDGE } from './fillMaskAndSvgPath';
 import { useState, useRef, useCallback, useEffect } from 'react';
@@ -768,6 +769,13 @@ function killWorker(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface UseMagicFillSessionProps {
+  /**
+   * Snaps a traced outline (mask pixels) onto the drawing's real lines/arcs.
+   * Provided by the Viewer once the page's vector geometry is loaded.
+   */
+  snapOutline?:         ((poly: [number, number][], maskW: number, maskH: number) => [number, number][]) | null;
+  /** Page size in PDF points (to turn mask pixels into real area). */
+  pageSizePt?:          { w: number; h: number } | null;
   /** Identifies the page for saved rooms, e.g. `${drawingId}:${page}`. Null = don't save. */
   regionKey?:           string | null;
   /** Owner of saved rooms (so they're removed with the project / drawing). */
@@ -813,6 +821,8 @@ export function fmtArea(px: number, mpp: number | null): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useMagicFillSession({
+  snapOutline = null,
+  pageSizePt = null,
   regionKey = null,
   regionOwner = null,
   fillCanvasRef,
@@ -874,10 +884,35 @@ export function useMagicFillSession({
   regionKeyRef.current = regionKey;
   const regionsJobRef = useRef<string | null>(null);
 
-  const setRegions = useCallback((key: string, w: number, h: number, regions: StoredRegion[]) => {
-    regionsRef.current = { key, w, h, regions };
-    setRegionsVersion(v => v + 1);
+  // Snap outlines onto the drawing's lines (kept raw too: geometry may load
+  // after the rooms, and then they're snapped again).
+  const snapRef = useRef(snapOutline);
+  snapRef.current = snapOutline;
+  const rawRegionsRef = useRef<{ key: string; w: number; h: number; regions: StoredRegion[] } | null>(null);
+  const snapRegions = useCallback((regions: StoredRegion[], w: number, h: number) => {
+    const snap = snapRef.current;
+    if (!snap) return regions;
+    return regions.map(r => ({ ...r, polygon: snap(r.polygon, w, h) }));
   }, []);
+  const setRegions = useCallback((key: string, w: number, h: number, regions: StoredRegion[]) => {
+    rawRegionsRef.current = { key, w, h, regions };
+    regionsRef.current = { key, w, h, regions: snapRegions(regions, w, h) };
+    setRegionsVersion(v => v + 1);
+  }, [snapRegions]);
+  // Metres per MASK pixel (the fill list shows areas with this). The page
+  // scale is metres per PDF point; the mask is rendered larger than the page.
+  useEffect(() => {
+    const mw = maskDims.w || rawRegionsRef.current?.w || 0;
+    setMfMetersPerPixel(scaleFactor > 0 && pageSizePt && mw ? scaleFactor * (pageSizePt.w / mw) : null);
+  }, [scaleFactor, pageSizePt, maskDims.w, regionsVersion]);
+
+  // Geometry arrived (or changed) → re-snap the current rooms.
+  useEffect(() => {
+    const raw = rawRegionsRef.current;
+    if (!raw || !snapOutline) return;
+    regionsRef.current = { ...raw, regions: snapRegions(raw.regions, raw.w, raw.h) };
+    setRegionsVersion(v => v + 1);
+  }, [snapOutline, snapRegions]);
 
   // Load saved rooms when the page changes.
   useEffect(() => {
@@ -1007,7 +1042,6 @@ export function useMagicFillSession({
     setMfHolesClosed(new Set());
     setMfLastFillPos(null);
 
-    setMfMetersPerPixel(scaleFactor > 0 ? scaleFactor : null);
 
     // ── Helper: fall back to the visible canvas bitmap ────────────────────
     //    Used when the page ref isn't available yet, or if the off-screen
@@ -1306,9 +1340,10 @@ export function useMagicFillSession({
         opacity: mfOpacity,
         areaPx,
         perimPx,
-        polygon: polygon as [number, number][],
+        // Snapped onto the drawing's lines when geometry is available.
+        polygon: (snapRef.current ? snapRef.current(polygon as [number, number][], mw, mh) : polygon) as [number, number][],
         svgPath,
-        svgMode: true,
+        svgMode: !snapRef.current,
       };
 
       setMagicFills(prev => [...prev, fill]);
@@ -1586,38 +1621,81 @@ export function useMagicFillSession({
     const fills = magicFillsRef.current;
     if (fills.length === 0) return;
 
-    const totalArea  = fills.reduce((s, f) => s + f.areaPx,  0);
-    const totalPerim = fills.reduce((s, f) => s + f.perimPx, 0);
-    const m2 = mfMetersPerPixel
-      ? totalArea * mfMetersPerPixel * mfMetersPerPixel
-      : null;
+    // Each fill becomes a real Area shape: its (snapped) outline as normalised
+    // points, area from that outline in PDF points → m² with the page scale.
+    // (Previously the area was mask pixels × "metres per pixel", where that
+    // factor was actually metres per PDF point — so areas came out up to 9×
+    // too large, and the rows had no shape on the drawing.)
+    const mw = maskWRef.current || maskDims.w || 1;
+    const mh = maskHRef.current || maskDims.h || 1;
+    const ptPerPxX = pageSizePt ? pageSizePt.w / mw : 1;
+    const ptPerPxY = pageSizePt ? pageSizePt.h / mh : 1;
+    const sf = scaleFactor > 0 ? scaleFactor : 1;
+    const calibrated = !!pageSizePt && scaleFactor > 0;
 
-    const row: any = {
-      id:          `mf-${Date.now()}`,
+    const parts = fills.map(f => {
+      const usable = f.polygon.length >= 3;
+      const m = usable && pageSizePt
+        ? maskOutlineMeasure(f.polygon, { w: mw, h: mh }, pageSizePt, sf)
+        : { area: f.areaPx * ptPerPxX * ptPerPxY * sf * sf, perimeter: f.perimPx * ptPerPxX * sf };
+      return {
+        fill: f,
+        points: usable ? f.polygon.map(([x, y]) => ({ x: x / mw, y: y / mh })) : [],
+        area: m.area,
+        perim: m.perimeter,
+      };
+    });
+    const unit = calibrated ? 'm²' : 'pt²';
+    const total = parts.reduce((s, p) => s + p.area, 0);
+    const totalPerim = parts.reduce((s, p) => s + p.perim, 0);
+    const baseName = name || 'Magic Fill Area';
+    const now = Date.now();
+    const round = (v: number) => parseFloat(v.toFixed(4));
+
+    const rowFor = (p: typeof parts[number], id: string, label: string, extra: Record<string, unknown> = {}) => ({
+      id,
       drawingId:   activeDrawingId || '',
-      label:       name || 'Magic Fill Area',
-      description: name || 'Magic Fill Area',
+      label,
+      description: label,
       type:        'Area',
-      quantity:    m2 != null ? parseFloat(m2.toFixed(4)) : totalArea,
-      unit:        m2 != null ? 'm²' : 'px²',
+      quantity:    round(p.area),
+      unit,
       unitRate:    0,
-      notes:       `${fills.length} fill region${fills.length !== 1 ? 's' : ''} · ${fmtArea(totalArea, mfMetersPerPixel)}`,
-      isOverridden: true,
-      color:        fills[0]?.color || '#60a5fa',
-      isVisible:    true,
-      childIds:     [],
-    };
+      notes:       `Perimeter ${round(p.perim)} ${calibrated ? 'm' : 'pt'}`,
+      points:      p.points,
+      isOverridden: p.points.length === 0,     // no shape → quantity can't be re-derived
+      color:       p.fill.color || '#60a5fa',
+      isVisible:   true,
+      childIds:    [],
+      ...extra,
+    });
 
-    if (propAppendToGroupId) {
-      row.parentId = propAppendToGroupId;
-      row.groupId  = propAppendToGroupId;
+    if (parts.length === 1) {
+      const row: any = rowFor(parts[0], `mf-${now}`, baseName);
+      if (propAppendToGroupId) { row.parentId = propAppendToGroupId; row.groupId = propAppendToGroupId; }
+      onAddMeasurementProp?.(row);
+    } else {
+      // Several fills → a group: one row per fill, the header shows the total.
+      const headerId = propAppendToGroupId || `mf-${now}`;
+      const childIds = parts.map((_, i) => `mf-${now}-${i + 1}`);
+      if (!propAppendToGroupId) {
+        onAddMeasurementProp?.({
+          id: headerId, drawingId: activeDrawingId || '', label: baseName, description: baseName,
+          groupName: baseName, type: 'Area', quantity: round(total), unit, unitRate: 0,
+          notes: `${parts.length} areas · perimeter ${round(totalPerim)} ${calibrated ? 'm' : 'pt'}`,
+          points: [], isOverridden: false, isGroupHeader: true, isExpanded: true,
+          color: parts[0].fill.color || '#60a5fa', isVisible: true, childIds,
+        } as any);
+      }
+      parts.forEach((p, i) => {
+        onAddMeasurementProp?.(rowFor(p, childIds[i], `${baseName} ${i + 1}`, { parentId: headerId, groupId: headerId }) as any);
+      });
     }
 
-    onAddMeasurementProp?.(row);
     onAppendComplete?.();
     handleMagicClear();
   }, [
-    activeDrawingId, mfMetersPerPixel,
+    activeDrawingId, scaleFactor, pageSizePt, maskDims,
     propAppendToGroupId, onAddMeasurementProp, onAppendComplete,
     handleMagicClear,
   ]);
