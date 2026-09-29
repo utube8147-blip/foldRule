@@ -52,7 +52,7 @@ export function MeasurementDetailsDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div 
-        className="bg-zinc-900 border border-industrial-border shadow-2xl p-6 w-full max-w-96"
+        className="bg-zinc-900 border border-industrial-border shadow-2xl p-6 w-full max-w-4xl"
         onClick={e => e.stopPropagation()}
       >
         <h3 className="text-sm font-mono font-bold text-zinc-200 uppercase tracking-widest mb-4">
