@@ -21,10 +21,11 @@ import { defaultMaterialBank } from '@/data/materials';
 // NOTE: internal IDs predate the Foldrule rename. Do not change them — the
 // database name and backup format string identify existing users' data.
 const DB_NAME    = 'quantity-savior';
-const DB_VERSION = 2; // v2: adds the `settings` store (folder handle, tombstones)
+const DB_VERSION = 3; // v2: `settings` store · v3: `regions` store (Magic Fill rooms)
 const PROJECTS   = 'projects';
 const FILES      = 'files';
 const SETTINGS   = 'settings';
+const REGIONS    = 'regions';
 
 export const SCHEMA_VERSION = 1;
 
@@ -78,6 +79,11 @@ function openDb(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains(SETTINGS)) {
         db.createObjectStore(SETTINGS);
+      }
+      if (!db.objectStoreNames.contains(REGIONS)) {
+        const r = db.createObjectStore(REGIONS, { keyPath: 'key' });
+        r.createIndex('projectId', 'projectId', { unique: false });
+        r.createIndex('drawingId', 'drawingId', { unique: false });
       }
     };
     req.onsuccess = () => {
@@ -214,6 +220,7 @@ export async function renameProject(id: string, name: string): Promise<void> {
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  await deleteRegionsWhere('projectId', id).catch(() => {});
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
   tx.objectStore(PROJECTS).delete(id);
@@ -432,3 +439,51 @@ export async function createProjectFromPdfs(pdfs: File[]): Promise<ProjectRecord
   await putProjectRecord(full, files);
   return full;
 }
+
+// ── Magic Fill rooms (pre-computed regions per drawing page) ──────────────────
+
+export interface StoredRegion {
+  /** Bounding box in mask pixels. */
+  x0: number; y0: number; x1: number; y1: number;
+  /** Filled pixel count (islands included) — what a click would fill. */
+  areaPx:  number;
+  perimPx: number;
+  /** Smoothed outline, mask pixels. */
+  polygon: [number, number][];
+}
+
+export interface PageRegionsRecord {
+  key:       string;          // `${drawingId}:${page}`
+  projectId: string;
+  drawingId: string;
+  page:      number;
+  version:   number;          // bump when the room-finding algorithm changes
+  maskW:     number;
+  maskH:     number;
+  regions:   StoredRegion[];
+  createdAt: number;
+}
+
+export async function getPageRegions(key: string): Promise<PageRegionsRecord | null> {
+  const db = await openDb();
+  const tx = db.transaction(REGIONS, 'readonly');
+  return (await reqToPromise(tx.objectStore(REGIONS).get(key) as IDBRequest<PageRegionsRecord | undefined>)) ?? null;
+}
+
+export async function putPageRegions(rec: PageRegionsRecord): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(REGIONS, 'readwrite');
+  tx.objectStore(REGIONS).put(rec);
+  await txDone(tx);
+}
+
+async function deleteRegionsWhere(index: 'projectId' | 'drawingId', value: string): Promise<void> {
+  const db = await openDb();
+  const tx = db.transaction(REGIONS, 'readwrite');
+  const keys = await reqToPromise(tx.objectStore(REGIONS).index(index).getAllKeys(IDBKeyRange.only(value)));
+  for (const k of keys) tx.objectStore(REGIONS).delete(k);
+  await txDone(tx);
+}
+
+/** Remove saved rooms for a drawing (it was removed from the project). */
+export const deleteDrawingRegions = (drawingId: string) => deleteRegionsWhere('drawingId', drawingId);

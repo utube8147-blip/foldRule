@@ -24,6 +24,8 @@ import { Minimap }           from '@/components/features/overlays/Minimap';
 import { SnapSettingsPanel } from '@/components/features/dialogs/SnapSettingsPanel';
 import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
 import { usePdfDocument, hasSnapGeometry } from '@/hooks/snapEngine/usePdfDocument';
+import { RoomHoverOverlay } from './RoomHoverOverlay';
+import { createLassoStore } from '@/lib/geometry/lassoStore';
 import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGroup } from './CentreAnchorOverlay';
 import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type { GeometryShape } from '@/types/snapTypes';
@@ -141,7 +143,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     undo, redo, canUndo, canRedo,
     selectedId, setSelectedId, projectState, updateMeasurement,
     setActivePage, showLabels, pendingPage, clearPendingPage,
-    setDrawingPageCount, focusSeq, setNextMaterial, showGeometry,
+    setDrawingPageCount, focusSeq, setNextMaterial, showGeometry, projectId: takeoffProjectId,
   } = useTakeoffContext();
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
@@ -380,6 +382,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     zoom:            scale,
     pan:             stablePan,
   });
+
+  // In-progress Magic Fill lasso, shared with the room preview only.
+  const lassoStore = useMemo(() => createLassoStore(), []);
 
   // ── Centre anchor (Circle / Arc tools) ────────────────────────────────────
   // Picking a centre marker anchors it; the next clicks either take one of the
@@ -742,7 +747,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleMagicClear, handleMagicDelete,
     handleMagicToggleHide, handleMagicAbortSession,
     handleMagicFinish, handleMfNameConfirm, handleMfNameSkip,
+    mfRooms,
   } = useMagicFillSession({
+    regionKey:   activeDrawingId ? `${activeDrawingId}:${pageNumber}` : null,
+    regionOwner: activeDrawingId && takeoffProjectId
+      ? { projectId: takeoffProjectId, drawingId: activeDrawingId, page: pageNumber }
+      : null,
     fillCanvasRef,
     magicFillActive: activeTool === 'magic-fill',
     pdfRenderCount,
@@ -1497,6 +1507,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 activeColor={activeColor}
                 onSingleClick={handleMagicSingleClick}
                 onPolygonLasso={handleMagicPolygonFill}
+                onLassoChange={lassoStore.set}
                 onHover={handleMagicHover}
                 onHoverLeave={handleMagicHoverLeave}
               />
@@ -1541,6 +1552,17 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   fill={mfSelectedFill}
                   metersPerPixel={mfMetersPerPixel}
                   holesClosed={mfHolesClosed}
+                />
+              )}
+
+              {activeTool === 'magic-fill' && mfRooms && pdfDimensions && pdfDocDims && (
+                <RoomHoverOverlay
+                  rooms={mfRooms}
+                  pdfDimensions={pdfDimensions}
+                  pageWidthPt={pdfDocDims.w}
+                  scaleFactor={scaleFactor}
+                  calibrated={isPageCalibrated}
+                  lassoStore={lassoStore}
                 />
               )}
 

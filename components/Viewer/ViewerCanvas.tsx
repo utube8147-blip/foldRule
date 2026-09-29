@@ -519,9 +519,13 @@ export function ViewerCanvas({
               (z-42 through z-46) but above the vector layer (z-10).
               style.width and style.height are set by FillCanvasSizer in px
               matching pdfDimensions so it exactly overlaps the PDF page. */}
+          {/* Magic Fill's pixel layer: still maintained (undo / erase / merge use
+              it) but not shown — fills are drawn as vector paths by
+              MagicFillCanvas, so edges are crisp instead of pixelated. */}
           <canvas
             ref={fillCanvasRef}
-            className="absolute inset-0 z-[39] pointer-events-none"
+            className="absolute inset-0 z-[39] pointer-events-none opacity-0"
+            aria-hidden
           />
 
           <canvas

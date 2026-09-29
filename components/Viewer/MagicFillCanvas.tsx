@@ -101,6 +101,8 @@ interface MagicFillCanvasProps {
   activeColor?:   string;
   onSingleClick:  (canvasX: number, canvasY: number) => void;
   onPolygonLasso: (poly: [number, number][]) => void;
+  /** In-progress lasso (points + live mouse point), or null when not lassoing. */
+  onLassoChange?: (pts: [number, number][] | null) => void;
   onHover:        (canvasX: number, canvasY: number) => void;
   onHoverLeave:   () => void;
 }
@@ -238,6 +240,7 @@ export function MagicFillCanvas({
   activeColor = '#60a5fa',
   onSingleClick,
   onPolygonLasso,
+  onLassoChange,
   onHover,
   onHoverLeave,
 }: MagicFillCanvasProps) {
@@ -254,6 +257,13 @@ export function MagicFillCanvas({
   const [lassoPoints, setLassoPoints] = useState<[number, number][]>([]);
   const [isLassoing,  setIsLassoing]  = useState(false);
   const [lassoMouse,  setLassoMouse]  = useState<[number, number] | null>(null);
+
+  // Report the lasso as it will be when finished (incl. the live mouse point).
+  useEffect(() => {
+    if (!onLassoChange) return;
+    if (!isLassoing || lassoPoints.length === 0) { onLassoChange(null); return; }
+    onLassoChange(lassoMouse ? [...lassoPoints, lassoMouse] : lassoPoints);
+  }, [lassoPoints, lassoMouse, isLassoing, onLassoChange]);
   const lassoRef = useRef<[number, number][]>([]);
 
   const pointerDownPos = useRef<{ x: number; y: number } | null>(null);
@@ -358,6 +368,11 @@ export function MagicFillCanvas({
         ctx.stroke(path2d);
         ctx.restore();
       }
+
+      // Interior — drawn from the outline path (crisp, follows the room's
+      // edges) instead of the old pixel-painted fill layer.
+      ctx.fillStyle = `rgba(${r},${g},${b},${Math.max(0, Math.min(1, (f.opacity ?? 35) / 100))})`;
+      ctx.fill(path2d, 'nonzero');
 
       // Main outline
       ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected || isInGroup ? 1 : 0.85})`;

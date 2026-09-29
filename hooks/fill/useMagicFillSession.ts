@@ -21,6 +21,9 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { buildWallMaskInWorker, maskCache } from './wallMaskClient';
+import { getPageRegions, putPageRegions, type StoredRegion } from '@/lib/storage/projectDb';
+import { REFERENCE_LONG_EDGE } from './fillMaskAndSvgPath';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { MagicFill }     from '@/hooks/fill/useMagicFill';
@@ -37,6 +40,12 @@ import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';
 //    High enough that thin wall lines (≥0.5 pt) survive as ≥1-px strokes.
 //    Completely independent of whatever committedScale the viewer is at.
 const MASK_SCALE = 3;
+/**
+ * Cap on the off-screen mask render. At 3× an A1 sheet is ~36 million pixels
+ * (≈144 MB of RGBA) — which is what froze the app when switching plans with
+ * Magic Fill selected. 12 MP keeps walls crisp while staying responsive.
+ */
+const MAX_MASK_PIXELS = 12_000_000;
 
 const FILL_COLORS = [
   '#60a5fa','#34d399','#fbbf24','#f87171','#a78bfa',
@@ -203,7 +212,7 @@ function mfBuildSmoothPolygon(mask, w, h) {
 // ─────────────────────────────────────────────────────────────────────────────
 // RASTER WORKER — single-click flood fill
 // ─────────────────────────────────────────────────────────────────────────────
-const RASTER_WORKER_SOURCE = /* js */`
+export const RASTER_WORKER_SOURCE = /* js */`
 ${SVG_PATH_UTILS_SOURCE}
 ${MF_SMOOTH_CONTOUR_SOURCE}
 
@@ -351,6 +360,111 @@ self.onmessage = ({ data }) => {
     { fillDataBuffer: fillDataArr.buffer, closedBuffer: closed.buffer, areaPx, perimPx, polygon, svgPath },
     [fillDataArr.buffer, closed.buffer],
   );
+};
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ROOMS WORKER — every enclosed area on the page, found once and saved.
+//
+// Mirrors what a click fills: 4-connected scanline regions of open space,
+// islands filled in (closeHoles), smoothed outline via mfBuildSmoothPolygon.
+// Each region is processed inside its own bounding box, so the total work is
+// roughly one pass over the page. Tiny areas (text counters, hatch cells) are
+// skipped — clicks there use the normal flood fill.
+// ─────────────────────────────────────────────────────────────────────────────
+/** Bump when the room-finding algorithm changes (saved rooms get rebuilt). */
+export const ROOMS_VERSION = 2;   // v2: skip regions covering > 80% of the page
+
+/** Same seed pattern as OFFSETS_R inside the raster worker (keep in sync). */
+const SEED_OFFSETS: [number, number][] = [
+  [0,0],[1,0],[-1,0],[0,1],[0,-1],
+  [2,0],[-2,0],[0,2],[0,-2],
+  [1,1],[-1,1],[1,-1],[-1,-1],
+];
+
+export const ROOMS_WORKER_SOURCE = /* js */`
+${SVG_PATH_UTILS_SOURCE}
+${MF_SMOOTH_CONTOUR_SOURCE}
+
+function closeHoles(filled, w, h) {
+  const outside = new Uint8Array(w * h);
+  const stack = [];
+  const push = (i) => { if (i >= 0 && i < w * h && !filled[i] && !outside[i]) { outside[i] = 1; stack.push(i); } };
+  for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); }
+  for (let y = 1; y < h - 1; y++) { push(y * w); push(y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0)   push(i - 1);
+    if (x < w-1) push(i + 1);
+    if (y > 0)   push(i - w);
+    if (y < h-1) push(i + w);
+  }
+  const closed = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) closed[i] = filled[i] || (!outside[i] ? 1 : 0);
+  return closed;
+}
+
+self.onmessage = ({ data }) => {
+  const { maskBuffer, w, h, minArea } = data;
+  const mask  = new Uint8Array(maskBuffer);
+  const N     = w * h;
+  const label = new Int32Array(N);
+  const stack = new Int32Array(N);
+  const comps = [];
+  let next = 1;
+
+  // 1. Label every open-space region (same 4-connected scanline walk as a click).
+  for (let s = 0; s < N; s++) {
+    if (mask[s] || label[s]) continue;
+    const id = next++;
+    let count = 0, x0 = w, y0 = h, x1 = 0, y1 = 0, top = 0;
+    stack[top++] = s; label[s] = id;
+    while (top > 0) {
+      const idx = stack[--top];
+      const cy = (idx / w) | 0, cx = idx % w, row = cy * w;
+      let left = cx;
+      while (left > 0 && !mask[row + left - 1] && !label[row + left - 1]) left--;
+      let right = cx;
+      while (right < w - 1 && !mask[row + right + 1] && !label[row + right + 1]) right++;
+      for (let x = left; x <= right; x++) label[row + x] = id;
+      count += right - left + 1;
+      if (left < x0) x0 = left; if (right > x1) x1 = right;
+      if (cy < y0) y0 = cy;     if (cy > y1) y1 = cy;
+      const up = row - w, dn = row + w;
+      for (let x = left; x <= right; x++) {
+        if (cy > 0     && !mask[up + x] && !label[up + x]) { label[up + x] = id; stack[top++] = up + x; }
+        if (cy < h - 1 && !mask[dn + x] && !label[dn + x]) { label[dn + x] = id; stack[top++] = dn + x; }
+      }
+    }
+    comps.push({ id, count, x0, y0, x1, y1 });
+  }
+
+  // 2. Outline each usable region inside its bounding box.
+  const regions = [];
+  for (const c of comps) {
+    if (c.count <= 4 || c.count < minArea || c.count / N > 0.80) continue;
+    const cw = c.x1 - c.x0 + 3, ch = c.y1 - c.y0 + 3;
+    const crop = new Uint8Array(cw * ch);
+    for (let y = c.y0; y <= c.y1; y++) {
+      const src = y * w, dst = (y - c.y0 + 1) * cw + 1 - c.x0;
+      for (let x = c.x0; x <= c.x1; x++) if (label[src + x] === c.id) crop[dst + x] = 1;
+    }
+    const closed = closeHoles(crop, cw, ch);
+    let areaPx = 0;
+    for (let i = 0; i < closed.length; i++) if (closed[i]) areaPx++;
+    // The open space around a building closes up into (nearly) the whole
+    // page — that's not a room.
+    if (areaPx / N > 0.80) continue;
+    const poly = mfBuildSmoothPolygon(closed, cw, ch);
+    if (!poly || poly.length < 3) continue;
+    const polygon = poly.map(([x, y]) => [
+      Math.round((x + c.x0 - 1) * 10) / 10,
+      Math.round((y + c.y0 - 1) * 10) / 10,
+    ]);
+    regions.push({ x0: c.x0, y0: c.y0, x1: c.x1, y1: c.y1, areaPx, perimPx: mfPolygonPerim(polygon), polygon });
+  }
+  self.postMessage({ regions });
 };
 `;
 
@@ -654,6 +768,10 @@ function killWorker(
 // ─────────────────────────────────────────────────────────────────────────────
 
 interface UseMagicFillSessionProps {
+  /** Identifies the page for saved rooms, e.g. `${drawingId}:${page}`. Null = don't save. */
+  regionKey?:           string | null;
+  /** Owner of saved rooms (so they're removed with the project / drawing). */
+  regionOwner?:         { projectId: string; drawingId: string; page: number } | null;
   /**
    * Whether the Magic Fill tool is selected. The wall mask (an extra off-screen
    * page render + full pixel scan) is only built while it is — and only once
@@ -695,6 +813,8 @@ export function fmtArea(px: number, mpp: number | null): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useMagicFillSession({
+  regionKey = null,
+  regionOwner = null,
   fillCanvasRef,
   magicFillActive = true,
   pdfRenderCount,
@@ -743,6 +863,60 @@ export function useMagicFillSession({
   const maskRef       = useRef<Uint8Array | null>(null);
   /** Page the current mask was built from (masks are zoom-independent). */
   const maskPageRef = useRef<unknown>(null);
+
+  // ── Pre-computed rooms (saved per page) ──────────────────────────────────
+  // A click inside a known room fills it straight from the saved outline —
+  // no flood fill. Rooms are found once per page (after the wall mask exists),
+  // saved locally, and loaded instantly next time.
+  const regionsRef = useRef<{ key: string; w: number; h: number; regions: StoredRegion[] } | null>(null);
+  const [regionsVersion, setRegionsVersion] = useState(0);
+  const regionKeyRef = useRef(regionKey);
+  regionKeyRef.current = regionKey;
+  const regionsJobRef = useRef<string | null>(null);
+
+  const setRegions = useCallback((key: string, w: number, h: number, regions: StoredRegion[]) => {
+    regionsRef.current = { key, w, h, regions };
+    setRegionsVersion(v => v + 1);
+  }, []);
+
+  // Load saved rooms when the page changes.
+  useEffect(() => {
+    if (!regionKey) return;
+    if (regionsRef.current?.key === regionKey) return;
+    let alive = true;
+    getPageRegions(regionKey).then(rec => {
+      if (!alive || !rec || rec.version !== ROOMS_VERSION) return;
+      setRegions(rec.key, rec.maskW, rec.maskH, rec.regions);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [regionKey, setRegions]);
+
+  /** Find rooms from a finished wall mask (background worker), then save them. */
+  const computeRegions = useCallback((mask: Uint8Array, w: number, h: number) => {
+    const key = regionKeyRef.current;
+    if (!key || regionsRef.current?.key === key || regionsJobRef.current === key) return;
+    regionsJobRef.current = key;
+    const { worker, url } = spawnWorker(ROOMS_WORKER_SOURCE);
+    const done = () => { worker.terminate(); URL.revokeObjectURL(url); if (regionsJobRef.current === key) regionsJobRef.current = null; };
+    worker.onmessage = ({ data }: MessageEvent<{ regions: StoredRegion[] }>) => {
+      done();
+      if (regionKeyRef.current !== key) return;
+      setRegions(key, w, h, data.regions);
+      const owner = regionOwnerRef.current;
+      if (owner) {
+        putPageRegions({
+          key, projectId: owner.projectId, drawingId: owner.drawingId, page: owner.page,
+          version: ROOMS_VERSION, maskW: w, maskH: h, regions: data.regions, createdAt: Date.now(),
+        }).catch(err => console.warn('[MagicFill] could not save rooms', err));
+      }
+    };
+    worker.onerror = (e) => { console.warn('[MagicFill] room finder failed', e); done(); };
+    const copy = mask.slice().buffer;
+    // Skip specks: at least 0.005% of the page (≈600 px on a 12 MP mask).
+    worker.postMessage({ maskBuffer: copy, w, h, minArea: Math.max(200, Math.round(w * h * 0.00005)) }, [copy]);
+  }, [setRegions]);
+  const regionOwnerRef = useRef(regionOwner);
+  regionOwnerRef.current = regionOwner;
   const maskWRef      = useRef(0);
   const maskHRef      = useRef(0);
   const fillDataRef   = useRef<ImageData | null>(null);
@@ -858,48 +1032,179 @@ export function useMagicFillSession({
     if (!magicFillActive) return;
     if (maskRef.current && maskPageRef.current && maskPageRef.current === currentPdfPageRef.current) return;
 
-    const page = currentPdfPageRef.current;
-    if (!page) {
-      // Page ref not yet populated — fall back (zoom-dependent, but rare).
-      fallbackToVisibleCanvas();
+    // Seen this page before (e.g. switching plans back and forth)? Reuse it.
+    const cachedPage = currentPdfPageRef.current;
+    const cached = cachedPage ? maskCache.get(cachedPage) : undefined;
+    if (cached) {
+      maskRef.current = cached.mask;
+      maskPageRef.current = cachedPage;
+      maskWRef.current = cached.w;
+      maskHRef.current = cached.h;
+      setMaskDims({ w: cached.w, h: cached.h });
+      computeRegions(cached.mask, cached.w, cached.h);
       return;
     }
 
-    // ── Render the page at MASK_SCALE into a throwaway off-screen canvas ──
-    const viewport = page.getViewport({ scale: MASK_SCALE });
-    const offW = Math.round(viewport.width);
-    const offH = Math.round(viewport.height);
-
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width  = offW;
-    offCanvas.height = offH;
-    const offCtx = offCanvas.getContext('2d');
-    if (!offCtx) { fallbackToVisibleCanvas(); return; }
-
-    page.render({ canvas: offCanvas, canvasContext: offCtx, viewport })
-      .promise
-      .then(() => {
-        if (myGeneration !== maskGenerationRef.current) return;
-        const id   = offCtx.getImageData(0, 0, offW, offH);
-        const mask = buildNormalisedWallMask(id.data, offW, offH);
-        maskRef.current  = mask;
-        maskPageRef.current = page;
-        maskWRef.current = offW;
-        maskHRef.current = offH;
-        setMaskDims({ w: offW, h: offH });
-      })
-      .catch((err: any) => {
-        if (err?.name === 'RenderingCancelledException') return;
-        console.error('[useMagicFillSession] off-screen mask render failed — falling back', err);
+    const buildMask = () => {
+      const page = currentPdfPageRef.current;
+      if (!page) {
+        // Page ref not yet populated — fall back (zoom-dependent, but rare).
         fallbackToVisibleCanvas();
-      });
+        return;
+      }
 
+      // ── Render the page at MASK_SCALE into a throwaway off-screen canvas ──
+      const base  = page.getViewport({ scale: 1 });
+      const scale = Math.min(MASK_SCALE, Math.sqrt(MAX_MASK_PIXELS / Math.max(1, base.width * base.height)));
+      const viewport = page.getViewport({ scale });
+      const offW = Math.round(viewport.width);
+      const offH = Math.round(viewport.height);
+
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width  = offW;
+      offCanvas.height = offH;
+      const offCtx = offCanvas.getContext('2d');
+      if (!offCtx) { fallbackToVisibleCanvas(); return; }
+
+      page.render({ canvas: offCanvas, canvasContext: offCtx, viewport })
+        .promise
+        .then(() => {
+          if (myGeneration !== maskGenerationRef.current) return undefined;
+          const id = offCtx.getImageData(0, 0, offW, offH);
+          offCanvas.width = 0; offCanvas.height = 0;            // free the render's memory now
+          // Pixel scan + closing run in a worker; the pixel buffer is handed over.
+          // (Tiny pages need up-sampling, which uses a canvas — those are cheap
+          // and stay on the main thread.)
+          const build = Math.max(offW, offH) < REFERENCE_LONG_EDGE
+            ? Promise.resolve(buildNormalisedWallMask(id.data, offW, offH))
+            : buildWallMaskInWorker(id.data, offW, offH);
+          return build.then(mask => {
+            maskCache.set(page, { mask, w: offW, h: offH });
+            if (myGeneration !== maskGenerationRef.current) return;
+            maskRef.current  = mask;
+            maskPageRef.current = page;
+            maskWRef.current = offW;
+            maskHRef.current = offH;
+            setMaskDims({ w: offW, h: offH });
+            computeRegions(mask, offW, offH);
+          });
+        })
+        .catch((err: any) => {
+          if (err?.name === 'RenderingCancelledException') return;
+          console.error('[useMagicFillSession] off-screen mask render failed — falling back', err);
+          fallbackToVisibleCanvas();
+        });
+    };
+
+    // Saved rooms for this page? Then the mask is only needed for borderline
+    // clicks and lasso fills — build it when the browser is idle instead of
+    // now, so opening the plan stays instant.
+    const key = regionKeyRef.current;
+    if (!key) { buildMask(); return; }
+    getPageRegions(key).then(rec => {
+      if (myGeneration !== maskGenerationRef.current) return;
+      if (rec && rec.version === ROOMS_VERSION) {
+        if (regionsRef.current?.key !== key) setRegions(rec.key, rec.maskW, rec.maskH, rec.regions);
+        const ric = (window as Window & { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+        if (ric) ric(() => { if (myGeneration === maskGenerationRef.current) buildMask(); }, { timeout: 4000 });
+        else setTimeout(() => { if (myGeneration === maskGenerationRef.current) buildMask(); }, 1500);
+      } else {
+        buildMask();
+      }
+    }).catch(() => buildMask());
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdfRenderCount, magicFillActive]);
 
   // ── Single-click raster fill ──────────────────────────────────────────────
+  /** Fill a pre-computed room directly (no flood fill). */
+  const fillFromRegion = useCallback((region: StoredRegion, mw: number, mh: number, canvasX: number, canvasY: number) => {
+    const fc = fillCanvasRef.current;
+    if (!fc || !fillDataRef.current) return;
+    const cssW = pdfDimensions?.w ?? fc.width, cssH = pdfDimensions?.h ?? fc.height;
+    snapshots.current.push(new ImageData(new Uint8ClampedArray(fillDataRef.current.data), fc.width, fc.height));
+
+    // Paint on the fill canvas (CSS space).
+    const [r, g, b] = hexToRgb(activeColor);
+    const fillCtx = fc.getContext('2d')!;
+    fillCtx.save();
+    fillCtx.fillStyle = `rgba(${r},${g},${b},${mfOpacity / 100})`;
+    fillCtx.beginPath();
+    region.polygon.forEach(([x, y], i) => {
+      const px = x * (cssW / mw), py = y * (cssH / mh);
+      if (i === 0) fillCtx.moveTo(px, py); else fillCtx.lineTo(px, py);
+    });
+    fillCtx.closePath();
+    fillCtx.fill();
+    fillCtx.restore();
+    fillDataRef.current = fillCtx.getImageData(0, 0, cssW, cssH);
+
+    // Pixel map in mask space (used by merge / erase / repaint) — rasterised
+    // inside the room's bounding box only.
+    const bw = region.x1 - region.x0 + 1, bh = region.y1 - region.y0 + 1;
+    const oc = document.createElement('canvas');
+    oc.width = bw; oc.height = bh;
+    const octx = oc.getContext('2d')!;
+    octx.beginPath();
+    region.polygon.forEach(([x, y], i) => (i === 0 ? octx.moveTo(x - region.x0, y - region.y0) : octx.lineTo(x - region.x0, y - region.y0)));
+    octx.closePath();
+    octx.fillStyle = '#000';
+    octx.fill();
+    const alpha = octx.getImageData(0, 0, bw, bh).data;
+    const paintedMask = new Uint8Array(mw * mh);
+    for (let y = 0; y < bh; y++) {
+      const dst = (y + region.y0) * mw + region.x0;
+      for (let x = 0; x < bw; x++) if (alpha[(y * bw + x) * 4 + 3] > 127) paintedMask[dst + x] = 1;
+    }
+
+    fillCountRef.current += 1;
+    const id = Date.now() + fillCountRef.current;
+    fillPixelMaps.current.set(id, paintedMask);
+    const fill: MagicFill = {
+      id, label: `Fill ${fillCountRef.current}`, color: activeColor, opacity: mfOpacity,
+      areaPx: region.areaPx, perimPx: region.perimPx, polygon: region.polygon, svgMode: false,
+    };
+    setMagicFills(prev => [...prev, fill]);
+    setMfSelectedId(id);
+    setMfSelectedGroup(null);
+    setMfLastFillPos({ x: canvasX, y: canvasY });
+    cycleColor();
+  }, [fillCanvasRef, pdfDimensions, activeColor, mfOpacity, cycleColor]);
+
+  /** The saved room a click lands in — only when every seed agrees (else null). */
+  const regionAt = useCallback((canvasX: number, canvasY: number) => {
+    const rs = regionsRef.current;
+    if (!rs || rs.key !== regionKeyRef.current) return null;
+    const cssW = pdfDimensions?.w ?? rs.w, cssH = pdfDimensions?.h ?? rs.h;
+    const mx = Math.round(canvasX * (rs.w / cssW)), my = Math.round(canvasY * (rs.h / cssH));
+    const inside = (reg: StoredRegion, x: number, y: number) => {
+      if (x < reg.x0 || x > reg.x1 || y < reg.y0 || y > reg.y1) return false;
+      let c = false;
+      const p = reg.polygon;
+      for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
+        if ((p[i][1] > y) !== (p[j][1] > y) && x < ((p[j][0] - p[i][0]) * (y - p[i][1])) / (p[j][1] - p[i][1]) + p[i][0]) c = !c;
+      }
+      return c;
+    };
+    const find = (x: number, y: number) => {
+      let best: StoredRegion | null = null;
+      for (const reg of rs.regions) if (inside(reg, x, y) && (!best || reg.areaPx < best.areaPx)) best = reg;
+      return best;
+    };
+    const hit = find(mx, my);
+    if (!hit) return null;
+    // A click near a thin line merges both sides in the flood fill — let it.
+    for (const [dx, dy] of SEED_OFFSETS) {
+      const other = find(mx + dx, my + dy);
+      if (other && other !== hit) return null;
+    }
+    return { region: hit, w: rs.w, h: rs.h };
+  }, [pdfDimensions]);
+
   const handleMagicSingleClick = useCallback((canvasX: number, canvasY: number) => {
-    if (!maskRef.current || !fillDataRef.current || mfIsFilling) return;
+    if (mfIsFilling) return;
+    const fast = regionAt(canvasX, canvasY);
+    if (fast && fillDataRef.current) { fillFromRegion(fast.region, fast.w, fast.h, canvasX, canvasY); return; }
+    if (!maskRef.current || !fillDataRef.current) return;
     const fc = fillCanvasRef.current;
     if (!fc) return;
 
@@ -1022,7 +1327,7 @@ export function useMagicFillSession({
         setMfIsFilling(false); setMfFillMsg(''); setMfFillSub(undefined);
       }
     };
-  }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions]);
+  }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions, regionAt, fillFromRegion]);
 
   // ── Polygon lasso fill ────────────────────────────────────────────────────
   const handleMagicPolygonFill = useCallback((poly: [number, number][]) => {
@@ -1327,6 +1632,9 @@ export function useMagicFillSession({
   const mfStagedCount   = magicFills.length;
 
   return {
+    /** Saved rooms for this page (mask-pixel coordinates) — for the hover highlight. */
+    mfRooms: regionsRef.current && regionsRef.current.key === regionKey ? regionsRef.current : null,
+    mfRoomsVersion: regionsVersion,
     allVisibleFills,
     magicFills,
     mfStagedCount,

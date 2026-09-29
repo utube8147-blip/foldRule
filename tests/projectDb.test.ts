@@ -68,3 +68,25 @@ describe('projectDb', () => {
     expect((await listProjects()).some(p => p.id === id)).toBe(true);
   });
 });
+
+describe('saved Magic Fill rooms', () => {
+  it('saves, loads, and is removed with its drawing or project', async () => {
+    const { putPageRegions, getPageRegions, deleteDrawingRegions } = await import('@/lib/storage/projectDb');
+    const rec = (drawingId: string, projectId: string, page = 1) => ({
+      key: `${drawingId}:${page}`, projectId, drawingId, page, version: 1, maskW: 100, maskH: 80,
+      regions: [{ x0: 1, y0: 1, x1: 10, y1: 10, areaPx: 81, perimPx: 36, polygon: [[1, 1], [10, 1], [10, 10], [1, 10]] as [number, number][] }],
+      createdAt: Date.now(),
+    });
+    const p = await createProject('Rooms test');
+    await putPageRegions(rec('dA', p.id));
+    await putPageRegions(rec('dB', p.id));
+    expect((await getPageRegions('dA:1'))?.regions[0].areaPx).toBe(81);
+
+    await deleteDrawingRegions('dA');
+    expect(await getPageRegions('dA:1')).toBeNull();
+    expect(await getPageRegions('dB:1')).not.toBeNull();
+
+    await deleteProject(p.id);
+    expect(await getPageRegions('dB:1')).toBeNull();
+  });
+});

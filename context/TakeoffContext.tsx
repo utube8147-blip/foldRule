@@ -40,7 +40,7 @@ import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/sc
 import { defaultMaterialBank } from '@/data/materials';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
-  saveProjectState, requestPersistentStorage, newId,
+  saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions,
 } from '@/lib/storage/projectDb';
 import { initFolderSync, pushProjectToFolder } from '@/lib/storage/folderSync';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
@@ -873,6 +873,7 @@ export function TakeoffProvider({
     if (target?.fileUrl?.startsWith('blob:')) URL.revokeObjectURL(target.fileUrl);
     const pid = projectIdRef.current;
     if (pid) deleteDrawingFile(pid, id).catch(err => console.error('[storage] delete file failed', err));
+    deleteDrawingRegions(id).catch(() => {});
   }, [syncedSetProjectState, syncedSetTempPoints, resetHistory]);
 
   const setActiveDrawingId = useCallback((id: string) => {

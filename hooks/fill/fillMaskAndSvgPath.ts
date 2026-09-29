@@ -4,8 +4,8 @@
 
 const WALL_LUMA           = 120;
 const STROKE_NEIGHBOR_MIN = 0.4;
-const DILATE_R            = 2;
-const ERODE_R             = 2;
+export const DILATE_R      = 2;
+export const ERODE_R       = 2;
 
 /**
  * Step 1 — dark-pixel detection + stroke-neighbor filter.
@@ -105,7 +105,7 @@ export function erodeMask(src: Uint8Array, w: number, h: number, r: number): Uin
  * below REFERENCE_LONG_EDGE the image is upsampled before the closing runs,
  * then the result is mapped back to native size (nearest-neighbour, binary).
  */
-const REFERENCE_LONG_EDGE   = 1800;
+export const REFERENCE_LONG_EDGE = 1800;
 const MAX_NORMALIZE_UPSCALE = 4;
 
 export function buildNormalisedWallMask(
