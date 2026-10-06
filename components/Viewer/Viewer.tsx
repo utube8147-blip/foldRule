@@ -1846,6 +1846,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   pageRef={currentPdfPageRef}
                   pageKey={`${activeDrawingId}:${pageNumber}`}
                   spaceHeld={spaceHeld}
+                  areas={measurements
+                    .filter(m => !m.isGroupHeader && (m.type === 'Polygon' || m.type === 'Rectangle' || m.type === 'Area') && (m.points?.length ?? 0) >= 3)
+                    .map(m => ({
+                      id: m.id, name: m.label || m.description || 'Area',
+                      outer: tessellatePoints(getEffectivePoints(m, measurements), pdfDimensions.w, pdfDimensions.h),
+                      holes: m.holes ?? [],
+                    }))}
                   onClose={() => setActiveTool('select')}
                   onCommit={(pts, name) => {
                     const groupId = crypto.randomUUID();

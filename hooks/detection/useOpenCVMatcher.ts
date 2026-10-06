@@ -250,11 +250,21 @@ function collectPeaks(resultMat, origW, origH, bboxW, bboxH, threshold,
   var supH = Math.max(1, Math.floor(bboxH * 0.5));
   var buf  = new Float32Array(data);
 
-  for (var ry = 0; ry < rRows; ry++) {
-    for (var rx = 0; rx < rCols; rx++) {
-      var idx   = ry * rCols + rx;
+  // Strongest first: take each peak at its true maximum, then blank its
+  // neighbourhood. (Scanning in reading order took the first pixel that
+  // crossed the threshold — the shoulder of a peak — which gave scores stuck
+  // just above the threshold and boxes shifted off the symbol.)
+  var above = [];
+  for (var i0 = 0; i0 < buf.length; i0++) if (buf[i0] >= threshold) above.push(i0);
+  above.sort(function(p, q) { return buf[q] - buf[p]; });
+  if (above.length > 400000) above.length = 400000;
+
+  for (var ai = 0; ai < above.length; ai++) {
+    {
+      var idx   = above[ai];
       var score = buf[idx];
-      if (score < threshold) continue;
+      if (score < threshold) continue;          // already blanked by a stronger peak
+      var ry = Math.floor(idx / rCols), rx = idx - ry * rCols;
 
       var sx = rx + offsetX;
       var sy = ry + offsetY;
@@ -325,7 +335,9 @@ function coarsePass(cv, srcGray, tmplBase, angleDeg, doFlip, scale,
   var result = new cv.Mat();
   cv.matchTemplate(srcGray, tmplFinal, result, cv.TM_CCOEFF_NORMED);
 
-  var hits = collectPeaks(result, origW, origH, bboxW, bboxH,
+  // Box = the template actually matched (a turned template is bigger than
+  // the sample), so the centre lands on the symbol.
+  var hits = collectPeaks(result, origW, origH, tmplFinal.cols, tmplFinal.rows,
                            coarseThresh, angleDeg, doFlip, scale,
                            templateIndex, 0, 0);
   result.delete();
@@ -395,7 +407,7 @@ function finePass(cv, srcGray, tmplBase, candidate, fineStep, halfRange,
     var result = new cv.Mat();
     cv.matchTemplate(roiMat, tmplFinal, result, cv.TM_CCOEFF_NORMED);
 
-    var hits = collectPeaks(result, origW, origH, bboxW, bboxH,
+    var hits = collectPeaks(result, origW, origH, tmplFinal.cols, tmplFinal.rows,
                              threshold, angle, doFlip, scale,
                              tmplIdx, rx0, ry0);
     result.delete();
