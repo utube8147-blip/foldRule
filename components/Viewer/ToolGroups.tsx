@@ -108,6 +108,7 @@ export const TOOL_GROUPS: Group[] = [
       ['One room', 'Click inside it.'],
       ['Several rooms at once', 'Hold Space and click points around them, then click the first point again. Every room the loop touches is filled.'],
       ['Keep them', 'Press Enter (or Finish) to add the fills to the takeoff.'],
+      ['Made a mistake?', 'Ctrl+Z (or Undo) takes back the last fill only. Ctrl+Y puts it back.'],
     ],
   },
 ];

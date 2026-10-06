@@ -976,6 +976,7 @@ export function useMagicFillSession({
 
   // Generation counter — bumped every time the mask/fillData are rebuilt.
   const maskGenerationRef = useRef(0);
+  const fillSessionKeyRef = useRef<string | null>(null);
 
   const workerRef    = useRef<Worker | null>(null);
   const workerUrlRef = useRef<string | null>(null);
@@ -1018,6 +1019,34 @@ export function useMagicFillSession({
   //  handleMagicPolygonFill for the CSS→mask coordinate conversion, so
   //  clicks remain accurate at every zoom level.
   //
+  /** Redraw the zoom-sized pixel layer from the fills' outlines. */
+  const repaintFillLayer = useCallback((list: MagicFill[]) => {
+    const fc = fillCanvasRef.current;
+    const ctx = fc?.getContext('2d');
+    if (!fc || !ctx || !fc.width || !fc.height) return;
+    const mw = maskWRef.current || rawRegionsRef.current?.w || 0;
+    const mh = maskHRef.current || rawRegionsRef.current?.h || 0;
+    ctx.clearRect(0, 0, fc.width, fc.height);
+    if (mw && mh) {
+      for (const f of list) {
+        if (f.polygon.length < 3) continue;
+        const [r, g, b] = hexToRgb(f.color);
+        ctx.fillStyle = `rgba(${r},${g},${b},${(f.opacity ?? 35) / 100})`;
+        ctx.beginPath();
+        f.polygon.forEach(([x, y], k) => {
+          const px = x * (fc.width / mw), py = y * (fc.height / mh);
+          if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+    fillDataRef.current = ctx.getImageData(0, 0, fc.width, fc.height);
+  }, [fillCanvasRef]);
+  // Fills taken back with Undo, newest last — Redo puts them back.
+  const redoRef = useRef<MagicFill[][]>([]);
+  const [mfRedoCount, setMfRedoCount] = useState(0);
+
   useEffect(() => {
     if (pdfRenderCount === 0) return;
     const fc = fillCanvasRef.current;
@@ -1040,19 +1069,29 @@ export function useMagicFillSession({
     setMfIsFilling(false);
     setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
 
-    fillDataRef.current = new ImageData(cssW, cssH);
-
-    fillCountRef.current  = 0;
-    groupCountRef.current = 0;
-    fillPixelMaps.current.clear();
+    // Same page, tool still on → this is only a zoom / re-render. The fills
+    // not yet finished live in mask space (which doesn't change with zoom),
+    // so they are kept; only the zoom-sized pixel layer is rebuilt.
+    const sessionKey = magicFillActive && regionKeyRef.current ? regionKeyRef.current : null;
+    const keepFills = sessionKey !== null && sessionKey === fillSessionKeyRef.current;
+    fillSessionKeyRef.current = sessionKey;
     snapshots.current = [];
-    setMagicFills([]);
-    setMfHiddenIds(new Set());
-    setMfSelectedId(null);
-    setMfSelectedGroup(null);
     setMfHoveredId(null);
-    setMfHolesClosed(new Set());
-    setMfLastFillPos(null);
+
+    if (keepFills) {
+      repaintFillLayer(magicFillsRef.current);
+    } else {
+      fillDataRef.current = new ImageData(cssW, cssH);
+      fillCountRef.current  = 0;
+      groupCountRef.current = 0;
+      fillPixelMaps.current.clear();
+      setMagicFills([]);
+      setMfHiddenIds(new Set());
+      setMfSelectedId(null);
+      setMfSelectedGroup(null);
+      setMfHolesClosed(new Set());
+      setMfLastFillPos(null);
+    }
 
 
     // ── Helper: fall back to the visible canvas bitmap ────────────────────
@@ -1164,6 +1203,9 @@ export function useMagicFillSession({
   // ── Single-click raster fill ──────────────────────────────────────────────
   /** Fill a pre-computed room directly (no flood fill). */
   const fillFromRegion = useCallback((region: StoredRegion, mw: number, mh: number, canvasX: number, canvasY: number) => {
+    // Already filled → just select it (a second fill would count the room twice).
+    const dup = magicFillsRef.current.find(f => f.polygon === region.polygon);
+    if (dup) { setMfSelectedId(dup.id); setMfSelectedGroup(null); setMfLastFillPos({ x: canvasX, y: canvasY }); return; }
     const fc = fillCanvasRef.current;
     if (!fc || !fillDataRef.current) return;
     const cssW = pdfDimensions?.w ?? fc.width, cssH = pdfDimensions?.h ?? fc.height;
@@ -1209,7 +1251,8 @@ export function useMagicFillSession({
       id, label: `Fill ${fillCountRef.current}`, color: activeColor, opacity: mfOpacity,
       areaPx: region.areaPx, perimPx: region.perimPx, polygon: region.polygon, svgMode: false,
     };
-    setMagicFills(prev => [...prev, fill]);
+    redoRef.current = []; setMfRedoCount(0);
+      setMagicFills(prev => [...prev, fill]);
     setMfSelectedId(id);
     setMfSelectedGroup(null);
     setMfLastFillPos({ x: canvasX, y: canvasY });
@@ -1359,6 +1402,7 @@ export function useMagicFillSession({
         svgMode: !snapRef.current,
       };
 
+      redoRef.current = []; setMfRedoCount(0);
       setMagicFills(prev => [...prev, fill]);
       setMfSelectedId(id);
       setMfSelectedGroup(null);
@@ -1526,6 +1570,7 @@ export function useMagicFillSession({
         svgMode: true,
       };
 
+      redoRef.current = []; setMfRedoCount(0);
       setMagicFills(prev => [...prev, fill]);
       setMfSelectedId(null);
       setMfSelectedGroup(gId);
@@ -1587,32 +1632,35 @@ export function useMagicFillSession({
     setMfIsFilling(false);
     setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
 
-    setMagicFills(prev => {
-      if (prev.length === 0) return prev;
-      const last = prev[prev.length - 1];
-      let next: MagicFill[];
-      if (last.groupId != null) {
-        const gid = last.groupId;
-        prev.filter(x => x.groupId === gid).forEach(x => fillPixelMaps.current.delete(x.id));
-        next = prev.filter(x => x.groupId !== gid);
-      } else {
-        fillPixelMaps.current.delete(last.id);
-        next = prev.slice(0, -1);
-      }
-      if (snapshots.current.length > 0) {
-        const snap = snapshots.current.pop()!;
-        const fc = fillCanvasRef.current;
-        if (fc) {
-          fillDataRef.current = new ImageData(new Uint8ClampedArray(snap.data), snap.width, snap.height);
-          fc.getContext('2d')?.putImageData(fillDataRef.current, 0, 0);
-        }
-      }
-      const newSel = next.length ? next[next.length - 1].id : null;
-      setMfSelectedId(newSel);
-      setMfSelectedGroup(null);
-      return next;
-    });
-  }, [fillCanvasRef]);
+    const prev = magicFillsRef.current;
+    if (prev.length === 0) return;
+    const last = prev[prev.length - 1];
+    const taken = last.groupId != null ? prev.filter(x => x.groupId === last.groupId) : [last];
+    const ids = new Set(taken.map(x => x.id));
+    const next = prev.filter(x => !ids.has(x.id));
+    redoRef.current.push(taken);
+    setMfRedoCount(redoRef.current.length);
+    snapshots.current = [];
+    magicFillsRef.current = next;
+    repaintFillLayer(next);
+    setMagicFills(next);
+    setMfSelectedId(next.length ? next[next.length - 1].id : null);
+    setMfSelectedGroup(null);
+    setMfHoveredId(null);
+  }, [repaintFillLayer]);
+
+  const handleMagicRedo = useCallback(() => {
+    const back = redoRef.current.pop();
+    setMfRedoCount(redoRef.current.length);
+    if (!back) return;
+    const next = [...magicFillsRef.current, ...back];
+    snapshots.current = [];
+    magicFillsRef.current = next;
+    repaintFillLayer(next);
+    setMagicFills(next);
+    setMfSelectedId(back[back.length - 1].id);
+    setMfSelectedGroup(null);
+  }, [repaintFillLayer]);
 
   // ── Clear all ─────────────────────────────────────────────────────────────
   const handleMagicClear = useCallback(() => {
@@ -1625,6 +1673,8 @@ export function useMagicFillSession({
     if (fillDataRef.current) {
       fillDataRef.current.data.fill(0);
     }
+    for (const g of redoRef.current) g.forEach(x => fillPixelMaps.current.delete(x.id));
+    redoRef.current = []; setMfRedoCount(0);
     snapshots.current       = [];
     fillCountRef.current    = 0;
     groupCountRef.current   = 0;
@@ -1754,10 +1804,10 @@ export function useMagicFillSession({
     handleMagicClear,
   ]);
 
+  // Skip = keep the fills under the default name (it used to throw them away).
   const handleMfNameSkip = useCallback(() => {
-    setShowMfNameDialog(false);
-    handleMagicClear();
-  }, [handleMagicClear]);
+    handleMfNameConfirm('');
+  }, [handleMfNameConfirm]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
   const allVisibleFills = magicFills;
@@ -1794,6 +1844,8 @@ export function useMagicFillSession({
     handleMagicHoverLeave,
     handleMagicFillHoles,
     handleMagicUndo,
+    handleMagicRedo,
+    mfRedoCount,
     handleMagicClear,
     handleMagicDelete,
     handleMagicToggleHide,

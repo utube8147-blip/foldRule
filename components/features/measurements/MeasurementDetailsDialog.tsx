@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { DoorOpen, Wind, Fan, Zap, Plug, Library } from 'lucide-react';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import { formatCurrency } from '@/lib/utils';
@@ -47,6 +47,14 @@ export function MeasurementDetailsDialog({
     }
   }, [isOpen, defaultName, defaultMaterial]);
 
+  // Select the suggested name so typing replaces it.
+  const nameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    const t = setTimeout(() => nameRef.current?.select(), 0);
+    return () => clearTimeout(t);
+  }, [isOpen]);
+
   if (!isOpen) return null;
 
   return (
@@ -71,6 +79,8 @@ export function MeasurementDetailsDialog({
               className="w-full bg-zinc-800 border border-industrial-border px-3 py-2 text-sm font-mono text-zinc-200 focus:outline-none focus:border-amber-400 transition-colors"
               placeholder={isCountType ? "e.g., Fans, Doors, Windows, etc." : "e.g., Wall Section A, Column Base, etc."}
               autoFocus
+              ref={nameRef}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onConfirm(name, material, selectedIcon); } }}
             />
           </div>
           

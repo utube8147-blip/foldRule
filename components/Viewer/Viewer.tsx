@@ -16,7 +16,7 @@
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
-import { ChevronLeft, ChevronRight, Check } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Check, Undo2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import pdfjsLib from '@/lib/pdf/pdfClient';
 import { ToolType, TakeoffRow } from '@/types';
@@ -828,7 +828,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleMagicPolygonFill,
     maskW, maskH,
     handleMagicHover, handleMagicHoverLeave,
-    handleMagicFillHoles, handleMagicUndo,
+    handleMagicFillHoles, handleMagicUndo, handleMagicRedo, mfRedoCount,
     handleMagicClear, handleMagicDelete,
     handleMagicToggleHide, handleMagicAbortSession,
     handleMagicFinish, handleMfNameConfirm, handleMfNameSkip,
@@ -1236,6 +1236,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [selectedId, projectState, updateMeasurement]);
 
   // ── Toolbar API ───────────────────────────────────────────────────────────
+  const mfSessionUndo = activeTool === 'magic-fill' && (mfStagedCount > 0 || mfRedoCount > 0);
   const toolbarAPI = useMemo(() => ({
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool: handleSetActiveTool, scale, setScale, scaleFactor,
@@ -1251,7 +1252,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pdf, pageNumber,
     fitToScreen: () => fitToScreen(),
     handleManualScale,
-    canUndo, canRedo, handleUndo, handleRedo,
+    // While fills are waiting to be finished, the main Undo / Redo buttons
+    // step through those fills.
+    canUndo: mfSessionUndo ? mfStagedCount > 0 : canUndo,
+    canRedo: mfSessionUndo ? mfRedoCount > 0 : canRedo,
+    handleUndo: mfSessionUndo ? handleMagicUndo : handleUndo,
+    handleRedo: mfSessionUndo ? handleMagicRedo : handleRedo,
     polyarcMode: safePolyarcMode, togglePolyarcMode,
     tempPointsCount: tempPoints.length,
     pageSizePt: pdfDimensions ? { w: pdfDimensions.w / (dimsScaleRef.current || 1), h: pdfDimensions.h / (dimsScaleRef.current || 1) } : null,
@@ -1262,7 +1268,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     snapThreshold, confidenceFilter,
     pdfStage, resolvedSnapPoints,
     pageNumber, pdf,
-    fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo,
+    fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo, mfSessionUndo, mfStagedCount, mfRedoCount, handleMagicUndo, handleMagicRedo,
     safePolyarcMode, togglePolyarcMode, tempPoints.length,
   , pdfDimensions]);
 
@@ -1272,8 +1278,16 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (activeTool === 'magic-fill' && mfStagedCount > 0) { handleMagicAbortSession(); return; }
+        // Magic fill: Esc steps back one fill (or just drops the lasso in
+        // progress) — it never throws the whole series away.
+        if (activeTool === 'magic-fill' && lassoStore.get()) return;
+        if (activeTool === 'magic-fill' && mfStagedCount > 0) { e.preventDefault(); handleMagicUndo(); return; }
         if (activeTool === 'perimeter-offset') { handleOffsetCancel(); return; }
+      }
+      if (activeTool === 'magic-fill' && !(e.target as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable]')) {
+        const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
+        if (mfStagedCount > 0 && ((mod && k === 'z' && !e.shiftKey) || (!mod && e.key === 'Backspace'))) { e.preventDefault(); handleMagicUndo(); return; }
+        if (mfRedoCount > 0 && mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); handleMagicRedo(); return; }
       }
       if (e.key === 'Enter' && activeTool === 'perimeter-offset') return;
 
@@ -1338,7 +1352,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
-    handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
+    handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel, handleMagicUndo, handleMagicRedo, mfRedoCount, lassoStore,
     setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled, setToolMode,
     arcStart, clearTempPoints, showMeasurementDialog, mfStagedCount, handleMagicFinish, handleFinishMeasurement,
   ]);
@@ -1527,8 +1541,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
           onKeyDown={e => {
             if (e.code === 'Space') e.preventDefault();
             if (e.key === 'Escape') {
-              if (activeTool === 'magic-fill' && mfStagedCount > 0) {
-                handleMagicAbortSession();
+              if (activeTool === 'magic-fill' && (mfStagedCount > 0 || lassoStore.get())) {
+                /* handled by the window shortcut: step back one fill */
               } else if (activeTool === 'perimeter-offset') {
                 handleOffsetCancel();
               } else if (tempPoints.length > 0) {
@@ -1619,15 +1633,27 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 !mfIsRepainting &&
                 !propAppendToGroupId &&
                 mfLastFillPos && (
-                  <button
-                    className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                  <div
+                    className="absolute z-[70] flex items-stretch gap-1"
                     style={{ left: mfLastFillPos.x + 15, top: mfLastFillPos.y + 15 }}
+                    onPointerDown={e => e.stopPropagation()}
+                  >
+                  <button
+                    className="flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
                     onClick={e => { e.stopPropagation(); handleMagicFinish(); }}
                     onPointerDown={e => e.stopPropagation()}
                   >
                     <Check className="w-3 h-3" />
                     Finish ({mfStagedCount} fill{mfStagedCount !== 1 ? 's' : ''})
                   </button>
+                    <button
+                      title="Undo the last fill (Ctrl+Z)"
+                      className="flex items-center gap-1 bg-zinc-900 text-zinc-100 border border-zinc-600 font-mono text-[11px] uppercase tracking-widest px-2.5 py-1.5 shadow-lg whitespace-nowrap hover:bg-zinc-800 active:scale-95 transition-transform"
+                      onClick={e => { e.stopPropagation(); handleMagicUndo(); }}
+                    >
+                      <Undo2 className="w-3 h-3" /> Undo
+                    </button>
+                  </div>
                 )}
 
               {isMagicFillTool && mfHoveredFill && !mfIsFilling && !mfIsRepainting && (
@@ -1780,7 +1806,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 )}
                 <div className="w-px h-3 bg-industrial-border" />
                 {mfStagedCount > 0
-                  ? <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
+                  ? <span className="text-amber-400">Enter to finish · Ctrl+Z or Esc to undo the last fill</span>
                   : <span>Click a room to fill it · Hold Space and click around several rooms to fill them together</span>
                 }
               </>

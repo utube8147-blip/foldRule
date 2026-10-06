@@ -563,6 +563,8 @@ export function TakeoffProvider({
       mAfter = recalculateParentTotal(m.parentId, mAfter);
     }
 
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
+
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -596,6 +598,8 @@ export function TakeoffProvider({
       mAfter = recalculateParentTotal(parentId, mAfter);
     }
 
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
+
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -626,6 +630,8 @@ export function TakeoffProvider({
       mAfter = recalculateParentTotal(m.parentId, mAfter);
     }
 
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
+
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -649,6 +655,8 @@ export function TakeoffProvider({
     if (updatedMeasurement?.parentId) {
       mAfter = recalculateParentTotal(updatedMeasurement.parentId, mAfter);
     }
+
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -681,6 +689,8 @@ export function TakeoffProvider({
       const childIdsToDelete = deletedMeasurement.childIds ?? [];
       mAfter = mAfter.filter(m => !childIdsToDelete.includes(m.id as never));
     }
+
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
@@ -762,6 +772,8 @@ export function TakeoffProvider({
       mAfter.push(groupHeader);
     }
 
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
+
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -790,6 +802,8 @@ export function TakeoffProvider({
         .filter(m => m.id !== groupId);
     }
 
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
+
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -809,6 +823,8 @@ export function TakeoffProvider({
     const mAfter = mBefore
       .map(m => m.parentId === groupId ? { ...m, groupId: undefined, parentId: undefined } : m)
       .filter(m => m.id !== groupId);
+
+    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
 
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
