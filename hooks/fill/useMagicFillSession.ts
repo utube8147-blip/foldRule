@@ -152,7 +152,12 @@ function mfAdaptiveRdp(pts) {
     const j = (i + 1) % pts.length;
     perim += Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
   }
-  const eps = Math.max(0.5, Math.min(3, perim / 400));
+  // Under one mask pixel: enough to flatten the pixel staircase of a straight
+  // or diagonal wall into a single edge, but small enough that a curved wall
+  // keeps its shape. (This used to grow to 3 px for large rooms, which turned
+  // circles and arcs into visibly flat-sided polygons wherever the outline
+  // could not be snapped onto the drawing's own arc — thick walls, mostly.)
+  const eps = Math.max(0.5, Math.min(0.9, perim / 400));
   return mfRdpSimplify(pts, eps);
 }
 
@@ -381,7 +386,7 @@ self.onmessage = ({ data }) => {
 // skipped — clicks there use the normal flood fill.
 // ─────────────────────────────────────────────────────────────────────────────
 /** Bump when the room-finding algorithm changes (saved rooms get rebuilt). */
-export const ROOMS_VERSION = 3;   // v2: skip regions covering > 80% of the page · v3: thin lines are walls
+export const ROOMS_VERSION = 4;   // v2: skip regions covering > 80% of the page · v3: thin lines are walls · v4: curved walls keep their shape
 
 /** Same seed pattern as OFFSETS_R inside the raster worker (keep in sync). */
 const SEED_OFFSETS: [number, number][] = [
