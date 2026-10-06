@@ -10,7 +10,6 @@ import { useEffect, useState } from 'react';
 import { FolderOpen, FolderSync, HardDrive, MonitorDown, TriangleAlert, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFolderStatus, useInstallState, useStorageMode } from './hooks';
-import { getStorageModeReason } from '@/lib/storage/projectDb';
 import { connectFolder, resumeFolder, disconnectFolder, syncFolder } from '@/lib/storage/folderSync';
 import { promptInstall } from '@/lib/pwa/install';
 
@@ -80,8 +79,10 @@ export function FolderPermissionStrip({ onAfterResume }: { onAfterResume?: () =>
     try { setDismissed(sessionStorage.getItem(DISMISS_KEY) === '1'); } catch { setDismissed(false); }
   }, []);
 
+  const mode = useStorageMode();
   const needsAttention = !!f.folderName && (f.permission === 'prompt' || f.permission === 'denied' || !!f.error);
-  if (!needsAttention || dismissed) return null;
+  // When projects live in the folder, StorageModeBanner handles this (and can't be dismissed).
+  if (mode !== 'browser' || !needsAttention || dismissed) return null;
 
   const dismiss = () => {
     setDismissed(true);
@@ -133,9 +134,41 @@ export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnec
   const mode = useStorageMode();
   const f    = useFolderStatus();
   const [busy, setBusy] = useState(false);
-  if (mode !== 'memory') return null;
+  if (mode === 'browser') return null;
 
   const usingFolder = !!f.folderName && f.permission === 'granted' && !f.error;
+  // Projects live in the folder by choice and it is reachable: nothing to say.
+  if (mode === 'folder' && (usingFolder || !f.loaded)) return null;
+  if (mode === 'folder') {
+    const canAllow = !!f.folderName && f.permission === 'prompt' && !f.error;
+    return (
+      <div role="alert" className={cn('border-b border-amber-400/40 bg-amber-400/[0.08] px-6 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-sans text-amber-100/90', className)}>
+        <FolderOpen className="w-4 h-4 shrink-0 text-amber-400" aria-hidden />
+        <span className="flex-1 min-w-[260px] leading-relaxed">
+          <strong className="font-semibold">
+            {f.folderName ? <>Your projects are in the folder “{f.folderName}”.</> : 'Your projects folder isn’t connected.'}
+          </strong>{' '}
+          {f.error
+            ? <>{f.error} Choose the folder again to carry on.</>
+            : canAllow
+              ? 'The browser needs your OK to open it again. Nothing is loaded or saved until then.'
+              : 'Choose it to load your projects. Nothing is saved until then.'}
+        </span>
+        {canAllow ? (
+          <button type="button" disabled={busy} onClick={() => void act(resumeFolder)}
+            className="bg-amber-accent hover:bg-amber-400 text-black font-bold px-3 py-1.5 disabled:opacity-50">
+            Allow access
+          </button>
+        ) : (
+          <button type="button" disabled={busy} onClick={() => void act(connectFolder)}
+            className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black font-bold px-3 py-1.5 disabled:opacity-50">
+            <FolderOpen className="w-3.5 h-3.5" aria-hidden />
+            Choose projects folder
+          </button>
+        )}
+      </div>
+    );
+  }
   const act = async (fn: () => Promise<boolean>) => {
     setBusy(true);
     try { if (await fn()) onAfterConnect?.(); } finally { setBusy(false); }
@@ -163,7 +196,7 @@ export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnec
               : 'Use “Download backup” on a project before closing this window.'}
           </>
         )}
-        <span className="block opacity-70 mt-0.5">{getStorageModeReason() ?? ''} Freeing space on the drive that holds your browser profile (usually C:) brings normal saving back.</span>
+        <span className="block opacity-70 mt-0.5">This usually means the drive that holds your browser profile (usually C:) is full. Freeing space there brings normal saving back.</span>
       </span>
       {!usingFolder && f.supported && (
         f.folderName && f.permission === 'prompt' ? (
@@ -205,7 +238,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
   const statusText =
     f.syncing ? 'Syncing…' :
     f.error ? f.error :
-    f.permission === 'granted' ? `Saving here · last synced ${when(f.lastSyncAt)}` :
+    f.permission === 'granted' ? `Everything is saved here · last synced ${when(f.lastSyncAt)}` :
     f.permission === 'denied' ? 'Blocked by the browser' :
     'Paused — needs your OK';
 
@@ -225,9 +258,13 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
           <section className="flex gap-3">
             <HardDrive className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" aria-hidden />
             <div>
-              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-xs">This browser · always on</h3>
+              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-xs">
+                {connected ? 'This browser · remembers your folder' : 'This browser · used until you choose a folder'}
+              </h3>
               <p className="mt-1 text-zinc-400">
-                Every change saves here automatically, including offline. This is what the app works from.
+                {connected
+                  ? 'Your projects and drawings are not kept in the browser — only which folder they are in.'
+                  : 'With no folder chosen, projects are saved inside this browser on this computer.'}
               </p>
             </div>
           </section>
@@ -268,22 +305,24 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
                     </button>
                     <button type="button" disabled={busy} onClick={() => void act(disconnectFolder)}
                       className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500 hover:text-red-300 disabled:opacity-50">
-                      Stop saving to folder
+                      Stop using folder
                     </button>
                   </div>
                   <p className="mt-3 text-zinc-500">
                     This folder is used by Foldrule everywhere on this computer — the browser tab and the installed
                     app share it, so you only choose it once.{' '}
-                    Each project is a sub-folder with a <span className="text-zinc-300">project.json</span> and its PDFs.
+                    This folder is where your projects live. Each one is a sub-folder with a{' '}
+                    <span className="text-zinc-300">project.json</span> and its PDFs.
                     Point this at a OneDrive or Google Drive folder to keep projects in sync across computers.
-                    Stopping leaves the files where they are.
+                    Stopping copies your projects back into this browser and leaves the files where they are.
                   </p>
                 </>
               ) : (
                 <>
                   <p className="mt-1 text-zinc-400">
-                    Keep a copy of every project as real files in a folder you choose — easy to back up, or to sync
-                    between computers through OneDrive or Google Drive. Your browser will ask once to allow access.
+                    Keep your projects as real files in a folder you choose, instead of inside the browser — easy to
+                    back up, takes no browser storage, and syncs between computers through OneDrive or Google Drive.
+                    Your browser will ask to allow access.
                   </p>
                   <button type="button" disabled={busy} onClick={() => void act(connectFolder)}
                     className="mt-3 flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 text-[11px] font-bold uppercase tracking-widest disabled:opacity-50">
@@ -327,6 +366,17 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
 export function FolderSaveHint() {
   const f    = useFolderStatus();
   const mode = useStorageMode();
+  if (mode === 'folder') {
+    const ok = !!f.folderName && f.permission === 'granted' && !f.error;
+    if (ok) return <span className="text-[11px] text-zinc-500 font-semibold truncate max-w-[180px]" title={`Saved in your projects folder “${f.folderName}”`}>· in “{f.folderName}”</span>;
+    return (
+      <button type="button" onClick={() => void (f.folderName && f.permission === 'prompt' && !f.error ? resumeFolder() : connectFolder())}
+        title="Your projects are kept in your folder, and the browser needs your OK to use it again. Nothing is saved until then."
+        className="text-[11px] font-bold text-red-300 hover:text-white border border-red-500/60 bg-red-500/10 px-1.5 py-0.5">
+        Not saved · allow folder
+      </button>
+    );
+  }
   if (mode === 'memory') {
     const ok = !!f.folderName && f.permission === 'granted' && !f.error;
     if (ok) {

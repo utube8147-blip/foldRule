@@ -285,18 +285,30 @@ has its own window, works offline after first use (`public/sw.js`, production
 builds only), and opens files from File Explorer: double-click a `.foldrule`
 backup, or right-click a PDF → *Open with → Foldrule* (handled by `/open`).
 
-**Save to a folder** (Edge/Chrome). Dashboard → *Save location* → *Choose
-folder*. Browser storage stays the working copy; the folder is a mirror of real
-files, one sub-folder per project:
+**Projects in a folder** (Edge/Chrome). Dashboard → *Save location* → *Choose
+folder*. From then on **the folder is the storage**: projects and PDFs are kept
+there and nowhere else, one sub-folder per project:
 
 ```
 <your folder>/Colombo-Residence__1a2b3c4d/project.json
 <your folder>/Colombo-Residence__1a2b3c4d/drawings/A-101__9f8e7d6c.pdf
 ```
 
-Every save is pushed to the folder; opening the dashboard syncs both ways (the
-newer copy wins), so a OneDrive/Google Drive folder keeps two computers in step.
-Code: `lib/storage/folderSync.ts`, UI: `components/pwa/FolderControls.tsx`.
+* The browser remembers only *which folder* (a tiny settings entry). No
+  project data or PDFs are stored in the browser profile, so it doesn't fill
+  the system drive. Anything that was in the browser is moved into the folder
+  on the first sync (and removed from the browser only once it is safely there).
+* Opening the app reads `project.json` files for the list; a project's PDFs are
+  read when it is opened. Every save is written straight to the folder, and
+  the header says "Saved" only after that write succeeded.
+* A OneDrive/Google Drive folder keeps two computers in step (newer copy wins).
+* *Stop using folder* copies everything back into the browser first.
+* Without a folder (or in browsers that can't use one), projects are saved in
+  the browser as before.
+
+Code: `lib/storage/folderSync.ts` (sync, on-demand PDFs),
+`lib/storage/projectDb.ts` (`setFolderPrimary`, `getStorageMode() === 'folder'`),
+UI: `components/pwa/FolderControls.tsx`.
 
 **One folder per computer — browser tab and installed app share it.** The chosen
 folder is remembered in the browser's own storage, which the tab and the

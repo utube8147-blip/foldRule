@@ -100,11 +100,116 @@ function createStores(db: IDBDatabase): void {
 //  the browser copy is what makes every save instant and prompt-free. When it
 //  is unavailable we fall back to folder-only rather than refusing to work.
 
-export type StorageMode = 'browser' | 'memory';
+export type StorageMode = 'browser' | 'memory' | 'folder';
+
+// ── "Projects live in my folder" ─────────────────────────────────────────────
+//
+//  Once a projects folder is connected (lib/storage/folderSync.ts) it becomes
+//  THE place projects and PDFs are stored. The browser then keeps only the
+//  small settings store on disk — which folder it is, mainly — and project
+//  data is held in memory while the app is open, read from the folder and
+//  written back to it on every save. Nothing bulky goes into the browser
+//  profile (so a full C: drive stops mattering), and the folder is always the
+//  complete, current copy.
+//
+//  The choice is a flag in localStorage so it is known before any data is
+//  touched. getStorageMode() reports 'folder' in this state.
+
+const FOLDER_PRIMARY_KEY = 'foldrule:projects-in-folder';
+let folderPrimary: boolean = (() => {
+  try { return typeof localStorage !== 'undefined' && localStorage.getItem(FOLDER_PRIMARY_KEY) === '1'; }
+  catch { return false; }
+})();
+let memDataPromise: Promise<IDBDatabase> | null = null;
+
+export const isFolderPrimary = (): boolean => folderPrimary;
+
+/** Switch where project data is kept. Does not move anything — see folderSync. */
+export function setFolderPrimary(on: boolean): void {
+  if (folderPrimary === on) return;
+  folderPrimary = on;
+  if (!on) { memDataPromise = null; hydratedFromFolder.clear(); }
+  try {
+    if (typeof localStorage !== 'undefined') {
+      if (on) localStorage.setItem(FOLDER_PRIMARY_KEY, '1'); else localStorage.removeItem(FOLDER_PRIMARY_KEY);
+    }
+  } catch { /* storage blocked: the choice lasts for this session */ }
+  modeListeners.forEach(l => l());
+}
+
+/**
+ * Reads a project's PDFs from the folder the first time they are needed (set
+ * by folderSync). Keeps opening the project list cheap: only project.json
+ * files are read up front, drawings when a project is actually opened.
+ */
+type FolderFileLoader = (projectId: string) => Promise<Map<string, File>>;
+let folderFileLoader: FolderFileLoader | null = null;
+const hydratedFromFolder = new Set<string>();
+export function setFolderFileLoader(fn: FolderFileLoader | null): void { folderFileLoader = fn; }
+
+/**
+ * Projects of the current account that are still in the on-disk browser
+ * database (made before the folder took over, or by an account that hadn't
+ * synced yet) are copied into memory so the next folder sync writes them out.
+ * Returns their ids; call deleteDiskProjects(ids) once that sync has succeeded.
+ * Other accounts' projects are left where they are.
+ */
+export async function copyMyDiskProjectsToMemory(): Promise<string[]> {
+  if (!folderPrimary || storageMode === 'memory') return [];
+  const disk = await openDiskDb();
+  const mine = (await reqToPromise(disk.transaction(PROJECTS, 'readonly').objectStore(PROJECTS).getAll() as IDBRequest<ProjectRecord[]>)).filter(isMine);
+  if (mine.length === 0) return [];
+  const mem = await openDb();
+  for (const rec of mine) {
+    const have = await reqToPromise(mem.transaction(PROJECTS, 'readonly').objectStore(PROJECTS).get(rec.id) as IDBRequest<ProjectRecord | undefined>);
+    if (have && have.updatedAt >= rec.updatedAt) continue;         // the folder's copy is as new or newer
+    const files = await reqToPromise(disk.transaction(FILES, 'readonly').objectStore(FILES).index('projectId').getAll(rec.id) as IDBRequest<FileRecord[]>);
+    const tx = mem.transaction([PROJECTS, FILES], 'readwrite');
+    tx.objectStore(PROJECTS).put(owned(rec));
+    for (const f of files) tx.objectStore(FILES).put(f);
+    await txDone(tx);
+  }
+  return mine.map(r => r.id);
+}
+
+/** Remove these projects (and their PDFs / saved rooms) from the on-disk browser database. */
+export async function deleteDiskProjects(ids: string[]): Promise<void> {
+  if (ids.length === 0 || storageMode === 'memory') return;
+  const disk = await openDiskDb();
+  const tx = disk.transaction([PROJECTS, FILES, REGIONS], 'readwrite');
+  for (const id of ids) {
+    tx.objectStore(PROJECTS).delete(id);
+    for (const store of [FILES, REGIONS]) {
+      const keys = await reqToPromise(tx.objectStore(store).index('projectId').getAllKeys(id));
+      for (const k of keys) tx.objectStore(store).delete(k);
+    }
+  }
+  await txDone(tx);
+}
+
+/** Copy every project (with its PDFs) from memory into the on-disk browser database. */
+export async function copyProjectDataToDisk(): Promise<void> {
+  if (!folderPrimary || storageMode === 'memory') return;
+  const mem = await openDb();
+  const all = await reqToPromise(mem.transaction(PROJECTS, 'readonly').objectStore(PROJECTS).getAll() as IDBRequest<ProjectRecord[]>);
+  const disk = await openDiskDb();
+  for (const rec of all) {
+    const files = await loadDrawingFiles(rec.id);       // pulls PDFs in from the folder if needed
+    const tx = disk.transaction([PROJECTS, FILES], 'readwrite');
+    tx.objectStore(PROJECTS).put(rec);
+    for (const [drawingId, file] of files) {
+      tx.objectStore(FILES).put({
+        key: `${rec.id}:${drawingId}`, projectId: rec.id, drawingId,
+        name: file.name, type: file.type || 'application/pdf', blob: file,
+      } satisfies FileRecord);
+    }
+    await txDone(tx);
+  }
+}
 let storageMode: StorageMode = 'browser';
 let storageModeReason: string | null = null;
 const modeListeners = new Set<() => void>();
-export const getStorageMode = (): StorageMode => storageMode;
+export const getStorageMode = (): StorageMode => (storageMode === 'memory' ? 'memory' : folderPrimary ? 'folder' : 'browser');
 export const getServerStorageMode = (): StorageMode => 'browser';
 export const getStorageModeReason = (): string | null => storageModeReason;
 export function subscribeStorageMode(cb: () => void): () => void {
@@ -115,6 +220,8 @@ export function subscribeStorageMode(cb: () => void): () => void {
 /** Test hook: back to on-disk storage. */
 export function __resetStorageModeForTests(): void {
   storageMode = 'browser'; storageModeReason = null; dbPromise = null;
+  folderPrimary = false; memDataPromise = null; hydratedFromFolder.clear();
+  try { if (typeof localStorage !== 'undefined') localStorage.removeItem(FOLDER_PRIMARY_KEY); } catch { /* ignore */ }
 }
 
 function openMemoryDb(): Promise<IDBDatabase> {
@@ -147,7 +254,7 @@ export function fallBackToMemory(reason: unknown): Promise<IDBDatabase> {
   return mem;
 }
 
-function openDb(): Promise<IDBDatabase> {
+function openDiskDb(): Promise<IDBDatabase> {
   if (!isStorageAvailable()) return Promise.reject(new Error('IndexedDB is not available in this browser'));
   if (dbPromise) return dbPromise;
   const thisOpen: Promise<IDBDatabase> = new Promise((resolve, reject) => {
@@ -172,6 +279,15 @@ function openDb(): Promise<IDBDatabase> {
   });
   dbPromise = thisOpen;
   return thisOpen;
+}
+
+/** The database project data goes through: memory when projects live in the folder, else disk. */
+function openDb(): Promise<IDBDatabase> {
+  if (folderPrimary && storageMode !== 'memory') {
+    if (!memDataPromise) memDataPromise = openMemoryDb();
+    return memDataPromise;
+  }
+  return openDiskDb();
 }
 
 /** Drop the cached connection (it will be reopened on the next call). */
@@ -378,6 +494,7 @@ export async function renameProject(id: string, name: string): Promise<void> {
 }
 
 export async function deleteProject(id: string): Promise<void> {
+  hydratedFromFolder.delete(id);
   await deleteRegionsWhere('projectId', id).catch(() => {});
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
@@ -436,6 +553,25 @@ export async function loadDrawingFiles(projectId: string): Promise<Map<string, F
   const out = new Map<string, File>();
   for (const r of recs) {
     out.set(r.drawingId, new File([r.blob], r.name, { type: r.type || 'application/pdf' }));
+  }
+  // Projects kept in the folder: fetch this project's PDFs from it once per session.
+  if (getStorageMode() !== 'browser' && folderFileLoader && !hydratedFromFolder.has(projectId)) {
+    const fromFolder = await folderFileLoader(projectId).catch(() => null);
+    if (fromFolder) {
+      hydratedFromFolder.add(projectId);
+      const missing = [...fromFolder].filter(([drawingId]) => !out.has(drawingId));
+      if (missing.length > 0) {
+        const wtx = (await openDb()).transaction(FILES, 'readwrite');
+        for (const [drawingId, file] of missing) {
+          out.set(drawingId, file);
+          wtx.objectStore(FILES).put({
+            key: `${projectId}:${drawingId}`, projectId, drawingId,
+            name: file.name, type: file.type || 'application/pdf', blob: file,
+          } satisfies FileRecord);
+        }
+        await txDone(wtx).catch(() => {});
+      }
+    }
   }
   return out;
 }
@@ -541,20 +677,20 @@ export function downloadBlob(blob: Blob, filename: string): void {
 // ── Settings (small key/value store: folder handle, tombstones, prefs) ──────
 
 export async function getSetting<T>(key: string): Promise<T | undefined> {
-  const db = await openDb();
+  const db = await openDiskDb();
   const tx = db.transaction(SETTINGS, 'readonly');
   return reqToPromise(tx.objectStore(SETTINGS).get(key) as IDBRequest<T | undefined>);
 }
 
 export async function setSetting(key: string, value: unknown): Promise<void> {
-  const db = await openDb();
+  const db = await openDiskDb();
   const tx = db.transaction(SETTINGS, 'readwrite');
   tx.objectStore(SETTINGS).put(value, key);
   await txDone(tx);
 }
 
 export async function deleteSetting(key: string): Promise<void> {
-  const db = await openDb();
+  const db = await openDiskDb();
   const tx = db.transaction(SETTINGS, 'readwrite');
   tx.objectStore(SETTINGS).delete(key);
   await txDone(tx);
@@ -565,6 +701,8 @@ export async function deleteSetting(key: string): Promise<void> {
  * drawing files — used when pulling a newer copy in from a synced folder.
  */
 export async function putProjectRecord(record: ProjectRecord, files: Map<string, File>): Promise<void> {
+  // A newer copy arrived from the folder without its PDFs: fetch them afresh when needed.
+  if (files.size === 0) hydratedFromFolder.delete(record.id);
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
   tx.objectStore(PROJECTS).put(owned(record));

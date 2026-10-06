@@ -40,9 +40,9 @@ import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/sc
 import { defaultMaterialBank } from '@/data/materials';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
-  saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions, describeStorageError,
+  saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions, describeStorageError, getStorageMode,
 } from '@/lib/storage/projectDb';
-import { initFolderSync, pushProjectToFolder, PROJECTS_PULLED_EVENT } from '@/lib/storage/folderSync';
+import { initFolderSync, pushProjectToFolder, syncFolder, getFolderStatus, PROJECTS_PULLED_EVENT } from '@/lib/storage/folderSync';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
@@ -969,6 +969,9 @@ export function TakeoffProvider({
 
     (async () => {
       try {
+        // Projects kept in the folder: read them from it first (no-op, and no
+        // prompt, if access hasn't been allowed yet — the screen then asks).
+        if (getStorageMode() !== 'browser') { await initFolderSync(); await syncFolder(); }
         const rec = await getProject(projectId);
         if (cancelled) return;
         if (!rec) { setLoadStatus('not-found'); return; }
@@ -1036,11 +1039,24 @@ export function TakeoffProvider({
     setSaveStatus('saving');
     try {
       const at = await saveProjectState(pid, latestStateRef.current);
+      if (getStorageMode() !== 'browser') {
+        // The folder IS the storage: it only counts as saved once it is written there.
+        await pushProjectToFolder(pid);
+        const f = getFolderStatus();
+        if (!f.folderName || f.permission !== 'granted' || f.error) {
+          setSaveError(f.error ?? (f.folderName
+            ? `Not saved: access to your projects folder “${f.folderName}” needs to be allowed again. Use “Allow” next to this message.`
+            : 'Not saved: choose your projects folder.'));
+          setSaveStatus('error');
+          return;
+        }
+      } else {
+        // Mirror to the user's folder if they chose one (never prompts, never blocks).
+        void pushProjectToFolder(pid);
+      }
       setLastSavedAt(at);
       setSaveStatus('saved');
       setSaveError(null);
-      // Mirror to the user's folder if they chose one (never prompts, never blocks).
-      void pushProjectToFolder(pid);
     } catch (err) {
       console.error('[storage] autosave failed', err);
       setSaveError(describeStorageError(err));

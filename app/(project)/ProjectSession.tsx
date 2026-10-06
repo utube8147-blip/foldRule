@@ -42,14 +42,14 @@ function ProjectGate({ children }: { children: React.ReactNode }) {
   // Browser storage is unavailable, so the project can only come from the
   // projects folder. Choosing it pulls the projects in and this screen reloads
   // the project by itself (see PROJECTS_PULLED_EVENT in TakeoffContext).
-  if (storageMode === 'memory' && (loadStatus === 'not-found' || loadStatus === 'error')) {
+  if (storageMode !== 'browser' && (loadStatus === 'not-found' || loadStatus === 'error')) {
     return (
       <div className="h-screen flex flex-col bg-industrial-black">
         <StorageModeBanner />
         <div className="flex-1">
           <StatusScreen
-            title="Choose your projects folder to open this project"
-            body="This browser’s own storage isn’t working on this computer, so the project has to be read from your projects folder. If it was never saved to a folder, it can’t be opened until browser storage works again."
+            title="Open your projects folder to load this project"
+            body="Your projects are kept in your projects folder. Allow access to it (or choose it again) using the bar above, and this project opens by itself. If the project isn’t in that folder, go back to your project list."
             fill
           />
         </div>

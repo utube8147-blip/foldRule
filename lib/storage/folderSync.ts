@@ -17,6 +17,13 @@
 //    on another computer via OneDrive) are pulled in; newer local ones pushed.
 //  • Permission is only ever requested from a click (browsers require it).
 //    If it lapses, the UI shows a small inline "Allow" — never a pop-up.
+//  • THE FOLDER IS THE STORAGE. As soon as a folder is connected and the first
+//    sync has put every project in it, project data stops being kept in the
+//    browser at all (projectDb → setFolderPrimary): the browser remembers only
+//    which folder it is. Projects are read from the folder when the app opens
+//    (project.json up front, PDFs when a project is opened) and every save is
+//    written straight back. Disconnecting copies everything back into the
+//    browser first.
 //  • ONE folder per device. The chosen folder is stored in IndexedDB, which the
 //    browser tab and the installed app share (same browser profile). Every open
 //    window therefore uses the same folder: connecting, changing, allowing or
@@ -28,6 +35,8 @@
 import {
   getSetting, setSetting, deleteSetting, getProject, listProjects,
   loadDrawingFiles, putProjectRecord, requestPersistentStorage, getStorageOwner, SCHEMA_VERSION, type ProjectRecord,
+  getStorageMode, isFolderPrimary, setFolderPrimary, setFolderFileLoader, copyProjectDataToDisk,
+  copyMyDiskProjectsToMemory, deleteDiskProjects,
 } from './projectDb';
 
 /** Fired on `window` after a sync brought projects in from the folder. */
@@ -66,6 +75,7 @@ let initPromise: Promise<void> | null = null;
 
 /** Test hook: forget in-memory state (the stored handle is untouched). */
 export function __resetFolderSyncForTests(): void {
+  setFolderPrimary(false);
   rootHandle = null; initPromise = null; status = initial; syncChain = Promise.resolve();
 }
 
@@ -158,6 +168,17 @@ async function queryPermission(h: FileSystemDirectoryHandle): Promise<Permission
   catch { return 'prompt'; }
 }
 
+/** PDFs are read from the folder on demand when projects live there. */
+function registerFileLoader(): void {
+  setFolderFileLoader(async (projectId) => {
+    const root = rootHandle;
+    if (!root || (await queryPermission(root)) !== 'granted') throw new Error('folder not available');
+    const rec = await getProject(projectId);
+    const dir = rec ? await findProjectDir(root, projectId) : null;
+    return rec && dir ? readFolderDrawings(dir, rec) : new Map<string, File>();
+  });
+}
+
 /** Load the saved folder (if any) and check — without prompting — whether we may use it. */
 export function initFolderSync(): Promise<void> {
   if (initPromise) return initPromise;
@@ -165,6 +186,7 @@ export function initFolderSync(): Promise<void> {
     const supported = isFolderSupported();
     if (!supported) { set({ supported, loaded: true }); return; }
     startWatching();
+    registerFileLoader();
     try {
       const h = await getSetting<FileSystemDirectoryHandle>(HANDLE_KEY);
       if (h) {
@@ -194,6 +216,7 @@ export async function connectFolder(): Promise<boolean> {
     return false;
   }
   rootHandle = h;
+  registerFileLoader();
   try { await setSetting(HANDLE_KEY, h); }
   catch (err) { console.warn('[folder] could not remember the folder for next time', err); }
   // Ask the browser not to evict our storage (it holds the remembered folder).
@@ -219,6 +242,18 @@ export async function resumeFolder(): Promise<boolean> {
 
 /** Stop mirroring to the folder. Files already there are left untouched. */
 export async function disconnectFolder(): Promise<void> {
+  // Projects live in the folder: bring them (and their PDFs) back into the
+  // browser before letting go of it, or they would vanish from the app.
+  if (isFolderPrimary()) {
+    try {
+      await copyProjectDataToDisk();
+    } catch (err) {
+      console.error('[folder] could not copy projects back into the browser', err);
+      set({ error: 'Couldn’t copy your projects back into this browser (is the disk full?), so the folder is still in use.' });
+      return;
+    }
+    setFolderPrimary(false);
+  }
   rootHandle = null;
   await deleteSetting(HANDLE_KEY);
   set({ folderName: null, permission: null, lastSyncAt: null, error: null });
@@ -335,6 +370,24 @@ const canWrite = () => !!rootHandle && status.permission === 'granted';
  */
 export function syncFolder(): Promise<{ pulled: number; pushed: number } | null> {
   return serial(async () => {
+    const first = await syncOnce();
+    // First clean sync with a folder: from here on the folder IS the storage.
+    // Everything is in it now, so stop keeping project data in the browser —
+    // load it from the folder (second pass) and clear the browser's copies.
+    if (first && !status.error && !isFolderPrimary() && getStorageMode() === 'browser') {
+      setFolderPrimary(true);
+      const second = await syncOnce();
+      // (That pass also removes this account's copies from the browser, and only
+      // once they are safely in the folder — see syncOnce.)
+      if (!second || status.error) { setFolderPrimary(false); return first; }
+      return { pulled: first.pulled, pushed: first.pushed };
+    }
+    return first;
+  });
+}
+
+async function syncOnce(): Promise<{ pulled: number; pushed: number } | null> {
+  {
     if (!rootHandle) return null;
     const permission = await queryPermission(rootHandle);
     if (permission !== 'granted') { set({ permission }); return null; }
@@ -343,6 +396,10 @@ export function syncFolder(): Promise<{ pulled: number; pushed: number } | null>
     let pulled = 0, pushed = 0;
     try {
       const root       = rootHandle;
+      // Projects live in the folder: anything of this account's still sitting in
+      // the browser database joins the sync, and is removed from the browser
+      // only after the folder has it.
+      const fromDisk   = isFolderPrimary() ? await copyMyDiskProjectsToMemory() : [];
       const tombstones = new Set((await getSetting<string[]>(TOMBSTONES_KEY)) ?? []);
       const local      = new Map((await listProjects()).map(p => [p.id, p]));
       const inFolder   = new Map<string, { dir: FileSystemDirectoryHandle; rec: ProjectRecord }>();
@@ -365,7 +422,8 @@ export function syncFolder(): Promise<{ pulled: number; pushed: number } | null>
       for (const { dir, rec } of inFolder.values()) {  // pull
         const mine = local.get(rec.id);
         if (!mine || rec.updatedAt > mine.updatedAt + NEWER_BY_MS) {
-          await putProjectRecord(rec, await readFolderDrawings(dir, rec));
+          // Projects kept in the folder: only the record now, PDFs when it is opened.
+          await putProjectRecord(rec, getStorageMode() === 'browser' ? await readFolderDrawings(dir, rec) : new Map());
           pulled++;
         }
       }
@@ -377,6 +435,7 @@ export function syncFolder(): Promise<{ pulled: number; pushed: number } | null>
         }
       }
       await deleteSetting(TOMBSTONES_KEY);
+      await deleteDiskProjects(fromDisk).catch(err => console.warn('[folder] could not clear the browser copies', err));
       set({ syncing: false, lastSyncAt: Date.now(), error: null });
       // Lets an open screen that couldn't find its project (e.g. browser storage
       // is unavailable and the folder was just chosen) load it now.
@@ -388,7 +447,7 @@ export function syncFolder(): Promise<{ pulled: number; pushed: number } | null>
       set({ syncing: false, error: describe(err) });
     }
     return { pulled, pushed };
-  });
+  }
 }
 
 /** Push one project after it was saved (workspace autosave). Never prompts. */

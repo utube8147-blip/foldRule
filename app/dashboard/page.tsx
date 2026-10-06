@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import * as motion from 'motion/react-m';
 import { useAuth } from '@/context/AuthContext';
+import { useStorageMode } from '@/components/pwa/hooks';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
 import { useConfirm } from '@/components/common/ConfirmDialog';
 import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog, StorageModeBanner } from '@/components/pwa/FolderControls';
@@ -59,6 +60,7 @@ export default function Dashboard() {
   const [busyId,   setBusyId]   = useState<string | null>(null);
   const [usage,    setUsage]    = useState<{ used: number; quota: number } | null>(null);
   const { user, status: authStatus } = useAuth();
+  const storageMode = useStorageMode();
   const [showStorage, setShowStorage] = useState(false);
   const { confirm } = useConfirm();
   const importRef = useRef<HTMLInputElement>(null);
@@ -71,8 +73,16 @@ export default function Dashboard() {
       await syncFolder();
       setProjects(await listProjects());
       setError(null);
-      const est = await navigator.storage?.estimate?.();
-      if (est?.usage != null && est.quota) setUsage({ used: est.usage, quota: est.quota });
+      // Storage usage is only a nicety for the header. The browser can fail to
+      // work it out (it does when its own storage is broken, e.g. a full disk) —
+      // that must never hide the project list or show as an error.
+      try {
+        const est = await navigator.storage?.estimate?.();
+        if (est?.usage != null && est.quota) setUsage({ used: est.usage, quota: est.quota });
+        else setUsage(null);
+      } catch {
+        setUsage(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setProjects([]);
@@ -209,8 +219,10 @@ export default function Dashboard() {
           <div>
             <h1 className="text-3xl font-semibold tracking-tight text-white mb-2">Projects</h1>
             <p className="text-xs text-zinc-500 tracking-widest uppercase">
-              {projects?.length ?? 0} project{projects?.length === 1 ? '' : 's'} on this computer
-              {usage && <> · {formatBytes(usage.used)} of {formatBytes(usage.quota)} used in this browser</>}
+              {projects?.length ?? 0} project{projects?.length === 1 ? '' : 's'}{' '}
+              {storageMode === 'browser'
+                ? <>on this computer{usage && <> · {formatBytes(usage.used)} of {formatBytes(usage.quota)} used in this browser</>}</>
+                : 'in your projects folder'}
             </p>
           </div>
           <div className="flex items-center gap-3">
