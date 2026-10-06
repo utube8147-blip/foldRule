@@ -48,6 +48,10 @@ export interface TakeoffRow {
   unitRate: number;
   notes: string;
   points: Array<{ x: number; y: number }>;
+  /** Cut-outs inside an area. Each is an outline; its area is deducted. */
+  holes?: Array<Array<{ x: number; y: number }>>;
+  /** A quantity worked out from another row (source quantity × factor). Follows the source. */
+  derived?: { sourceId: string; factor: number; what: string };
   isOverridden: boolean;
   presetData?: Record<string, any>;
   presetId?: string;
@@ -76,7 +80,7 @@ export interface TakeoffRow {
   gridRows?:    number;
 }
 
-export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point' | 'Polygon' | 'Rectangle';
+export type MeasurementType = 'Length' | 'Area' | 'Count' | 'Point' | 'Polygon' | 'Rectangle' | 'Volume';
 
 
 

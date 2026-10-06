@@ -92,6 +92,7 @@ interface UseDrawingCanvasParams {
   showLabels?:      boolean;
   /** Measurement to outline as selected (read per frame; no re-render needed). */
   selectedIdRef?:   React.RefObject<string | null>;
+  extraSelectedRef?: React.RefObject<string[]>;
   /**
    * Finds the PDF line/arc under the cursor (canvas px in, canvas px out) so it
    * can be highlighted while drawing. Null = feature off.
@@ -585,6 +586,7 @@ export function useDrawingCanvas({
   arcDragPreview,
   showLabels = false,
   selectedIdRef,
+  extraSelectedRef,
   findHoverGeometry = null,
   findPinsNear = null,
 }: UseDrawingCanvasParams): UseDrawingCanvasReturn {
@@ -751,8 +753,14 @@ export function useDrawingCanvas({
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.closePath();
+          // Cut-outs: left unfilled, outlined like the edge.
+          for (const hole of m.holes ?? []) {
+            if (hole.length < 3) continue;
+            hole.forEach((q, i) => { const c = toCanvas(q.x, q.y); if (i === 0) ctx.moveTo(c.x, c.y); else ctx.lineTo(c.x, c.y); });
+            ctx.closePath();
+          }
           ctx.globalAlpha = 0.17;
-          ctx.fill();
+          ctx.fill('evenodd');
           ctx.globalAlpha = COMMITTED_ALPHA;
           ctx.stroke();
         }
@@ -835,9 +843,12 @@ export function useDrawingCanvas({
       }
 
       // ── Selection outline (per frame, cheap: one shape) ───────────────────
-      const selId = selectedIdRef?.current;
-      if (selId) {
+      const selIds = [selectedIdRef?.current, ...(extraSelectedRef?.current ?? [])].filter(Boolean) as string[];
+      let selNo = 0;
+      const selCount = new Set(selIds).size;
+      for (const selId of new Set(selIds)) {
         const sel = measurements.find(m => m.id === selId);
+        selNo += 1;
         if (sel && sel.isVisible !== false && sel.points?.length) {
           const pts = sel.points.map(p => toCanvas(p.x, p.y));
           const closed = sel.type === 'Area' || sel.type === 'Polygon' || sel.type === 'Rectangle';
@@ -847,13 +858,42 @@ export function useDrawingCanvas({
               ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
               ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(242,194,48,0.95)'; ctx.stroke();
             }
-          } else {
+          } else if (closed) {
+            // Areas: a square grid over the shape marks it as selected (no
+            // outline, no dots — the shape's own edge stays as it is).
             ctx.beginPath();
             pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
-            if (closed) ctx.closePath();
+            ctx.closePath();
+            for (const hole of sel.holes ?? []) {
+              hole.forEach((q, i) => { const c = toCanvas(q.x, q.y); if (i === 0) ctx.moveTo(c.x, c.y); else ctx.lineTo(c.x, c.y); });
+              ctx.closePath();
+            }
+            ctx.clip('evenodd');
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+            for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
+            const step = 12;
+            ctx.fillStyle = 'rgba(242,194,48,0.10)';
+            ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+            ctx.beginPath();
+            for (let x = Math.floor(x0 / step) * step; x <= x1; x += step) { ctx.moveTo(x + 0.5, y0); ctx.lineTo(x + 0.5, y1); }
+            for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { ctx.moveTo(x0, y + 0.5); ctx.lineTo(x1, y + 0.5); }
+            ctx.lineWidth = 1; ctx.setLineDash([]);
+            ctx.strokeStyle = 'rgba(40,44,52,0.55)';
+            ctx.stroke();
+          } else {
+            // Lines: dashed highlight along the line, with its points.
+            ctx.beginPath();
+            pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
             ctx.lineJoin = 'round'; ctx.lineCap = 'round';
             ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(242,194,48,0.28)'; ctx.stroke();
             ctx.lineWidth = 2;  ctx.setLineDash([8, 5]); ctx.strokeStyle = 'rgba(242,194,48,1)'; ctx.stroke();
+            if (selCount === 1 && !(sel.arcRadius != null)) {
+              ctx.setLineDash([]);
+              for (const p of pts) {
+                ctx.fillStyle = '#1d2125'; ctx.strokeStyle = 'rgba(242,194,48,1)'; ctx.lineWidth = 1.5;
+                ctx.fillRect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.strokeRect(p.x - 3.5, p.y - 3.5, 7, 7);
+              }
+            }
           }
           ctx.restore();
         }

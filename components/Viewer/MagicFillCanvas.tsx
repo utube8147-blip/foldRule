@@ -75,6 +75,12 @@ function buildPath2D(fill: MagicFill & { svgPath?: string; svgMode?: boolean }):
   p.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]);
   p.closePath();
+  for (const hole of (fill as MagicFill).holes ?? []) {
+    if (hole.length < 3) continue;
+    p.moveTo(hole[0][0], hole[0][1]);
+    for (let i = 1; i < hole.length; i++) p.lineTo(hole[i][0], hole[i][1]);
+    p.closePath();
+  }
   return p;
 }
 
@@ -99,7 +105,7 @@ interface MagicFillCanvasProps {
   selectedId:     number | null;
   selectedGroup:  number | null;
   activeColor?:   string;
-  onSingleClick:  (canvasX: number, canvasY: number) => void;
+  onSingleClick:  (canvasX: number, canvasY: number, subtract?: boolean) => void;
   onPolygonLasso: (poly: [number, number][]) => void;
   /** In-progress lasso (points + live mouse point), or null when not lassoing. */
   onLassoChange?: (pts: [number, number][] | null) => void;
@@ -372,7 +378,7 @@ export function MagicFillCanvas({
       // Interior — drawn from the outline path (crisp, follows the room's
       // edges) instead of the old pixel-painted fill layer.
       ctx.fillStyle = `rgba(${r},${g},${b},${Math.max(0, Math.min(1, (f.opacity ?? 35) / 100))})`;
-      ctx.fill(path2d, 'nonzero');
+      ctx.fill(path2d, 'evenodd');
 
       // Main outline
       ctx.strokeStyle = `rgba(${r},${g},${b},${isSelected || isInGroup ? 1 : 0.85})`;
@@ -498,7 +504,7 @@ export function MagicFillCanvas({
     if (!pointerDownPos.current) return;
 
     const { x, y } = getXY(e);
-    if (!hasMoved.current) onSingleClick(x, y);
+    if (!hasMoved.current) onSingleClick(x, y, e.altKey);
     pointerDownPos.current = null;
     hasMoved.current       = false;
   }, [getXY, onSingleClick, isLassoing]);

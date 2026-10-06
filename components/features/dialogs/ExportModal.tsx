@@ -6,9 +6,10 @@ interface ExportModalProps {
   projectState: any;
   onClose: () => void;
   onExport: (filename: string) => void; // ← now accepts filename
+  onExportCsv?: (filename: string) => void;
 }
 
-export function ExportModal({ projectState, onClose, onExport }: ExportModalProps) {
+export function ExportModal({ projectState, onClose, onExport, onExportCsv }: ExportModalProps) {
   const [fileName, setFileName] = useState(
     `${projectState.projectName.toLowerCase().replace(/\s+/g, '-')}-takeoff.xlsx`
   );
@@ -93,6 +94,14 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
             <Download className="w-5 h-5 pointer-events-none text-black stroke-[3]" />
             Download .xlsx
           </button>
+          {onExportCsv && (
+            <button
+              onClick={() => onExportCsv(fileName)}
+              className="w-full mt-2 border border-[#2E353C] text-stone-300 font-black text-[11px] py-3 hover:border-amber-accent hover:text-amber-accent transition-colors uppercase tracking-[0.2em]"
+            >
+              Download .csv (rows + totals by type)
+            </button>
+          )}
           <p className="text-[10px] text-center text-stone-600 mt-4 uppercase tracking-widest font-bold">
             EXPORTING {filesCount} FILES WITH {pointsCount} TOTAL TAKEOFF POINTS
           </p>

@@ -191,6 +191,7 @@ interface TakeoffContextValue {
   addMeasurement:      (m: TakeoffRow) => void;
   updateMeasurement:   (id: string, updates: Partial<TakeoffRow>) => void;
   deleteMeasurement:   (id: string) => void;
+  replaceMeasurements: (removeIds: string[], add?: TakeoffRow[], updates?: Record<string, Partial<TakeoffRow>>) => void;
   clearAll:            () => void;
   toggleVisibility:    (id?: string) => void;
 
@@ -272,6 +273,26 @@ const InteractionContext = createContext<InteractionValue>({ tempPoints: [], pen
 interface SaveStatusValue { saveStatus: SaveStatus; lastSavedAt: number | null; /** Why the last save failed (when saveStatus is 'error'). */ saveError?: string | null; }
 const SaveStatusContext = createContext<SaveStatusValue>({ saveStatus: 'saved', lastSavedAt: null });
 export function useSaveStatus(): SaveStatusValue { return useContext(SaveStatusContext); }
+
+/**
+ * Rows worked out from another row (volume = area × depth, …) follow their
+ * source: when the source's quantity changes, so does theirs.
+ */
+function followDerived(list: TakeoffRow[]): TakeoffRow[] {
+  if (!list.some(m => m.derived)) return list;
+  const byId = new Map(list.map(m => [m.id, m]));
+  let changed = false;
+  const out = list.map(m => {
+    if (!m.derived || m.isOverridden) return m;
+    const src = byId.get(m.derived.sourceId);
+    if (!src) return m;
+    const q = parseFloat((src.quantity * m.derived.factor).toFixed(4));
+    if (Math.abs(q - m.quantity) < 1e-9) return m;
+    changed = true;
+    return { ...m, quantity: q };
+  });
+  return changed ? out : list;
+}
 
 export function TakeoffProvider({
   children,
@@ -373,7 +394,9 @@ export function TakeoffProvider({
 
   const syncedSetProjectState: typeof setProjectState = useCallback((updater) => {
     setProjectState(prev => {
-      const next = typeof updater === 'function' ? (updater as (p: ProjectState) => ProjectState)(prev) : updater;
+      let next = typeof updater === 'function' ? (updater as (p: ProjectState) => ProjectState)(prev) : updater;
+      const followed = followDerived(next.measurements);
+      if (followed !== next.measurements) next = { ...next, measurements: followed };
       measurementsRef.current = next.measurements;
       drawingsRef.current     = next.drawings;
       activeDrawingIdRef.current = next.activeDrawingId;
@@ -493,7 +516,7 @@ export function TakeoffProvider({
     if (entry.undoneMeasurement && entry.tempPointsBefore.length > 0) {
       setPendingMeasurement({
         id:          entry.undoneMeasurement.id,
-        type:        entry.undoneMeasurement.type,
+        type:        entry.undoneMeasurement.type as any,
         color:       entry.undoneMeasurement.color,
         description: entry.undoneMeasurement.description,
       });
@@ -637,6 +660,48 @@ export function TakeoffProvider({
       return { ...prev, measurements: mAfter };
     });
 
+    pushEntry({
+      measurementsBefore: mBefore,
+      tempPointsBefore:   tBefore,
+      measurementsAfter:  mAfter,
+      tempPointsAfter:    tBefore,
+    });
+  }, [pushEntry, syncedSetProjectState, recalculateParentTotal]);
+
+  // ── replaceMeasurements ────────────────────────────────────────────────────
+  // Remove some rows, change some, add some — as ONE undo step. Used by
+  // merge / cut out / split, where several rows change together.
+  const replaceMeasurements = useCallback((
+    removeIds: string[],
+    add: TakeoffRow[] = [],
+    updates: Record<string, Partial<TakeoffRow>> = {},
+  ) => {
+    const mBefore = measurementsRef.current;
+    const tBefore = tempPointsRef.current;
+    const gone = new Set(removeIds);
+    const parents = new Set<string>();
+    for (const m of mBefore) if (gone.has(m.id) && m.parentId) parents.add(m.parentId);
+    let mAfter = mBefore
+      .filter(m => !gone.has(m.id))
+      .map(m => {
+        let r = updates[m.id] ? { ...m, ...updates[m.id] } : m;
+        if (r.childIds?.some(c => gone.has(c))) r = { ...r, childIds: r.childIds.filter(c => !gone.has(c)) };
+        if (updates[m.id] && r.parentId) parents.add(r.parentId);
+        return r;
+      });
+    const added = add.map(r => applyNextMaterial(stampPage(r)));
+    for (const r of added) {
+      if (r.parentId) {
+        parents.add(r.parentId);
+        mAfter = mAfter.map(m => m.id === r.parentId ? { ...m, childIds: [...(m.childIds ?? []), r.id] } : m);
+      }
+    }
+    mAfter = [...mAfter, ...added];
+    for (const pid of parents) mAfter = recalculateParentTotal(pid, mAfter);
+    mAfter = followDerived(mAfter);
+
+    measurementsRef.current = mAfter;
+    syncedSetProjectState(prev => ({ ...prev, measurements: mAfter }));
     pushEntry({
       measurementsBefore: mBefore,
       tempPointsBefore:   tBefore,
@@ -1136,6 +1201,7 @@ export function TakeoffProvider({
     addMeasurement,
     updateMeasurement,
     deleteMeasurement,
+    replaceMeasurements,
     clearAll,
     toggleVisibility,
     createGroup,

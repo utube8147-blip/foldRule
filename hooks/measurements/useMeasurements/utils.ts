@@ -74,7 +74,10 @@ export function recalculateMeasurementQuantity(
       const canvasPoints = updatedPoints.map(pt =>
         toCanvasFunc(pt.x, pt.y)
       );
-      const area = calculatePolygonArea(canvasPoints);
+      // Cut-outs are deducted.
+      const holes = (measurement.holes ?? []).reduce(
+        (t, h) => t + calculatePolygonArea(h.map(pt => toCanvasFunc(pt.x, pt.y))), 0);
+      const area = Math.max(0, calculatePolygonArea(canvasPoints) - holes);
       const quantity = (area / (zoom * zoom)) * (scaleFactor * scaleFactor);
       return { quantity, unit: 'sq m' };
     }

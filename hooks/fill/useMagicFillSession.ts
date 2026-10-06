@@ -27,7 +27,9 @@ import { getPageRegions, putPageRegions, type StoredRegion } from '@/lib/storage
 import { REFERENCE_LONG_EDGE } from './fillMaskAndSvgPath';
 import { fillPreview } from '@/components/Viewer/RoomHoverOverlay';
 import { mergeRings, ringArea, ringPerimeter } from '@/lib/geometry/ringUnion';
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { subtractShapes } from '@/lib/geometry/regionOps';
+import { pickRoomLabel, type TextItem } from '@/lib/takeoff/roomLabels';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { MagicFill }     from '@/hooks/fill/useMagicFill';
 import type { PdfDimensions } from '@/types/viewerTypes';
@@ -832,6 +834,33 @@ export function fmtArea(px: number, mpp: number | null): string {
 // Hook
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── Fill geometry helpers (mask-pixel space) ────────────────────────────────
+function inRing(r: [number, number][], x: number, y: number): boolean {
+  let c = false;
+  for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+    if ((r[i][1] > y) !== (r[j][1] > y) && x < ((r[j][0] - r[i][0]) * (y - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) c = !c;
+  }
+  return c;
+}
+export function pointInFill(f: MagicFill, x: number, y: number): boolean {
+  return f.polygon.length >= 3 && inRing(f.polygon, x, y) && !(f.holes ?? []).some(h => inRing(h, x, y));
+}
+const fillAreaPx = (f: { polygon: [number, number][]; holes?: [number, number][][] }) =>
+  Math.max(0, ringArea(f.polygon) - (f.holes ?? []).reduce((t, h) => t + ringArea(h), 0));
+
+/** Rooms worth filling in one go: not the page background, not specks, not things standing inside another room. */
+export function roomsToFillAll(regions: StoredRegion[], w: number, h: number): StoredRegion[] {
+  const page = w * h, edge = 3;
+  const real = regions.filter(r =>
+    r.polygon.length >= 3 && r.areaPx > page * 0.0004 && r.areaPx < page * 0.6 &&
+    !(r.x0 <= edge || r.y0 <= edge || r.x1 >= w - 1 - edge || r.y1 >= h - 1 - edge));
+  return real.filter(r => !real.some(o =>
+    o !== r && o.areaPx > r.areaPx &&
+    r.x0 >= o.x0 && r.y0 >= o.y0 && r.x1 <= o.x1 && r.y1 <= o.y1 &&
+    r.polygon.slice(0, 12).every(([x, y]) => inRing(o.polygon, x, y))));
+}
+
+
 export function useMagicFillSession({
   snapOutline = null,
   pageSizePt = null,
@@ -1044,8 +1073,25 @@ export function useMagicFillSession({
     fillDataRef.current = ctx.getImageData(0, 0, fc.width, fc.height);
   }, [fillCanvasRef]);
   // Fills taken back with Undo, newest last — Redo puts them back.
+  // Undo history: the list of fills before each change (a lasso that makes
+  // several fills at once is one step).
+  const pastRef = useRef<MagicFill[][]>([]);
   const redoRef = useRef<MagicFill[][]>([]);
+  const rememberLock = useRef(false);
   const [mfRedoCount, setMfRedoCount] = useState(0);
+  const [mfUndoCount, setMfUndoCount] = useState(0);
+  const remember = useCallback(() => {
+    if (rememberLock.current) return;
+    rememberLock.current = true;
+    setTimeout(() => { rememberLock.current = false; }, 0);
+    pastRef.current = [...pastRef.current.slice(-49), magicFillsRef.current];
+    redoRef.current = [];
+    setMfUndoCount(pastRef.current.length); setMfRedoCount(0);
+  }, []);
+  const forgetHistory = useCallback(() => {
+    pastRef.current = []; redoRef.current = [];
+    setMfUndoCount(0); setMfRedoCount(0);
+  }, []);
 
   useEffect(() => {
     if (pdfRenderCount === 0) return;
@@ -1084,6 +1130,7 @@ export function useMagicFillSession({
       fillDataRef.current = new ImageData(cssW, cssH);
       fillCountRef.current  = 0;
       groupCountRef.current = 0;
+      forgetHistory();
       fillPixelMaps.current.clear();
       setMagicFills([]);
       setMfHiddenIds(new Set());
@@ -1226,32 +1273,13 @@ export function useMagicFillSession({
     fillCtx.restore();
     fillDataRef.current = fillCtx.getImageData(0, 0, cssW, cssH);
 
-    // Pixel map in mask space (used by merge / erase / repaint) — rasterised
-    // inside the room's bounding box only.
-    const bw = region.x1 - region.x0 + 1, bh = region.y1 - region.y0 + 1;
-    const oc = document.createElement('canvas');
-    oc.width = bw; oc.height = bh;
-    const octx = oc.getContext('2d')!;
-    octx.beginPath();
-    region.polygon.forEach(([x, y], i) => (i === 0 ? octx.moveTo(x - region.x0, y - region.y0) : octx.lineTo(x - region.x0, y - region.y0)));
-    octx.closePath();
-    octx.fillStyle = '#000';
-    octx.fill();
-    const alpha = octx.getImageData(0, 0, bw, bh).data;
-    const paintedMask = new Uint8Array(mw * mh);
-    for (let y = 0; y < bh; y++) {
-      const dst = (y + region.y0) * mw + region.x0;
-      for (let x = 0; x < bw; x++) if (alpha[(y * bw + x) * 4 + 3] > 127) paintedMask[dst + x] = 1;
-    }
-
     fillCountRef.current += 1;
     const id = Date.now() + fillCountRef.current;
-    fillPixelMaps.current.set(id, paintedMask);
     const fill: MagicFill = {
       id, label: `Fill ${fillCountRef.current}`, color: activeColor, opacity: mfOpacity,
       areaPx: region.areaPx, perimPx: region.perimPx, polygon: region.polygon, svgMode: false,
     };
-    redoRef.current = []; setMfRedoCount(0);
+    remember();
       setMagicFills(prev => [...prev, fill]);
     setMfSelectedId(id);
     setMfSelectedGroup(null);
@@ -1402,7 +1430,7 @@ export function useMagicFillSession({
         svgMode: !snapRef.current,
       };
 
-      redoRef.current = []; setMfRedoCount(0);
+      remember();
       setMagicFills(prev => [...prev, fill]);
       setMfSelectedId(id);
       setMfSelectedGroup(null);
@@ -1570,7 +1598,7 @@ export function useMagicFillSession({
         svgMode: true,
       };
 
-      redoRef.current = []; setMfRedoCount(0);
+      remember();
       setMagicFills(prev => [...prev, fill]);
       setMfSelectedId(null);
       setMfSelectedGroup(gId);
@@ -1604,6 +1632,123 @@ export function useMagicFillSession({
     handleMagicPolygonFill(poly);
   }, [handleMagicPolygonFill]);
 
+  // ── Take a room back out (Alt-click) ──────────────────────────────────────
+  // On a fill that is exactly that room → the fill is removed. Inside a
+  // bigger (joined) fill → that room is cut out of it.
+  const handleMagicSubtractClick = useCallback((canvasX: number, canvasY: number) => {
+    if (mfIsFilling) return;
+    const hit = regionAt(canvasX, canvasY);
+    const rs = regionsRef.current;
+    const mw = hit?.w ?? rs?.w ?? maskWRef.current, mh = hit?.h ?? rs?.h ?? maskHRef.current;
+    const cssW = pdfDimensions?.w ?? mw, cssH = pdfDimensions?.h ?? mh;
+    const mx = canvasX * (mw / cssW), my = canvasY * (mh / cssH);
+    const fills = magicFillsRef.current;
+    const target = [...fills].reverse().find(f => pointInFill(f, mx, my));
+    if (!target) return;
+
+    let next: MagicFill[];
+    if (!hit || target.polygon === hit.region.polygon) {
+      next = fills.filter(f => f.id !== target.id);
+    } else {
+      const N = (r: [number, number][]) => r.map(([x, y]) => ({ x: x / mw, y: y / mh }));
+      const D = (r: { x: number; y: number }[]) => r.map(p => [p.x * mw, p.y * mh] as [number, number]);
+      const pieces = subtractShapes(
+        { outer: N(target.polygon), holes: (target.holes ?? []).map(N) },
+        [{ outer: N(hit.region.polygon), holes: [] }],
+      );
+      const made: MagicFill[] = pieces.map((s, i) => {
+        const polygon = D(s.outer), holes = s.holes.map(D);
+        fillCountRef.current += i === 0 ? 0 : 1;
+        return {
+          ...target,
+          id: i === 0 ? target.id : Date.now() + fillCountRef.current + i,
+          label: i === 0 ? target.label : `Fill ${fillCountRef.current}`,
+          polygon, holes: holes.length ? holes : undefined, svgMode: false, svgPath: undefined,
+          areaPx: fillAreaPx({ polygon, holes }),
+          perimPx: ringPerimeter(polygon) + holes.reduce((t, h) => t + ringPerimeter(h), 0),
+        };
+      });
+      next = fills.flatMap(f => (f.id === target.id ? made : [f]));
+    }
+    remember();
+    fillPixelMaps.current.delete(target.id);
+    snapshots.current = [];
+    magicFillsRef.current = next;
+    repaintFillLayer(next);
+    setMagicFills(next);
+    setMfSelectedId(null); setMfHoveredId(null);
+    setMfLastFillPos({ x: canvasX, y: canvasY });
+  }, [mfIsFilling, regionAt, pdfDimensions, remember, repaintFillLayer]);
+
+  // ── Fill every room on the page ───────────────────────────────────────────
+  const mfRoomCount = useMemo(() => {
+    const rs = regionsRef.current;
+    return rs && rs.key === regionKey ? roomsToFillAll(rs.regions, rs.w, rs.h).length : 0;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [regionsVersion, regionKey]);
+  const handleMagicFillAll = useCallback(() => {
+    const rs = regionsRef.current;
+    if (mfIsFilling || !rs || rs.key !== regionKeyRef.current) return;
+    const have = new Set(magicFillsRef.current.map(f => f.polygon));
+    const rooms = roomsToFillAll(rs.regions, rs.w, rs.h).filter(r => !have.has(r.polygon));
+    if (!rooms.length) return;
+    remember();
+    const added: MagicFill[] = rooms.map(r => {
+      fillCountRef.current += 1;
+      return {
+        id: Date.now() + fillCountRef.current, label: `Fill ${fillCountRef.current}`,
+        color: activeColor, opacity: mfOpacity,
+        areaPx: r.areaPx, perimPx: r.perimPx, polygon: r.polygon, svgMode: false,
+      };
+    });
+    const next = [...magicFillsRef.current, ...added];
+    snapshots.current = [];
+    magicFillsRef.current = next;
+    repaintFillLayer(next);
+    setMagicFills(next);
+    setMfSelectedId(null); setMfSelectedGroup(null);
+    // Put the Finish button on the biggest room.
+    const big = rooms.reduce((a, b) => (b.areaPx > a.areaPx ? b : a));
+    const cssW = pdfDimensions?.w ?? rs.w, cssH = pdfDimensions?.h ?? rs.h;
+    setMfLastFillPos({ x: ((big.x0 + big.x1) / 2) * (cssW / rs.w), y: ((big.y0 + big.y1) / 2) * (cssH / rs.h) });
+  }, [mfIsFilling, remember, repaintFillLayer, activeColor, pdfDimensions]);
+
+  // ── Room names printed on the drawing ─────────────────────────────────────
+  // Read once per page (normalised 0–1 positions), used to name fills.
+  const pageTextRef = useRef<{ page: unknown; items: TextItem[] } | null>(null);
+  useEffect(() => {
+    if (!magicFillActive || pdfRenderCount === 0) return;
+    const page = currentPdfPageRef.current as any;
+    if (!page || pageTextRef.current?.page === page) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const vp = page.getViewport({ scale: 1 });
+        const tc = await page.getTextContent();
+        if (cancelled) return;
+        const items: TextItem[] = [];
+        for (const it of tc.items as any[]) {
+          const str = typeof it.str === 'string' ? it.str.trim() : '';
+          if (!str || !Array.isArray(it.transform)) continue;
+          const [a, b, , , e, f] = it.transform as number[];
+          const size = Math.hypot(a, b) || it.height || 1;
+          const ang = Math.atan2(b, a), wd = it.width || 0;
+          const [vx, vy] = vp.convertToViewportPoint(e + Math.cos(ang) * wd / 2, f + Math.sin(ang) * wd / 2 + size * 0.3);
+          items.push({ text: str, x: vx / vp.width, y: vy / vp.height, size: size / vp.height });
+        }
+        pageTextRef.current = { page, items };
+      } catch { pageTextRef.current = { page, items: [] }; }
+    })();
+    return () => { cancelled = true; };
+  }, [magicFillActive, pdfRenderCount, currentPdfPageRef]);
+
+  const roomLabelFor = useCallback((f: MagicFill): string => {
+    const t = pageTextRef.current;
+    const mw = maskWRef.current || rawRegionsRef.current?.w || 0, mh = maskHRef.current || rawRegionsRef.current?.h || 0;
+    if (!t?.items.length || !mw || !mh) return '';
+    return pickRoomLabel(t.items, (x, y) => pointInFill(f, x * mw, y * mh));
+  }, []);
+
   // ── Hover ─────────────────────────────────────────────────────────────────
   const handleMagicHover = useCallback((canvasX: number, canvasY: number) => {
     const mw = maskWRef.current, mh = maskHRef.current;
@@ -1618,7 +1763,7 @@ export function useMagicFillSession({
     let found: number | null = null;
     for (let i = cf.length - 1; i >= 0; i--) {
       const map = fillPixelMaps.current.get(cf[i].id);
-      if (map && map[idx]) { found = cf[i].id; break; }
+      if (map ? map[idx] : pointInFill(cf[i], bitmapX, bitmapY)) { found = cf[i].id; break; }
     }
     setMfHoveredId(found);
     setMfHoverPos({ x: canvasX, y: canvasY });
@@ -1632,14 +1777,10 @@ export function useMagicFillSession({
     setMfIsFilling(false);
     setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
 
-    const prev = magicFillsRef.current;
-    if (prev.length === 0) return;
-    const last = prev[prev.length - 1];
-    const taken = last.groupId != null ? prev.filter(x => x.groupId === last.groupId) : [last];
-    const ids = new Set(taken.map(x => x.id));
-    const next = prev.filter(x => !ids.has(x.id));
-    redoRef.current.push(taken);
-    setMfRedoCount(redoRef.current.length);
+    const next = pastRef.current.pop();
+    if (!next) return;
+    redoRef.current.push(magicFillsRef.current);
+    setMfUndoCount(pastRef.current.length); setMfRedoCount(redoRef.current.length);
     snapshots.current = [];
     magicFillsRef.current = next;
     repaintFillLayer(next);
@@ -1650,15 +1791,15 @@ export function useMagicFillSession({
   }, [repaintFillLayer]);
 
   const handleMagicRedo = useCallback(() => {
-    const back = redoRef.current.pop();
-    setMfRedoCount(redoRef.current.length);
-    if (!back) return;
-    const next = [...magicFillsRef.current, ...back];
+    const next = redoRef.current.pop();
+    if (!next) return;
+    pastRef.current.push(magicFillsRef.current);
+    setMfUndoCount(pastRef.current.length); setMfRedoCount(redoRef.current.length);
     snapshots.current = [];
     magicFillsRef.current = next;
     repaintFillLayer(next);
     setMagicFills(next);
-    setMfSelectedId(back[back.length - 1].id);
+    setMfSelectedId(next.length ? next[next.length - 1].id : null);
     setMfSelectedGroup(null);
   }, [repaintFillLayer]);
 
@@ -1673,8 +1814,7 @@ export function useMagicFillSession({
     if (fillDataRef.current) {
       fillDataRef.current.data.fill(0);
     }
-    for (const g of redoRef.current) g.forEach(x => fillPixelMaps.current.delete(x.id));
-    redoRef.current = []; setMfRedoCount(0);
+    forgetHistory();
     snapshots.current       = [];
     fillCountRef.current    = 0;
     groupCountRef.current   = 0;
@@ -1692,6 +1832,7 @@ export function useMagicFillSession({
   }, [fillCanvasRef]);
 
   const handleMagicDelete = useCallback((fId: number) => {
+    remember();
     fillPixelMaps.current.delete(fId);
     setMagicFills(prev => prev.filter(x => x.id !== fId));
     if (mfSelectedId === fId) setMfSelectedId(null);
@@ -1717,8 +1858,10 @@ export function useMagicFillSession({
   const handleMagicFinish = useCallback(() => {
     if (magicFillsRef.current.length === 0) return;
     setShowMfNameDialog(true);
-    setPendingMfData({ id: `mf-${Date.now()}`, type: 'Area', description: 'Magic Fill Area' });
-  }, []);
+    const fills = magicFillsRef.current;
+    const only = fills.length === 1 ? roomLabelFor(fills[0]) : '';
+    setPendingMfData({ id: `mf-${Date.now()}`, type: 'Area', description: only || 'Magic Fill Area' });
+  }, [roomLabelFor]);
 
   const handleMfNameConfirm = useCallback((name: string) => {
     setShowMfNameDialog(false);
@@ -1742,10 +1885,15 @@ export function useMagicFillSession({
       const m = usable && pageSizePt
         ? maskOutlineMeasure(f.polygon, { w: mw, h: mh }, pageSizePt, sf)
         : { area: f.areaPx * ptPerPxX * ptPerPxY * sf * sf, perimeter: f.perimPx * ptPerPxX * sf };
+      // Parts taken back out (Alt-click) are deducted.
+      const holes = usable && pageSizePt ? (f.holes ?? []).filter(h => h.length >= 3) : [];
+      const holeArea = holes.reduce((t, h) => t + maskOutlineMeasure(h, { w: mw, h: mh }, pageSizePt!, sf).area, 0);
       return {
         fill: f,
         points: usable ? f.polygon.map(([x, y]) => ({ x: x / mw, y: y / mh })) : [],
-        area: m.area,
+        holes: holes.map(h => h.map(([x, y]) => ({ x: x / mw, y: y / mh }))),
+        label: roomLabelFor(f),
+        area: Math.max(0, m.area - holeArea),
         perim: m.perimeter,
       };
     });
@@ -1767,6 +1915,7 @@ export function useMagicFillSession({
       unitRate:    0,
       notes:       `Perimeter ${round(p.perim)} ${calibrated ? 'm' : 'pt'}`,
       points:      p.points,
+      ...(p.holes.length ? { holes: p.holes } : {}),
       isOverridden: p.points.length === 0,     // no shape → quantity can't be re-derived
       color:       p.fill.color || '#60a5fa',
       isVisible:   true,
@@ -1792,7 +1941,7 @@ export function useMagicFillSession({
         } as any);
       }
       parts.forEach((p, i) => {
-        onAddMeasurementProp?.(rowFor(p, childIds[i], `${baseName} ${i + 1}`, { parentId: headerId, groupId: headerId }) as any);
+        onAddMeasurementProp?.(rowFor(p, childIds[i], p.label || `${baseName} ${i + 1}`, { parentId: headerId, groupId: headerId }) as any);
       });
     }
 
@@ -1801,7 +1950,7 @@ export function useMagicFillSession({
   }, [
     activeDrawingId, scaleFactor, pageSizePt, maskDims,
     propAppendToGroupId, onAddMeasurementProp, onAppendComplete,
-    handleMagicClear,
+    handleMagicClear, roomLabelFor,
   ]);
 
   // Skip = keep the fills under the default name (it used to throw them away).
@@ -1846,6 +1995,10 @@ export function useMagicFillSession({
     handleMagicUndo,
     handleMagicRedo,
     mfRedoCount,
+    mfUndoCount,
+    handleMagicSubtractClick,
+    handleMagicFillAll,
+    mfRoomCount,
     handleMagicClear,
     handleMagicDelete,
     handleMagicToggleHide,

@@ -108,7 +108,9 @@ function getWorkerSource(): string {
   return `
 'use strict';
 
-const OPENCV_URL = 'https://docs.opencv.org/4.x/opencv.js';
+// The copy shipped with the app is tried first (works offline); the public
+// copy is only a fallback.
+var OPENCV_URLS = ['https://docs.opencv.org/4.x/opencv.js'];
 let cvReady = false;
 let cvLoadPromise = null;
 
@@ -116,9 +118,11 @@ function loadCV() {
   if (cvReady) return Promise.resolve();
   if (cvLoadPromise) return cvLoadPromise;
   cvLoadPromise = new Promise(function(resolve, reject) {
-    try { importScripts(OPENCV_URL); } catch(e) {
-      reject(new Error('importScripts failed: ' + e)); return;
+    var loaded = false, lastErr = null;
+    for (var u = 0; u < OPENCV_URLS.length && !loaded; u++) {
+      try { importScripts(OPENCV_URLS[u]); loaded = true; } catch(e) { lastErr = e; }
     }
+    if (!loaded) { reject(new Error('importScripts failed: ' + lastErr)); return; }
     var poll = setInterval(function() {
       if (typeof cv !== 'undefined' && cv && typeof cv.matchTemplate === 'function') {
         clearInterval(poll); cvReady = true; resolve();
@@ -554,6 +558,7 @@ self.onmessage = async function(e) {
 
   if (msg.type === 'LOAD') {
     try {
+      if (msg.localUrl && OPENCV_URLS.indexOf(msg.localUrl) < 0) OPENCV_URLS.unshift(msg.localUrl);
       self.postMessage({ type: 'PROGRESS', phase: 'Loading OpenCV.js...' });
       await loadCV();
       self.postMessage({ type: 'READY' });
@@ -686,7 +691,7 @@ export function useOpenCVMatcher(): UseOpenCVMatcherReturn {
       rejectRef.current  = null;
     };
 
-    worker.postMessage({ type: 'LOAD' });
+    worker.postMessage({ type: 'LOAD', localUrl: `${window.location.origin}/vendor/opencv.js` });
     setWorkerPhase('Loading OpenCV.js…');
 
     return () => {

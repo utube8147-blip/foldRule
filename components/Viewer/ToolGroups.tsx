@@ -17,6 +17,7 @@ import React from 'react';
 import {
   MousePointer2, Pentagon, Square, Circle, Hexagon, Spline, Pencil, Hash, MapPin, Grid3x3,
   Wand2, Minus, Plus, Route, CircleDashed,
+  ScanSearch,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -55,6 +56,13 @@ export const TOOL_GROUPS: Group[] = [
       key: 'select', label: 'Select', icon: MousePointer2, tool: 'select',
       hint: 'Click a shape to select it and its row. Drag a corner to adjust it. Hold Space and drag to move the drawing.',
     }],
+    tips: [
+      ['Merge, subtract, intersect', 'Click one area, Shift-click another, then pick the action in the bar at the bottom.'],
+      ['Cut out or split', 'Select an area, choose Cut out or Split, then draw the hole or the cutting line.'],
+      ['Add or delete a corner', 'Right-click an edge or a corner of the selected shape.'],
+      ['Move or copy', 'Drag a selected shape, or nudge it with the arrow keys. Copy gives duplicate, mirror and repeat.'],
+      ['Perimeter, volume, wall area', 'Select a shape and choose Convert.'],
+    ],
   },
   {
     id: 'area', label: 'Area', icon: Pentagon, shortcut: 'P',
@@ -69,6 +77,8 @@ export const TOOL_GROUPS: Group[] = [
         hint: 'Click one corner, then the opposite corner.' },
       { key: 'circle', label: 'Circle', icon: Circle, tool: 'radius', mode: { area: true }, shortcut: 'C',
         hint: 'Click the centre, then the edge. Enter to finish.' },
+      { key: 'ellipse', label: 'Ellipse', icon: CircleDashed, tool: 'rectangle', mode: { area: true, ellipse: true },
+        hint: 'Click two opposite corners of the box the ellipse fits in.' },
       { key: 'regular', label: 'Regular', icon: Hexagon, tool: 'polygon', mode: { regular: true },
         hint: 'Set the number of sides, click the centre, then one corner.' },
     ],
@@ -91,6 +101,8 @@ export const TOOL_GROUPS: Group[] = [
     modes: [
       { key: 'count', label: 'Items', icon: Hash, tool: 'count', shortcut: 'N',
         hint: 'Click each item. Enter to finish the group.' },
+      { key: 'auto', label: 'Find & count', icon: ScanSearch, tool: 'count', mode: { auto: true },
+        hint: 'Drag a box round ONE symbol (a door, a socket, a light). Every matching symbol on the page is found and counted for you — remove any wrong ones, then add them to the takeoff.' },
       { key: 'grid', label: 'On a grid', icon: Grid3x3, tool: 'grid-count', shortcut: 'G',
         hint: 'Draw around an area — items are counted on an evenly spaced grid inside it (tiles, ceiling panels).' },
       { key: 'marker', label: 'Marker', icon: MapPin, tool: 'point', shortcut: 'T',
@@ -107,7 +119,9 @@ export const TOOL_GROUPS: Group[] = [
     tips: [
       ['One room', 'Click inside it.'],
       ['Several rooms at once', 'Hold Space and click points around them, then click the first point again. Every room the loop touches is filled.'],
-      ['Keep them', 'Press Enter (or Finish) to add the fills to the takeoff.'],
+      ['Every room', 'Use “Fill all rooms” in the bottom bar, then Alt-click the ones you don’t want.'],
+      ['Take a room back out', 'Alt-click a filled room. Inside a joined fill it cuts that room out.'],
+      ['Keep them', 'Press Enter (or Finish) to add the fills to the takeoff. Rooms with a name printed on the drawing are named for you.'],
       ['Made a mistake?', 'Ctrl+Z (or Undo) takes back the last fill only. Ctrl+Y puts it back.'],
     ],
   },
@@ -126,7 +140,7 @@ export function activeGroupAndMode(activeTool: string, drawMode: DrawMode): { gr
     for (const mode of group.modes) {
       if (mode.tool !== activeTool) continue;
       const want = { ...DEFAULT_DRAW_MODE, ...mode.mode };
-      if (want.area === drawMode.area && want.regular === drawMode.regular) return { group, mode };
+      if (want.area === drawMode.area && want.regular === drawMode.regular && !!want.auto === !!drawMode.auto && !!want.ellipse === !!drawMode.ellipse) return { group, mode };
     }
   }
   return null;

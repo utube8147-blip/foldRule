@@ -33,6 +33,7 @@ import {
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
 import { exportProjectToExcel } from '@/lib/export/clientExport';
+import { takeoffToCsv, downloadCsv } from '@/lib/export/csvExport';
 import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
 import { useProjectHref } from '@/lib/nav/projectHref';
 // Loaded on first open — they cost nothing until used.
@@ -717,6 +718,11 @@ export default function Workspace() {
             projectState={ps}
             onClose={() => setShowExportModal(false)}
             onExport={executeExport}
+            onExportCsv={filename => {
+              downloadCsv(takeoffToCsv({ projectName: ps.projectName, measurements: ps.measurements, materials: ps.materials as never, drawings: ps.drawings }), filename || `${ps.projectName}-takeoff`);
+              addToast('Exported CSV', 'success');
+              setShowExportModal(false);
+            }}
           />
         )}
       </AnimatePresence>

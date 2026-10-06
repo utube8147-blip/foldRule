@@ -12,7 +12,7 @@ export interface Pt { x: number; y: number }
  *             measured as an area rather than a circumference.
  *   regular — the polygon tool draws a regular polygon (centre, then a corner).
  */
-export interface DrawMode { area: boolean; regular: boolean; sides: number }
+export interface DrawMode { area: boolean; regular: boolean; sides: number; /** Count: find matching symbols automatically. */ auto?: boolean; /** Area: ellipse instead of circle. */ ellipse?: boolean }
 export const DEFAULT_DRAW_MODE: DrawMode = { area: false, regular: false, sides: 6 };
 export const drawModeState: DrawMode = { ...DEFAULT_DRAW_MODE };
 

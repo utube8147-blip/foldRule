@@ -20,6 +20,10 @@ export interface MagicFill {
   areaPx:   number;
   perimPx:  number;
   polygon:  [number, number][];
+  /** Parts taken back out of the fill (Alt-click). Deducted from the area. */
+  holes?:   [number, number][][];
+  /** Room name read from the drawing, when there is one inside the fill. */
+  roomLabel?: string;
   groupId?: number;
 
   // ── SVG path fields (populated by useMagicFillSession workers) ────────────

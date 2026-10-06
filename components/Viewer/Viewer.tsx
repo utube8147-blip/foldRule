@@ -26,6 +26,10 @@ import { useSnapEngine }     from '@/hooks/snapEngine/useSnapEngine';
 import { usePdfDocument, hasSnapGeometry } from '@/hooks/snapEngine/usePdfDocument';
 import { RoomHoverOverlay } from './RoomHoverOverlay';
 import { createLassoStore } from '@/lib/geometry/lassoStore';
+import { useShapeActions } from '@/hooks/shapes/useShapeActions';
+import { AutoCount } from '@/components/Viewer/AutoCount';
+import { getNextMeasurementColor } from '@/hooks/measurements/useMeasurements';
+import { ShapeActions, type ShapeMenuState } from '@/components/Viewer/ShapeActions';
 import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGroup } from './CentreAnchorOverlay';
 import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type { GeometryShape } from '@/types/snapTypes';
@@ -147,13 +151,40 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     tempPoints, pushPoint, commitMeasurement, batchCommitMeasurements,
     clearTempPoints, retagTempPoints,
     undo, redo, canUndo, canRedo,
-    selectedId, setSelectedId, projectState, updateMeasurement,
+    selectedId, setSelectedId, projectState, updateMeasurement, replaceMeasurements,
     setActivePage, showLabels, pendingPage, clearPendingPage,
     setDrawingPageCount, focusSeq, setNextMaterial, showGeometry, projectId: takeoffProjectId,
     setShowLabels, setShowGeometry,
   } = useTakeoffContext();
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
+  // More shapes selected with Shift-click (the first one picked is `selectedId`).
+  const [extraSelected, setExtraSelected] = useState<string[]>([]);
+  const extraSelectedRef = useRef<string[]>(extraSelected);
+  extraSelectedRef.current = extraSelected;
+  const [shapeMenu, setShapeMenu] = useState<ShapeMenuState | null>(null);
+  // While a cut-out / split is being drawn, the drawn shape is used as the
+  // cutter instead of being saved (set further down, once the actions exist).
+  const consumeDrawnRef = useRef<(rows: TakeoffRow[]) => boolean>(() => false);
+  const commitOrConsume = useCallback((m: TakeoffRow) => {
+    // Ellipse mode: the drawn box becomes the ellipse that fits inside it.
+    if (drawModeState.ellipse && m.type === 'Rectangle' && m.points.length >= 2) {
+      const xs = m.points.map(p => p.x), ys = m.points.map(p => p.y);
+      const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+      const rx = (Math.max(...xs) - Math.min(...xs)) / 2, ry = (Math.max(...ys) - Math.min(...ys)) / 2;
+      const N = 72;
+      m = {
+        ...m, type: 'Polygon', quantity: +(m.quantity * Math.PI / 4).toFixed(4),
+        label: m.label?.replace(/Rectangle/g, 'Ellipse'), description: (m.description ?? '').replace(/Rectangle/g, 'Ellipse'),
+        points: Array.from({ length: N }, (_, i) => ({ x: cx + rx * Math.cos((i / N) * 2 * Math.PI), y: cy + ry * Math.sin((i / N) * 2 * Math.PI) })),
+      };
+    }
+    if (!consumeDrawnRef.current([m])) commitMeasurement(m);
+  }, [commitMeasurement]);
+  const batchCommitOrConsume = useCallback((rows: TakeoffRow[]) => {
+    if (!consumeDrawnRef.current(rows)) batchCommitMeasurements(rows);
+  }, [batchCommitMeasurements]);
+  const shapePendingRef = useRef(false);
   const [showTechInfo, setShowTechInfo] = useState(false);
   const [dragOver,     setDragOver]     = useState(false);
 
@@ -716,7 +747,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     scaleRef:         dimsScaleRef    as React.RefObject<number>,
     activeTool, setActiveTool: setActiveToolString,
     measurements, tempPoints, pushPoint,
-    commitMeasurement, batchCommitMeasurements,
+    commitMeasurement: commitOrConsume, batchCommitMeasurements: batchCommitOrConsume,
     appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
     clearTempPoints, scaleFactor, onUpdateMeasurement,
@@ -729,6 +760,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     forcedPolyarcMode: forcedPolyarcMode ?? undefined,
     showLabels,
     selectedIdRef,
+    extraSelectedRef,
     findHoverGeometry,
     findPinsNear,
   } as any);
@@ -828,7 +860,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleMagicPolygonFill,
     maskW, maskH,
     handleMagicHover, handleMagicHoverLeave,
-    handleMagicFillHoles, handleMagicUndo, handleMagicRedo, mfRedoCount,
+    handleMagicFillHoles, handleMagicUndo, handleMagicRedo, mfRedoCount, mfUndoCount,
+    handleMagicSubtractClick, handleMagicFillAll, mfRoomCount,
     handleMagicClear, handleMagicDelete,
     handleMagicToggleHide, handleMagicAbortSession,
     handleMagicFinish, handleMfNameConfirm, handleMfNameSkip,
@@ -1082,6 +1115,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     const minPts = activeTool === 'count' || activeTool === 'point' ? 1 : 2;
     if (tempPoints.length < minPts) { finishMeasurement(); return; }
     if (propAppendToGroupId) { finishMeasurement(); onAppendComplete?.(); return; }
+    if (shapePendingRef.current) { finishMeasurement(); return; }   // cut-out / split: no name needed
     const type =
       activeTool === 'polygon'   || activeTool === 'rectangle' ? 'Polygon' :
       activeTool === 'linear'    ? 'Length' :
@@ -1236,7 +1270,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [selectedId, projectState, updateMeasurement]);
 
   // ── Toolbar API ───────────────────────────────────────────────────────────
-  const mfSessionUndo = activeTool === 'magic-fill' && (mfStagedCount > 0 || mfRedoCount > 0);
+  const mfSessionUndo = activeTool === 'magic-fill' && (mfStagedCount > 0 || mfRedoCount > 0 || mfUndoCount > 0);
   const toolbarAPI = useMemo(() => ({
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool: handleSetActiveTool, scale, setScale, scaleFactor,
@@ -1254,7 +1288,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleManualScale,
     // While fills are waiting to be finished, the main Undo / Redo buttons
     // step through those fills.
-    canUndo: mfSessionUndo ? mfStagedCount > 0 : canUndo,
+    canUndo: mfSessionUndo ? mfUndoCount > 0 : canUndo,
     canRedo: mfSessionUndo ? mfRedoCount > 0 : canRedo,
     handleUndo: mfSessionUndo ? handleMagicUndo : handleUndo,
     handleRedo: mfSessionUndo ? handleMagicRedo : handleRedo,
@@ -1268,7 +1302,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     snapThreshold, confidenceFilter,
     pdfStage, resolvedSnapPoints,
     pageNumber, pdf,
-    fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo, mfSessionUndo, mfStagedCount, mfRedoCount, handleMagicUndo, handleMagicRedo,
+    fitToScreen, handleManualScale, canUndo, canRedo, handleUndo, handleRedo, mfSessionUndo, mfStagedCount, mfRedoCount, mfUndoCount, handleMagicUndo, handleMagicRedo,
     safePolyarcMode, togglePolyarcMode, tempPoints.length,
   , pdfDimensions]);
 
@@ -1286,7 +1320,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       }
       if (activeTool === 'magic-fill' && !(e.target as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable]')) {
         const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-        if (mfStagedCount > 0 && ((mod && k === 'z' && !e.shiftKey) || (!mod && e.key === 'Backspace'))) { e.preventDefault(); handleMagicUndo(); return; }
+        if (mfUndoCount > 0 && ((mod && k === 'z' && !e.shiftKey) || (!mod && e.key === 'Backspace'))) { e.preventDefault(); handleMagicUndo(); return; }
         if (mfRedoCount > 0 && mod && (k === 'y' || (k === 'z' && e.shiftKey))) { e.preventDefault(); handleMagicRedo(); return; }
       }
       if (e.key === 'Enter' && activeTool === 'perimeter-offset') return;
@@ -1352,7 +1386,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
-    handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel, handleMagicUndo, handleMagicRedo, mfRedoCount, lassoStore,
+    handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel, handleMagicUndo, handleMagicRedo, mfRedoCount, mfUndoCount, lassoStore,
     setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled, setToolMode,
     arcStart, clearTempPoints, showMeasurementDialog, mfStagedCount, handleMagicFinish, handleFinishMeasurement,
   ]);
@@ -1397,20 +1431,105 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       if (pts.length === 1) {
         return Math.hypot((pts[0].x - nx) * w, (pts[0].y - ny) * h) <= radius * 1.6;
       }
-      return pts.length >= 2 && hitTestMeasurement(nx, ny, pts, closed, radius);
+      if (!(pts.length >= 2 && hitTestMeasurement(nx, ny, pts, closed, radius))) return false;
+      // Inside a cut-out is not inside the area (unless right on the cut-out's edge).
+      for (const hole of m.holes ?? []) {
+        if (hole.length >= 3 && hitTestMeasurement(nx, ny, hole, true, radius) && !hitTestMeasurement(nx, ny, hole, false, radius)) return false;
+      }
+      return true;
     });
   }, [measurements, scale, pdfDimensionsRef]);
 
   const handleCanvasClickWithSelect = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool === 'select') {
+      if (skipClickRef.current) { skipClickRef.current = false; return; }
       const r = e.currentTarget.getBoundingClientRect();
       const hit = findShapeAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
-      setSelectedId(hit ? (hit.parentId && !hit.points?.length ? hit.parentId : hit.id) : null);
+      const id = hit ? (hit.parentId && !hit.points?.length ? hit.parentId : hit.id) : null;
+      setShapeMenu(null);
+      if ((e.shiftKey || e.ctrlKey || e.metaKey) && id) {
+        // Add to / remove from the selection.
+        if (!selectedId) setSelectedId(id);
+        else if (id === selectedId) { setSelectedId(extraSelected[0] ?? null); setExtraSelected(extraSelected.slice(1)); }
+        else setExtraSelected(extraSelected.includes(id) ? extraSelected.filter(x => x !== id) : [...extraSelected, id]);
+        return;
+      }
+      setExtraSelected([]);
+      setSelectedId(id);
       return;
     }
     if (activeTool === 'arc' && anchorRef.current?.kind === 'arc') { handleArcAnchorClick(e); return; }
     handleCanvasClick(e);
-  }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick, handleArcAnchorClick]);
+  }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick, handleArcAnchorClick, selectedId, extraSelected]);
+
+  // Right-click on a shape (Select tool) → what you can do with it.
+  const handleContextMenuWithShapes = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (activeTool !== 'select') { handleContextMenu(e); return; }
+    e.preventDefault();
+    const r = e.currentTarget.getBoundingClientRect();
+    const at = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+    const hit = findShapeAt(at.x, at.y);
+    if (!hit) { setShapeMenu(null); return; }
+    const id = hit.parentId && !hit.points?.length ? hit.parentId : hit.id;
+    if (id !== selectedId && !extraSelected.includes(id)) { setExtraSelected([]); setSelectedId(id); }
+    setShapeMenu({ x: e.clientX, y: e.clientY, at, tol: 9 / Math.max(0.25, scale) });
+  }, [activeTool, handleContextMenu, findShapeAt, selectedId, extraSelected, setSelectedId, scale]);
+
+  const shapeApi = useShapeActions({
+    measurements, selectedId, setSelectedId, extraSelected, setExtraSelected,
+    pageSizePt: pdfDocDims ?? null, scaleFactor, activeTool, tempPointCount: tempPoints.length,
+    replaceMeasurements,
+    startDrawing: kind => setToolMode('polyarc' as ToolType, { area: kind === 'area' }),
+    backToSelect: () => { if (tempPoints.length > 0) clearTempPoints(); setActiveTool('select'); },
+  });
+  consumeDrawnRef.current = shapeApi.consumeDrawn;
+
+  // Drag a selected shape to move it (corners are still dragged on their own).
+  const moveRef = useRef<{ sx: number; sy: number; moved: boolean; pointerId: number } | null>(null);
+  const [moveDelta, setMoveDelta] = useState<{ dx: number; dy: number } | null>(null);
+  const skipClickRef = useRef(false);
+  const shapePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>): boolean => {
+    if (activeTool !== 'select' || e.button !== 0 || e.shiftKey || e.ctrlKey || e.metaKey || spaceHeld) return false;
+    if (!shapeApi.movable.length) return false;
+    const r = e.currentTarget.getBoundingClientRect();
+    const nx = (e.clientX - r.left) / r.width, ny = (e.clientY - r.top) / r.height;
+    const hit = findShapeAt(nx, ny);
+    if (!hit || !shapeApi.movable.some(m => m.id === hit.id)) return false;
+    e.preventDefault(); e.stopPropagation();          // not a pan
+    e.currentTarget.setPointerCapture(e.pointerId);
+    moveRef.current = { sx: nx, sy: ny, moved: false, pointerId: e.pointerId };
+    return true;
+  }, [activeTool, spaceHeld, shapeApi.movable, findShapeAt]);
+  const shapePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>): boolean => {
+    const mv = moveRef.current;
+    if (!mv) return false;
+    const r = e.currentTarget.getBoundingClientRect();
+    const dx = (e.clientX - r.left) / r.width - mv.sx, dy = (e.clientY - r.top) / r.height - mv.sy;
+    if (!mv.moved && Math.hypot(dx * r.width, dy * r.height) < 4) return true;
+    mv.moved = true;
+    setMoveDelta({ dx, dy });
+    return true;
+  }, []);
+  const shapePointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>): boolean => {
+    const mv = moveRef.current;
+    if (!mv) return false;
+    moveRef.current = null;
+    try { e.currentTarget.releasePointerCapture(mv.pointerId); } catch { /* already released */ }
+    if (mv.moved) {
+      const r = e.currentTarget.getBoundingClientRect();
+      shapeApi.moveBy((e.clientX - r.left) / r.width - mv.sx, (e.clientY - r.top) / r.height - mv.sy);
+      skipClickRef.current = true;                       // the click that follows a drag isn't a selection
+      setTimeout(() => { skipClickRef.current = false; }, 0);
+    }
+    setMoveDelta(null);
+    return true;
+  }, [shapeApi]);
+  shapePendingRef.current = !!shapeApi.pending;
+  // The extra selection only makes sense with the Select tool, on this page.
+  useEffect(() => { if (activeTool !== 'select') { setExtraSelected([]); setShapeMenu(null); } }, [activeTool]);
+  useEffect(() => { setExtraSelected([]); setShapeMenu(null); }, [activeDrawingId, pageNumber]);
+  useEffect(() => { if (!selectedId) setExtraSelected([]); }, [selectedId]);
+  useEffect(() => { redrawDrawingCanvas(); }, [extraSelected, redrawDrawingCanvas]);
 
   // ── Drag & drop PDFs onto the drawing area ────────────────────────────────
   const isFileDrag = (e: React.DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
@@ -1526,6 +1645,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       )}
 
       <div className="flex flex-1 overflow-hidden min-h-0 relative isolate">
+        <ShapeActions api={shapeApi} visible={activeTool === 'select'} menu={shapeMenu} onCloseMenu={() => setShapeMenu(null)} hasShapes={measurements.some(m => !m.isGroupHeader && (m.points?.length ?? 0) > 0)} />
         {isMagicFillTool && (
           <MagicFillProgressOverlay
             active={mfIsFilling || mfIsRepainting}
@@ -1582,10 +1702,10 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               snapFlashes={snapFlashes.map(f => ({ ...f, id: String(f.id) }))} toCanvas={toCanvas}
               readyToDraw={true}
               handleCanvasClick={isOffsetTool ? handleOffsetCanvasClick : handleCanvasClickWithSelect}
-              handleContextMenu={handleContextMenu}
-              handleCanvasPointerMove={isOffsetTool ? handleOffsetCanvasPointerMove : wrappedPointerMove}
-              handleCanvasPointerDown={handleCanvasPointerDown as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
-              handleCanvasPointerUp={handleCanvasPointerUp}
+              handleContextMenu={handleContextMenuWithShapes}
+              handleCanvasPointerMove={isOffsetTool ? handleOffsetCanvasPointerMove : (e => { if (!shapePointerMove(e)) wrappedPointerMove(e); })}
+              handleCanvasPointerDown={(e => ((handleCanvasPointerDown(e) as unknown as boolean) || shapePointerDown(e))) as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
+              handleCanvasPointerUp={e => { if (!shapePointerUp(e)) handleCanvasPointerUp(e); }}
               handleDrawingCanvasPointerDown={handleDrawingCanvasPointerDown}
               setCursorPoint={setCursorPoint} cursorPointRef={cursorPointRef}
               redrawPinCanvas={redrawPinCanvas}
@@ -1620,7 +1740,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 selectedId={mfSelectedId}
                 selectedGroup={mfSelectedGroup}
                 activeColor={activeColor}
-                onSingleClick={handleMagicSingleClick}
+                onSingleClick={(x, y, subtract) => (subtract ? handleMagicSubtractClick(x, y) : handleMagicSingleClick(x, y))}
                 onPolygonLasso={handleMagicPolygonFill}
                 onLassoChange={lassoStore.set}
                 onHover={handleMagicHover}
@@ -1708,6 +1828,42 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   showMarkers={tempPoints.length === 0}
                   onPickCentre={pickCentre}
                   pxPerPoint={canvasPerPageRef.current}
+                />
+              )}
+              {moveDelta && (
+                <svg className="absolute inset-0 w-full h-full pointer-events-none z-[65]" viewBox="0 0 1 1" preserveAspectRatio="none">
+                  {shapeApi.movable.map(m => {
+                    const pts = tessellatePoints(getEffectivePoints(m, measurements), pdfDimensions?.w ?? 1, pdfDimensions?.h ?? 1)
+                      .map(q => `${q.x + moveDelta.dx},${q.y + moveDelta.dy}`).join(' ');
+                    const closed = m.type === 'Polygon' || m.type === 'Rectangle' || m.type === 'Area';
+                    const common = { points: pts, fill: closed ? 'rgba(242,194,48,0.18)' : 'none', stroke: '#F2C230', strokeWidth: 2, strokeDasharray: '6 4', vectorEffect: 'non-scaling-stroke' as const };
+                    return closed ? <polygon key={m.id} {...common} /> : <polyline key={m.id} {...common} />;
+                  })}
+                </svg>
+              )}
+              {activeTool === 'count' && drawMode.auto && pdfDimensions && (
+                <AutoCount
+                  pageRef={currentPdfPageRef}
+                  pageKey={`${activeDrawingId}:${pageNumber}`}
+                  spaceHeld={spaceHeld}
+                  onClose={() => setActiveTool('select')}
+                  onCommit={(pts, name) => {
+                    const groupId = crypto.randomUUID();
+                    const color = getNextMeasurementColor();
+                    const kids = pts.map((p, i) => ({
+                      id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+                      description: `${name} ${i + 1}`, label: name,
+                      type: 'Count', quantity: 1, unit: 'EA', unitRate: 0, notes: '',
+                      points: [{ x: p.x, y: p.y }],
+                      isOverridden: false, color, isVisible: true, parentId: groupId, childIds: [],
+                    } as TakeoffRow));
+                    batchCommitMeasurements([{
+                      id: groupId, drawingId: activeDrawingId || '',
+                      description: name, label: name, type: 'Count',
+                      quantity: pts.length, unit: 'EA', unitRate: 0, notes: 'Found automatically — checked by eye', points: [],
+                      isOverridden: false, color, isVisible: true, isGroupHeader: true, childIds: kids.map(k => k.id),
+                    } as TakeoffRow, ...kids]);
+                  }}
                 />
               )}
             </ViewerCanvas>
@@ -1804,10 +1960,19 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                     <span>Total: {fmtArea(magicFills.reduce((s, f) => s + f.areaPx, 0), mfMetersPerPixel)}</span>
                   </>
                 )}
+                {mfRoomCount > 0 && (
+                  <button
+                    onClick={handleMagicFillAll}
+                    title="Fill every room found on this page. Alt-click the ones you don't want, then Finish."
+                    className="border border-amber-400/60 text-amber-300 hover:bg-amber-400 hover:text-black px-2 py-0.5 font-mono font-bold"
+                  >
+                    Fill all {mfRoomCount} rooms
+                  </button>
+                )}
                 <div className="w-px h-3 bg-industrial-border" />
                 {mfStagedCount > 0
                   ? <span className="text-amber-400">Enter to finish · Ctrl+Z or Esc to undo the last fill</span>
-                  : <span>Click a room to fill it · Hold Space and click around several rooms to fill them together</span>
+                  : <span>Click a room to fill it · Alt-click takes a room back out · Space + clicks fills several together</span>
                 }
               </>
             ) : isGridCountTool ? (

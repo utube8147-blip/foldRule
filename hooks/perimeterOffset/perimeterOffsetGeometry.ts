@@ -82,7 +82,7 @@ export function isOpenPathResult(endStyle: OpenEndStyle): boolean {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
-function isSentinel(p: any): boolean {
+export function isSentinel(p: any): boolean {
   return p?.segmentId != null && SENTINEL_IDS.has(p.segmentId);
 }
 
