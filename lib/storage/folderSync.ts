@@ -30,6 +30,9 @@ import {
   loadDrawingFiles, putProjectRecord, requestPersistentStorage, SCHEMA_VERSION, type ProjectRecord,
 } from './projectDb';
 
+/** Fired on `window` after a sync brought projects in from the folder. */
+export const PROJECTS_PULLED_EVENT = 'foldrule:projects-pulled';
+
 const HANDLE_KEY     = 'folderHandle';
 const TOMBSTONES_KEY = 'deletedProjectIds';
 const PROJECT_FILE   = 'project.json';
@@ -372,6 +375,11 @@ export function syncFolder(): Promise<{ pulled: number; pushed: number } | null>
       }
       await deleteSetting(TOMBSTONES_KEY);
       set({ syncing: false, lastSyncAt: Date.now(), error: null });
+      // Lets an open screen that couldn't find its project (e.g. browser storage
+      // is unavailable and the folder was just chosen) load it now.
+      if (pulled > 0 && typeof window !== 'undefined' && typeof window.dispatchEvent === 'function' && typeof Event === 'function') {
+        window.dispatchEvent(new Event(PROJECTS_PULLED_EVENT));
+      }
     } catch (err) {
       console.error('[folder] sync failed', err);
       set({ syncing: false, error: describe(err) });

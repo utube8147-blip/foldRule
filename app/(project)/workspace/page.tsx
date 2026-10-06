@@ -12,7 +12,8 @@ import { Navbar } from '@/components/layout/Navbar';
 import dynamic from 'next/dynamic';
 import type { ViewerToolbarAPI } from '@/components/Viewer/Viewer';
 import { Material, TakeoffRow, ToolType } from '@/types';
-import { ViewerToolbar, HistoryControls, ScaleControls } from '@/components/Viewer/ViewerToolbar';
+import { HistoryControls, ScaleControls } from '@/components/Viewer/ViewerToolbar';
+import { ToolRail } from '@/components/Viewer/ToolGroups';
 
 const Viewer = dynamic(
   () => import('@/components/Viewer/Viewer').then(m => m.Viewer),
@@ -27,7 +28,7 @@ import type { PresetTemplate } from '@/components/presets/PresetTemplates';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import {
   PanelRightOpen,
-  PanelLeftOpen,
+  FolderOpen,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
@@ -105,7 +106,8 @@ export default function Workspace() {
   } = useTakeoffData();
   const href = useProjectHref();
 
-  const [leftCollapsed,       setLeftCollapsed]       = useState(false);
+  // Project Explorer drawer: closed by default so the drawing gets the room.
+  const [leftCollapsed,       setLeftCollapsed]       = useState(true);
   const [rightCollapsed,      setRightCollapsed]      = useState(false);
   const [showExportModal,     setShowExportModal]     = useState(false);
   const [showPresetDrawer,    setShowPresetDrawer]    = useState(false);
@@ -444,7 +446,10 @@ export default function Workspace() {
   );
   const openMaterialLibrary = useCallback(() => setShowMaterialLibrary(true), [setShowMaterialLibrary]);
   const collapseSidebar     = useCallback(() => setLeftCollapsed(true), []);
-  const expandSidebar       = useCallback(() => setLeftCollapsed(false), []);
+  const selectDrawingFromDrawer = useCallback((id: string) => {
+    setActiveDrawingId(id);
+    setLeftCollapsed(true);
+  }, [setActiveDrawingId]);
   const collapseTable       = useCallback(() => setRightCollapsed(true), []);
   const [showAnalysis,  setShowAnalysis]  = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
@@ -458,6 +463,7 @@ export default function Workspace() {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (e.key === '?') { e.preventDefault(); setShowShortcuts(v => !v); }
+      else if (e.key === 'Escape') { setLeftCollapsed(true); }
       else if (e.key === '[') { e.preventDefault(); setLeftCollapsed(v => !v); }
       else if (e.key === ']') { e.preventDefault(); setRightCollapsed(v => !v); }
     };
@@ -546,16 +552,6 @@ export default function Workspace() {
 
       <div className="flex flex-1 overflow-hidden mt-14">
 
-        <Sidebar
-          isCollapsed={leftCollapsed}
-          onCollapse={collapseSidebar}
-          projectState={sidebarProjectState}
-          onUpdateMaterials={handleUpdateMaterials}
-          onOpenMaterialLibrary={openMaterialLibrary}
-          onDrawingAdded={addDrawing}
-          onSelectDrawing={setActiveDrawingId}
-          onUpdateProjectMeta={updateProjectMeta}
-        />
 
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
@@ -565,62 +561,64 @@ export default function Workspace() {
                 Tool changes go through the Viewer's handler (api.setActiveTool)
                 so the linear↔arc → polyarc upgrade logic runs. Drawing aids and
                 zoom are in the bar under the drawing. */}
-            <ViewerToolbar
-              orientation="vertical"
+            <ToolRail
               activeTool={activeTool as ToolType}
-              setActiveTool={(tool: ToolType) => api?.setActiveTool
-                ? api.setActiveTool(tool)
-                : setActiveTool(tool)
-              }
-              canUndo={api?.canUndo ?? false}
-              canRedo={api?.canRedo ?? false}
-              handleUndo={() => api?.handleUndo?.()}
-              handleRedo={() => api?.handleRedo?.()}
-              tempPointsCount={api?.tempPointsCount ?? 0}
-              showPins={showPins}
-              setShowPins={setShowPins}
-              snapEnabled={api?.snapEnabled ?? true}
-              setSnapEnabled={(v: boolean) => api?.setSnapEnabled?.(v)}
-              showSnapSettings={api?.showSnapSettings ?? false}
-              setShowSnapSettings={(v: boolean) => api?.setShowSnapSettings?.(v)}
-              orthoEnabled={api?.orthoEnabled ?? false}
-              setOrthoEnabled={(v: boolean) => api?.setOrthoEnabled?.(v)}
-              scaleFactor={currentScaleFactor}
-              handleManualScale={() => api?.handleManualScale?.()}
-              analysisStatus={api?.analysisStatus ?? 'idle'}
-              analysisPage={api?.analysisPage ?? null}
-              currentPageCorners={api?.currentPageCorners ?? 0}
-              scale={api?.scale ?? 1}
-              setScale={(s) => api?.setScale?.(s)}
-              fitToScreen={() => api?.fitToScreen?.()}
-              MIN_ZOOM={0.1}
-              MAX_ZOOM={5}
-              ZOOM_SENSITIVITY={0.1}
+              drawMode={api?.drawMode}
+              setToolMode={(tool, mode) => (api?.setToolMode ? api.setToolMode(tool, mode) : setActiveTool(tool))}
+              setActiveTool={(tool: ToolType) => (api?.setActiveTool ? api.setActiveTool(tool) : setActiveTool(tool))}
               polyarcMode={api?.polyarcMode}
               togglePolyarcMode={api?.togglePolyarcMode}
-              hideHistory
-              hideScale
-              showLabels={showLabels}
-              setShowLabels={setShowLabels}
-              showGeometry={showGeometry}
-              setShowGeometry={setShowGeometry}
-leading={leftCollapsed ? (
+              leading={
                 <>
                   <button
                     type="button"
-                    onClick={expandSidebar}
-                    title="Show Project Explorer ([)"
-                    aria-label="Show Project Explorer"
-                    className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
+                    onClick={() => setLeftCollapsed(v => !v)}
+                    aria-expanded={!leftCollapsed}
+                    aria-label="Drawings and project details"
+                    className={cn(
+                      'w-12 h-10 flex items-center justify-center border transition-colors relative group',
+                      leftCollapsed
+                        ? 'border-transparent text-zinc-400 hover:text-amber-accent hover:border-zinc-700'
+                        : 'bg-zinc-800 border-amber-400 text-amber-400',
+                    )}
                   >
-                    <PanelLeftOpen className="w-4 h-4" />
+                    <FolderOpen className="w-4 h-4" />
+                    {ps.drawings.length > 1 && (
+                      <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 bg-amber-accent text-black text-[9px] font-mono font-bold leading-[14px] text-center">
+                        {ps.drawings.length}
+                      </span>
+                    )}
+                    <span className="absolute left-[3.25rem] top-1/2 -translate-y-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-[70] shadow-lg text-left">
+                      Drawings &amp; project details [ [ ]
+                    </span>
                   </button>
-                  <div className="h-px w-6 bg-zinc-700/60 my-1" aria-hidden />
+                  <div className="h-px w-8 bg-zinc-700/60 my-0.5" aria-hidden />
                 </>
-              ) : undefined}
+              }
             />
 
-            <div className="flex-1 min-w-0 relative">
+            <div className="flex-1 min-w-0 flex flex-col">
+              <div className="flex-1 min-h-0 relative">
+              {/* Project Explorer: a drawer over the drawing (opened from the top of
+                  the tool rail or with [), so it takes no room while measuring. */}
+              {!leftCollapsed && (
+                <div className="absolute inset-0 z-[54] bg-black/30" onPointerDown={collapseSidebar} aria-hidden />
+              )}
+              <div className={cn(
+                'absolute left-0 top-0 bottom-0 z-[55] shadow-[8px_0_30px_-8px_rgba(0,0,0,0.7)]',
+                leftCollapsed && 'pointer-events-none',
+              )}>
+                <Sidebar
+                  isCollapsed={leftCollapsed}
+                  onCollapse={collapseSidebar}
+                  projectState={sidebarProjectState}
+                  onUpdateMaterials={handleUpdateMaterials}
+                  onOpenMaterialLibrary={openMaterialLibrary}
+                  onDrawingAdded={addDrawing}
+                  onSelectDrawing={selectDrawingFromDrawer}
+                  onUpdateProjectMeta={updateProjectMeta}
+                />
+              </div>
               <Viewer
                 activeTool={activeTool as ToolType}
                 setActiveTool={setActiveTool as (tool: ToolType) => void}
@@ -654,6 +652,7 @@ leading={leftCollapsed ? (
                   <PanelRightOpen className="w-4 h-4" />
                 </button>
               )}
+              </div>
             </div>
 
             {!rightCollapsed && (
@@ -730,9 +729,15 @@ leading={leftCollapsed ? (
       <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
 
         <div className="flex items-center gap-6">
-          <span className="text-[10px] text-zinc-500 tracking-wide font-semibold truncate max-w-[220px]" title={ps.projectName}>
-            {ps.projectName}
-          </span>
+<button
+            type="button"
+            onClick={() => setLeftCollapsed(v => !v)}
+            title="Switch drawing ([)"
+            className="text-[10px] text-zinc-400 hover:text-amber-accent tracking-wide font-semibold truncate max-w-[260px]"
+          >
+            {activeDrawing ? activeDrawing.name : 'No drawing open'}
+            {ps.drawings.length > 1 && <span className="text-zinc-600"> · {ps.drawings.length} drawings</span>}
+          </button>
           <div className="w-px h-3 bg-zinc-800" />
           <span className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">
             {ps.measurements.filter(m => !m.isGroupHeader).length} measurements

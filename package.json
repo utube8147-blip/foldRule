@@ -48,6 +48,7 @@
     "cmdk": "1.1.1",
     "embla-carousel-react": "8.6.0",
     "exceljs": "^4.4.0",
+    "fake-indexeddb": "^6.2.5",
     "input-otp": "1.4.2",
     "lucide-react": "^0.564.0",
     "motion": "^12.40.0",
@@ -78,7 +79,6 @@
     "eslint": "^9.39.5",
     "eslint-config-next": "^16.2.6",
     "eslint-plugin-unused-imports": "^4.4.1",
-    "fake-indexeddb": "^6.2.5",
     "jsdom": "^25.0.1",
     "postcss": "^8.5",
     "tailwindcss": "^4.2.0",
@@ -89,5 +89,5 @@
   "engines": {
     "node": ">=20.9"
   },
-  "description": "Foldrule — PDF takeoff and BOQ, in your browser"
+  "description": "Foldrule \u2014 PDF takeoff and BOQ, in your browser"
 }

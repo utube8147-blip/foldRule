@@ -50,6 +50,31 @@ describe('snapping fill outlines onto the drawing', () => {
     expect(onArc.length).toBeGreaterThan(5);
   });
 
+  it('a wall meeting an arc gets the exact join, and the outline follows the true circle', () => {
+    // quarter-disc room: two walls from the centre (300,300) and a r=50 arc between their ends
+    const r = 50, k = 0.5523 * r;
+    const idx2 = buildGeometryIndex([L('base', 300, 300, 350, 300), L('side', 300, 300, 300, 350)],
+      [{ id: 'arc', shape: 'arc', center: { x: 300, y: 300 }, radius: r,
+         bezier: { p0: { x: 350, y: 300 }, p1: { x: 350, y: 300 + k }, p2: { x: 300 + k, y: 350 }, p3: { x: 300, y: 350 } } }]);
+    // a sparse trace 1.5 inside, with chamfered joins and only three points on the arc
+    const trace: P[] = [[301.5, 301.5], [344, 301.5]];
+    for (const deg of [15, 45, 75]) trace.push([300 + 48.5 * Math.cos((deg * Math.PI) / 180), 300 + 48.5 * Math.sin((deg * Math.PI) / 180)]);
+    trace.push([301.5, 344]);
+    const out = snapOutline(trace, { nearest: (x, y, t) => idx2.nearestPoint({ x, y }, t) as never, edgeTol: 4, cornerTol: 4 });
+
+    const has = (x: number, y: number) => out.some(p => Math.hypot(p[0] - x, p[1] - y) < 1e-6);
+    expect(has(350, 300)).toBe(true);                 // wall ∩ arc, exactly
+    expect(has(300, 350)).toBe(true);
+    expect(has(300, 300)).toBe(true);                 // wall ∩ wall
+    // every other point is exactly on the circle, and there are enough of them to look round
+    const rest = out.filter(p => !(Math.hypot(p[0] - 300, p[1] - 300) < 1e-6));
+    for (const p of rest) expect(Math.hypot(p[0] - 300, p[1] - 300)).toBeCloseTo(50, 6);
+    expect(rest.length).toBeGreaterThan(12);
+    // area of the quarter disc, to within the fine stepping
+    expect(polygonArea(out)).toBeGreaterThan((Math.PI * r * r) / 4 * 0.999);
+    expect(polygonArea(out)).toBeLessThanOrEqual((Math.PI * r * r) / 4 + 1e-9);
+  });
+
   it('leaves the outline alone where there is nothing to snap to', () => {
     const empty = buildGeometryIndex([], []);
     const poly = traced(100, 100, 200, 200);

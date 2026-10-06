@@ -7,9 +7,10 @@
 //  • "Install app" only appears when the browser can actually install.
 
 import { useEffect, useState } from 'react';
-import { FolderOpen, FolderSync, HardDrive, MonitorDown, X } from 'lucide-react';
+import { FolderOpen, FolderSync, HardDrive, MonitorDown, TriangleAlert, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { useFolderStatus, useInstallState } from './hooks';
+import { useFolderStatus, useInstallState, useStorageMode } from './hooks';
+import { getStorageModeReason } from '@/lib/storage/projectDb';
 import { connectFolder, resumeFolder, disconnectFolder, syncFolder } from '@/lib/storage/folderSync';
 import { promptInstall } from '@/lib/pwa/install';
 
@@ -117,6 +118,67 @@ export function FolderPermissionStrip({ onAfterResume }: { onAfterResume?: () =>
         className="text-zinc-500 hover:text-zinc-200 uppercase tracking-widest text-[11px] font-bold">
         Not now
       </button>
+    </div>
+  );
+}
+
+// ── Browser storage unavailable: the folder is the only thing that persists ──
+
+/**
+ * Shown when the browser's own storage can't be used (typically a full disk).
+ * The app keeps working from memory; this explains that and gets the projects
+ * folder connected, which is then where everything is loaded from and saved to.
+ */
+export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnect?: () => void; className?: string }) {
+  const mode = useStorageMode();
+  const f    = useFolderStatus();
+  const [busy, setBusy] = useState(false);
+  if (mode !== 'memory') return null;
+
+  const usingFolder = !!f.folderName && f.permission === 'granted' && !f.error;
+  const act = async (fn: () => Promise<boolean>) => {
+    setBusy(true);
+    try { if (await fn()) onAfterConnect?.(); } finally { setBusy(false); }
+  };
+
+  return (
+    <div role="alert" className={cn(
+      'border-b px-6 py-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-sans',
+      usingFolder ? 'border-amber-400/30 bg-amber-400/[0.07] text-amber-100/90' : 'border-red-500/40 bg-red-500/10 text-red-100',
+      className,
+    )}>
+      <TriangleAlert className={cn('w-4 h-4 shrink-0', usingFolder ? 'text-amber-400' : 'text-red-400')} aria-hidden />
+      <span className="flex-1 min-w-[260px] leading-relaxed">
+        {usingFolder ? (
+          <>
+            <strong className="font-semibold">Saving to the folder “{f.folderName}” only.</strong>{' '}
+            This browser’s own storage isn’t working on this computer, so the folder is the only copy.
+            You’ll need to choose it again after closing or reloading this window.
+          </>
+        ) : (
+          <>
+            <strong className="font-semibold">This browser can’t store projects right now — nothing here will survive a reload.</strong>{' '}
+            {f.supported
+              ? 'Choose your projects folder to load your projects and save your work there.'
+              : 'Use “Download backup” on a project before closing this window.'}
+          </>
+        )}
+        <span className="block opacity-70 mt-0.5">{getStorageModeReason() ?? ''} Freeing space on the drive that holds your browser profile (usually C:) brings normal saving back.</span>
+      </span>
+      {!usingFolder && f.supported && (
+        f.folderName && f.permission === 'prompt' ? (
+          <button type="button" disabled={busy} onClick={() => void act(resumeFolder)}
+            className="bg-amber-accent hover:bg-amber-400 text-black font-bold px-3 py-1.5 disabled:opacity-50">
+            Allow access to “{f.folderName}”
+          </button>
+        ) : (
+          <button type="button" disabled={busy} onClick={() => void act(connectFolder)}
+            className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black font-bold px-3 py-1.5 disabled:opacity-50">
+            <FolderOpen className="w-3.5 h-3.5" aria-hidden />
+            Choose projects folder
+          </button>
+        )
+      )}
     </div>
   );
 }
@@ -263,7 +325,25 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
 // ── Compact status for the workspace save indicator ──────────────────────────
 
 export function FolderSaveHint() {
-  const f = useFolderStatus();
+  const f    = useFolderStatus();
+  const mode = useStorageMode();
+  if (mode === 'memory') {
+    const ok = !!f.folderName && f.permission === 'granted' && !f.error;
+    if (ok) {
+      return (
+        <span className="text-[11px] font-bold text-amber-400" title={`This browser’s storage isn’t working, so the folder “${f.folderName}” is the only saved copy. Choose it again after reloading.`}>
+          · folder only
+        </span>
+      );
+    }
+    return (
+      <button type="button" onClick={() => void (f.folderName && f.permission === 'prompt' ? resumeFolder() : connectFolder())}
+        title="This browser can’t store projects right now (full disk?). Nothing is saved until you choose a folder."
+        className="text-[11px] font-bold text-red-300 hover:text-white border border-red-500/60 bg-red-500/10 px-1.5 py-0.5">
+        Not saved · choose folder
+      </button>
+    );
+  }
   if (!f.folderName) return null;
   if (f.permission === 'granted' && !f.error) {
     return <span className="text-[11px] text-zinc-600 font-semibold" title={`Also saved to the folder “${f.folderName}”`}>· folder</span>;

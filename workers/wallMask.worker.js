@@ -4,16 +4,40 @@
 // dilateMask / erodeMask in hooks/fill/fillMaskAndSvgPath.ts.
 // tests/wallMaskWorker.test.ts checks both give identical masks.
 const WALL_LUMA = 120;
+const FAINT_LUMA = 215;
+const RIDGE_DROP = 18;
 const STROKE_NEIGHBOR_MIN = 0.4;
 const DILATE_R = 2;
 const ERODE_R = 2;
 
 function buildWallMask(data, w, h) {
-  const dark = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] < 20) continue;
-    const luma = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
-    if (luma < WALL_LUMA) dark[i] = 1;
+  // Brightness per pixel, dark pixels, then thin-line ridges — see the notes in
+  // hooks/fill/fillMaskAndSvgPath.ts (buildWallMask).
+  const N = w * h;
+  const luma = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    luma[i] = data[i * 4 + 3] < 20
+      ? 255
+      : Math.round(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
+  }
+
+  // Clearly dark pixels are wall.
+  const dark = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (luma[i] < WALL_LUMA) dark[i] = 1;
+
+  for (let y = 2; y < h - 2; y++) {
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      const l = luma[i];
+      if (l < WALL_LUMA || l >= FAINT_LUMA) continue;
+      const t = l + RIDGE_DROP;
+      if (
+        (luma[i - 2] >= t && luma[i + 2] >= t) ||
+        (luma[i - 2 * w] >= t && luma[i + 2 * w] >= t) ||
+        (luma[i - 2 * w - 2] >= t && luma[i + 2 * w + 2] >= t) ||
+        (luma[i - 2 * w + 2] >= t && luma[i + 2 * w - 2] >= t)
+      ) dark[i] = 1;
+    }
   }
   const mask = new Uint8Array(w * h);
   for (let y = 0; y < h; y++) {

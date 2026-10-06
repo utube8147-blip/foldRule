@@ -43,6 +43,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { drawModeState, pathToRing, regularPolygon, circleRing, clampSides, type Pt } from '@/lib/geometry/pathShapes';
 import { useCallback } from 'react';
 import React from 'react';
 import { TakeoffRow } from '@/types';
@@ -735,6 +736,25 @@ export function useMeasurementCommit({
       const groups       = splitRadiusPoints(pts);
       const validCircles = groups.filter(g => g.length === 2);
       if (validCircles.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
+      // Area mode: each circle is measured as an area (exact πr²).
+      if (drawModeState.area) {
+        const color = getNextMeasurementColor();
+        const rows: TakeoffRow[] = validCircles.map(([centre, edge], i) => {
+          const rMetres = calcRadiusM(centre, edge);
+          const ring    = circleRing(toCanvas(centre.x, centre.y), toCanvas(edge.x, edge.y)).map(p => toNorm(p.x, p.y));
+          const label   = validCircles.length === 1 ? (meta?.label || 'Circle') : `${meta?.label || 'Circle'} ${i + 1}`;
+          return {
+            id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+            description: label, label,
+            type: 'Polygon', quantity: +(Math.PI * rMetres * rMetres).toFixed(4), unit: 'sq m', unitRate: 0,
+            notes: `Circle: r=${rMetres.toFixed(3)}m`,
+            points: ring, isOverridden: false, color, isVisible: true, childIds: [],
+          } as TakeoffRow;
+        });
+        if (rows.length === 1) commitMeasurement(rows[0]); else batchCommitMeasurements(rows);
+        clearTempPoints(); setCursorPoint(null); return;
+      }
+
       const groupColor = getNextMeasurementColor();
       const groupLabel = meta?.label || 'Circle Group';
       if (validCircles.length === 1) {
@@ -787,8 +807,30 @@ export function useMeasurementCommit({
       const segments = splitPolyarcSegments(pts);
       if (segments.length === 0) { clearTempPoints(); setCursorPoint(null); return; }
 
+      // Area mode: the path closes into one area. Curves are followed exactly
+      // (finely stepped), and the result is an ordinary polygon, so it behaves
+      // like any other area afterwards.
+      if (drawModeState.area) {
+        const ringCanvas = pathToRing(segments.map(seg => seg.type === 'arc'
+          ? { type: 'arc' as const,  points: seg.points.map(p => toCanvas(p.x, p.y)) as [Pt, Pt, Pt] }
+          : { type: 'line' as const, points: seg.points.map(p => toCanvas(p.x, p.y)) }), 3);
+        if (ringCanvas.length < 3) { clearTempPoints(); setCursorPoint(null); return; }
+        const ring  = ringCanvas.map(p => toNorm(p.x, p.y));
+        const label = meta?.label || 'New Area';
+        const curved = segments.filter(s => s.type === 'arc').length;
+        const areaId = crypto.randomUUID();
+        commitMeasurement({
+          id: areaId, drawingId: activeDrawingId || '',
+          description: label, label,
+          type: 'Polygon', quantity: calcArea(ring), unit: 'sq m', unitRate: 0,
+          notes: curved ? `Includes ${curved} curved edge${curved === 1 ? '' : 's'}` : '',
+          points: ring, isOverridden: false, color: getNextMeasurementColor(), isVisible: true, childIds: [],
+        });
+        clearTempPoints(); setCursorPoint(null); return;
+      }
+
       const groupColor = getNextMeasurementColor();
-      const groupLabel = meta?.label || 'Polyarc';
+      const groupLabel = meta?.label || 'New Length';
 
       let totalLength = 0;
       for (const seg of segments) {
@@ -1145,6 +1187,26 @@ export function useMeasurementCommit({
         setPendingBreak(false);
       } else segmentId = tempPoints[tempPoints.length - 1].segmentId!;
       pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentId });
+      return;
+    }
+
+    if (activeTool === 'polygon' && drawModeState.regular) {
+      if (tempPoints.length === 0) {
+        pushPoint({ x: norm.x, y: norm.y, snapped: snap.snapped, segmentId: crypto.randomUUID() });
+        return;
+      }
+      const centre = toCanvas(tempPoints[0].x, tempPoints[0].y);
+      if (Math.hypot(snap.point.x - centre.x, snap.point.y - centre.y) < 2) return;   // same spot: wait for a real corner
+      const sides = clampSides(drawModeState.sides);
+      const ring  = regularPolygon(centre, snap.point, sides).map(p => toNorm(p.x, p.y));
+      const label = `${sides}-sided polygon`;
+      commitMeasurement({
+        id: crypto.randomUUID(), drawingId: activeDrawingId || '',
+        description: label, label,
+        type: 'Polygon', quantity: calcArea(ring), unit: 'sq m', unitRate: 0, notes: `Regular polygon, ${sides} sides`,
+        points: ring, isOverridden: false, color: getNextMeasurementColor(), isVisible: true, childIds: [],
+      });
+      clearTempPoints(); setCursorPoint(null);
       return;
     }
 

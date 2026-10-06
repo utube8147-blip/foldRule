@@ -81,7 +81,7 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool, placement = '
         onClick={() => setOpen(o => !o)}
         className={cn(
           'h-9 flex items-center justify-center gap-1 border transition-all text-[10px] font-mono font-bold uppercase tracking-widest',
-          placement === 'right' ? 'w-9' : 'px-2',
+          placement === 'right' ? 'w-12 h-10' : 'px-2',
           isAdvancedActive || open
             ? 'bg-zinc-800 border-amber-400 text-amber-400'
             : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
@@ -102,7 +102,7 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool, placement = '
       {open && (
         <div className={cn(
           'absolute z-[80] bg-industrial-panel border border-industrial-border shadow-xl min-w-[260px]',
-          placement === 'right' ? 'left-11 bottom-0' : 'top-10 left-0',
+          placement === 'right' ? 'left-[3.25rem] bottom-0' : 'top-10 left-0',
         )}>
 
           {/* Pitch factor row — always first */}

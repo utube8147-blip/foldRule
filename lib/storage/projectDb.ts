@@ -63,40 +63,109 @@ export function isStorageAvailable(): boolean {
   return typeof globalThis !== 'undefined' && typeof globalThis.indexedDB !== 'undefined';
 }
 
+function createStores(db: IDBDatabase): void {
+  if (!db.objectStoreNames.contains(PROJECTS)) {
+    db.createObjectStore(PROJECTS, { keyPath: 'id' });
+  }
+  if (!db.objectStoreNames.contains(FILES)) {
+    const files = db.createObjectStore(FILES, { keyPath: 'key' });
+    files.createIndex('projectId', 'projectId', { unique: false });
+  }
+  if (!db.objectStoreNames.contains(SETTINGS)) {
+    db.createObjectStore(SETTINGS);
+  }
+  if (!db.objectStoreNames.contains(REGIONS)) {
+    const r = db.createObjectStore(REGIONS, { keyPath: 'key' });
+    r.createIndex('projectId', 'projectId', { unique: false });
+    r.createIndex('drawingId', 'drawingId', { unique: false });
+  }
+}
+
+// ── Storage mode ─────────────────────────────────────────────────────────────
+//
+//  'browser'  normal: IndexedDB on disk.
+//  'memory'   the browser's storage is broken on this computer (typically the
+//             disk holding the browser profile is full: "Internal error opening
+//             backing store", FILE_ERROR_NO_SPACE). The app then runs on an
+//             in-memory database with the same API, so everything keeps
+//             working — and the projects FOLDER (lib/storage/folderSync.ts)
+//             becomes the only thing that persists. Nothing in memory survives
+//             a reload, so the UI asks for the folder (StorageModeBanner).
+//
+//  Why IndexedDB at all when a folder is connected? The browser can only
+//  remember the chosen folder *in IndexedDB*, folder access can lapse until the
+//  user clicks "Allow", and network/cloud folders can be slow or offline — so
+//  the browser copy is what makes every save instant and prompt-free. When it
+//  is unavailable we fall back to folder-only rather than refusing to work.
+
+export type StorageMode = 'browser' | 'memory';
+let storageMode: StorageMode = 'browser';
+let storageModeReason: string | null = null;
+const modeListeners = new Set<() => void>();
+export const getStorageMode = (): StorageMode => storageMode;
+export const getServerStorageMode = (): StorageMode => 'browser';
+export const getStorageModeReason = (): string | null => storageModeReason;
+export function subscribeStorageMode(cb: () => void): () => void {
+  modeListeners.add(cb);
+  return () => { modeListeners.delete(cb); };
+}
+
+/** Test hook: back to on-disk storage. */
+export function __resetStorageModeForTests(): void {
+  storageMode = 'browser'; storageModeReason = null; dbPromise = null;
+}
+
+function openMemoryDb(): Promise<IDBDatabase> {
+  return import('fake-indexeddb').then(({ IDBFactory: MemoryFactory }) => new Promise<IDBDatabase>((resolve, reject) => {
+    const req = new MemoryFactory().open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => createStores(req.result as unknown as IDBDatabase);
+    req.onsuccess = () => resolve(req.result as unknown as IDBDatabase);
+    req.onerror   = () => reject(req.error);
+  }));
+}
+
+/**
+ * Stop using on-disk browser storage for this session and run from memory.
+ * Safe to call repeatedly. Returns the in-memory database.
+ */
+export function fallBackToMemory(reason: unknown): Promise<IDBDatabase> {
+  if (storageMode === 'memory' && dbPromise) return dbPromise;
+  const old = dbPromise;
+  storageMode = 'memory';
+  storageModeReason = describeStorageError(reason);
+  console.warn('[storage] browser storage unavailable — running from memory', reason);
+  const mem = openMemoryDb();
+  dbPromise = mem;
+  // Close the on-disk connection if there was one. (`old` may be the open
+  // attempt that is itself resolving to the memory database — don't close that.)
+  void Promise.all([old, mem]).then(([oldDb, memDb]) => {
+    if (oldDb && oldDb !== memDb) { try { oldDb.close(); } catch { /* already closed */ } }
+  }).catch(() => {});
+  modeListeners.forEach(l => l());
+  return mem;
+}
+
 function openDb(): Promise<IDBDatabase> {
   if (!isStorageAvailable()) return Promise.reject(new Error('IndexedDB is not available in this browser'));
   if (dbPromise) return dbPromise;
   const thisOpen: Promise<IDBDatabase> = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(PROJECTS)) {
-        db.createObjectStore(PROJECTS, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(FILES)) {
-        const files = db.createObjectStore(FILES, { keyPath: 'key' });
-        files.createIndex('projectId', 'projectId', { unique: false });
-      }
-      if (!db.objectStoreNames.contains(SETTINGS)) {
-        db.createObjectStore(SETTINGS);
-      }
-      if (!db.objectStoreNames.contains(REGIONS)) {
-        const r = db.createObjectStore(REGIONS, { keyPath: 'key' });
-        r.createIndex('projectId', 'projectId', { unique: false });
-        r.createIndex('drawingId', 'drawingId', { unique: false });
-      }
-    };
+    let req: IDBOpenDBRequest;
+    try { req = indexedDB.open(DB_NAME, DB_VERSION); }
+    catch (err) { fallBackToMemory(err).then(resolve, reject); return; }
+    req.onupgradeneeded = () => createStores(req.result);
     req.onsuccess = () => {
       const db = req.result;
       // Another tab upgraded the schema: release this connection so it can.
-      db.onversionchange = () => { db.close(); dbPromise = null; };
+      db.onversionchange = () => { db.close(); if (dbPromise === thisOpen) dbPromise = null; };
       // The browser closed the connection itself (disk full, storage cleared,
       // profile error). Forget it so the next call opens a fresh one instead
       // of failing forever with "The database connection is closing".
       db.onclose = () => { if (dbPromise === thisOpen) dbPromise = null; };
       resolve(db);
     };
-    req.onerror   = () => { dbPromise = null; reject(req.error); };
+    // The on-disk database can't be opened at all ("Internal error opening
+    // backing store", full disk, corrupt profile): run from memory instead.
+    req.onerror   = (e) => { e.preventDefault?.(); fallBackToMemory(req.error).then(resolve, reject); };
     req.onblocked = () => reject(new Error('Database upgrade blocked — close other tabs of this app'));
   });
   dbPromise = thisOpen;
@@ -120,7 +189,7 @@ export function isClosedConnectionError(err: unknown): boolean {
 export function describeStorageError(err: unknown): string {
   const e = err as DOMException | undefined;
   const text = `${e?.name ?? ''} ${e?.message ?? ''}`;
-  if (e?.name === 'QuotaExceededError' || /NO_SPACE|quota|disk.*full/i.test(text)) {
+  if (e?.name === 'QuotaExceededError' || /NO_SPACE|quota|disk.*full|backing store|IO error/i.test(text)) {
     return 'This computer’s disk is full, so the browser can’t save. Free up some space on the drive that holds your browser profile (usually C:), then click to retry. Until then, new changes are not saved.';
   }
   if (isClosedConnectionError(err)) {
@@ -217,10 +286,27 @@ export async function saveProjectState(id: string, state: ProjectState): Promise
   try {
     return await writeProjectState(id, state);
   } catch (err) {
-    if (!isClosedConnectionError(err)) throw err;
-    resetDbConnection();
+    if (storageMode === 'memory') throw err;
+    if (isClosedConnectionError(err)) {
+      resetDbConnection();
+      try { return await writeProjectState(id, state); }
+      catch (again) { err = again; }
+    }
+    // The disk copy can't be written (full disk / dead connection). Keep the
+    // session alive in memory; the projects folder, if connected, still gets
+    // every save (see pushProjectToFolder).
+    if (!isDiskFailure(err)) throw err;
+    await fallBackToMemory(err);
     return writeProjectState(id, state);
   }
+}
+
+/** Failures of the on-disk store itself, as opposed to bad data. */
+function isDiskFailure(err: unknown): boolean {
+  const e = err as DOMException | undefined;
+  const text = `${e?.name ?? ''} ${e?.message ?? ''}`;
+  return isClosedConnectionError(err) || e?.name === 'QuotaExceededError' || e?.name === 'UnknownError'
+    || /NO_SPACE|quota|backing store|disk.*full|IO error/i.test(text);
 }
 
 async function writeProjectState(id: string, state: ProjectState): Promise<number> {
@@ -267,7 +353,7 @@ export async function deleteProject(id: string): Promise<void> {
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
   tx.objectStore(PROJECTS).delete(id);
   const idx  = tx.objectStore(FILES).index('projectId');
-  const keys = await reqToPromise(idx.getAllKeys(IDBKeyRange.only(id)));
+  const keys = await reqToPromise(idx.getAllKeys(id));
   for (const k of keys) tx.objectStore(FILES).delete(k);
   await txDone(tx);
 }
@@ -315,7 +401,7 @@ export async function loadDrawingFiles(projectId: string): Promise<Map<string, F
   const db   = await openDb();
   const tx   = db.transaction(FILES, 'readonly');
   const recs = await reqToPromise(
-    tx.objectStore(FILES).index('projectId').getAll(IDBKeyRange.only(projectId)) as IDBRequest<FileRecord[]>,
+    tx.objectStore(FILES).index('projectId').getAll(projectId) as IDBRequest<FileRecord[]>,
   );
   const out = new Map<string, File>();
   for (const r of recs) {
@@ -522,7 +608,7 @@ export async function putPageRegions(rec: PageRegionsRecord): Promise<void> {
 async function deleteRegionsWhere(index: 'projectId' | 'drawingId', value: string): Promise<void> {
   const db = await openDb();
   const tx = db.transaction(REGIONS, 'readwrite');
-  const keys = await reqToPromise(tx.objectStore(REGIONS).index(index).getAllKeys(IDBKeyRange.only(value)));
+  const keys = await reqToPromise(tx.objectStore(REGIONS).index(index).getAllKeys(value));
   for (const k of keys) tx.objectStore(REGIONS).delete(k);
   await txDone(tx);
 }

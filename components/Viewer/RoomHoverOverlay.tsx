@@ -14,6 +14,10 @@
 import React, { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { StoredRegion } from '@/lib/storage/projectDb';
 import type { LassoStore } from '@/lib/geometry/lassoStore';
+import { mergeRings, ringArea } from '@/lib/geometry/ringUnion';
+
+/** Keep in step with LINE_BRIDGE_PX in hooks/fill/useMagicFillSession.ts. */
+const LINE_BRIDGE_PX = 3;
 
 interface Props {
   rooms:         { w: number; h: number; regions: StoredRegion[] };
@@ -138,13 +142,23 @@ export function RoomHoverOverlay({ rooms, pdfDimensions, pageWidthPt, scaleFacto
   const toPath = (r: StoredRegion) =>
     r.polygon.map(([x, y], i) => `${i ? 'L' : 'M'}${(x * sx).toFixed(1)} ${(y * sy).toFixed(1)}`).join(' ') + ' Z';
 
+  // A lasso joins pieces that only a thin line separates — preview the joined
+  // outline(s), which is exactly what finishing the lasso will fill.
+  const topsKey = selection.lasso ? selection.tops.map(t => `${t.x0},${t.y0},${t.x1},${t.y1},${t.areaPx}`).join('|') : '';
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const joined = useMemo(() => (selection.lasso ? mergeRings(selection.tops.map(t => t.polygon), LINE_BRIDGE_PX) : []), [topsKey]);
+
   if (!selection.tops.length) return <svg ref={svgRef} className="absolute inset-0 w-full h-full pointer-events-none" aria-hidden />;
 
   const ptPerPx = pageWidthPt / rooms.w;
-  const m2 = selection.areaPx * ptPerPx * ptPerPx * scaleFactor * scaleFactor;
-  const n = selection.tops.length;
+  const useJoined = selection.lasso && joined.length > 0;
+  const areaPx = useJoined ? joined.reduce((sum, r) => sum + ringArea(r), 0) : selection.areaPx;
+  const m2 = areaPx * ptPerPx * ptPerPx * scaleFactor * scaleFactor;
+  const n = useJoined ? joined.length : selection.tops.length;
+  const ringPath = (ring: [number, number][]) =>
+    ring.map(([x, y], i) => `${i ? 'L' : 'M'}${(x * sx).toFixed(1)} ${(y * sy).toFixed(1)}`).join(' ') + ' Z';
   const label = selection.lasso
-    ? `${calibrated ? `≈ ${m2.toFixed(2)} m² · ` : ''}${n} room${n === 1 ? '' : 's'} — finish the lasso to fill`
+    ? `${calibrated ? `≈ ${m2.toFixed(2)} m² · ` : ''}${n} area${n === 1 ? '' : 's'} — finish the lasso to fill`
     : `${calibrated ? `≈ ${m2.toFixed(2)} m² — ` : ''}click to fill`;
   // Label at the centre of the combined boxes.
   const bx0 = Math.min(...selection.tops.map(r => r.x0)), bx1 = Math.max(...selection.tops.map(r => r.x1));
@@ -153,11 +167,15 @@ export function RoomHoverOverlay({ rooms, pdfDimensions, pageWidthPt, scaleFacto
 
   return (
     <svg ref={svgRef} className="absolute inset-0 w-full h-full z-[45] pointer-events-none" viewBox={`0 0 ${w} ${h}`} aria-hidden>
-      {selection.tops.map((r, i) => (
-        <path key={`t${i}`} d={toPath(r)} fill="#F2C230" fillOpacity={0.14} stroke="#F2C230" strokeWidth={2} strokeDasharray="7 5" />
-      ))}
+      {useJoined
+        ? joined.map((ring, i) => (
+            <path key={`j${i}`} d={ringPath(ring)} fill="#F2C230" fillOpacity={0.2} stroke="#F2C230" strokeWidth={2} strokeDasharray="7 5" />
+          ))
+        : selection.tops.map((r, i) => (
+            <path key={`t${i}`} d={toPath(r)} fill="#F2C230" fillOpacity={0.14} stroke="#F2C230" strokeWidth={2} strokeDasharray="7 5" />
+          ))}
       {/* Enclosed areas inside — filled too */}
-      {selection.inner.map((r, i) => (
+      {!useJoined && selection.inner.map((r, i) => (
         <path key={`n${i}`} d={toPath(r)} fill="#F2C230" fillOpacity={0.22} stroke="#F2C230" strokeWidth={1.25} strokeOpacity={0.9} />
       ))}
       <g transform={`translate(${((bx0 + bx1) / 2) * sx}, ${((by0 + by1) / 2) * sy})`}>

@@ -316,6 +316,10 @@ export interface ViewerToolbarAPI {
   setSnapEnabled: (v: boolean) => void;
   orthoEnabled?: boolean;
   setOrthoEnabled?: (v: boolean) => void;
+  /** How the active tool is being used (Area vs Length, regular polygon…). */
+  drawMode?: import('@/lib/geometry/pathShapes').DrawMode;
+  /** Pick a tool together with its mode (used by the rail and the mode strip). */
+  setToolMode?: (tool: ToolType, mode?: Partial<import('@/lib/geometry/pathShapes').DrawMode>) => void;
 
   showSnapSettings: boolean;
   setShowSnapSettings: (v: boolean) => void;

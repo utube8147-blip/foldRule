@@ -3,6 +3,10 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const WALL_LUMA           = 120;
+/** Lighter than this is paper; between WALL_LUMA and this may be a thin line. */
+const FAINT_LUMA          = 215;
+/** How much darker than the paper on both sides a thin-line pixel must be. */
+const RIDGE_DROP          = 18;
 const STROKE_NEIGHBOR_MIN = 0.4;
 export const DILATE_R      = 2;
 export const ERODE_R       = 2;
@@ -16,16 +20,39 @@ export function buildWallMask(
   w: number,
   h: number,
 ): Uint8Array {
-  // Pass 1: mark every pixel whose luminance is below the wall threshold
-  // and whose alpha is non-trivial.
-  const dark = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    if (data[i * 4 + 3] < 20) continue;
-    const luma =
-      0.299 * data[i * 4] +
-      0.587 * data[i * 4 + 1] +
-      0.114 * data[i * 4 + 2];
-    if (luma < WALL_LUMA) dark[i] = 1;
+  // Pass 1: per-pixel brightness (transparent counts as paper).
+  const N = w * h;
+  const luma = new Uint8Array(N);
+  for (let i = 0; i < N; i++) {
+    luma[i] = data[i * 4 + 3] < 20
+      ? 255
+      : Math.round(0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2]);
+  }
+
+  // Clearly dark pixels are wall.
+  const dark = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (luma[i] < WALL_LUMA) dark[i] = 1;
+
+  // Thin lines too. A line narrower than a pixel (fine pens, big sheets, and
+  // above all diagonal or curved lines, whose ink is shared between two
+  // pixels) never gets dark enough to pass the test above, so the fill used to
+  // leak straight through walls that look perfectly closed on screen. Such a
+  // pixel is a wall if it is a "ridge": darker than the paper two pixels away
+  // on BOTH sides, in any of the four directions. A shaded or coloured area is
+  // not a ridge (its neighbours are as dark as it is), so tinted rooms stay open.
+  for (let y = 2; y < h - 2; y++) {
+    for (let x = 2; x < w - 2; x++) {
+      const i = y * w + x;
+      const l = luma[i];
+      if (l < WALL_LUMA || l >= FAINT_LUMA) continue;
+      const t = l + RIDGE_DROP;
+      if (
+        (luma[i - 2] >= t && luma[i + 2] >= t) ||
+        (luma[i - 2 * w] >= t && luma[i + 2 * w] >= t) ||
+        (luma[i - 2 * w - 2] >= t && luma[i + 2 * w + 2] >= t) ||
+        (luma[i - 2 * w + 2] >= t && luma[i + 2 * w - 2] >= t)
+      ) dark[i] = 1;
+    }
   }
 
   // Pass 2: keep only dark pixels that have at least one dark neighbour

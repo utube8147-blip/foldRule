@@ -97,6 +97,13 @@ export interface UseViewerPdfReturn {
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
+/**
+ * Gap left around the page when fitting it to the window. (Not CANVAS_PADDING:
+ * that is the scrollable space around the page, far larger than the window, and
+ * subtracting it made "fit" compute a zero or tiny zoom.)
+ */
+const FIT_MARGIN = 24;
+
 export function useViewerPdf({
   containerRef,
   pdfCanvasRef,
@@ -178,8 +185,9 @@ export function useViewerPdf({
     try {
       const p  = await doc.getPage(page);
       const vp = p.getViewport({ scale: 1 });
-      const vW = containerRef.current.clientWidth  - CANVAS_PADDING * 2;
-      const vH = containerRef.current.clientHeight - CANVAS_PADDING * 2;
+      const vW = containerRef.current.clientWidth  - FIT_MARGIN * 2;
+      const vH = containerRef.current.clientHeight - FIT_MARGIN * 2;
+      if (vW <= 0 || vH <= 0) return;
       setScale(Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
         Math.min(vW / vp.width, vH / vp.height) * 0.97)));
       setTimeout(() => centerDocumentInViewport(), 150);
@@ -273,8 +281,8 @@ export function useViewerPdf({
       const vp   = page.getViewport({ scale: 1 });
       let fit = 1.5;
       if (containerRef.current) {
-        const vW = (containerRef.current.clientWidth  || containerRef.current.offsetWidth  || window.innerWidth)  - CANVAS_PADDING * 2;
-        const vH = (containerRef.current.clientHeight || containerRef.current.offsetHeight || window.innerHeight) - CANVAS_PADDING * 2;
+        const vW = (containerRef.current.clientWidth  || containerRef.current.offsetWidth  || window.innerWidth)  - FIT_MARGIN * 2;
+        const vH = (containerRef.current.clientHeight || containerRef.current.offsetHeight || window.innerHeight) - FIT_MARGIN * 2;
         if (vW > 0 && vH > 0)
           fit = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM,
             Math.min(vW / vp.width, vH / vp.height) * 0.97));

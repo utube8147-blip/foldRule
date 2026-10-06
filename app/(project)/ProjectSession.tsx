@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { TakeoffProvider, useTakeoffData } from '@/context/TakeoffContext';
 import { PresetProvider } from '@/context/PresetContext';
+import { StorageModeBanner } from '@/components/pwa/FolderControls';
+import { useStorageMode } from '@/components/pwa/hooks';
 
 export function ProjectSession({ children }: { children: React.ReactNode }) {
   const projectId = useSearchParams().get('project');
@@ -28,11 +30,29 @@ export function ProjectSession({ children }: { children: React.ReactNode }) {
 
 function ProjectGate({ children }: { children: React.ReactNode }) {
   const { loadStatus, loadError } = useTakeoffData();
+  const storageMode = useStorageMode();
 
   if (loadStatus === 'loading' || loadStatus === 'idle') {
     return (
       <div className="flex h-screen items-center justify-center bg-industrial-black text-sm text-zinc-400">
         Opening project…
+      </div>
+    );
+  }
+  // Browser storage is unavailable, so the project can only come from the
+  // projects folder. Choosing it pulls the projects in and this screen reloads
+  // the project by itself (see PROJECTS_PULLED_EVENT in TakeoffContext).
+  if (storageMode === 'memory' && (loadStatus === 'not-found' || loadStatus === 'error')) {
+    return (
+      <div className="h-screen flex flex-col bg-industrial-black">
+        <StorageModeBanner />
+        <div className="flex-1">
+          <StatusScreen
+            title="Choose your projects folder to open this project"
+            body="This browser’s own storage isn’t working on this computer, so the project has to be read from your projects folder. If it was never saved to a folder, it can’t be opened until browser storage works again."
+            fill
+          />
+        </div>
       </div>
     );
   }
@@ -55,9 +75,9 @@ function ProjectGate({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-function StatusScreen({ title, body }: { title: string; body: string }) {
+function StatusScreen({ title, body, fill }: { title: string; body: string; fill?: boolean }) {
   return (
-    <main className="flex h-screen items-center justify-center bg-industrial-black px-6">
+    <main className={`flex ${fill ? 'h-full' : 'h-screen'} items-center justify-center bg-industrial-black px-6`}>
       <div className="max-w-md">
         <h1 className="text-lg font-semibold text-zinc-100">{title}</h1>
         <p className="mt-2 text-sm leading-relaxed text-zinc-400">{body}</p>

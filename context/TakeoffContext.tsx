@@ -42,7 +42,7 @@ import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
   saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions, describeStorageError,
 } from '@/lib/storage/projectDb';
-import { initFolderSync, pushProjectToFolder } from '@/lib/storage/folderSync';
+import { initFolderSync, pushProjectToFolder, PROJECTS_PULLED_EVENT } from '@/lib/storage/folderSync';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
 
 // ─── Stakeholders ─────────────────────────────────────────────────────────────
@@ -944,6 +944,20 @@ export function TakeoffProvider({
   const hydratedRef = useRef(false);
   const objectUrlsRef = useRef<string[]>([]);
 
+  // If the project wasn't found (or failed to load) and a folder sync then
+  // brings projects in, try again — this is how a project opens when browser
+  // storage is unavailable and the user has just chosen their projects folder.
+  const [reloadTick, setReloadTick] = useState(0);
+  const loadStatusRef = useRef(loadStatus);
+  loadStatusRef.current = loadStatus;
+  useEffect(() => {
+    const onPulled = () => {
+      if (loadStatusRef.current === 'not-found' || loadStatusRef.current === 'error') setReloadTick(t => t + 1);
+    };
+    window.addEventListener(PROJECTS_PULLED_EVENT, onPulled);
+    return () => window.removeEventListener(PROJECTS_PULLED_EVENT, onPulled);
+  }, []);
+
   useEffect(() => {
     hydratedRef.current = false;
     if (!projectId) { setLoadStatus('idle'); return; }
@@ -1008,7 +1022,7 @@ export function TakeoffProvider({
       for (const u of objectUrlsRef.current) URL.revokeObjectURL(u);
       objectUrlsRef.current = [];
     };
-  }, [projectId, resetHistory]);
+  }, [projectId, resetHistory, reloadTick]);
 
   // ── Autosave (debounced) ───────────────────────────────────────────────────
   const latestStateRef = useRef(projectState);

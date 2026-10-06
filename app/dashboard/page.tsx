@@ -13,7 +13,7 @@ import * as motion from 'motion/react-m';
 import { getProfile, initials, type LocalProfile } from '@/lib/profile';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
 import { useConfirm } from '@/components/common/ConfirmDialog';
-import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog } from '@/components/pwa/FolderControls';
+import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog, StorageModeBanner } from '@/components/pwa/FolderControls';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/brand/Logo';
@@ -196,6 +196,7 @@ export default function Dashboard() {
         </div>
       </header>
 
+      <StorageModeBanner onAfterConnect={() => void refresh()} />
       <FolderPermissionStrip onAfterResume={() => void refresh()} />
 
       <main className="flex-1 overflow-auto p-8 max-w-screen-2xl mx-auto w-full">

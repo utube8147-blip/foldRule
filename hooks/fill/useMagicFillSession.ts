@@ -25,6 +25,8 @@ import { buildWallMaskInWorker, maskCache } from './wallMaskClient';
 import { maskOutlineMeasure } from './fillArea';
 import { getPageRegions, putPageRegions, type StoredRegion } from '@/lib/storage/projectDb';
 import { REFERENCE_LONG_EDGE } from './fillMaskAndSvgPath';
+import { fillPreview } from '@/components/Viewer/RoomHoverOverlay';
+import { mergeRings, ringArea, ringPerimeter } from '@/lib/geometry/ringUnion';
 import { useState, useRef, useCallback, useEffect } from 'react';
 import type { PDFPageProxy } from 'pdfjs-dist';
 import type { MagicFill }     from '@/hooks/fill/useMagicFill';
@@ -41,6 +43,11 @@ import { SVG_PATH_UTILS_SOURCE } from '@/workers/svgPathUtils';
 //    High enough that thin wall lines (≥0.5 pt) survive as ≥1-px strokes.
 //    Completely independent of whatever committedScale the viewer is at.
 const MASK_SCALE = 3;
+/**
+ * Lasso fills join pieces whose outlines are within twice this many mask
+ * pixels of each other — i.e. separated by a thin drawn line, not by a wall.
+ */
+const LINE_BRIDGE_PX = 3;
 /**
  * Cap on the off-screen mask render. At 3× an A1 sheet is ~36 million pixels
  * (≈144 MB of RGBA) — which is what froze the app when switching plans with
@@ -374,7 +381,7 @@ self.onmessage = ({ data }) => {
 // skipped — clicks there use the normal flood fill.
 // ─────────────────────────────────────────────────────────────────────────────
 /** Bump when the room-finding algorithm changes (saved rooms get rebuilt). */
-export const ROOMS_VERSION = 2;   // v2: skip regions covering > 80% of the page
+export const ROOMS_VERSION = 3;   // v2: skip regions covering > 80% of the page · v3: thin lines are walls
 
 /** Same seed pattern as OFFSETS_R inside the raster worker (keep in sync). */
 const SEED_OFFSETS: [number, number][] = [
@@ -1224,13 +1231,14 @@ export function useMagicFillSession({
       for (const reg of rs.regions) if (inside(reg, x, y) && (!best || reg.areaPx < best.areaPx)) best = reg;
       return best;
     };
-    const hit = find(mx, my);
-    if (!hit) return null;
-    // A click near a thin line merges both sides in the flood fill — let it.
-    for (const [dx, dy] of SEED_OFFSETS) {
-      const other = find(mx + dx, my + dy);
-      if (other && other !== hit) return null;
+    // The room under the cursor — the same one the hover preview outlines — so
+    // a click fills exactly what was previewed. (Only a click that lands on a
+    // line, in no room at all, tries the neighbouring pixels.)
+    let hit = find(mx, my);
+    if (!hit) {
+      for (const [dx, dy] of SEED_OFFSETS) { hit = find(mx + dx, my + dy); if (hit) break; }
     }
+    if (!hit) return null;
     return { region: hit, w: rs.w, h: rs.h };
   }, [pdfDimensions]);
 
@@ -1366,6 +1374,47 @@ export function useMagicFillSession({
 
   // ── Polygon lasso fill ────────────────────────────────────────────────────
   const handleMagicPolygonFill = useCallback((poly: [number, number][]) => {
+    // Outline-based fill: every room the lasso touches is filled along its own
+    // saved outline — the very shapes the preview showed while lassoing — one
+    // fill per room. (The pixel-based fill below merged the rooms into a single
+    // blob, grew it across the walls and re-traced it, which is where the rough
+    // borders and missed corners came from. It remains only as the fallback for
+    // pages whose rooms haven't been worked out yet.)
+    const rs = regionsRef.current;
+    if (!mfIsFilling && rs && rs.key === regionKeyRef.current && fillDataRef.current && poly.length >= 3) {
+      const cssW0 = pdfDimensions?.w ?? rs.w, cssH0 = pdfDimensions?.h ?? rs.h;
+      const lasso = poly.map(([x, y]): [number, number] => [x * (rs.w / cssW0), y * (rs.h / cssH0)]);
+      const { tops } = fillPreview(rs.regions, lasso, null, rs.w * rs.h);
+      if (tops.length > 0) {
+        // Pieces separated only by a thin line (an arc across the floor, a
+        // pattern line) are one space: join them into a single outline, so
+        // there is no line drawn through the fill and it is one area. Real
+        // walls are wider than the bridge and keep rooms apart.
+        // Joining nudges points off the drawing's lines (it grows and shrinks
+        // the outlines), so the joined outline is put back onto the PDF's own
+        // lines and corners, the same way single rooms are.
+        const snap = snapRef.current;
+        const merged = mergeRings(tops.map(t => t.polygon as [number, number][]), LINE_BRIDGE_PX)
+          .map(ring => (snap ? snap(ring, rs.w, rs.h) : ring))
+          .filter(ring => ring.length >= 3);
+        const shapes: StoredRegion[] = merged.length > 0
+          ? merged.map(ring => {
+              const xs = ring.map(q => q[0]), ys = ring.map(q => q[1]);
+              return {
+                x0: Math.floor(Math.min(...xs)), y0: Math.floor(Math.min(...ys)),
+                x1: Math.ceil(Math.max(...xs)),  y1: Math.ceil(Math.max(...ys)),
+                areaPx: ringArea(ring), perimPx: ringPerimeter(ring), polygon: ring,
+              } as StoredRegion;
+            })
+          : tops;
+        for (const room of shapes) {
+          const cx = ((room.x0 + room.x1) / 2) * (cssW0 / rs.w);
+          const cy = ((room.y0 + room.y1) / 2) * (cssH0 / rs.h);
+          fillFromRegion(room, rs.w, rs.h, cx, cy);
+        }
+        return;
+      }
+    }
     if (poly.length < 3 || !maskRef.current || !fillDataRef.current || mfIsFilling) return;
     const fc = fillCanvasRef.current;
     if (!fc) return;
@@ -1490,7 +1539,7 @@ export function useMagicFillSession({
         setMfFillMsg(''); setMfFillSub(undefined); setMfFillProgress(null);
       }
     };
-  }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions]);
+  }, [mfIsFilling, fillCanvasRef, activeColor, cycleColor, pdfDimensions, fillFromRegion]);
 
   // ── Batch rect fill (delegates to polygon lasso) ──────────────────────────
   const handleMagicBatchRect = useCallback((

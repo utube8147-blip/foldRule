@@ -97,14 +97,63 @@ email — stored in this browser by `lib/profile.ts`, never sent anywhere) and
 * Storage keys (`quantity-savior` database, backup format id) intentionally
   keep their old names so existing projects and backups keep working.
 
+## Tools: Area · Length · Count
+
+The rail is organised by what is measured, not by shape (`components/Viewer/ToolGroups.tsx`):
+
+| Rail button | Ways to draw (panel that opens beside the button on hover) |
+| ----------- | ------------------------------------------ |
+| Select      | —                                          |
+| Area        | Draw outline (straight, `A` for a curved edge) · Rectangle · Circle · Regular (n sides) |
+| Length      | Draw run (straight, `A` for a curved stretch) · Single arc · Circle (circumference) |
+| Count       | Items · On a grid · Marker                 |
+| Magic fill  | —                                          |
+
+* Each mode is one of the underlying tools plus a `DrawMode` flag
+  (`lib/geometry/pathShapes.ts`): e.g. *Area · With curves* is the line+curve
+  path tool (`polyarc`) with `area: true`, which closes the path into a polygon.
+* Every Area mode commits the **same kind of shape** (a `Polygon` ring; curves
+  are finely stepped, a circle's quantity is exact πr²), so later editing /
+  cut-outs / merging can treat all areas alike.
+* Hovering (or focusing) a rail button opens its ways to draw beside it, each
+  with a one-line "what do I click" hint. Clicking the button re-uses the way
+  last chosen there; its icon shows the current one. While drawing a path with
+  curves, a small Straight / Curve switch sits under the button (or press `A`).
+* Shortcuts pick a mode directly: `P` area outline, `R` rectangle,
+  `C` circle (area), `L` length run, `B` single arc,
+  `N` count, `G` grid count, `T` marker, `M` magic fill; `A` switches the next
+  edge between straight and curve while drawing a path.
+
+## Magic fill
+
+* Rooms are worked out once per page from a wall mask (`hooks/fill/`), saved,
+  and outlined on hover. **Fills use those outlines**: a click fills the room
+  under the cursor, a lasso (hold Space, click around, close) fills every room
+  it touches, exactly as previewed. Pieces that only a thin drawn line
+  separates are joined into one outline first (`lib/geometry/ringUnion.ts`,
+  gaps up to 2 × `LINE_BRIDGE_PX` mask pixels), so no line is drawn through
+  the fill and it is one area; rooms separated by a real wall stay separate. The older pixel flood
+  fill is only a fallback for pages whose rooms aren't ready yet.
+* **Thin lines are walls.** A line narrower than a mask pixel (fine pens, big
+  sheets, diagonal and curved lines) is too faint for the darkness test, which
+  is how fills leaked through closed walls. `buildWallMask` also accepts
+  "ridge" pixels — darker than the paper two pixels away on both sides — so
+  hairlines close rooms while tinted/shaded areas stay open. The same code
+  lives in `workers/wallMask.worker.js`; a test keeps the two identical.
+  `ROOMS_VERSION` was bumped, so saved rooms are rebuilt on first use.
+
 ## Workspace layout
 
 ```
 header        project name · undo/redo · scale · unit · calibrate · save · export
-left          Project Explorer ([ to hide)
-tool rail     the measuring tools, grouped, on the left edge of the drawing
+tool rail     far left: a Drawings button, then Select · Area · Length · Count ·
+              Magic · More
+fly-outs      hovering a rail button opens its ways to draw beside it
+drawer        Project Explorer (drawings, scope/specs, upload) — slides over the
+              drawing from the rail's top button or [; closes on outside click,
+              Esc, or picking a drawing. It never takes layout space.
               (ViewerToolbar orientation="vertical"; "More tools" opens sideways)
-drawing
+drawing       opens fitted to the window
 bar under it  page · zoom · Snap (S) · Angle lock (F8) · Show ▾ (labels, pins,
               PDF geometry) · tool hint          (ViewerStatusControls)
 right         takeoff panel (] to hide, drag its edge to resize)
@@ -144,9 +193,18 @@ kept only for the Viewer used on its own (`hideToolbar={false}`).
 * **Fonts are self-hosted** (`app/fonts/*.woff2` via `next/font/local`), so
   builds don't need to reach Google Fonts and the installed app has its fonts
   offline.
-* **Full disk.** If the browser can't write (disk full), it closes the
-  database. Saving now reopens the connection and retries, and the save
-  indicator says "Disk full — not saving" instead of a generic failure.
+* **Browser storage unavailable (full disk, "Internal error opening backing
+  store").** `lib/storage/projectDb.ts` switches to an in-memory database with
+  the same API (`fake-indexeddb`, loaded only when needed) so the app keeps
+  working, and the projects folder becomes the only persistent copy:
+  a banner (`StorageModeBanner`) asks for the folder, projects are pulled from
+  it, every save is written to it, and the header shows "folder only". Because
+  the browser remembers the chosen folder *in IndexedDB*, the folder has to be
+  chosen again after each reload until browser storage works. With no folder,
+  the UI says plainly that nothing is being saved.
+* **Why keep browser storage when a folder is connected?** It is what remembers
+  the folder, it makes saves instant and prompt-free when folder access has
+  lapsed, and it works when a network/cloud folder is slow or offline.
 
 ## Performance notes
 

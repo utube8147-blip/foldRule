@@ -221,7 +221,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ['View', [
     ['Ctrl + / Ctrl −', 'Zoom in / out'], ['Ctrl 0', 'Fit to screen'],
     ['Drag (Select tool)', 'Pan'], ['Space + drag, middle mouse', 'Pan with any tool'],
-    ['[', 'Show / hide Project Explorer'], [']', 'Show / hide takeoff panel'], ['?', 'This list'],
+    ['[', 'Open / close drawings & project details'], [']', 'Show / hide takeoff panel'], ['?', 'This list'],
   ]],
 ];
 

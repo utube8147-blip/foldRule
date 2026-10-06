@@ -31,6 +31,7 @@ import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measure
 import type { GeometryShape } from '@/types/snapTypes';
 import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
 import { ViewerStatusControls } from './ViewerStatusControls';
+import { DEFAULT_DRAW_MODE, drawModeState, clampSides, type DrawMode } from '@/lib/geometry/pathShapes';
 import { constrainToAngle, isExactSnap, ORTHO_TOOLS, orthoState } from '@/lib/geometry/ortho';
 import { buildPointGrid } from '@/lib/geometry/pointGrid';
 import { snapOutline as snapOutlineToDrawing } from '@/lib/geometry/snapOutline';
@@ -639,6 +640,38 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     setActiveTool(newTool);
   }, [activeTool, tempPoints, retagTempPoints, setActiveTool]);
 
+  // ── Area / Length modes ───────────────────────────────────────────────────
+  // The rail's Area, Length and Count buttons are groups of the underlying
+  // tools. `drawMode` says how a tool is being used (e.g. a path of lines and
+  // curves closes into an area). Picking a mode from the strip abandons an
+  // unfinished shape of a different tool rather than converting it.
+  const [drawMode, setDrawModeState] = useState<DrawMode>(DEFAULT_DRAW_MODE);
+  Object.assign(drawModeState, drawMode);
+  const setToolMode = useCallback((tool: ToolType, mode?: Partial<DrawMode>) => {
+    const next: DrawMode = { ...DEFAULT_DRAW_MODE, sides: drawModeState.sides, ...mode };
+    next.sides = clampSides(next.sides);
+    Object.assign(drawModeState, next);
+    setDrawModeState(next);
+    if (tool !== activeTool) {
+      if (tempPoints.length > 0) clearTempPoints();
+      pendingPolyarcModeRef.current = null;
+      setForcedPolyarcMode(null);
+      setActiveTool(tool);
+    }
+  }, [activeTool, tempPoints.length, clearTempPoints, setActiveTool]);
+
+  // Each new path starts with straight edges again (finishing or cancelling a
+  // shape while on "curve" shouldn't make the next one start curved).
+  const prevTempCountRef = useRef(0);
+  useEffect(() => {
+    if (activeTool === 'polyarc' && prevTempCountRef.current > 0 && tempPoints.length === 0) {
+      pendingPolyarcModeRef.current = null;
+      setForcedPolyarcMode(null);
+      setPolyarcMode('line');
+    }
+    prevTempCountRef.current = tempPoints.length;
+  }, [activeTool, tempPoints.length]);
+
   useEffect(() => {
     if (activeTool !== 'polyarc') {
       setForcedPolyarcMode(null);
@@ -1208,6 +1241,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     activeTool, setActiveTool: handleSetActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
     orthoEnabled, setOrthoEnabled,
+    drawMode, setToolMode,
     showPins, setShowPins,
     snapThreshold, setSnapThreshold,
     confidenceFilter, setConfidenceFilter,
@@ -1223,7 +1257,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pageSizePt: pdfDimensions ? { w: pdfDimensions.w / (dimsScaleRef.current || 1), h: pdfDimensions.h / (dimsScaleRef.current || 1) } : null,
   }), [
     activeTool, handleSetActiveTool, scale, scaleFactor,
-    snapEnabled, showSnapSettings, orthoEnabled,
+    snapEnabled, showSnapSettings, orthoEnabled, drawMode, setToolMode,
     showPins, setShowPins,
     snapThreshold, confidenceFilter,
     pdfStage, resolvedSnapPoints,
@@ -1279,8 +1313,17 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
           y: 'polyarc',   o: 'perimeter-offset',
           m: 'magic-fill', k: 'scale',  c: 'radius',
         };
+        if (e.key.toLowerCase() === 'c') {            // Circle, measured as an area
+          e.preventDefault(); setToolMode('radius' as ToolType, { area: true }); return;
+        }
+        // Area and Length are one path tool each: straight by default, A for curves.
+        if (e.key.toLowerCase() === 'p') { e.preventDefault(); setToolMode('polyarc' as ToolType, { area: true }); return; }
+        if (e.key.toLowerCase() === 'l' || e.key.toLowerCase() === 'y') { e.preventDefault(); setToolMode('polyarc' as ToolType); return; }
         if (map[e.key.toLowerCase()]) {
-          e.preventDefault(); handleSetActiveTool(map[e.key.toLowerCase()]); return;
+          e.preventDefault();
+          // A shortcut always means the tool's plain form.
+          setDrawModeState(d => ({ ...DEFAULT_DRAW_MODE, sides: d.sides }));
+          handleSetActiveTool(map[e.key.toLowerCase()]); return;
         }
       }
       if (isTyping) return;
@@ -1296,7 +1339,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [
     activeTool, mfStagedCount, fitToScreen, handleUndo, handleRedo,
     handleSetActiveTool, handleMagicAbortSession, handleOffsetCancel,
-    setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled,
+    setScale, togglePolyarcMode, tempPoints.length, snapEnabled, setSnapEnabled, setToolMode,
     arcStart, clearTempPoints, showMeasurementDialog, mfStagedCount, handleMagicFinish, handleFinishMeasurement,
   ]);
 
@@ -1738,7 +1781,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 <div className="w-px h-3 bg-industrial-border" />
                 {mfStagedCount > 0
                   ? <span className="text-amber-400">Click Finish or press Enter to commit · Esc to discard</span>
-                  : <span>Click: fill · Space+click: polygon lasso</span>
+                  : <span>Click a room to fill it · Hold Space and click around several rooms to fill them together</span>
                 }
               </>
             ) : isGridCountTool ? (
@@ -1771,7 +1814,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               </span>
             ) : activeTool === 'polyarc' ? (
               <span className="text-orange-400">
-                Polyarc
+                {drawMode.area ? 'Area' : 'Length'} path
                 {polyarcHasContent
                   ? ` — ${polyarcLineCount} line${polyarcLineCount !== 1 ? 's' : ''} · ${polyarcArcCount} arc${polyarcArcCount !== 1 ? 's' : ''}`
                   : ''
