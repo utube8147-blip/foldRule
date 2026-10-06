@@ -14,6 +14,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { wheelMode } from '@/lib/shortcuts';
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react';
@@ -477,7 +478,20 @@ export function useViewerPdf({
     const el = containerRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
-      if (!(e.ctrlKey || e.metaKey)) return;
+      // The wheel zooms. Ctrl + wheel scrolls up/down, Shift + wheel sideways.
+      // (A trackpad pinch also arrives as Ctrl + wheel, with small fractional
+      // steps — that still zooms.)
+      if (e.shiftKey && !e.ctrlKey && !e.metaKey) return;                 // browser scrolls sideways
+      const mod = e.ctrlKey || e.metaKey;
+      const pinch = mod && (!Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 40);
+      // The user can swap the two (Shortcuts panel): wheel scrolls, Ctrl + wheel zooms.
+      if (wheelMode() === 'scroll' && !mod) return;                       // browser scrolls
+      if (wheelMode() === 'zoom' && mod && !pinch) {
+        e.preventDefault();                                               // not the browser's page zoom
+        el.scrollTop  += e.deltaY;
+        el.scrollLeft += e.deltaX;
+        return;
+      }
       e.preventDefault();
       onZoomRef.current?.();
       const delta =

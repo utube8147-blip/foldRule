@@ -27,7 +27,7 @@ import { getPageRegions, putPageRegions, type StoredRegion } from '@/lib/storage
 import { REFERENCE_LONG_EDGE } from './fillMaskAndSvgPath';
 import { fillPreview } from '@/components/Viewer/RoomHoverOverlay';
 import { mergeRings, ringArea, ringPerimeter } from '@/lib/geometry/ringUnion';
-import { subtractShapes } from '@/lib/geometry/regionOps';
+import { subtractShapes, intersectShapes, shapeArea } from '@/lib/geometry/regionOps';
 import { pickRoomLabel, type TextItem } from '@/lib/takeoff/roomLabels';
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import type { PDFPageProxy } from 'pdfjs-dist';
@@ -1253,6 +1253,19 @@ export function useMagicFillSession({
     // Already filled → just select it (a second fill would count the room twice).
     const dup = magicFillsRef.current.find(f => f.polygon === region.polygon);
     if (dup) { setMfSelectedId(dup.id); setMfSelectedGroup(null); setMfLastFillPos({ x: canvasX, y: canvasY }); return; }
+    // No ground is filled twice: a room already inside a bigger fill is not
+    // added again, and a new fill that covers earlier ones replaces them.
+    const N = (r: [number, number][]) => r.map(([x, y]) => ({ x: x / mw, y: y / mh }));
+    const fresh = { outer: N(region.polygon), holes: [] as { x: number; y: number }[][] };
+    const freshArea = shapeArea(fresh) || 1e-12;
+    const covered: number[] = [];
+    for (const f of magicFillsRef.current) {
+      if (f.polygon.length < 3) continue;
+      const old = { outer: N(f.polygon), holes: (f.holes ?? []).map(N) };
+      const shared = intersectShapes([fresh, old]).reduce((t, sh) => t + shapeArea(sh), 0);
+      if (shared / freshArea > 0.85) { setMfSelectedId(f.id); setMfSelectedGroup(null); setMfLastFillPos({ x: canvasX, y: canvasY }); return; }
+      if (shared / (shapeArea(old) || 1e-12) > 0.85) covered.push(f.id);
+    }
     const fc = fillCanvasRef.current;
     if (!fc || !fillDataRef.current) return;
     const cssW = pdfDimensions?.w ?? fc.width, cssH = pdfDimensions?.h ?? fc.height;
@@ -1280,7 +1293,7 @@ export function useMagicFillSession({
       areaPx: region.areaPx, perimPx: region.perimPx, polygon: region.polygon, svgMode: false,
     };
     remember();
-      setMagicFills(prev => [...prev, fill]);
+    setMagicFills(prev => [...prev.filter(f => !covered.includes(f.id)), fill]);
     setMfSelectedId(id);
     setMfSelectedGroup(null);
     setMfLastFillPos({ x: canvasX, y: canvasY });

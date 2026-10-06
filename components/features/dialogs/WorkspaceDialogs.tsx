@@ -4,7 +4,11 @@
 // open, and the analysis is computed once per open (useMemo), so they add no
 // cost to the workspace while closed.
 
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  PRESETS, SHORTCUT_LIST, activePreset, applyPreset, canAssign, clearShortcut, isCustomised, keyLabel, resetShortcuts, setShortcut, setWheelMode,
+  useShortcuts, wheelMode, type ShortcutId,
+} from '@/lib/shortcuts';
 import { X, AlertTriangle, CheckCircle2, ArrowRight } from 'lucide-react';
 import type { Drawing, Material, TakeoffRow } from '@/types';
 import { getPageScale } from '@/lib/takeoff/scale';
@@ -208,40 +212,118 @@ export function AnalysisDialog({ measurements, drawings, materials, onClose, onF
 
 // ── Keyboard shortcuts ───────────────────────────────────────────────────────
 
-const SHORTCUTS: [string, [string, string][]][] = [
-  ['Tools', [
-    ['V', 'Select / pan'], ['L', 'Linear'], ['P', 'Polygon'], ['R', 'Rectangle'], ['M', 'Magic fill'],
-    ['B', 'Arc'], ['Y', 'Polyarc (A toggles line / arc)'], ['C', 'Circle'], ['N', 'Count'], ['T', 'Point'],
-    ['G', 'Grid count'], ['O', 'Perimeter offset'], ['K', 'Set scale'],
-  ]],
-  ['Drawing', [
-    ['Enter / double-click', 'Finish shape'], ['Esc', 'Cancel, then back to Select'],
-    ['Ctrl Z', 'Undo'], ['Ctrl Y / Ctrl Shift Z', 'Redo'], ['S', 'Snap on / off'], ['F8', 'Angle lock (0° / 45° / 90°)'],
-  ]],
-  ['View', [
-    ['Ctrl + / Ctrl −', 'Zoom in / out'], ['Ctrl 0', 'Fit to screen'],
-    ['Drag (Select tool)', 'Pan'], ['Space + drag, middle mouse', 'Pan with any tool'],
-    ['[', 'Open / close drawings & project details'], [']', 'Show / hide takeoff panel'], ['?', 'This list'],
-  ]],
+// Fixed keys (can't be changed) — shown for reference.
+const FIXED: [string, string][] = [
+  ['Enter / double-click', 'Finish shape'], ['Esc', 'Cancel, then back to Select'],
+  ['Del / Backspace', 'Delete the selection'], ['Ctrl Z', 'Undo'], ['Ctrl Y', 'Redo'],
+  ['Shift + click', 'Add to the selection'], ['Arrow keys', 'Nudge the selection'],
+  ['Space (tap)', 'Swap between Select and the tool you were using'],
+  ['Space + drag', 'Pan with any tool'], ['Shift + wheel', 'Scroll sideways'],
+  ['Ctrl + / Ctrl −', 'Zoom in / out'], ['Ctrl 0', 'Fit to screen'],
 ];
 
+const KBD = 'inline-block min-w-[30px] text-center border px-1.5 py-0.5 text-[11px] font-bold';
+
 export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  useShortcuts();
+  const [editing, setEditing] = useState<ShortcutId | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+
+  // While a shortcut is being changed, the next key press becomes it.
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.key === 'Escape') { setEditing(null); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey || ['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return;
+      if (e.key === 'Backspace' || e.key === 'Delete') {      // clear: leave it without a key
+        clearShortcut(editing);
+        setNote(`“${SHORTCUT_LIST.find(s => s.id === editing)!.label}” has no key now.`);
+        setEditing(null); return;
+      }
+      if (!canAssign(e.key)) { setNote(`“${e.key === ' ' ? 'Space' : e.key}” already has a fixed job — pick another key.`); return; }
+      const label = SHORTCUT_LIST.find(s => s.id === editing)!.label;
+      const swapped = setShortcut(editing, e.key);
+      setNote(swapped
+        ? `“${label}” is now ${keyLabel(editing)}. “${SHORTCUT_LIST.find(s => s.id === swapped)!.label}” took its old key, ${keyLabel(swapped)}.`
+        : `“${label}” is now ${keyLabel(editing)}.`);
+      setEditing(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [editing]);
+
+  const groups = ['Tools', 'While drawing', 'Panels'] as const;
   return (
     <Shell title="Keyboard shortcuts" onClose={onClose}>
-      {SHORTCUTS.map(([group, rows]) => (
+      <p className="text-zinc-400 text-xs mb-3">
+        Click a key to change it, then press the key you want (Backspace leaves it empty). Single keys only. Saved on this device.
+      </p>
+      {note && <p role="status" className="text-xs text-amber-300 mb-3">{note}</p>}
+
+      <Section title="Ready-made sets">
+        <div className="flex gap-2">
+          {(Object.keys(PRESETS) as (keyof typeof PRESETS)[]).map(name => (
+            <button
+              key={name} aria-pressed={activePreset() === name}
+              onClick={() => { applyPreset(name); setEditing(null); setNote(name === 'planswift'
+                ? 'PlanSwift style: 1 Area · 2 Length · 4 Count · R pause / resume · C finish · A curve · F3 snap. Rectangle moved to Q, Circle to W.'
+                : 'Foldrule shortcuts are back.'); }}
+              className={`flex-1 text-left text-xs px-3 py-2 border ${activePreset() === name ? 'border-amber-accent text-amber-accent' : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'}`}
+            >{PRESETS[name].label}</button>
+          ))}
+        </div>
+      </Section>
+
+      <Section title="Mouse wheel">
+        <div className="flex gap-2">
+          {([['zoom', 'Wheel zooms · Ctrl + wheel scrolls'], ['scroll', 'Wheel scrolls · Ctrl + wheel zooms']] as const).map(([mode, text]) => (
+            <button
+              key={mode} onClick={() => setWheelMode(mode)} aria-pressed={wheelMode() === mode}
+              className={`flex-1 text-left text-xs px-3 py-2 border ${wheelMode() === mode ? 'border-amber-accent text-amber-accent' : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'}`}
+            >{text}</button>
+          ))}
+        </div>
+      </Section>
+
+      {groups.map(group => (
         <Section key={group} title={group}>
           <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2">
-            {rows.map(([k, d]) => (
-              <React.Fragment key={k}>
+            {SHORTCUT_LIST.filter(s => s.group === group).map(s => (
+              <React.Fragment key={s.id}>
                 <dt>
-                  <kbd className="inline-block min-w-[24px] text-center border border-zinc-600 bg-industrial-black px-1.5 py-0.5 text-[11px] font-bold text-amber-accent">{k}</kbd>
+                  <button
+                    onClick={() => { setNote(null); setEditing(e => (e === s.id ? null : s.id)); }}
+                    title="Click, then press the new key"
+                    aria-label={`Change the shortcut for ${s.label} (now ${keyLabel(s.id)})`}
+                    className={`${KBD} ${editing === s.id ? 'border-amber-accent bg-amber-accent text-black animate-pulse' : 'border-zinc-600 bg-industrial-black text-amber-accent hover:border-amber-accent'}`}
+                  >
+                    {editing === s.id ? 'press a key' : keyLabel(s.id)}
+                  </button>
                 </dt>
-                <dd className="text-zinc-400 self-center">{d}</dd>
+                <dd className="text-zinc-400 self-center">{s.label}</dd>
               </React.Fragment>
             ))}
           </dl>
         </Section>
       ))}
+
+      <Section title="Fixed">
+        <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2">
+          {FIXED.map(([k, d]) => (
+            <React.Fragment key={k}>
+              <dt><kbd className={`${KBD} border-zinc-700 bg-industrial-black text-zinc-400`}>{k}</kbd></dt>
+              <dd className="text-zinc-500 self-center">{d}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      </Section>
+
+      <button
+        onClick={() => { resetShortcuts(); setEditing(null); setNote('Shortcuts are back to the defaults.'); }}
+        disabled={!isCustomised()}
+        className="mt-2 text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-2 border border-zinc-600 text-zinc-300 hover:border-amber-accent hover:text-amber-accent disabled:opacity-40"
+      >Reset to defaults</button>
     </Shell>
   );
 }

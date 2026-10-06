@@ -462,6 +462,17 @@ async function doFindMatchesForTemplate(msg, tmplImageData, templateIndex, srcGr
     tmplBase = tmplGrayRaw;
   }
 
+  // First sweep on a smaller copy of the page (4× or 9× fewer pixels), as
+  // long as the sample stays big enough to be recognisable.
+  var minSide = Math.min(origW, origH);
+  var shrink  = minSide >= 72 ? 1 / 3 : minSide >= 36 ? 0.5 : 1;
+  var coarseSrc = srcGray, coarseTmpl = tmplBase;
+  if (shrink < 1) {
+    coarseSrc = new cvLib.Mat(); coarseTmpl = new cvLib.Mat();
+    cvLib.resize(srcGray, coarseSrc, new cvLib.Size(Math.round(srcGray.cols * shrink), Math.round(srcGray.rows * shrink)), 0, 0, cvLib.INTER_AREA);
+    cvLib.resize(tmplBase, coarseTmpl, new cvLib.Size(Math.max(8, Math.round(tmplBase.cols * shrink)), Math.max(8, Math.round(tmplBase.rows * shrink))), 0, 0, cvLib.INTER_AREA);
+  }
+
   var coarsePasses = [];
   for (var ri = 0; ri < rotations.length; ri++)
     for (var fi2 = 0; fi2 < flips.length; fi2++)
@@ -485,12 +496,23 @@ async function doFindMatchesForTemplate(msg, tmplImageData, templateIndex, srcGr
       detail: p.rot + 'deg' + (p.flip ? ' flip' : '') +
               (Math.abs(p.scale-1)>0.01 ? ' x'+p.scale.toFixed(1) : ''),
     });
-    var hits = coarsePass(cvLib, srcGray, tmplBase, p.rot, p.flip, p.scale,
-                           coarseThresh, origW, origH, templateIndex);
+    var hits = coarsePass(cvLib, coarseSrc, coarseTmpl, p.rot, p.flip, p.scale,
+                           coarseThresh - (shrink < 1 ? 0.05 : 0), origW * shrink, origH * shrink, templateIndex);
+    if (shrink < 1) {
+      // Back to full-size coordinates; the fine pass re-checks each spot at full size.
+      for (var hk = 0; hk < hits.length; hk++) {
+        var hh = hits[hk];
+        hh.cx /= shrink; hh.cy /= shrink; hh.tmplW = origW; hh.tmplH = origH;
+        hh.bbox = { x: Math.round(hh.bbox.x / shrink), y: Math.round(hh.bbox.y / shrink),
+                    w: Math.round(hh.bbox.w / shrink), h: Math.round(hh.bbox.h / shrink) };
+        hh.coarseOnly = true;   // a small-copy score is only a hint — never accepted without the fine pass
+      }
+    }
     coarseCandidates = coarseCandidates.concat(hits);
     await new Promise(function(r){ setTimeout(r, 0); });
   }
 
+  if (shrink < 1) { coarseSrc.delete(); coarseTmpl.delete(); }
   var nmsCoarse    = nms(coarseCandidates, 0.20);
   var finePerCand  = Math.round(halfRange * 2 / fineStep) + 1;
 
@@ -512,7 +534,7 @@ async function doFindMatchesForTemplate(msg, tmplImageData, templateIndex, srcGr
                             threshold, origW, origH);
     if (bestHit) {
       finalHits.push(bestHit);
-    } else if (cand.score >= threshold) {
+    } else if (!cand.coarseOnly && cand.score >= threshold) {
       finalHits.push(cand);
     }
     await new Promise(function(r){ setTimeout(r, 0); });

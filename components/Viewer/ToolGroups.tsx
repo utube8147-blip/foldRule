@@ -20,6 +20,7 @@ import {
   ScanSearch,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { keyLabel, useShortcuts, type ShortcutId } from '@/lib/shortcuts';
 import { cn } from '@/lib/utils';
 import type { ToolType } from '@/types';
 import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
@@ -33,14 +34,14 @@ interface Mode {
   mode?: Partial<DrawMode>;
   /** Plain-language "what do I click". */
   hint:  string;
-  shortcut?: string;
+  shortcut?: ShortcutId;
 }
 
 interface Group {
   id:       'select' | 'area' | 'length' | 'count' | 'magic';
   label:    string;
   icon:     LucideIcon;
-  shortcut: string;
+  shortcut: ShortcutId;
   /** What this group is for, shown in the rail tooltip. */
   about:    string;
   modes:    Mode[];
@@ -50,7 +51,7 @@ interface Group {
 
 export const TOOL_GROUPS: Group[] = [
   {
-    id: 'select', label: 'Select', icon: MousePointer2, shortcut: 'V',
+    id: 'select', label: 'Select', icon: MousePointer2, shortcut: 'select',
     about: 'Pick and adjust what you have measured',
     modes: [{
       key: 'select', label: 'Select', icon: MousePointer2, tool: 'select',
@@ -65,55 +66,55 @@ export const TOOL_GROUPS: Group[] = [
     ],
   },
   {
-    id: 'area', label: 'Area', icon: Pentagon, shortcut: 'P',
+    id: 'area', label: 'Area', icon: Pentagon, shortcut: 'area',
     about: 'Floors, ceilings, slabs, walls in elevation',
     modes: [
       // One path tool for straight and curved edges: it starts straight, and A
       // switches the NEXT edge at any point — so you never have to restart a
       // shape because you picked the wrong kind of tool.
-      { key: 'path', label: 'Draw outline', icon: Pentagon, tool: 'polyarc', mode: { area: true }, shortcut: 'P',
+      { key: 'path', label: 'Draw outline', icon: Pentagon, tool: 'polyarc', mode: { area: true }, shortcut: 'area',
         hint: 'Click each corner; click the first corner again or press Enter to finish. Need a curved edge? Press A, click a point on the curve, then where it ends. A again goes back to straight.' },
-      { key: 'rectangle', label: 'Rectangle', icon: Square, tool: 'rectangle', shortcut: 'R',
+      { key: 'rectangle', label: 'Rectangle', icon: Square, tool: 'rectangle', shortcut: 'rectangle',
         hint: 'Click one corner, then the opposite corner.' },
-      { key: 'circle', label: 'Circle', icon: Circle, tool: 'radius', mode: { area: true }, shortcut: 'C',
+      { key: 'circle', label: 'Circle', icon: Circle, tool: 'radius', mode: { area: true }, shortcut: 'circle',
         hint: 'Click the centre, then the edge. Enter to finish.' },
-      { key: 'ellipse', label: 'Ellipse', icon: CircleDashed, tool: 'rectangle', mode: { area: true, ellipse: true },
+      { key: 'ellipse', label: 'Ellipse', icon: CircleDashed, tool: 'rectangle', mode: { area: true, ellipse: true }, shortcut: 'ellipse',
         hint: 'Click two opposite corners of the box the ellipse fits in.' },
       { key: 'regular', label: 'Regular', icon: Hexagon, tool: 'polygon', mode: { regular: true },
         hint: 'Set the number of sides, click the centre, then one corner.' },
     ],
   },
   {
-    id: 'length', label: 'Length', icon: Pencil, shortcut: 'L',
+    id: 'length', label: 'Length', icon: Pencil, shortcut: 'length',
     about: 'Walls, skirting, pipes, kerbs, edges',
     modes: [
-      { key: 'path', label: 'Draw run', icon: Route, tool: 'polyarc', shortcut: 'L',
+      { key: 'path', label: 'Draw run', icon: Route, tool: 'polyarc', shortcut: 'length',
         hint: 'Click each point along the run; Enter to finish. Need a curved stretch? Press A, click a point on the curve, then where it ends. A again goes back to straight.' },
-      { key: 'arc', label: 'Single arc', icon: Spline, tool: 'arc', shortcut: 'B',
+      { key: 'arc', label: 'Single arc', icon: Spline, tool: 'arc', shortcut: 'arc',
         hint: 'Click the start, a point on the curve, then the end. Enter to finish.' },
       { key: 'circle', label: 'Circle', icon: CircleDashed, tool: 'radius',
         hint: 'Measures the distance around: click the centre, then the edge. Enter to finish.' },
     ],
   },
   {
-    id: 'count', label: 'Count', icon: Hash, shortcut: 'N',
+    id: 'count', label: 'Count', icon: Hash, shortcut: 'count',
     about: 'Doors, fittings, sockets — anything you count',
     modes: [
-      { key: 'count', label: 'Items', icon: Hash, tool: 'count', shortcut: 'N',
+      { key: 'count', label: 'Items', icon: Hash, tool: 'count', shortcut: 'count',
         hint: 'Click each item. Enter to finish the group.' },
-      { key: 'auto', label: 'Find & count', icon: ScanSearch, tool: 'count', mode: { auto: true },
+      { key: 'auto', label: 'Find & count', icon: ScanSearch, tool: 'count', mode: { auto: true }, shortcut: 'findCount',
         hint: 'Drag a box round ONE symbol (a door, a socket, a light). Every matching symbol on the page is found and counted for you — remove any wrong ones, then add them to the takeoff.' },
-      { key: 'grid', label: 'On a grid', icon: Grid3x3, tool: 'grid-count', shortcut: 'G',
+      { key: 'grid', label: 'On a grid', icon: Grid3x3, tool: 'grid-count', shortcut: 'grid',
         hint: 'Draw around an area — items are counted on an evenly spaced grid inside it (tiles, ceiling panels).' },
-      { key: 'marker', label: 'Marker', icon: MapPin, tool: 'point', shortcut: 'T',
+      { key: 'marker', label: 'Marker', icon: MapPin, tool: 'point', shortcut: 'marker',
         hint: 'Click to drop a single reference marker.' },
     ],
   },
   {
-    id: 'magic', label: 'Magic fill', icon: Wand2, shortcut: 'M',
+    id: 'magic', label: 'Magic fill', icon: Wand2, shortcut: 'magic',
     about: 'Click inside a room to measure it',
     modes: [{
-      key: 'magic', label: 'Magic fill', icon: Wand2, tool: 'magic-fill', shortcut: 'M',
+      key: 'magic', label: 'Magic fill', icon: Wand2, tool: 'magic-fill', shortcut: 'magic',
       hint: 'Rooms are found for you — point at one to see its outline.',
     }],
     tips: [
@@ -164,6 +165,7 @@ export function ToolRail({
   polyarcMode?: 'line' | 'arc';
   togglePolyarcMode?: () => void;
 }) {
+  useShortcuts();      // re-render when the user changes a shortcut
   const current = activeGroupAndMode(activeTool, drawMode);
 
   // Sub-options open beside a button while the pointer is over it (or it has
@@ -249,7 +251,7 @@ export function ToolRail({
                     {!hasModes && (
                       <p className="px-3 py-2.5 text-xs text-zinc-400 leading-relaxed">
                         {g.modes[0].hint}
-                        <kbd className="ml-2 font-mono text-[10px] text-zinc-500 border border-zinc-700 px-1">{g.shortcut}</kbd>
+                        <kbd className="ml-2 font-mono text-[10px] text-zinc-500 border border-zinc-700 px-1">{keyLabel(g.shortcut)}</kbd>
                       </p>
                     )}
                     {g.tips && (
@@ -278,7 +280,7 @@ export function ToolRail({
                             <span className="min-w-0 flex-1">
                               <span className="flex items-center justify-between gap-2">
                                 <span className={cn('text-xs font-semibold', on ? 'text-amber-300' : 'text-zinc-100')}>{m.label}</span>
-                                {m.shortcut && <kbd className="font-mono text-[10px] text-zinc-500 border border-zinc-700 px-1">{m.shortcut}</kbd>}
+                                {m.shortcut && <kbd className="font-mono text-[10px] text-zinc-500 border border-zinc-700 px-1">{keyLabel(m.shortcut)}</kbd>}
                               </span>
                               <span className="block text-[11px] text-zinc-500 leading-snug mt-0.5">{m.hint}</span>
                             </span>

@@ -3,6 +3,7 @@
 // add / delete a point, open ↔ closed, duplicate, and "convert" (work out a
 // second quantity from the same shape).
 
+import { isDeleteKey } from '@/lib/shortcuts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TakeoffRow } from '@/types';
 import { getNextMeasurementColor } from '@/hooks/measurements/useMeasurements/colors';
@@ -409,7 +410,8 @@ export function useShapeActions({
 
   const remove = useCallback(() => {
     if (!selectedRows.length) return;
-    replaceMeasurements(selectedRows.map(m => m.id));
+    // A group goes with its rows.
+    replaceMeasurements(selectedRows.flatMap(m => [m.id, ...(m.isGroupHeader ? m.childIds ?? [] : [])]));
     setExtraSelected([]); setSelectedId(null);
   }, [selectedRows, replaceMeasurements, setExtraSelected, setSelectedId]);
 
@@ -450,11 +452,19 @@ export function useShapeActions({
     say(`Added “${row.label}”: ${row.quantity} ${row.unit}.`);
   }, [primary, outline, lengthOf, replaceMeasurements, say]);
 
-  // Delete removes the selection (Select tool only, and not while typing).
+  // Delete or Backspace removes the selection (not while typing).
   useEffect(() => {
-    if (activeTool !== 'select' || !selectedRows.length) return;
+    // Not while something is being drawn (Backspace steps back there) or in Magic fill (it undoes a fill).
+    if (activeTool === 'magic-fill' || tempPointCount > 0 || pending || !selectedRows.length) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Delete') return;
+      // Esc lets go of the selection.
+      if (e.key === 'Escape' && activeTool === 'select') {
+        if ((e.target as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable]')) return;
+        setExtraSelected([]); setSelectedId(null);
+        return;
+      }
+      if (!isDeleteKey(e)) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t?.closest?.('input,textarea,select,[contenteditable]')) return;
       e.preventDefault();
@@ -462,7 +472,7 @@ export function useShapeActions({
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeTool, selectedRows.length, remove]);
+  }, [activeTool, tempPointCount, pending, selectedRows.length, remove, setExtraSelected, setSelectedId]);
 
   return {
     selectedRows, primary, message, pending,

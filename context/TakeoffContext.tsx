@@ -456,7 +456,7 @@ export function TakeoffProvider({
     let newUnit = parent.unit;
 
     for (const child of existingChildren) {
-      if (child.type === 'Length' || child.type === 'Area' || child.type === 'Count') {
+      if (child.type === 'Length' || child.type === 'Area' || child.type === 'Count' || child.type === 'Polygon' || child.type === 'Rectangle') {
         newTotal += child.quantity;
         newUnit = child.unit;
       }

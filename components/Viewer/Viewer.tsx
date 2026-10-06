@@ -28,7 +28,11 @@ import { RoomHoverOverlay } from './RoomHoverOverlay';
 import { createLassoStore } from '@/lib/geometry/lassoStore';
 import { useShapeActions } from '@/hooks/shapes/useShapeActions';
 import { AutoCount } from '@/components/Viewer/AutoCount';
+import { actionForKey } from '@/lib/shortcuts';
+import { useActiveItem, kindOfTool } from '@/hooks/shapes/useActiveItem';
+import { ActiveItemBar } from '@/components/Viewer/ActiveItemBar';
 import { getNextMeasurementColor } from '@/hooks/measurements/useMeasurements';
+import { setColorsInUse } from '@/hooks/measurements/useMeasurements/colors';
 import { ShapeActions, type ShapeMenuState } from '@/components/Viewer/ShapeActions';
 import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGroup } from './CentreAnchorOverlay';
 import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
@@ -166,6 +170,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   // While a cut-out / split is being drawn, the drawn shape is used as the
   // cutter instead of being saved (set further down, once the actions exist).
   const consumeDrawnRef = useRef<(rows: TakeoffRow[]) => boolean>(() => false);
+  // With a named item active, drawn shapes are added to it (set further down).
+  const adoptRef = useRef<(rows: TakeoffRow[]) => boolean>(() => false);
+  const itemActiveRef = useRef(false);
   const commitOrConsume = useCallback((m: TakeoffRow) => {
     // Ellipse mode: the drawn box becomes the ellipse that fits inside it.
     if (drawModeState.ellipse && m.type === 'Rectangle' && m.points.length >= 2) {
@@ -179,18 +186,48 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         points: Array.from({ length: N }, (_, i) => ({ x: cx + rx * Math.cos((i / N) * 2 * Math.PI), y: cy + ry * Math.sin((i / N) * 2 * Math.PI) })),
       };
     }
-    if (!consumeDrawnRef.current([m])) commitMeasurement(m);
+    if (consumeDrawnRef.current([m]) || adoptRef.current([m])) return;
+    commitMeasurement(m);
   }, [commitMeasurement]);
   const batchCommitOrConsume = useCallback((rows: TakeoffRow[]) => {
-    if (!consumeDrawnRef.current(rows)) batchCommitMeasurements(rows);
+    if (consumeDrawnRef.current(rows) || adoptRef.current(rows)) return;
+    batchCommitMeasurements(rows);
   }, [batchCommitMeasurements]);
   const shapePendingRef = useRef(false);
+  const magicItemIdRef = useRef<string | null>(null);
   const [showTechInfo, setShowTechInfo] = useState(false);
   const [dragOver,     setDragOver]     = useState(false);
 
   const undoRedoRef = useRef<UndoRedoRefValue>({ setCursorPoint: () => {} });
-  const handleUndo  = useCallback(() => { undo();  undoRedoRef.current.setCursorPoint(null); }, [undo]);
-  const handleRedo  = useCallback(() => { redo();  undoRedoRef.current.setCursorPoint(null); }, [redo]);
+  // New items get a colour nothing else in the takeoff is using.
+  setColorsInUse(((projectState?.measurements ?? []) as TakeoffRow[]).filter(m => m.isGroupHeader || !m.parentId).map(m => m.color));
+
+  // Undo / redo also put the selection back: whatever the step changed or
+  // brought back is selected again (so undoing a merge re-selects both areas).
+  const undoDiffRef = useRef<Map<string, TakeoffRow> | null>(null);
+  const noteBeforeUndo = () => {
+    undoDiffRef.current = new Map(((projectState?.measurements ?? []) as TakeoffRow[]).map(m => [m.id, m]));
+    setTimeout(() => { undoDiffRef.current = null; }, 80);      // nothing changed (e.g. a point was undone) → forget
+  };
+  const handleUndo  = useCallback(() => { noteBeforeUndo(); undo();  undoRedoRef.current.setCursorPoint(null); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [undo, projectState]);
+  const handleRedo  = useCallback(() => { noteBeforeUndo(); redo();  undoRedoRef.current.setCursorPoint(null); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [redo, projectState]);
+  useEffect(() => {
+    const before = undoDiffRef.current;
+    if (!before) return;
+    undoDiffRef.current = null;
+    const now = (projectState?.measurements ?? []) as TakeoffRow[];
+    const alive = new Set(now.map(m => m.id));
+    const changed = now.filter(m => !m.isGroupHeader && (m.points?.length ?? 0) > 0 && before.get(m.id) !== m).map(m => m.id);
+    if (activeTool === 'select' && changed.length > 0 && changed.length <= 24) {
+      const first = selectedId && changed.includes(selectedId) ? selectedId : changed[0];
+      setSelectedId(first);
+      setExtraSelected(changed.filter(id => id !== first));
+    } else {
+      if (selectedId && !alive.has(selectedId)) setSelectedId(null);
+      setExtraSelected(prev => prev.filter(id => alive.has(id)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectState?.measurements]);
 
   const isMagicFillActiveRef = useRef(activeTool === 'magic-fill');
   isMagicFillActiveRef.current = activeTool === 'magic-fill';
@@ -882,8 +919,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     isMagicFillActiveRef,
     activeDrawingId,
     measurements,
-    propAppendToGroupId: appendToGroupId,
-    onAddMeasurementProp,
+    propAppendToGroupId: appendToGroupId ?? magicItemIdRef.current ?? undefined,
+    // Fills saved while a named item is active go into that item.
+    onAddMeasurementProp: (row: TakeoffRow) => {
+      if (row.parentId && row.parentId === magicItemIdRef.current && !row.isGroupHeader) { if (adoptRef.current([{ ...row, parentId: undefined }])) return; }
+      onAddMeasurementProp?.(row);
+    },
     onUpdateMeasurementProp,
     onDeleteMeasurementProp,
     onAppendComplete,
@@ -1116,6 +1157,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     if (tempPoints.length < minPts) { finishMeasurement(); return; }
     if (propAppendToGroupId) { finishMeasurement(); onAppendComplete?.(); return; }
     if (shapePendingRef.current) { finishMeasurement(); return; }   // cut-out / split: no name needed
+    if (itemActiveRef.current) { finishMeasurement(); return; }     // named item active: it already has its name
     const type =
       activeTool === 'polygon'   || activeTool === 'rectangle' ? 'Polygon' :
       activeTool === 'linear'    ? 'Length' :
@@ -1332,7 +1374,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       // Enter finishes the shape in progress. (This used to live on the drawing
       // container, which can't take focus — so Enter never worked.)
       if (e.key === 'Enter' && !isTyping && !hasModifier && !showMeasurementDialog) {
-        if (activeTool === 'magic-fill' && mfStagedCount > 0) { e.preventDefault(); handleMagicFinish(); return; }
+        if (activeTool === 'magic-fill' && mfStagedCount > 0) { e.preventDefault(); finishMagicRef.current(); return; }
         if (tempPoints.length > 0) { e.preventDefault(); handleFinishMeasurement(); return; }
       }
       if (e.key === 'Escape' && !isTyping && anchorRef.current) {
@@ -1345,33 +1387,46 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         handleSetActiveTool('select' as ToolType); return;
       }
       if (!isTyping && !hasModifier) {
-        if (e.key.toLowerCase() === 'a' && activeTool === 'polyarc') {
-          e.preventDefault(); togglePolyarcMode(); return;
-        }
-        if (e.key.toLowerCase() === 's') {
-          e.preventDefault(); setSnapEnabled(!snapEnabled); return;
-        }
-        if (e.key === 'F8') {
-          e.preventDefault(); setOrthoEnabled(v => !v); return;
-        }
-        const map: Record<string, ToolType> = {
-          v: 'select',    l: 'linear',   r: 'rectangle',
-          p: 'polygon',   n: 'count',    t: 'point',
-          b: 'arc',       g: 'grid-count',
-          y: 'polyarc',   o: 'perimeter-offset',
-          m: 'magic-fill', k: 'scale',  c: 'radius',
-        };
-        if (e.key.toLowerCase() === 'c') {            // Circle, measured as an area
-          e.preventDefault(); setToolMode('radius' as ToolType, { area: true }); return;
-        }
-        // Area and Length are one path tool each: straight by default, A for curves.
-        if (e.key.toLowerCase() === 'p') { e.preventDefault(); setToolMode('polyarc' as ToolType, { area: true }); return; }
-        if (e.key.toLowerCase() === 'l' || e.key.toLowerCase() === 'y') { e.preventDefault(); setToolMode('polyarc' as ToolType); return; }
-        if (map[e.key.toLowerCase()]) {
-          e.preventDefault();
-          // A shortcut always means the tool's plain form.
+        // Single-key shortcuts — the user can change these (Shortcuts panel).
+        const act = actionForKey(e.key);
+        const plain = (tool: ToolType) => {             // a shortcut means the tool's plain form
           setDrawModeState(d => ({ ...DEFAULT_DRAW_MODE, sides: d.sides }));
-          handleSetActiveTool(map[e.key.toLowerCase()]); return;
+          handleSetActiveTool(tool);
+        };
+        if (act === 'curve') { if (activeTool === 'polyarc') { e.preventDefault(); togglePolyarcMode(); } return; }
+        // Mid-path, the Length key means "straight edges again" (A = curve, L = line).
+        if (act === 'length' && activeTool === 'polyarc' && tempPoints.length > 0) {
+          e.preventDefault(); if (safePolyarcMode === 'arc') togglePolyarcMode(); return;
+        }
+        if (act === 'swap') { e.preventDefault(); swapRef.current(); return; }
+        if (act === 'close') {
+          // Same as Enter: finish what is being drawn (nothing to finish → do nothing).
+          if (showMeasurementDialog) return;
+          if (activeTool === 'magic-fill' && mfStagedCount > 0) { e.preventDefault(); finishMagicRef.current(); }
+          else if (tempPoints.length > 0) { e.preventDefault(); handleFinishMeasurement(); }
+          return;
+        }
+        if (act) {
+          switch (act) {
+            case 'snap':      setSnapEnabled(!snapEnabled); break;
+            case 'angle':     setOrthoEnabled(v => !v); break;
+            case 'select':    plain('select' as ToolType); break;
+            case 'area':      setToolMode('polyarc' as ToolType, { area: true }); break;
+            case 'length':    setToolMode('polyarc' as ToolType); break;
+            case 'rectangle': plain('rectangle' as ToolType); break;
+            case 'circle':    setToolMode('radius' as ToolType, { area: true }); break;
+            case 'ellipse':   setToolMode('rectangle' as ToolType, { area: true, ellipse: true }); break;
+            case 'arc':       plain('arc' as ToolType); break;
+            case 'count':     plain('count' as ToolType); break;
+            case 'findCount': setToolMode('count' as ToolType, { auto: true }); break;
+            case 'grid':      plain('grid-count' as ToolType); break;
+            case 'marker':    plain('point' as ToolType); break;
+            case 'magic':     plain('magic-fill' as ToolType); break;
+            case 'scale':     plain('scale' as ToolType); break;
+            case 'offset':    plain('perimeter-offset' as ToolType); break;
+            default: return;                              // panels: handled by the page
+          }
+          e.preventDefault(); return;
         }
       }
       if (isTyping) return;
@@ -1483,6 +1538,85 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     backToSelect: () => { if (tempPoints.length > 0) clearTempPoints(); setActiveTool('select'); },
   });
   consumeDrawnRef.current = shapeApi.consumeDrawn;
+
+  // ── Named item: everything drawn is added to it until it is changed ───────
+  const itemApi = useActiveItem({
+    measurements, activeDrawingId, replaceMeasurements,
+    kind: shapeApi.pending ? null : kindOfTool(activeTool, drawMode),
+  });
+  adoptRef.current = itemApi.adopt;
+  itemActiveRef.current = !!itemApi.item;
+  magicItemIdRef.current = activeTool === 'magic-fill' && itemApi.item ? itemApi.item.id : null;
+  /** Finish the staged magic fills: straight into the named item, or ask for a name. */
+  const finishMagic = () => {
+    if (activeTool === 'magic-fill' && itemApi.item) handleMfNameConfirm(itemApi.item.name);
+    else handleMagicFinish();
+  };
+  const finishMagicRef = useRef(finishMagic); finishMagicRef.current = finishMagic;
+  // Nothing can be measured until the item is named (or naming is skipped on purpose).
+  const [nameNudge, setNameNudge] = useState(0);
+  useEffect(() => { if (!itemApi.needsName) setNameNudge(0); }, [itemApi.needsName]);
+
+  // ── Space: swap between Select and the tool you were using ───────────────
+  // A quick tap swaps; holding Space and dragging still pans. A shape that is
+  // half drawn is put aside, and comes back when you return to the tool.
+  const lastToolRef = useRef<{ tool: ToolType; mode: DrawMode } | null>(null);
+  const parkedRef = useRef<{ tool: ToolType; mode: DrawMode; points: typeof tempPoints } | null>(null);
+  const [parked, setParked] = useState(0);
+  if (activeTool !== 'select') lastToolRef.current = { tool: activeTool as ToolType, mode: drawMode };
+  const swapRef = useRef<() => void>(() => {});
+  swapRef.current = () => {
+    if (shapeApi.pending || showMeasurementDialog) return;
+    if (activeTool !== 'select' && parkedRef.current && tempPoints.length === 0) {
+      // A shape is waiting and nothing is half-drawn here → straight back to it, in one press.
+      const { tool, mode } = parkedRef.current;
+      setDrawModeState(mode);
+      Object.assign(drawModeState, mode);
+      setActiveTool(tool);
+      return;
+    }
+    if (activeTool !== 'select') {
+      // Park the half-drawn shape — unless one is already parked (then this one is a side job: let it go).
+      if (tempPoints.length > 0) {
+        if (!parkedRef.current) { parkedRef.current = { tool: activeTool as ToolType, mode: drawMode, points: tempPoints }; setParked(tempPoints.length); }
+        clearTempPoints();
+      }
+      setActiveTool('select');
+    } else if (parkedRef.current || lastToolRef.current) {
+      // A paused shape comes first: Space takes you back to it, even if you used another tool meanwhile.
+      const { tool, mode } = parkedRef.current ?? lastToolRef.current!;
+      setDrawModeState(mode);
+      Object.assign(drawModeState, mode);
+      setActiveTool(tool);
+    }
+  };
+  // Back on the tool → the half-drawn shape returns.
+  useEffect(() => {
+    const p = parkedRef.current;
+    if (!p) return;
+    // Same tool in the same mode (a Length path is not an Area path) → the shape returns.
+    // Any other tool leaves it parked, so you can draw or fix something else first.
+    if (activeTool === p.tool && !!drawMode.area === !!p.mode.area && !!drawMode.ellipse === !!p.mode.ellipse && !!drawMode.auto === !!p.mode.auto) {
+      const t = setTimeout(() => { retagTempPoints(() => p.points); parkedRef.current = null; setParked(0); }, 0);
+      return () => clearTimeout(t);
+    }
+  }, [activeTool, drawMode, retagTempPoints]);
+  // A new drawing or page: the paused shape no longer belongs here.
+  useEffect(() => { parkedRef.current = null; setParked(0); }, [activeDrawingId, pageNumber]);
+  useEffect(() => {
+    let downAt = 0, used = false;
+    const typing = (t: EventTarget | null) => !!(t as HTMLElement | null)?.closest?.('input,textarea,select,[contenteditable],button');
+    const kd = (e: KeyboardEvent) => { if (e.code === 'Space' && !e.repeat && !typing(e.target)) { downAt = Date.now(); used = false; } };
+    const pd = () => { used = true; };                 // Space + drag / click = pan or lasso, not a swap
+    const ku = (e: KeyboardEvent) => {
+      if (e.code !== 'Space' || !downAt) return;
+      const quick = Date.now() - downAt < 350;
+      downAt = 0;
+      if (quick && !used && !typing(e.target)) swapRef.current();
+    };
+    window.addEventListener('keydown', kd); window.addEventListener('keyup', ku); window.addEventListener('pointerdown', pd, true);
+    return () => { window.removeEventListener('keydown', kd); window.removeEventListener('keyup', ku); window.removeEventListener('pointerdown', pd, true); };
+  }, []);
 
   // Drag a selected shape to move it (corners are still dragged on their own).
   const moveRef = useRef<{ sx: number; sy: number; moved: boolean; pointerId: number } | null>(null);
@@ -1645,6 +1779,13 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       )}
 
       <div className="flex flex-1 overflow-hidden min-h-0 relative isolate">
+        <ActiveItemBar api={itemApi} hidden={!pdf} nudge={nameNudge} onLeave={() => setActiveTool('select')} />
+        {parked > 0 && !(tempPoints.length > 0 && parkedRef.current === null) && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-[72] bg-zinc-900 border border-amber-400/70 text-amber-200 text-xs px-3 py-1.5 shadow-xl pointer-events-none">
+            Shape paused ({parked} point{parked === 1 ? '' : 's'}) — {activeTool === 'select' ? 'press Space to carry on drawing' : 'finish here, then press Space to carry on with it'}
+            <button className="ml-3 underline text-amber-300/80 pointer-events-auto" onClick={() => { parkedRef.current = null; setParked(0); }}>discard</button>
+          </div>
+        )}
         <ShapeActions api={shapeApi} visible={activeTool === 'select'} menu={shapeMenu} onCloseMenu={() => setShapeMenu(null)} hasShapes={measurements.some(m => !m.isGroupHeader && (m.points?.length ?? 0) > 0)} />
         {isMagicFillTool && (
           <MagicFillProgressOverlay
@@ -1674,7 +1815,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             if (e.key === 'Enter') {
               e.preventDefault();
               if (activeTool === 'magic-fill' && mfStagedCount > 0) {
-                handleMagicFinish();
+                finishMagicRef.current();
               } else if (tempPoints.length > 0) {
                 handleFinishMeasurement();
               }
@@ -1760,7 +1901,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   >
                   <button
                     className="flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
-                    onClick={e => { e.stopPropagation(); handleMagicFinish(); }}
+                    onClick={e => { e.stopPropagation(); finishMagicRef.current(); }}
                     onPointerDown={e => e.stopPropagation()}
                   >
                     <Check className="w-3 h-3" />
@@ -1830,6 +1971,17 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                   pxPerPoint={canvasPerPageRef.current}
                 />
               )}
+              {itemApi.needsName && pdf && (
+                <div
+                  className="absolute inset-0 z-[69] cursor-not-allowed"
+                  style={{ pointerEvents: spaceHeld ? 'none' : 'auto' }}       /* Space + drag still pans */
+                  title="Name what you are measuring first"
+                  onPointerDown={e => { e.preventDefault(); e.stopPropagation(); setNameNudge(n => n + 1); }}
+                  onMouseDown={e => e.preventDefault()}                          /* keep the typing cursor in the name box */
+                  onClick={e => e.stopPropagation()}
+                  onContextMenu={e => e.preventDefault()}
+                />
+              )}
               {moveDelta && (
                 <svg className="absolute inset-0 w-full h-full pointer-events-none z-[65]" viewBox="0 0 1 1" preserveAspectRatio="none">
                   {shapeApi.movable.map(m => {
@@ -1855,6 +2007,15 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                     }))}
                   onClose={() => setActiveTool('select')}
                   onCommit={(pts, name) => {
+                    if (itemApi.item) {
+                      // A named count item is active → the matches go into it.
+                      itemApi.adopt(pts.map(p => ({
+                        id: crypto.randomUUID(), drawingId: activeDrawingId || '', description: '', label: '',
+                        type: 'Count', quantity: 1, unit: 'EA', unitRate: 0, notes: 'Found automatically', points: [{ x: p.x, y: p.y }],
+                        isOverridden: false, color: itemApi.item!.color, isVisible: true, childIds: [],
+                      } as TakeoffRow)));
+                      return;
+                    }
                     const groupId = crypto.randomUUID();
                     const color = getNextMeasurementColor();
                     const kids = pts.map((p, i) => ({

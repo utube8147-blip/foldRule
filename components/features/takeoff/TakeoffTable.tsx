@@ -1,4 +1,5 @@
 // components/TakeoffTable.tsx
+import { ColorSwatchPicker } from '@/components/common/ColorSwatchPicker';
 import React, { useState, useCallback } from 'react';
 import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check, PanelRightClose } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
@@ -329,18 +330,15 @@ function TakeoffTableImpl({
     );
   };
 
+  // Colours in use (one per group or loose row), so the picker can show which are free.
+  const usedColors = Array.from(new Set(measurements.filter(m => m.isGroupHeader || !m.parentId).map(m => m.color).filter(Boolean)));
+
   const renderRowActions = (row: TakeoffRow) => (
     <div className="flex items-center justify-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-      <label className="cursor-pointer">
-        <input
-          type="color"
-          value={row.color || '#EF9F27'}
-          onChange={(e) => { e.stopPropagation(); onUpdate(row.id, { color: e.target.value }); }}
-          onClick={(e) => e.stopPropagation()}
-          className="opacity-0 w-0 h-0 absolute pointer-events-none"
-        />
-        <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: row.color || '#EF9F27' }} />
-      </label>
+      <ColorSwatchPicker
+        value={row.color || '#EF9F27'} used={usedColors} label={row.label || row.description}
+        onChange={color => onUpdate(row.id, { color })}
+      />
       <button
         onClick={(e) => { e.stopPropagation(); onToggleVisibility(row.id); }}
         className={cn('transition-colors', row.isVisible !== false ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 hover:text-amber-accent')}
@@ -541,21 +539,10 @@ function TakeoffTableImpl({
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                          <label className="cursor-pointer">
-                            <input
-                              type="color"
-                              value={header.color || '#EF9F27'}
-                              onChange={(e) => {
-                                e.stopPropagation();
-                                const color = e.target.value;
-                                onUpdate(header.id, { color });
-                                batchUpdateGroup(groupId, items, { color });
-                              }}
-                              onClick={(e) => e.stopPropagation()}
-                              className="opacity-0 w-0 h-0 absolute pointer-events-none"
-                            />
-                            <div className="w-3 h-3 rounded-full shadow-sm hover:scale-110 transition-transform" style={{ backgroundColor: header.color || '#EF9F27' }} />
-                          </label>
+                          <ColorSwatchPicker
+                            value={header.color || '#EF9F27'} used={usedColors} label={header.label || header.description}
+                            onChange={color => { onUpdate(header.id, { color }); batchUpdateGroup(groupId, items, { color }); }}
+                          />
 
                           {/* ── FIX: single source of truth for the toggle.
                                     Always batch-update header + all children together

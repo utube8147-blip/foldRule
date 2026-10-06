@@ -34,6 +34,7 @@ import { cn } from '@/lib/utils';
 import { AnimatePresence } from 'motion/react';
 import { exportProjectToExcel } from '@/lib/export/clientExport';
 import { takeoffToCsv, downloadCsv } from '@/lib/export/csvExport';
+import { actionForKey } from '@/lib/shortcuts';
 import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
 import { useProjectHref } from '@/lib/nav/projectHref';
 // Loaded on first open — they cost nothing until used.
@@ -463,10 +464,11 @@ export default function Workspace() {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-      if (e.key === '?') { e.preventDefault(); setShowShortcuts(v => !v); }
+      const act = actionForKey(e.key);
+      if (act === 'help') { e.preventDefault(); setShowShortcuts(v => !v); }
       else if (e.key === 'Escape') { setLeftCollapsed(true); }
-      else if (e.key === '[') { e.preventDefault(); setLeftCollapsed(v => !v); }
-      else if (e.key === ']') { e.preventDefault(); setRightCollapsed(v => !v); }
+      else if (act === 'drawer') { e.preventDefault(); setLeftCollapsed(v => !v); }
+      else if (act === 'takeoff') { e.preventDefault(); setRightCollapsed(v => !v); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

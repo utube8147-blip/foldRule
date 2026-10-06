@@ -459,6 +459,7 @@ export function MagicFillCanvas({
         lassoRef.current = pts;
         setLassoPoints(pts);
         setIsLassoing(true);
+        pointerDownPos.current = null;      // this click starts the loop — it is not also a "fill this room" click
         return;
       }
 
@@ -500,7 +501,8 @@ export function MagicFillCanvas({
 
   // ── Pointer up ────────────────────────────────────────────────────────────
   const handlePointerUp = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (isLassoing) return;
+    // (The ref is checked as well: a quick click can end before the lasso state has re-rendered.)
+    if (isLassoing || lassoRef.current.length > 0 || spaceHeldRef.current) { pointerDownPos.current = null; return; }
     if (!pointerDownPos.current) return;
 
     const { x, y } = getXY(e);

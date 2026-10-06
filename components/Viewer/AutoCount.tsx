@@ -2,6 +2,7 @@
 // Find & count: drag a box round one symbol and every matching symbol on the
 // page is found (OpenCV template matching, in a worker, on this device).
 
+import { isDeleteKey } from '@/lib/shortcuts';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ScanSearch, Plus, RotateCcw, Check, X } from 'lucide-react';
 import { useOpenCVMatcher } from '@/hooks/detection/useOpenCVMatcher';
@@ -18,10 +19,12 @@ const inRing = (r: Pt[], p: Pt) => {
   return c;
 };
 const SEARCH_FLOOR = 0.55;              // searched once this loosely; the slider then only filters
-type Turn = 'none' | 'quarter' | 'any';
+type Turn = 'none' | 'any';
+// "Any angle" sweeps every 15° on a small copy of the page, then refines each
+// hit to 3° at full size — quicker than sweeping quarter turns and refining ±45°.
 const TURNS: Record<Turn, number[]> = {
-  none: [0], quarter: [0, 90, 180, 270],
-  any: Array.from({ length: 24 }, (_, i) => i * 15),      // every 15°, refined to 3° around each hit
+  none: [0],
+  any: Array.from({ length: 24 }, (_, i) => i * 15),
 };
 
 /** Small picture of a sample. */
@@ -51,7 +54,7 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
   const [adding, setAdding] = useState(false);          // next box is an extra sample
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [threshold, setThreshold] = useState(0.7);
-  const [turn, setTurn] = useState<Turn>('quarter');
+  const [turn, setTurn] = useState<Turn>('any');
   const [areaId, setAreaId] = useState('');
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);     // panel moved by dragging its title
   const inkRef = useRef<Record<number, { w: number; h: number }>>({});     // drawn size of each sample, px
@@ -61,6 +64,20 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [hovered, setHovered] = useState<string | null>(null);
+
+  // Delete / Backspace removes the match under the cursor.
+  useEffect(() => {
+    if (!hovered) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!isDeleteKey(e)) return;
+      if ((e.target as HTMLElement | null)?.closest?.('input,textarea,select')) return;
+      e.preventDefault(); e.stopPropagation();
+      setExcluded(s => new Set(s).add(hovered)); setHovered(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [hovered]);
 
   const rotations = TURNS[turn];
   const flips = useMemo(() => (mirrored ? [false, true] : [false]), [mirrored]);
@@ -160,6 +177,7 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
   });
   const kept = shown.filter(m => !excluded.has(m.id));
   const weakBelow = Math.min(0.97, threshold + 0.08);
+  const drop = (id: string) => { setExcluded(s => new Set(s).add(id)); setHovered(null); };
   const hasSample = cv.templates.length > 0;
   const working = busy || cv.isSearching;
   const sampling = !hasSample || adding;
@@ -197,31 +215,30 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
             width: `${Math.abs(drag.b.x - drag.a.x) * 100}%`, height: `${Math.abs(drag.b.y - drag.a.y) * 100}%`,
           }} />
         )}
-        {size && shown.map((m, n) => {
-          const off = excluded.has(m.id);
+        {size && kept.map((m, n) => {
           const weak = m.score < weakBelow;
-          const tone = off ? 'border-zinc-400/80 border-dashed' : weak ? 'border-amber-500 hover:border-red-500' : 'border-emerald-500 hover:border-red-500';
+          const hot = hovered === m.id;
           return (
-            <button
+            <div
               key={m.id}
-              title={off ? 'Left out — click to count it again' : `${weak ? 'Weaker match' : 'Match'} ${Math.round(m.score * 100)}% — click to leave it out`}
-              onPointerDown={e => e.stopPropagation()}
-              onClick={e => {
-                e.stopPropagation();
-                setExcluded(s => { const k = new Set(s); if (k.has(m.id)) k.delete(m.id); else k.add(m.id); return k; });
-              }}
-              className={`absolute border-2 bg-transparent ${tone}`}
-              style={{
-                ...fit(m),
-                pointerEvents: sampling ? 'none' : 'auto',
-              }}
+              title={`${weak ? 'Weaker match' : 'Match'} ${Math.round(m.score * 100)}% — × or Delete removes it`}
+              onPointerEnter={() => setHovered(m.id)}
+              onPointerLeave={() => setHovered(h => (h === m.id ? null : h))}
+              className={`absolute border-2 bg-transparent ${hot ? 'border-red-500' : weak ? 'border-amber-500' : 'border-emerald-500'}`}
+              style={{ ...fit(m), pointerEvents: sampling ? 'none' : 'auto' }}
             >
-              {!off && (
-                <span className={`absolute -top-2.5 -left-2.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] leading-[18px] font-bold text-center text-black ${weak ? 'bg-amber-400' : 'bg-emerald-400'}`}>
-                  {kept.indexOf(m) + 1 || n + 1}
-                </span>
-              )}
-            </button>
+              <span className={`absolute -top-2.5 -left-2.5 min-w-[18px] h-[18px] px-1 rounded-full text-[10px] leading-[18px] font-bold text-center text-black ${weak ? 'bg-amber-400' : 'bg-emerald-400'}`}>
+                {n + 1}
+              </span>
+              <button
+                aria-label={`Remove match ${n + 1}`}
+                onPointerDown={e => e.stopPropagation()}
+                onClick={e => { e.stopPropagation(); drop(m.id); }}
+                className="absolute -top-2.5 -right-2.5 w-[18px] h-[18px] rounded-full bg-red-500 text-white flex items-center justify-center shadow hover:bg-red-400"
+              >
+                <X className="w-3 h-3" strokeWidth={3} />
+              </button>
+            </div>
           );
         })}
       </div>
@@ -258,8 +275,11 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
               : working ? `Searching… ${cv.workerDetail || cv.workerPhase}`
               : !hasSample ? 'Drag a box round ONE symbol on the drawing'
               : adding ? 'Drag a box round a symbol that was missed'
-              : `${kept.length} found${area ? ` in ${area.name}` : ''}${shown.length - kept.length ? ` · ${shown.length - kept.length} left out` : ''}`}
+              : `${kept.length} found${area ? ` in ${area.name}` : ''}${shown.length - kept.length ? ` · ${shown.length - kept.length} removed` : ''}`}
           </span>
+          {hasSample && !working && excluded.size > 0 && (
+            <button onClick={() => setExcluded(new Set())} className="text-[11px] text-sky-300 underline hover:text-sky-200 whitespace-nowrap">put them back</button>
+          )}
           <button onClick={onClose} title="Close (Esc)" className="ml-auto text-zinc-500 hover:text-zinc-200"><X className="w-4 h-4" /></button>
         </div>
         {(error || cv.workerPhase.startsWith('Error')) && (
@@ -285,9 +305,8 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
                   onChange={e => { const t = e.target.value as Turn; setTurn(t); void rerun(TURNS[t], flips); }}
                   className="bg-zinc-800 border border-zinc-600 px-1.5 py-1 text-[11px] text-zinc-100"
                 >
-                  <option value="none">as drawn only</option>
-                  <option value="quarter">quarter turns</option>
-                  <option value="any">any angle (slower)</option>
+                  <option value="any">at any angle</option>
+                  <option value="none">as drawn only (fastest)</option>
                 </select>
               </label>
               <label className="flex items-center gap-1.5">
@@ -330,7 +349,7 @@ export function AutoCount({ pageRef, pageKey, spaceHeld, areas, onCommit, onClos
                 <Check className="w-3 h-3" /> Add {kept.length}
               </button>
             </div>
-            <div className="text-[11px] text-zinc-500">Click a box to leave it out. Amber boxes are weaker matches — check those first. Saved as a count group in the takeoff.</div>
+            <div className="text-[11px] text-zinc-500">Wrong match? Click its red × (or point at it and press Delete). Amber boxes are weaker matches — check those first.</div>
           </div>
         )}
       </div>
