@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
+import { RequireAuth } from '@/components/auth/RequireAuth';
 
 export const metadata: Metadata = {
   title:  'Projects',
@@ -6,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  return children;
+  return <Suspense fallback={null}><RequireAuth>{children}</RequireAuth></Suspense>;
 }

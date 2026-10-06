@@ -74,11 +74,59 @@ every measurement with live formulas for amounts, group subtotals, VAT and the
 total. When the project has a material library, the Summary / BOQ matrix /
 Materials / Cost breakdown sheets are added after it.
 
-## No accounts
+## Accounts
 
-There is no sign-in. `/register` is an optional local profile (name, firm,
-email — stored in this browser by `lib/profile.ts`, never sent anywhere) and
-`/login` redirects to it.
+Foldrule is offered as a service: people create a free account and log in to
+use the tools. **Projects still live on the user's own computer** — the account
+only says who they are. (Cloud sync is planned as a paid feature and will hang
+off the same user id.)
+
+**Turning accounts on**
+
+1. Create a project at supabase.com.
+2. *Settings → API*: copy the Project URL and the `anon` public key into
+   `.env.local` (and into Vercel → Settings → Environment Variables):
+
+   ```
+   NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
+   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ…
+   ```
+
+3. *Authentication → URL Configuration*: set **Site URL** to your site
+   (e.g. `https://foldrule.app`) and add these **Redirect URLs** for every
+   address you use (production, `http://localhost:3000`):
+   `…/dashboard` and `…/reset-password`.
+4. *Authentication → Providers → Email*: keep "Confirm email" on. For real
+   use, set up your own SMTP sender (*Authentication → Emails → SMTP*);
+   Supabase's built-in sender is rate-limited to a few emails per hour.
+5. Restart `npm run dev` / redeploy (the values are read at build time).
+
+Without those two variables the app runs in **local mode**: no accounts,
+nothing gated — convenient for development.
+
+**How it fits together**
+
+```
+lib/auth/supabase.ts          the client (URL + anon key only)
+context/AuthContext.tsx       session, sign in/up/out, reset, profile
+components/auth/RequireAuth   gate around /dashboard, /workspace, /takeoff-full,
+                              /presets, /open, /account → /login?next=…
+app/login  app/register  app/forgot-password  app/reset-password  app/account
+lib/storage/projectDb.ts      setStorageOwner(): each local project carries an
+                              ownerId; lists and opens are per account
+```
+
+* Two people logging in on one computer each see only their own projects.
+  Projects made before accounts existed are adopted by the first account that
+  opens the project list on that computer.
+* A shared projects folder may hold several accounts' projects; each account
+  syncs only its own.
+* Name and firm are stored in the Supabase user's metadata; no extra tables are
+  needed yet.
+* The gate decides who may use the app on this deployment. It is **not** a
+  security boundary for data (the data is on the user's machine). Anything that
+  must be enforced — paid plans, cloud sync — needs a server-side check when
+  those features are built.
 
 ## Brand, SEO and icons
 
@@ -90,7 +138,7 @@ email — stored in this browser by `lib/profile.ts`, never sent anywhere) and
 * Fonts: Inter (UI) and JetBrains Mono (labels, values) — the original app fonts — via `next/font`. Archivo is used only for the wordmark.
 * SEO: metadata in `app/layout.tsx`, `app/robots.ts`, `app/sitemap.ts`,
   `app/manifest.ts`, generated social image `app/opengraph-image.tsx`, and
-  JSON-LD on the landing page. Project screens, labs and the profile screen are
+  JSON-LD on the landing page. Project screens, labs and the account screens are
   `noindex`. Set `NEXT_PUBLIC_SITE_URL` in production.
 * Icons: `npm run icons` regenerates `app/icon.svg`, `app/favicon.ico`,
   `app/apple-icon.png`, `public/icons/*` and `public/brand/*` from the mark.

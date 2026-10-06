@@ -1,9 +1,8 @@
-// Profile screen. There are no accounts: the profile is stored in this browser
-// only (lib/profile.ts). /login redirects to /register.
+// Account screens (Supabase Auth — see context/AuthContext.tsx).
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title:  'Profile',
+  title:  'Log in',
   robots: { index: false, follow: true },
 };
 

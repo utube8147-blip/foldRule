@@ -41,6 +41,8 @@ export interface ProjectRecord {
   measurementCount: number;
   drawingCount:     number;
   schemaVersion:    number;
+  /** Account that owns this project (absent on projects made before accounts, or in local mode). */
+  ownerId?:         string;
   state:            StoredProjectState;
 }
 
@@ -242,13 +244,40 @@ export function emptyProjectState(name: string, number = ''): StoredProjectState
   };
 }
 
+// ── Whose projects ───────────────────────────────────────────────────────────
+//
+//  Projects live on this computer, but several people may sign in on it. Each
+//  project is stamped with its owner's account id; listing and opening only
+//  return the signed-in user's. Projects with no owner (made before accounts
+//  existed, or in local mode) are adopted by whoever lists them first.
+//  Owner `null` = local mode: no accounts, everything is visible.
+
+let storageOwner: string | null = null;
+export function setStorageOwner(id: string | null): void { storageOwner = id; }
+export const getStorageOwner = (): string | null => storageOwner;
+
+const isMine = (r: { ownerId?: string }) => !storageOwner || !r.ownerId || r.ownerId === storageOwner;
+/** Stamp a record with the current owner unless it already has one. */
+function owned<T extends { ownerId?: string }>(r: T): T {
+  return storageOwner && !r.ownerId ? { ...r, ownerId: storageOwner } : r;
+}
+
 // ── Projects ─────────────────────────────────────────────────────────────────
 
 export async function listProjects(): Promise<ProjectSummary[]> {
   const db  = await openDb();
   const tx  = db.transaction(PROJECTS, 'readonly');
   const all = await reqToPromise(tx.objectStore(PROJECTS).getAll() as IDBRequest<ProjectRecord[]>);
-  return all
+  const mine = all.filter(isMine);
+  // Adopt projects that have no owner yet (they were made on this computer
+  // before anyone signed in), so they stay with this account from now on.
+  const unclaimed = storageOwner ? mine.filter(r => !r.ownerId) : [];
+  if (unclaimed.length > 0) {
+    const wtx = db.transaction(PROJECTS, 'readwrite');
+    for (const r of unclaimed) { r.ownerId = storageOwner!; wtx.objectStore(PROJECTS).put(r); }
+    await txDone(wtx).catch(() => {});
+  }
+  return mine
     .map(({ state: _s, ...summary }) => summary)
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
@@ -257,7 +286,7 @@ export async function getProject(id: string): Promise<ProjectRecord | null> {
   const db = await openDb();
   const tx = db.transaction(PROJECTS, 'readonly');
   const r  = await reqToPromise(tx.objectStore(PROJECTS).get(id) as IDBRequest<ProjectRecord | undefined>);
-  return r ?? null;
+  return r && isMine(r) ? r : null;
 }
 
 export async function createProject(name: string, number = ''): Promise<ProjectRecord> {
@@ -276,7 +305,7 @@ export async function createProject(name: string, number = ''): Promise<ProjectR
   };
   const db = await openDb();
   const tx = db.transaction(PROJECTS, 'readwrite');
-  tx.objectStore(PROJECTS).put(record);
+  tx.objectStore(PROJECTS).put(owned(record));
   await txDone(tx);
   return record;
 }
@@ -325,9 +354,10 @@ async function writeProjectState(id: string, state: ProjectState): Promise<numbe
     measurementCount: state.measurements.filter(m => !m.isGroupHeader).length,
     drawingCount:     state.drawings.length,
     schemaVersion:    SCHEMA_VERSION,
+    ...(existing?.ownerId ? { ownerId: existing.ownerId } : {}),
     state:            stored,
   };
-  store.put(record);
+  store.put(owned(record));
   await txDone(tx);
   return now;
 }
@@ -366,7 +396,7 @@ export async function duplicateProject(id: string): Promise<ProjectRecord | null
   const state = { ...rec.state, projectName: copy.name };
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
-  tx.objectStore(PROJECTS).put({ ...copy, state, measurementCount: rec.measurementCount, drawingCount: rec.drawingCount });
+  tx.objectStore(PROJECTS).put(owned({ ...copy, state, measurementCount: rec.measurementCount, drawingCount: rec.drawingCount }));
   for (const [drawingId, file] of files) {
     tx.objectStore(FILES).put({
       key: `${copy.id}:${drawingId}`, projectId: copy.id, drawingId,
@@ -474,10 +504,10 @@ export async function importProjectBackup(file: File): Promise<ProjectRecord> {
   }
   const id  = newId();
   const now = Date.now();
-  const record: ProjectRecord = { ...payload.project, id, updatedAt: now };
+  const record: ProjectRecord = { ...payload.project, id, updatedAt: now, ownerId: storageOwner ?? undefined };
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
-  tx.objectStore(PROJECTS).put(record);
+  tx.objectStore(PROJECTS).put(owned(record));
   for (const f of payload.files ?? []) {
     tx.objectStore(FILES).put({
       key: `${id}:${f.drawingId}`, projectId: id, drawingId: f.drawingId,
@@ -537,7 +567,7 @@ export async function deleteSetting(key: string): Promise<void> {
 export async function putProjectRecord(record: ProjectRecord, files: Map<string, File>): Promise<void> {
   const db = await openDb();
   const tx = db.transaction([PROJECTS, FILES], 'readwrite');
-  tx.objectStore(PROJECTS).put(record);
+  tx.objectStore(PROJECTS).put(owned(record));
   for (const [drawingId, file] of files) {
     tx.objectStore(FILES).put({
       key: `${record.id}:${drawingId}`, projectId: record.id, drawingId,

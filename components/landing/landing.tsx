@@ -13,6 +13,7 @@ import {
 import * as motion from 'motion/react-m';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/brand/Logo';
+import { useAuth } from '@/context/AuthContext';
 
 const NAV = [
   { label: 'Features',     href: '#features' },
@@ -47,6 +48,11 @@ const AUDIENCE = [
 ];
 
 export function Landing() {
+  const { status } = useAuth();
+  // Signed in (or accounts not configured) → straight to the projects.
+  const inApp   = status === 'signed-in' || status === 'local';
+  const startHref  = inApp ? '/dashboard' : '/register';
+  const startLabel = inApp ? 'Open my projects' : 'Start free';
   return (
     <div className="min-h-screen bg-industrial-black text-zinc-200 selection:bg-rule/30">
       <div className="fixed inset-0 blueprint-grid opacity-[0.07] pointer-events-none" aria-hidden />
@@ -62,13 +68,18 @@ export function Landing() {
           ))}
         </nav>
 
-        <Link
-          href="/dashboard"
-          className="bg-rule hover:bg-[#F6CF55] text-black px-4 py-2 text-sm font-bold transition-colors flex items-center gap-2"
-        >
-          Open Foldrule
-          <ArrowRight className="w-4 h-4" aria-hidden />
-        </Link>
+        <div className="flex items-center gap-5">
+          {!inApp && (
+            <Link href="/login" className="text-sm font-semibold text-zinc-300 hover:text-white transition-colors">Log in</Link>
+          )}
+          <Link
+            href={startHref}
+            className="bg-rule hover:bg-[#F6CF55] text-black px-4 py-2 text-sm font-bold transition-colors flex items-center gap-2"
+          >
+            {startLabel}
+            <ArrowRight className="w-4 h-4" aria-hidden />
+          </Link>
+        </div>
       </header>
 
       <main className="relative z-10 px-4 md:px-8">
@@ -79,7 +90,7 @@ export function Landing() {
             className="flex items-center gap-2 border border-industrial-border px-3 py-1.5 mb-7 bg-industrial-panel font-mono text-xs text-zinc-400"
           >
             <span className="w-1.5 h-1.5 bg-rule" aria-hidden />
-            Free · runs in your browser · no account
+            Free account · runs in your browser · nothing to install
           </motion.p>
 
           <motion.h1
@@ -103,7 +114,7 @@ export function Landing() {
             className="mt-9 flex flex-col sm:flex-row items-center justify-center gap-3 w-full"
           >
             <Link
-              href="/dashboard"
+              href={startHref}
               className="w-full sm:w-auto bg-rule hover:bg-[#F6CF55] text-black px-7 py-3.5 text-sm font-bold transition-colors flex items-center justify-center gap-2"
             >
               Start a takeoff
@@ -193,7 +204,7 @@ export function Landing() {
             <dl className="space-y-6 text-sm leading-relaxed">
               {[
                 ['No upload', 'PDFs are opened and measured inside your browser. There is no server copy of your drawings or quantities.'],
-                ['No account', 'Nothing to sign up for and no password to remember. Open the app and start measuring.'],
+                ['The account only signs you in', 'Your free account says who you are. Your drawings and quantities are not stored with it.'],
                 ['Saved where you choose', 'Projects autosave in the browser. In Edge or Chrome you can also mirror them into a folder — the browser tab and the installed app share the same one.'],
                 ['Yours to move', 'Download a project as a single backup file and open it on any other computer.'],
               ].map(([t, d]) => (
@@ -214,7 +225,7 @@ export function Landing() {
           <h2 className="text-2xl md:text-3xl font-semibold text-white tracking-tight">Have a drawing to price?</h2>
           <p className="mt-3 text-sm text-zinc-400">Open it now — it takes about a minute to get your first quantity.</p>
           <Link
-            href="/dashboard"
+            href={startHref}
             className="mt-7 inline-flex items-center gap-2 bg-rule hover:bg-[#F6CF55] text-black px-7 py-3.5 text-sm font-bold transition-colors"
           >
             Start a takeoff
@@ -230,7 +241,7 @@ export function Landing() {
         </div>
         <nav aria-label="Footer" className="flex flex-wrap justify-center items-center gap-6 text-sm text-zinc-400">
           {NAV.map(l => <a key={l.label} href={l.href} className="hover:text-white transition-colors">{l.label}</a>)}
-          <Link href="/dashboard" className="hover:text-white transition-colors">My projects</Link>
+          <Link href={inApp ? '/dashboard' : '/login'} className="hover:text-white transition-colors">{inApp ? 'My projects' : 'Log in'}</Link>
         </nav>
       </footer>
     </div>

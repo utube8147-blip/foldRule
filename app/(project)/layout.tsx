@@ -5,6 +5,7 @@
 import type { Metadata } from 'next';
 import { Suspense } from 'react';
 import { ProjectSession } from './ProjectSession';
+import { RequireAuth } from '@/components/auth/RequireAuth';
 
 export const metadata: Metadata = {
   title:  'Workspace',
@@ -14,7 +15,9 @@ export const metadata: Metadata = {
 export default function ProjectLayout({ children }: { children: React.ReactNode }) {
   return (
     <Suspense fallback={<ProjectLoading />}>
-      <ProjectSession>{children}</ProjectSession>
+      <RequireAuth>
+        <ProjectSession>{children}</ProjectSession>
+      </RequireAuth>
     </Suspense>
   );
 }

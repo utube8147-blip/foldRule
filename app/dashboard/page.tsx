@@ -10,7 +10,7 @@ import {
   FolderOpen, Plus, Search, Upload, Download, Copy, Trash2, Pencil, ArrowDownUp, BoxSelect, FileText, UserRound,
 } from 'lucide-react';
 import * as motion from 'motion/react-m';
-import { getProfile, initials, type LocalProfile } from '@/lib/profile';
+import { useAuth } from '@/context/AuthContext';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
 import { useConfirm } from '@/components/common/ConfirmDialog';
 import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog, StorageModeBanner } from '@/components/pwa/FolderControls';
@@ -23,6 +23,12 @@ import {
   exportProjectBackup, importProjectBackup, downloadBlob, isStorageAvailable,
   type ProjectSummary,
 } from '@/lib/storage/projectDb';
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  return (parts[0][0] + (parts.length > 1 ? parts[parts.length - 1][0] : '')).toUpperCase();
+}
 
 function formatWhen(ts: number): string {
   const diff = Date.now() - ts;
@@ -52,12 +58,11 @@ export default function Dashboard() {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [busyId,   setBusyId]   = useState<string | null>(null);
   const [usage,    setUsage]    = useState<{ used: number; quota: number } | null>(null);
-  const [profile,  setProfile]  = useState<LocalProfile | null>(null);
+  const { user, status: authStatus } = useAuth();
   const [showStorage, setShowStorage] = useState(false);
   const { confirm } = useConfirm();
   const importRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => { setProfile(getProfile()); }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -177,22 +182,22 @@ export default function Dashboard() {
 
           <div className="w-px h-6 bg-industrial-border mx-2" />
 
-          {profile ? (
-            <Link href="/register" title="Edit your profile" className="flex items-center gap-3 group/profile">
+          {user ? (
+            <Link href="/account" title="Your account" className="flex items-center gap-3 group/profile">
               <span className="text-right flex flex-col">
-                <span className="text-xs font-bold text-zinc-300 leading-tight group-hover/profile:text-white">{profile.name}</span>
-                <span className="text-[11px] text-zinc-500">{profile.firm || 'Local profile'}</span>
+                <span className="text-xs font-bold text-zinc-300 leading-tight group-hover/profile:text-white">{user.name}</span>
+                <span className="text-[11px] text-zinc-500">{user.firm || user.email}</span>
               </span>
               <span className="w-8 h-8 bg-zinc-800 border border-industrial-border flex items-center justify-center text-xs font-bold text-amber-accent group-hover/profile:border-amber-accent/60" aria-hidden>
-                {initials(profile.name)}
+                {initials(user.name)}
               </span>
             </Link>
-          ) : (
-            <Link href="/register" className="flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-zinc-100">
+          ) : authStatus === 'local' ? (
+            <span className="flex items-center gap-2 text-xs font-semibold text-zinc-500" title="Accounts are not configured on this deployment — projects are simply saved on this computer.">
               <UserRound className="w-4 h-4" aria-hidden />
-              Add your name
-            </Link>
-          )}
+              Local mode
+            </span>
+          ) : null}
         </div>
       </header>
 

@@ -4,6 +4,7 @@ import './globals.css';
 import { MotionProvider } from '@/components/MotionProvider';
 import { PwaProvider } from '@/components/pwa/PwaProvider';
 import { ConfirmProvider } from '@/components/common/ConfirmDialog';
+import { AuthProvider } from '@/context/AuthContext';
 import { BRAND } from '@/lib/brand';
 
 // Fonts are self-hosted (app/fonts/*.woff2, variable fonts from Fontsource), so
@@ -80,7 +81,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     >
       <body className="antialiased font-sans">
         <MotionProvider>
-          <ConfirmProvider>{children}</ConfirmProvider>
+          <AuthProvider>
+            <ConfirmProvider>{children}</ConfirmProvider>
+          </AuthProvider>
         </MotionProvider>
         <PwaProvider />
       </body>

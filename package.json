@@ -42,6 +42,7 @@
     "@radix-ui/react-toggle": "1.1.10",
     "@radix-ui/react-toggle-group": "1.1.11",
     "@radix-ui/react-tooltip": "1.2.8",
+    "@supabase/supabase-js": "^2.117.2",
     "class-variance-authority": "^0.7.1",
     "clipper-lib": "^6.4.2",
     "clsx": "^2.1.1",
@@ -89,5 +90,5 @@
   "engines": {
     "node": ">=20.9"
   },
-  "description": "Foldrule \u2014 PDF takeoff and BOQ, in your browser"
+  "description": "Foldrule — PDF takeoff and BOQ, in your browser"
 }
