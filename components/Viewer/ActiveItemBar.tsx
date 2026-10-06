@@ -87,7 +87,7 @@ export function ActiveItemBar({ api, hidden, nudge = 0, onLeave }: {
             <ChevronDown className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
           </button>
           {menu && (
-            <div role="menu" className="absolute top-full left-0 mt-1 min-w-[16rem] max-h-72 overflow-y-auto bg-zinc-900 border border-zinc-600 shadow-2xl py-1">
+            <div role="menu" className="absolute top-full left-0 mt-1 min-w-[16rem] max-h-72 overflow-y-auto custom-scrollbar bg-zinc-900 border border-zinc-600 shadow-2xl py-1">
               <button role="menuitem" onClick={() => { setMenu(false); setNaming(true); }}
                 className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-amber-300 hover:bg-zinc-800">
                 <Plus className="w-3.5 h-3.5" /> New item…

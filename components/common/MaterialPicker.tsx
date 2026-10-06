@@ -112,13 +112,14 @@ export function MaterialPicker({
     return materials.filter(m => unitKind(m.unit) === wantKind || m.id === value);
   }, [materials, wantKind, allUnits, value]);
 
-  // ── Groups: collapsed; hovering (or clicking) a division opens it ──────────
+  // ── Groups: collapsed; clicking a division opens or closes it (several can
+  //    be open). Typing searches inside every division and opens the matches. ──
   const selectedGroup = useMemo(() => {
     if (!selected) return null;
     return groupMaterialsByDivision([selected])[0]?.label ?? null;
   }, [selected]);
-  const [openGroup, setOpenGroup] = useState<string | null>(null);
-  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set());
+  const setOpenGroup = (label: string | null) => setOpenGroups(label ? new Set([label]) : new Set());
 
   // ── Entries (memoised; ~250 items is cheap) ────────────────────────────────
   const entries = useMemo<Entry[]>(() => {
@@ -129,13 +130,17 @@ export function MaterialPicker({
       (m.category || '').toLowerCase().includes(q);
     const out: Entry[] = [];
     if (!searching) out.push({ kind: 'none' });
-    for (const g of groupMaterialsByDivision(unitFiltered.filter(match))) {
-      const open = searching || g.label === openGroup;
+    // A search looks in every division. If nothing in this unit matches, it
+    // widens to materials priced in other units instead of showing nothing.
+    let pool = unitFiltered.filter(match);
+    if (searching && pool.length === 0) pool = materials.filter(match);
+    for (const g of groupMaterialsByDivision(pool)) {
+      const open = searching || openGroups.has(g.label);
       out.push({ kind: 'header', label: g.label, count: g.items.length, open });
       if (open) for (const m of g.items) out.push({ kind: 'item', m, group: g.label });
     }
     return out;
-  }, [unitFiltered, query, openGroup]);
+  }, [unitFiltered, materials, query, openGroups]);
   const matchCount = useMemo(() => entries.reduce((n, e) => n + (e.kind === 'header' ? e.count : 0), 0), [entries]);
 
   // ── Open / close ───────────────────────────────────────────────────────────
@@ -171,14 +176,11 @@ export function MaterialPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, query]);
 
-  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
-  const hoverGroup = (label: string) => {
-    if (query) return;
-    if (hoverTimer.current) clearTimeout(hoverTimer.current);
-    // Small hover intent delay so sweeping the pointer across headings doesn't flicker.
-    hoverTimer.current = setTimeout(() => setOpenGroup(label), 110);
-  };
-  const toggleGroup = (label: string) => setOpenGroup(g => (g === label ? null : label));
+  const toggleGroup = (label: string) => setOpenGroups(prev => {
+    const next = new Set(prev);
+    if (next.has(label)) next.delete(label); else next.add(label);
+    return next;
+  });
 
   // ── Position: below the field, or above if there's no room ────────────────
   const place = useCallback(() => {
@@ -342,7 +344,7 @@ export function MaterialPicker({
                   <div
                     key={`h-${e.label}`} id={`${listId}-opt-${idx}`} data-opt={idx}
                     role="option" aria-selected={false} aria-expanded={e.open}
-                    onMouseEnter={() => { setActive(idx); hoverGroup(e.label); }}
+                    onMouseEnter={() => setActive(idx)}
                     onClick={() => { if (!query) toggleGroup(e.label); }}
                     className={cn(
                       'flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-[11px] font-bold uppercase tracking-widest border-b border-industrial-border/40',

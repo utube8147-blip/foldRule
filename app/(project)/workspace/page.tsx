@@ -375,6 +375,9 @@ export default function Workspace() {
       'Area':       'magic-fill',
       'magic-fill': 'magic-fill',
     };
+    // Area, length and count groups: the viewer makes the group the active
+    // item and switches to the normal drawing tool for it (see Viewer).
+    if (['Length', 'Polygon', 'Rectangle', 'Area', 'Count', 'magic-fill'].includes(groupType)) return;
     const newTool = toolMap[groupType] || 'linear';
     setActiveTool(newTool);
     addToast(`ADDING TO GROUP: Use ${newTool} tool to draw new item`, 'info');

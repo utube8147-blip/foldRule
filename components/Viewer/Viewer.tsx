@@ -29,7 +29,7 @@ import { createLassoStore } from '@/lib/geometry/lassoStore';
 import { useShapeActions } from '@/hooks/shapes/useShapeActions';
 import { AutoCount } from '@/components/Viewer/AutoCount';
 import { actionForKey } from '@/lib/shortcuts';
-import { useActiveItem, kindOfTool } from '@/hooks/shapes/useActiveItem';
+import { useActiveItem, kindOfTool, kindOfType } from '@/hooks/shapes/useActiveItem';
 import { ActiveItemBar } from '@/components/Viewer/ActiveItemBar';
 import { getNextMeasurementColor } from '@/hooks/measurements/useMeasurements';
 import { setColorsInUse } from '@/hooks/measurements/useMeasurements/colors';
@@ -1151,13 +1151,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     }
   }, [activeTool, handleMagicAbortSession]);
 
+  const finishLatestRef = useRef<() => void>(() => {});
+  finishLatestRef.current = () => finishMeasurement();
+
   // ── Finish + measurement name dialog ──────────────────────────────────────
   const handleFinishMeasurement = useCallback(() => {
     const minPts = activeTool === 'count' || activeTool === 'point' ? 1 : 2;
     if (tempPoints.length < minPts) { finishMeasurement(); return; }
     if (propAppendToGroupId) { finishMeasurement(); onAppendComplete?.(); return; }
-    if (shapePendingRef.current) { finishMeasurement(); return; }   // cut-out / split: no name needed
-    if (itemActiveRef.current) { finishMeasurement(); return; }     // named item active: it already has its name
+    // Cut-out / split, or a named item is active: no name box. Finish on the
+    // next frame, with the newest points — a double-click finishes in the same
+    // instant as its last click, before that point has been stored.
+    if (shapePendingRef.current || itemActiveRef.current) {
+      requestAnimationFrame(() => requestAnimationFrame(() => finishLatestRef.current()));
+      return;
+    }
     const type =
       activeTool === 'polygon'   || activeTool === 'rectangle' ? 'Polygon' :
       activeTool === 'linear'    ? 'Length' :
@@ -1545,6 +1553,20 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     kind: shapeApi.pending ? null : kindOfTool(activeTool, drawMode),
   });
   adoptRef.current = itemApi.adopt;
+  // "+" on a group in the takeoff: carry on adding to that group with the
+  // normal tools (straight and curved edges, rectangle, magic fill…) — not the
+  // old single-purpose line tool.
+  useEffect(() => {
+    if (!propAppendToGroupId) return;
+    const header = ((projectState?.measurements ?? []) as TakeoffRow[]).find(m => m.isGroupHeader && (m.id === propAppendToGroupId || m.groupId === propAppendToGroupId));
+    const k = header ? kindOfType(header.type) : null;
+    if (!header || !k) return;                        // other kinds keep the old behaviour
+    itemApi.useFor(k, header);
+    if (k === 'count') setToolMode('count' as ToolType);
+    else setToolMode('polyarc' as ToolType, { area: k === 'area' });
+    onAppendComplete?.();                             // the named item does the grouping from here on
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [propAppendToGroupId]);
   itemActiveRef.current = !!itemApi.item;
   magicItemIdRef.current = activeTool === 'magic-fill' && itemApi.item ? itemApi.item.id : null;
   /** Finish the staged magic fills: straight into the named item, or ask for a name. */

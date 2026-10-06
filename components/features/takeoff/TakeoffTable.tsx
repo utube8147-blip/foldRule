@@ -1,5 +1,6 @@
 // components/TakeoffTable.tsx
 import { ColorSwatchPicker } from '@/components/common/ColorSwatchPicker';
+import { PALETTE_GRID } from '@/hooks/measurements/useMeasurements/colors';
 import React, { useState, useCallback } from 'react';
 import { Trash2, Plus, Pencil, Eye, EyeOff, ChevronDown, ChevronRight, FolderOpen, Package, ExternalLink, ChevronUp, AlertTriangle, X, Copy, Check, PanelRightClose } from 'lucide-react';
 import { cn, formatCurrency } from '@/lib/utils';
@@ -74,7 +75,94 @@ function TakeoffTableImpl({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const { selectedId, focusMeasurement, setMaterialLibraryOpen } = useTakeoffData();
+  const { selectedId, focusMeasurement, setMaterialLibraryOpen, replaceMeasurements, ungroupMeasurements } = useTakeoffData();
+
+  // ── Moving a row to another group (drag & drop, or right-click → Move to) ──
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dropGroup, setDropGroup] = useState<string | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; rowId: string; group?: boolean } | null>(null);
+  const kindOf = (t: string) => (t === 'Polygon' || t === 'Rectangle' || t === 'Area' ? 'area' : t === 'Length' ? 'length' : t === 'Count' ? 'count' : t);
+  /** Can this row go into that group? Same kind of quantity only (an area can't join a length group). */
+  const canJoin = (row: TakeoffRow | undefined, header: TakeoffRow | undefined) =>
+    !!row && !!header && !row.isGroupHeader && header.isGroupHeader && row.parentId !== header.id && kindOf(row.type) === kindOf(header.type);
+  const moveRow = (rowId: string, targetId: string | null) => {
+    const row = measurements.find(m => m.id === rowId);
+    if (!row || row.isGroupHeader) return;
+    if (targetId === null) {
+      if (!row.parentId) return;
+      replaceMeasurements([row.id], [{ ...row, parentId: undefined, groupId: undefined }]);
+      return;
+    }
+    const header = measurements.find(m => m.id === targetId);
+    if (!canJoin(row, header) || !header) return;
+    const name = header.groupName || header.label || header.description || 'Group';
+    const n = (header.childIds?.length ?? 0) + 1;
+    // The row takes the group's name, colour and material, so it reads as part of it.
+    replaceMeasurements([row.id], [{
+      ...row, parentId: header.id, groupId: header.id, color: header.color,
+      label: `${name} ${n}`, description: `${name} ${n}`,
+      ...(header.materialId ? { materialId: header.materialId, unitRate: header.unitRate } : {}),
+    }]);
+    setExpandedGroups(prev => new Set(prev).add(header.groupId || header.id));
+  };
+  const uid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `r-${Date.now()}-${Math.random()}`);
+  const nudge = (r: TakeoffRow): TakeoffRow => ({
+    ...r,
+    points: (r.points ?? []).map((q: any) => (q && typeof q.x === 'number' && q.segmentId == null ? { ...q, x: q.x + 0.012, y: q.y + 0.012 } : q)),
+    holes: r.holes?.map(h => h.map(q => ({ x: q.x + 0.012, y: q.y + 0.012 }))),
+  });
+  /** A copy of one row, placed just beside the original, in the same group. */
+  const duplicateRow = (rowId: string) => {
+    const row = measurements.find(m => m.id === rowId);
+    if (!row || row.isGroupHeader) return;
+    const name = `${row.description || row.label || 'Item'} copy`;
+    replaceMeasurements([], [{ ...nudge(row), id: uid(), childIds: [], derived: undefined, label: name, description: name }]);
+  };
+  /**
+   * A copy of a group with its material, rate, unit and settings.
+   * `withShapes` false → an empty group ready to measure into (e.g. the next floor);
+   * true → its shapes are copied too, placed just beside the originals.
+   */
+  const duplicateGroup = (headerId: string, withShapes: boolean) => {
+    const header = measurements.find(m => m.id === headerId);
+    if (!header) return;
+    const gid = header.groupId || header.id;
+    const kids = withShapes ? measurements.filter(m => !m.isGroupHeader && (m.parentId === header.id || m.groupId === gid)) : [];
+    const base = header.groupName || header.label || header.description || 'Group';
+    const taken = new Set(measurements.filter(m => m.isGroupHeader).map(m => (m.groupName || m.label || m.description || '').toLowerCase()));
+    let name = `${base} copy`;
+    for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${base} copy ${i}`;
+    const id = uid();
+    const free = PALETTE_GRID.flatMap(h => [h.shades[2], h.shades[3], h.shades[1]]).find(c => !usedColors.some(u => (u || '').toLowerCase() === c.toLowerCase())) ?? header.color;
+    const copies = kids.map((k, i) => ({
+      ...nudge(k), id: uid(), parentId: id, groupId: id, childIds: [], derived: undefined, color: free,
+      label: `${name} ${i + 1}`, description: `${name} ${i + 1}`,
+    } as TakeoffRow));
+    replaceMeasurements([], [{
+      ...header, id, groupId: id, label: name, description: name, groupName: name, color: free,
+      childIds: copies.map(c => c.id), quantity: copies.reduce((t, c) => t + c.quantity, 0), points: [], isExpanded: true,
+    } as TakeoffRow, ...copies]);
+    setExpandedGroups(prev => new Set(prev).add(id));
+  };
+
+  React.useEffect(() => {
+    if (!rowMenu) return;
+    const close = (e: Event) => {
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return;
+      // Clicks and scrolling inside the menu itself must not close it.
+      if (!(e instanceof KeyboardEvent) && (e.target as HTMLElement | null)?.closest?.('[data-row-menu]')) return;
+      setRowMenu(null);
+    };
+    window.addEventListener('pointerdown', close, true); window.addEventListener('keydown', close, true); window.addEventListener('wheel', close, true);
+    return () => { window.removeEventListener('pointerdown', close, true); window.removeEventListener('keydown', close, true); window.removeEventListener('wheel', close, true); };
+  }, [rowMenu]);
+  /** Props that make a row draggable and give it the right-click menu. */
+  const rowMoveProps = (row: TakeoffRow) => ({
+    draggable: editingId !== row.id,
+    onDragStart: (e: React.DragEvent) => { e.dataTransfer.setData('text/plain', row.id); e.dataTransfer.effectAllowed = 'move'; setDragId(row.id); },
+    onDragEnd: () => { setDragId(null); setDropGroup(null); },
+    onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); e.stopPropagation(); setRowMenu({ x: e.clientX, y: e.clientY, rowId: row.id }); },
+  });
   const bodyRef = React.useRef<HTMLDivElement>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
 
@@ -478,8 +566,18 @@ function TakeoffTableImpl({
               return (
                 <React.Fragment key={groupId}>
                   <tr
-                    className="border-t border-amber-500/20 bg-[#1a1a1a] cursor-pointer hover:bg-[#222] transition-colors group"
+                    className={cn('border-t border-amber-500/20 bg-[#1a1a1a] cursor-pointer hover:bg-[#222] transition-colors group',
+                      dropGroup === header.id && 'outline outline-2 -outline-offset-2 outline-amber-400 bg-amber-400/10',
+                      dragId && !canJoin(measurements.find(m => m.id === dragId), header) && 'opacity-40')}
                     onClick={() => toggleGroup(groupId)}
+                    onDragOver={e => {
+                      if (!dragId || !canJoin(measurements.find(m => m.id === dragId), header)) return;
+                      e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+                      if (dropGroup !== header.id) setDropGroup(header.id);
+                    }}
+                    onContextMenu={e => { e.preventDefault(); e.stopPropagation(); setRowMenu({ x: e.clientX, y: e.clientY, rowId: header.id, group: true }); }}
+                    onDragLeave={() => setDropGroup(g => (g === header.id ? null : g))}
+                    onDrop={e => { e.preventDefault(); const id = e.dataTransfer.getData('text/plain') || dragId; setDragId(null); setDropGroup(null); if (id) moveRow(id, header.id); }}
                   >
                     <td className="p-2 text-center border-r border-industrial-border text-amber-500 font-bold whitespace-nowrap">
                       {groupIdx + 1}
@@ -518,6 +616,37 @@ function TakeoffTableImpl({
                           </span>
                         )}
                         <span className="text-[10px] text-zinc-600 shrink-0">({items.length})</span>
+                      </div>
+                      {/* One material for the whole group: it is applied to every row in it. */}
+                      <div className="pl-8 mt-0.5" onClick={e => e.stopPropagation()}>
+                        {editingId === header.id && editingField === 'groupMaterial' ? (
+                          <MaterialPicker
+                            size="sm" autoOpen materials={materials} value={header.materialId ?? null}
+                            measurementType={items[0]?.type ?? header.type}
+                            onOpenBank={() => { stopEditing(); setMaterialLibraryOpen(true); }}
+                            onClose={stopEditing}
+                            onChange={(id) => {
+                              const mat = id ? materials.find(m => m.id === id) : undefined;
+                              const rate = mat ? ((mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0) : 0;
+                              const upd = mat ? { materialId: mat.id, unitRate: rate } : { materialId: undefined, unitRate: 0 };
+                              onUpdate(header.id, upd);
+                              batchUpdateGroup(groupId, items, upd);
+                            }}
+                          />
+                        ) : (() => {
+                          const gm = getMaterial(header.materialId);
+                          const mixed = !gm && items.some(i => i.materialId);
+                          return (
+                            <button
+                              type="button" onClick={e => startEditing(header.id, 'groupMaterial', e)}
+                              title={gm ? 'Change the material for every row in this group' : 'Set one material for every row in this group'}
+                              className={cn('block max-w-full truncate text-left text-[10px] font-mono transition-colors hover:text-amber-accent',
+                                gm ? 'text-zinc-400' : mixed ? 'text-zinc-500' : 'text-zinc-700 opacity-0 group-hover:opacity-100 focus-visible:opacity-100')}
+                            >
+                              {gm ? `${gm.code ? `${gm.code} · ` : ''}${gm.name}` : mixed ? 'materials set per row · set one for all' : '+ material for the group'}
+                            </button>
+                          );
+                        })()}
                       </div>
                     </td>
                     <td className="p-2 text-right pr-3">
@@ -571,7 +700,7 @@ function TakeoffTableImpl({
                           <button
                             onClick={(e) => { e.stopPropagation(); onAddSegmentToGroup?.(groupId, header.groupType || header.type); }}
                             className="text-zinc-600 hover:text-blue-400 transition-colors"
-                            title="Add segment to this group"
+                            title="Draw more into this group"
                           >
                             <Plus className="w-3 h-3" />
                           </button>
@@ -601,6 +730,7 @@ function TakeoffTableImpl({
                       <React.Fragment key={item.id}>
                         <tr
                           data-row-id={item.id}
+                          {...rowMoveProps(item)}
                           className={cn('group/row border-t border-[#1a1a1a] transition-colors cursor-pointer',
                             item.id === selectedId ? 'bg-amber-400/[0.08] shadow-[inset_2px_0_0_#F2C230]' : isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
                           onClick={() => { toggleRowExpand(item.id); focusMeasurement(item.id); }}
@@ -662,6 +792,7 @@ function TakeoffTableImpl({
                 <React.Fragment key={row.id}>
                   <tr
                     data-row-id={row.id}
+                    {...rowMoveProps(row)}
                     className={cn('group/row border-t border-industrial-border transition-colors cursor-pointer',
                       row.id === selectedId ? 'bg-amber-400/[0.08] shadow-[inset_2px_0_0_#F2C230]' : isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
                     onClick={() => { toggleRowExpand(row.id); focusMeasurement(row.id); }}
@@ -756,6 +887,65 @@ function TakeoffTableImpl({
           Generate Full Analysis
         </button>
       </div>
+      {rowMenu && (() => {
+        const row = measurements.find(m => m.id === rowMenu.rowId);
+        if (!row) return null;
+        const close = () => setRowMenu(null);
+        // One line per action; the longer explanation is the tooltip.
+        const Item = ({ label, hint, onClick, danger }: { label: React.ReactNode; hint?: string; onClick: () => void; danger?: boolean }) => (
+          <button role="menuitem" title={hint} onClick={() => { close(); onClick(); }}
+            className={cn('w-full px-3 py-1.5 text-left truncate hover:bg-zinc-800', danger ? 'text-red-400' : 'text-zinc-100')}>
+            {label}
+          </button>
+        );
+        const Divider = () => <div className="border-t border-zinc-700 my-1" />;
+        const shell = 'fixed z-[200] w-60 max-h-[70vh] overflow-y-auto custom-scrollbar bg-zinc-900 border border-zinc-600 shadow-2xl py-1 text-xs';
+        const place = (rows: number) => ({
+          left: Math.min(rowMenu.x, window.innerWidth - 250),
+          top: Math.max(8, Math.min(rowMenu.y, window.innerHeight - 24 - rows * 30)),
+        });
+
+        if (rowMenu.group) {
+          const gid = row.groupId || row.id;
+          const items = measurements.filter(m => !m.isGroupHeader && (m.parentId === row.id || m.groupId === gid));
+          const name = row.groupName || row.label || row.description || 'Group';
+          return (
+            <div data-row-menu role="menu" className={shell} style={place(7)} onContextMenu={e => e.preventDefault()}>
+              <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500 truncate">{name}</div>
+              <Item label="Set material for the group" hint="One material and rate for every row in it" onClick={() => { setEditingId(row.id); setEditingField('groupMaterial'); }} />
+              <Item label="Duplicate as an empty group" hint="Same material, rate and unit — ready for the next floor or area" onClick={() => duplicateGroup(row.id, false)} />
+              <Item label="Duplicate with its shapes" hint="Copies every shape too, placed just beside the originals" onClick={() => duplicateGroup(row.id, true)} />
+              <Item label="Ungroup" hint="Keep the rows, remove the group" onClick={() => ungroupMeasurements(row.id)} />
+              <Divider />
+              <Item danger label="Delete group" hint="Deletes the group and its rows. Ctrl+Z brings it back." onClick={() => {
+                void confirm({ title: 'Delete group', message: <>Delete <span className="text-zinc-100 font-bold">{name}</span> and all its items?</>, detail: 'Ctrl+Z brings it back.', confirmText: 'Delete group' })
+                  .then(ok => { if (ok) onDelete(row.id); });
+              }} />
+            </div>
+          );
+        }
+
+        const targets = measurements.filter(h => canJoin(row, h));
+        return (
+          <div data-row-menu role="menu" className={shell} style={place(5 + Math.min(8, targets.length + 1))} onContextMenu={e => e.preventDefault()}>
+            <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500 truncate">{row.description || row.label}</div>
+            <Item label={row.materialId ? 'Change material' : 'Set material'} hint="For this row only" onClick={() => { setExpandedRows(prev => new Set(prev).add(row.id)); setEditingId(row.id); setEditingField('materialId'); }} />
+            {(row.points?.length ?? 0) > 0 && <Item label="Duplicate" hint="A copy just beside it, in the same group" onClick={() => duplicateRow(row.id)} />}
+            {(targets.length > 0 || row.parentId) && <Divider />}
+            {targets.length > 0 && <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500">Move to</div>}
+            {targets.map(h => (
+              <button key={h.id} role="menuitem" onClick={() => { moveRow(row.id, h.id); close(); }}
+                className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-zinc-100 hover:bg-zinc-800">
+                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: h.color }} />
+                <span className="truncate">{h.groupName || h.label || h.description}</span>
+              </button>
+            ))}
+            {row.parentId && <Item label="Take it out of its group" onClick={() => moveRow(row.id, null)} />}
+            <Divider />
+            <Item danger label="Delete" hint="Ctrl+Z brings it back" onClick={() => onDelete(row.id)} />
+          </div>
+        );
+      })()}
     </aside>
   );
 }

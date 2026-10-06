@@ -452,6 +452,33 @@ export function useShapeActions({
     say(`Added “${row.label}”: ${row.quantity} ${row.unit}.`);
   }, [primary, outline, lengthOf, replaceMeasurements, say]);
 
+  // ── Move to another group ────────────────────────────────────────────────
+  const kindOfType = (t: string) => (AREA_TYPES.has(t) ? 'area' : t);
+  /** Groups the whole selection could go into (same kind of quantity). */
+  const groupTargets = useMemo(() => {
+    const rows = selectedRows.filter(m => !m.isGroupHeader);
+    if (!rows.length) return [];
+    const kind = kindOfType(rows[0].type);
+    if (rows.some(r => kindOfType(r.type) !== kind)) return [];
+    return measurements.filter(h => h.isGroupHeader && !h.presetId && kindOfType(h.type) === kind && !rows.every(r => r.parentId === h.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRows, measurements]);
+  const inGroup = selectedRows.some(m => !m.isGroupHeader && m.parentId);
+  const moveToGroup = useCallback((groupId: string | null) => {
+    const rows = selectedRows.filter(m => !m.isGroupHeader && m.parentId !== (groupId ?? undefined));
+    if (!rows.length) return;
+    const header = groupId ? measurements.find(m => m.id === groupId) : null;
+    if (groupId && !header) return;
+    const name = header ? header.groupName || header.label || header.description || 'Group' : '';
+    const n0 = header?.childIds?.length ?? 0;
+    const moved = rows.map((r, i) => (header
+      ? { ...r, parentId: header.id, groupId: header.id, color: header.color, label: `${name} ${n0 + i + 1}`, description: `${name} ${n0 + i + 1}`,
+          ...(header.materialId ? { materialId: header.materialId, unitRate: header.unitRate } : {}) }
+      : { ...r, parentId: undefined, groupId: undefined }) as TakeoffRow);
+    replaceMeasurements(rows.map(r => r.id), moved);
+    say(header ? `Moved to “${name}”.` : 'Taken out of its group.');
+  }, [selectedRows, measurements, replaceMeasurements, say]);
+
   // Delete or Backspace removes the selection (not while typing).
   useEffect(() => {
     // Not while something is being drawn (Backspace steps back there) or in Magic fill (it undoes a fill).
@@ -479,6 +506,7 @@ export function useShapeActions({
     merge, subtract, intersect,
     beginCutout: () => begin('cutout'), beginSplit: () => begin('split'), cancelPending, consumeDrawn,
     probe, addPoint, deletePoint, removeCutouts, toggleClosed,
+    groupTargets, inGroup, moveToGroup,
     duplicate, remove, convert, moveBy, mirror, repeat, edgeLength, overlaps, selectPair, movable,
     clearSelection: () => { setExtraSelected([]); setSelectedId(null); },
   };

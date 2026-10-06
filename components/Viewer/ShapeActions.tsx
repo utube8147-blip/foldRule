@@ -5,7 +5,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   SquaresUnite, SquaresSubtract, SquaresIntersect, SquaresExclude, Scissors, Slice, Copy, Trash2,
-  Plus, Minus, Calculator, ArrowRightLeft, X, SquareDashed, Ruler, TriangleAlert,
+  Plus, Minus, Calculator, ArrowRightLeft, X, SquareDashed, Ruler, TriangleAlert, FolderInput,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { isAreaRow, hasPlainPoints, type ShapeActionsApi, type ConvertKind } from '@/hooks/shapes/useShapeActions';
@@ -14,7 +14,7 @@ export interface ShapeMenuState { x: number; y: number; at: { x: number; y: numb
 
 interface Item { key: string; label: string; hint: string; icon: LucideIcon; run: () => void; danger?: boolean }
 
-function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert: () => void, openCopy: () => void): Item[] {
+function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert: () => void, openCopy: () => void, openGroup: () => void): Item[] {
   const { selectedRows, primary } = api;
   const areas = selectedRows.filter(isAreaRow);
   const items: Item[] = [];
@@ -55,6 +55,9 @@ function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert
   if (selectedRows.some(m => !m.isGroupHeader && m.points?.length)) {
     items.push({ key: 'copy', label: 'Copy', hint: 'Duplicate, mirror, or repeat at a spacing', icon: Copy, run: openCopy });
   }
+  if (api.groupTargets.length > 0 || api.inGroup) {
+    items.push({ key: 'group', label: 'Move to group', hint: 'Put it in another group — it takes that group’s name, colour and material', icon: FolderInput, run: openGroup });
+  }
   items.push({ key: 'del', label: 'Delete', hint: 'Remove from the takeoff (Ctrl+Z brings it back)', icon: Trash2, run: api.remove, danger: true });
   return items;
 }
@@ -74,7 +77,7 @@ function ConvertPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => voi
     { kind: 'slope', title: 'On a slope', unit: '% slope (rise ÷ run)', out: 'true size of a roof or ramp drawn in plan' },
   );
   return (
-    <div className="w-80 p-3 space-y-2 max-h-[60vh] overflow-y-auto" onPointerDown={e => e.stopPropagation()}>
+    <div className="w-80 p-3 space-y-2 max-h-[60vh] overflow-y-auto custom-scrollbar" onPointerDown={e => e.stopPropagation()}>
       <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">Add a row worked out from this shape</div>
       {rows.map(r => {
         const v = parseFloat(vals[r.kind] ?? '');
@@ -137,13 +140,33 @@ function CopyPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => void }
   );
 }
 
+function GroupPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => void }) {
+  return (
+    <div className="w-72 py-1 max-h-72 overflow-y-auto custom-scrollbar" onPointerDown={e => e.stopPropagation()}>
+      <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-400">Move to</div>
+      {api.groupTargets.length === 0 && <div className="px-3 py-1.5 text-xs text-zinc-500">No other group of the same kind yet.</div>}
+      {api.groupTargets.map(g => (
+        <button key={g.id} onClick={() => { api.moveToGroup(g.id); onDone(); }}
+          className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-zinc-100 hover:bg-zinc-800">
+          <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: g.color }} />
+          <span className="truncate">{g.groupName || g.label || g.description}</span>
+        </button>
+      ))}
+      {api.inGroup && (
+        <button onClick={() => { api.moveToGroup(null); onDone(); }}
+          className="w-full px-3 py-1.5 text-left text-xs text-zinc-400 hover:bg-zinc-800 border-t border-zinc-700 mt-1">Take it out of its group</button>
+      )}
+    </div>
+  );
+}
+
 export function ShapeActions({ api, visible, menu, onCloseMenu, hasShapes }: {
   api: ShapeActionsApi; visible: boolean; menu: ShapeMenuState | null; onCloseMenu: () => void; hasShapes: boolean;
 }) {
   const [convertOpen, setConvertOpen] = useState<'bar' | 'menu' | null>(null);
-  const [panel, setPanel] = useState<'convert' | 'copy'>('convert');
-  const barItems  = useItems(api, null, () => { setPanel('convert'); setConvertOpen(c => (c === 'bar' && panel === 'convert' ? null : 'bar')); }, () => { setPanel('copy'); setConvertOpen(c => (c === 'bar' && panel === 'copy' ? null : 'bar')); });
-  const menuItems = useItems(api, menu, () => { setPanel('convert'); setConvertOpen('menu'); }, () => { setPanel('copy'); setConvertOpen('menu'); });
+  const [panel, setPanel] = useState<'convert' | 'copy' | 'group'>('convert');
+  const barItems  = useItems(api, null, () => { setPanel('convert'); setConvertOpen(c => (c === 'bar' && panel === 'convert' ? null : 'bar')); }, () => { setPanel('copy'); setConvertOpen(c => (c === 'bar' && panel === 'copy' ? null : 'bar')); }, () => { setPanel('group'); setConvertOpen(c => (c === 'bar' && panel === 'group' ? null : 'bar')); });
+  const menuItems = useItems(api, menu, () => { setPanel('convert'); setConvertOpen('menu'); }, () => { setPanel('copy'); setConvertOpen('menu'); }, () => { setPanel('group'); setConvertOpen('menu'); });
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { if (!api.primary) setConvertOpen(null); }, [api.primary]);
@@ -214,7 +237,7 @@ export function ShapeActions({ api, visible, menu, onCloseMenu, hasShapes }: {
         <div data-shape-actions className="absolute bottom-3 left-1/2 -translate-x-1/2 z-[70] max-w-[96%]" onPointerDown={e => e.stopPropagation()}>
           {convertOpen === 'bar' && (
             <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-zinc-900 border border-zinc-600 shadow-2xl">
-              {panel === 'convert' ? <ConvertPanel api={api} onDone={() => setConvertOpen(null)} /> : <CopyPanel api={api} onDone={() => setConvertOpen(null)} />}
+              {panel === 'convert' ? <ConvertPanel api={api} onDone={() => setConvertOpen(null)} /> : panel === 'copy' ? <CopyPanel api={api} onDone={() => setConvertOpen(null)} /> : <GroupPanel api={api} onDone={() => setConvertOpen(null)} />}
             </div>
           )}
           <div className="flex items-stretch bg-zinc-900 border border-zinc-600 shadow-2xl">
@@ -249,11 +272,12 @@ export function ShapeActions({ api, visible, menu, onCloseMenu, hasShapes }: {
           {convertOpen === 'menu'
             ? (panel === 'convert'
                 ? <ConvertPanel api={api} onDone={() => { setConvertOpen(null); onCloseMenu(); }} />
-                : <CopyPanel api={api} onDone={() => { setConvertOpen(null); onCloseMenu(); }} />)
+                : panel === 'copy' ? <CopyPanel api={api} onDone={() => { setConvertOpen(null); onCloseMenu(); }} />
+                : <GroupPanel api={api} onDone={() => { setConvertOpen(null); onCloseMenu(); }} />)
             : menuItems.map(it => (
               <button
                 key={it.key} role="menuitem"
-                onClick={() => { it.run(); if (it.key !== 'convert' && it.key !== 'copy') onCloseMenu(); }}
+                onClick={() => { it.run(); if (it.key !== 'convert' && it.key !== 'copy' && it.key !== 'group') onCloseMenu(); }}
                 className={`w-full flex items-start gap-2.5 px-3 py-1.5 text-left hover:bg-zinc-800 ${it.danger ? 'text-red-400' : 'text-zinc-100'}`}
               >
                 <it.icon className="w-4 h-4 mt-0.5 shrink-0" />

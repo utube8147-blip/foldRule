@@ -30,6 +30,11 @@ export function kindOfTool(tool: string, mode: DrawMode): ItemKind | null {
 
 const uid = () => (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `i-${Date.now()}-${Math.random()}`);
 
+/** The kind of quantity a group holds, from its row type. */
+export function kindOfType(type: string): ItemKind | null {
+  return (Object.keys(KIND_TYPES) as ItemKind[]).find(k => KIND_TYPES[k].types.includes(type)) ?? null;
+}
+
 export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeasurements }: {
   measurements: TakeoffRow[];
   activeDrawingId: string | null | undefined;
@@ -74,6 +79,11 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     setItems(s => ({ ...s, [k]: { id: g.id, name: g.label || g.groupName || g.description || 'Item', color: g.color } }));
   }, []);
 
+  /** Make a given group the active item for its kind (used by "add to this group" in the takeoff). */
+  const useFor = useCallback((k: ItemKind, g: Pick<TakeoffRow, 'id' | 'label' | 'groupName' | 'description' | 'color'>) => {
+    setItems(s => ({ ...s, [k]: { id: g.id, name: g.groupName || g.label || g.description || 'Item', color: g.color } }));
+  }, []);
+
   /** Ask again (undefined) or stop grouping for this kind ('none'). */
   const clear = useCallback((mode: 'ask' | 'none') => {
     const k = kindRef.current;
@@ -106,6 +116,8 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     counter.current = { id: it.id, n: n0 + leaves.length };
     const kids = leaves.map((r, i) => ({
       ...r, parentId: it.id, groupId: it.id, color: it.color, childIds: [],
+      // A material set on the group applies to everything added to it.
+      ...(head?.materialId ? { materialId: head.materialId, unitRate: head.unitRate } : {}),
       label: `${it.name} ${n0 + i + 1}`, description: `${it.name} ${n0 + i + 1}`,
     } as TakeoffRow));
     // The group row is recreated if it was deleted in the meantime.
@@ -114,6 +126,6 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replaceMeasurements, activeDrawingId]);
 
-  return { kind, item, header, needsName, existing, start, use, clear, adopt, what: kind ? KIND_TYPES[kind].what : '' };
+  return { kind, item, header, needsName, existing, start, use, useFor, clear, adopt, what: kind ? KIND_TYPES[kind].what : '' };
 }
 export type ActiveItemApi = ReturnType<typeof useActiveItem>;

@@ -250,24 +250,48 @@ export function Landing() {
 
 // ─── Hero illustration: the workspace, drawn ─────────────────────────────────
 
+// One floor of a house at 40 units per metre: tiled living / dining / kitchen
+// (with a curved bay and a column cut out), a vinyl hall, two carpeted
+// bedrooms, a bathroom and a stair. It shows each kind of measuring at once:
+// grouped areas, a cut-out, a curved edge, a length run, counted symbols.
+const C = { tile: '#5B9BD5', hall: '#F2C230', carpet: '#6FBF8B', wet: '#C77DBA', run: '#E0875A', count: '#34D399', sock: '#F472B6' };
+
 const ROOMS = [
-  { name: 'Living',   area: '31.20', pts: '40,40 300,40 300,220 40,220',    fill: '#5B9BD5', lx: 170, ly: 130 },
-  { name: 'Kitchen',  area: '14.85', pts: '300,40 470,40 470,150 300,150',  fill: '#F2C230', lx: 385, ly: 95 },
-  { name: 'Bedroom',  area: '16.40', pts: '300,150 470,150 470,320 360,320 360,220 300,220', fill: '#6FBF8B', lx: 412, ly: 235 },
-  { name: 'Bath',     area: '6.30',  pts: '40,220 170,220 170,320 40,320',  fill: '#C77DBA', lx: 105, ly: 270 },
-  { name: 'Hall',     area: '13.30', pts: '170,220 360,220 360,320 170,320', fill: '#E0875A', lx: 265, ly: 270 },
+  // d: outline (evenodd, so the column in Living is a hole)
+  { name: 'Living',    area: '35.25', fill: C.tile,   d: 'M40 50H330V250H40ZM150 120V160H190V120Z', lx: 250, ly: 105 },
+  { name: 'Dining',    area: '23.75', fill: C.tile,   d: 'M330 50H520V250H330Z',                    lx: 425, ly: 90 },
+  { name: 'Kitchen',   area: '24.07', fill: C.tile,   d: 'M520 50H700V90A75 75 0 0 1 700 210V250H520Z', lx: 600, ly: 205 },
+  { name: 'Hall',      area: '24.75', fill: C.hall,   d: 'M40 250H700V310H40Z',                      lx: 90, ly: 280 },
+  { name: 'Bedroom 1', area: '18.38', fill: C.carpet, d: 'M40 310H250V450H40Z',                      lx: 190, ly: 420 },
+  { name: 'Bath',      area: '10.50', fill: C.wet,    d: 'M250 310H370V450H250Z',                    lx: 310, ly: 425 },
+  { name: 'Bedroom 2', area: '16.63', fill: C.carpet, d: 'M370 310H560V450H370Z',                    lx: 505, ly: 420 },
 ];
 
-const ROWS = [
-  { d: 'Floor finish — Living',  q: '31.20', u: 'm²', c: '#5B9BD5' },
-  { d: 'Floor finish — Kitchen', q: '14.85', u: 'm²', c: '#F2C230' },
-  { d: 'Floor finish — Bedroom', q: '16.40', u: 'm²', c: '#6FBF8B' },
-  { d: 'Wall tiling — Bath',     q: '6.30',  u: 'm²', c: '#C77DBA' },
-  { d: 'Skirting',               q: '64.80', u: 'm',  c: '#E0875A' },
-  { d: 'Internal doors',         q: '5',     u: 'nr', c: '#9AA4AE' },
+// Doors: [x, y, 'h' | 'v'] — the gap starts at (x, y) and is 40 long.
+const DOORS: [number, number, 'h' | 'v'][] = [
+  [200, 250, 'h'], [400, 250, 'h'], [600, 250, 'h'],
+  [150, 310, 'h'], [290, 310, 'h'], [450, 310, 'h'], [610, 310, 'h'],
+  [330, 140, 'v'], [520, 110, 'v'],
+];
+const SOCKETS: [number, number][] = [[60, 70], [310, 70], [60, 230], [350, 230], [500, 70], [540, 70], [680, 232], [60, 330], [230, 430], [390, 330], [540, 430]];
+
+type Row = { d: string; q: string; u: string; c: string; sub?: boolean; note?: string };
+const ROWS: Row[] = [
+  { d: 'Floor tile — ground', q: '83.07', u: 'm²', c: C.tile, note: '3' },
+  { d: 'Living (less column)',      q: '35.25', u: 'm²', c: C.tile, sub: true },
+  { d: 'Dining',                    q: '23.75', u: 'm²', c: C.tile, sub: true },
+  { d: 'Kitchen, curved bay',       q: '24.07', u: 'm²', c: C.tile, sub: true },
+  { d: 'Carpet — bedrooms',         q: '35.01', u: 'm²', c: C.carpet, note: '2' },
+  { d: 'Vinyl — hall',              q: '24.75', u: 'm²', c: C.hall },
+  { d: 'Wet-area tile — bath',      q: '10.50', u: 'm²', c: C.wet },
+  { d: 'Skirting — bedroom 1',      q: '17.50', u: 'm',  c: C.run },
+  { d: 'Slab, 150 thick',           q: '23.00', u: 'm³', c: '#9AA4AE' },
+  { d: 'Internal doors (found)',    q: '9',     u: 'nr', c: C.count },
+  { d: 'Sockets',                   q: '11',    u: 'nr', c: C.sock },
 ];
 
 function WorkspacePreview() {
+  const mono = 'var(--font-jetbrains), monospace';
   return (
     <div className="border border-industrial-border bg-industrial-panel shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]">
       {/* title bar */}
@@ -295,46 +319,99 @@ function WorkspacePreview() {
 
         {/* drawing */}
         <div className="flex-1 min-w-0 bg-[#E6E9EC] relative">
-          <svg viewBox="0 0 510 360" className="block w-full h-auto" role="img" aria-label="A floor plan with five measured rooms, each filled with a colour and labelled with its area">
+          <svg viewBox="0 0 760 500" className="block w-full h-auto" role="img"
+            aria-label="A measured floor plan: three tiled rooms grouped under one item with a column cut out and a curved bay, a hall, two carpeted bedrooms and a bathroom, a skirting run measured as a length, nine doors found and counted, and eleven sockets counted">
             <defs>
               <pattern id="lp-grid" width="20" height="20" patternUnits="userSpaceOnUse">
                 <path d="M20 0H0V20" fill="none" stroke="#C9CED3" strokeWidth="0.5" />
               </pattern>
+              <pattern id="lp-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <path d="M0 0V6" stroke="#56606B" strokeWidth="1" />
+              </pattern>
             </defs>
-            <rect width="510" height="360" fill="url(#lp-grid)" />
+            <rect width="760" height="500" fill="url(#lp-grid)" />
+
+            {/* measured areas (the column in Living is a cut-out) */}
             {ROOMS.map(r => (
-              <polygon key={r.name} points={r.pts} fill={r.fill} fillOpacity="0.42" stroke={r.fill} strokeWidth="1.5" />
+              <path key={r.name} d={r.d} fillRule="evenodd" fill={r.fill} fillOpacity="0.4" stroke={r.fill} strokeWidth="1.5" />
             ))}
+            <rect x="150" y="120" width="40" height="40" fill="url(#lp-hatch)" stroke="#1D2125" strokeWidth="1.5" />
+
+            {/* furniture and fittings, as on a real sheet */}
+            <g fill="none" stroke="#7A848F" strokeWidth="1">
+              <rect x="60" y="180" width="110" height="38" rx="5" /><rect x="68" y="186" width="94" height="20" rx="3" />
+              <rect x="225" y="165" width="60" height="34" /><ellipse cx="425" cy="165" rx="52" ry="30" />
+              {[[380, 128], [425, 122], [470, 128], [380, 202], [425, 208], [470, 202]].map(([x, y]) => <circle key={`${x}-${y}`} cx={x} cy={y} r="8" />)}
+              <path d="M540 60H690V84H564V180H540Z" /><circle cx="640" cy="72" r="7" /><circle cx="664" cy="72" r="7" /><rect x="544" y="120" width="16" height="30" />
+              <rect x="60" y="340" width="80" height="96" /><rect x="66" y="346" width="30" height="18" rx="3" /><rect x="104" y="346" width="30" height="18" rx="3" />
+              <rect x="390" y="345" width="80" height="92" /><rect x="396" y="351" width="68" height="18" rx="3" />
+              <rect x="262" y="392" width="46" height="48" rx="8" /><ellipse cx="344" cy="335" rx="14" ry="10" /><rect x="262" y="320" width="26" height="30" rx="4" />
+              <path d="M572 450V322M584 322V450M596 322V450M608 322V450M620 322V450M632 322V450M644 322V450M656 322V450M668 322V450M680 322V450M572 386H690" />
+            </g>
+
             {/* walls */}
             <g fill="none" stroke="#1D2125" strokeLinejoin="miter">
-              <path d="M40 40H470V320H40Z" strokeWidth="5" />
-              <path d="M300 40V130M300 165V220M40 220H110M150 220H300M170 220V320M360 220V250M360 290V320M300 150H400M440 150H470M300 220H360" strokeWidth="3" />
+              <path d="M40 50H700V90A75 75 0 0 1 700 210V450H40Z" strokeWidth="5" />
+              <path d="M330 50V140M330 180V250M520 50V110M520 150V250M40 250H200M240 250H400M440 250H600M640 250H700M40 310H150M190 310H290M330 310H450M490 310H610M650 310H700M250 310V450M370 310V450M560 310V450" strokeWidth="3" />
             </g>
-            {/* door swings */}
-            <g fill="none" stroke="#56606B" strokeWidth="1">
-              <path d="M300 130A35 35 0 0 1 335 165" /><path d="M110 220A40 40 0 0 1 150 260" /><path d="M360 250A40 40 0 0 0 320 290" />
-            </g>
-            {/* dimension line */}
-            <g stroke="#56606B" strokeWidth="1" fill="#56606B" fontFamily="var(--font-jetbrains), monospace" fontSize="9">
-              <path d="M40 22H470M40 16V28M470 16V28" fill="none" />
-              <text x="255" y="16" textAnchor="middle" stroke="none">12 400</text>
-            </g>
-            {/* area labels */}
-            {ROOMS.map(r => (
-              <g key={r.name} fontFamily="var(--font-jetbrains), monospace" textAnchor="middle">
-                <rect x={r.lx - 34} y={r.ly - 17} width="68" height="32" fill="#16191C" />
-                <text x={r.lx} y={r.ly - 4} fontSize="8.5" fill="#9AA4AE">{r.name}</text>
-                <text x={r.lx} y={r.ly + 9} fontSize="10.5" fontWeight="700" fill={r.fill}>{r.area} m²</text>
+
+            {/* doors: leaf + swing, each boxed and numbered by Find & count */}
+            {DOORS.map(([x, y, o], i) => (
+              <g key={i}>
+                <path d={o === 'h' ? `M${x} ${y}V${y + 40}A40 40 0 0 0 ${x + 40} ${y}` : `M${x} ${y}H${x + 40}A40 40 0 0 1 ${x} ${y + 40}`} fill="none" stroke="#56606B" strokeWidth="1" />
+                <rect x={x - 3} y={y - 3} width="46" height="46" fill="none" stroke={C.count} strokeWidth="1.5" />
+                <circle cx={x - 3} cy={y - 3} r="7" fill={C.count} />
+                <text x={x - 3} y={y} textAnchor="middle" fontFamily={mono} fontSize="8.5" fontWeight="700" fill="#06281C">{i + 1}</text>
               </g>
             ))}
-            {/* snap marker on the polygon being traced */}
-            <g>
-              <circle cx="470" cy="150" r="9" fill="none" stroke="#B8322A" strokeWidth="1.5" />
-              <rect x="466.5" y="146.5" width="7" height="7" fill="#B8322A" />
-              <g fontFamily="var(--font-jetbrains), monospace" fontSize="8.5">
-                <rect x="408" y="126" width="54" height="15" fill="#B8322A" />
-                <text x="435" y="136.5" textAnchor="middle" fill="#fff">ENDPOINT</text>
+
+            {/* sockets: a simple click-to-count */}
+            {SOCKETS.map(([x, y], i) => (
+              <g key={i}><circle cx={x} cy={y} r="5.5" fill={C.sock} fillOpacity="0.35" stroke={C.sock} strokeWidth="1.5" /><path d={`M${x - 3} ${y}H${x + 3}`} stroke="#7A1746" strokeWidth="1.2" /></g>
+            ))}
+
+            {/* a length run: skirting round Bedroom 1 */}
+            <path d="M46 316H244V444H46Z" fill="none" stroke={C.run} strokeWidth="3" strokeDasharray="9 5" />
+            <g fontFamily={mono}><rect x="52" y="319" width="92" height="15" fill={C.run} /><text x="98" y="329.5" textAnchor="middle" fontSize="8.5" fontWeight="700" fill="#2A1206">SKIRTING 17.50 m</text></g>
+
+            {/* dimensions */}
+            <g stroke="#56606B" strokeWidth="1" fill="#56606B" fontFamily={mono} fontSize="9">
+              <path d="M40 30H700M40 24V36M700 24V36M20 50V450M14 50H26M14 450H26" fill="none" />
+              <text x="370" y="24" textAnchor="middle" stroke="none">16 500</text>
+              <text x="14" y="254" textAnchor="middle" stroke="none" transform="rotate(-90 14 254)">10 000</text>
+            </g>
+
+            {/* area labels */}
+            {ROOMS.map(r => (
+              <g key={r.name} fontFamily={mono} textAnchor="middle">
+                <rect x={r.lx - 36} y={r.ly - 16} width="72" height="30" fill="#16191C" />
+                <text x={r.lx} y={r.ly - 4} fontSize="8" fill="#9AA4AE">{r.name}</text>
+                <text x={r.lx} y={r.ly + 9} fontSize="10" fontWeight="700" fill={r.fill}>{r.area} m²</text>
               </g>
+            ))}
+            {/* notes on the cut-out and the curved edge */}
+            <g fontFamily={mono} fontSize="8" fill="#1D2125">
+              <text x="170" y="174" textAnchor="middle">COLUMN −1.00</text>
+              <text x="706" y="153" textAnchor="middle" fill="#134B7A" fontWeight="700">ARC</text>
+            </g>
+
+            {/* snapping to a corner of the drawing */}
+            <g>
+              <circle cx="520" cy="250" r="9" fill="none" stroke="#B8322A" strokeWidth="1.5" />
+              <rect x="516.5" y="246.5" width="7" height="7" fill="#B8322A" />
+              <g fontFamily={mono} fontSize="8.5"><rect x="531" y="256" width="54" height="15" fill="#B8322A" /><text x="558" y="266.5" textAnchor="middle" fill="#fff">ENDPOINT</text></g>
+            </g>
+
+            {/* what is being measured into, and the count result */}
+            <g fontFamily={mono}>
+              <rect x="48" y="58" width="232" height="20" fill="#16191C" stroke="#3A424B" />
+              <circle cx="60" cy="68" r="4" fill={C.tile} />
+              <text x="70" y="71.5" fontSize="8" fill="#9AA4AE">ADDING TO</text>
+              <text x="122" y="71.5" fontSize="9" fontWeight="700" fill="#fff">Floor tile</text>
+              <text x="272" y="71.5" fontSize="9" textAnchor="end" fill="#F2C230">83.07 m² · 3</text>
+              <rect x="574" y="462" width="126" height="20" fill="#16191C" stroke="#3A424B" />
+              <text x="582" y="475.5" fontSize="8" fill="#F2C230">FIND &amp; COUNT</text>
+              <text x="692" y="475.5" fontSize="9" textAnchor="end" fontWeight="700" fill={C.count}>9 found</text>
             </g>
           </svg>
         </div>
@@ -343,21 +420,23 @@ function WorkspacePreview() {
         <div className="hidden md:flex flex-col w-72 border-l border-industrial-border">
           <div className="px-4 py-3 border-b border-industrial-border flex items-center justify-between">
             <span className="text-xs font-semibold text-zinc-200">Takeoff</span>
-            <span className="font-mono text-[11px] text-zinc-500">6 items</span>
+            <span className="font-mono text-[11px] text-zinc-500">8 items</span>
           </div>
           <ul className="flex-1 divide-y divide-industrial-border/70">
             {ROWS.map(r => (
-              <li key={r.d} className="px-4 py-2.5 flex items-center gap-3">
-                <span className="w-2.5 h-2.5 shrink-0" style={{ background: r.c }} aria-hidden />
-                <span className="text-xs text-zinc-300 flex-1 truncate text-left">{r.d}</span>
-                <span className="font-mono text-xs text-white tabular-nums">{r.q}</span>
+              <li key={r.d} className={cn('py-2 flex items-center gap-3', r.sub ? 'pl-9 pr-4 bg-industrial-black/40' : 'px-4')}>
+                <span className={cn('shrink-0', r.sub ? 'w-1.5 h-1.5 rounded-full' : 'w-2.5 h-2.5')} style={{ background: r.c }} aria-hidden />
+                <span className={cn('flex-1 truncate text-left', r.sub ? 'text-[11px] text-zinc-400' : 'text-xs text-zinc-300')}>
+                  {r.d}{r.note && <span className="ml-1.5 font-mono text-[10px] text-zinc-500">({r.note})</span>}
+                </span>
+                <span className={cn('font-mono tabular-nums', r.sub ? 'text-[11px] text-zinc-400' : 'text-xs text-white')}>{r.q}</span>
                 <span className="font-mono text-[11px] text-zinc-500 w-5 text-left">{r.u}</span>
               </li>
             ))}
           </ul>
           <div className="px-4 py-3 border-t border-industrial-border flex items-center justify-between bg-industrial-black">
             <span className="text-xs text-zinc-400">Total incl. VAT</span>
-            <span className="font-mono text-sm font-bold text-rule tabular-nums">LKR 1,284,600</span>
+            <span className="font-mono text-sm font-bold text-rule tabular-nums">LKR 3,912,400</span>
           </div>
         </div>
       </div>
