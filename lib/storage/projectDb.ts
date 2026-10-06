@@ -66,7 +66,7 @@ export function isStorageAvailable(): boolean {
 function openDb(): Promise<IDBDatabase> {
   if (!isStorageAvailable()) return Promise.reject(new Error('IndexedDB is not available in this browser'));
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
+  const thisOpen: Promise<IDBDatabase> = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
     req.onupgradeneeded = () => {
       const db = req.result;
@@ -90,12 +90,43 @@ function openDb(): Promise<IDBDatabase> {
       const db = req.result;
       // Another tab upgraded the schema: release this connection so it can.
       db.onversionchange = () => { db.close(); dbPromise = null; };
+      // The browser closed the connection itself (disk full, storage cleared,
+      // profile error). Forget it so the next call opens a fresh one instead
+      // of failing forever with "The database connection is closing".
+      db.onclose = () => { if (dbPromise === thisOpen) dbPromise = null; };
       resolve(db);
     };
     req.onerror   = () => { dbPromise = null; reject(req.error); };
     req.onblocked = () => reject(new Error('Database upgrade blocked — close other tabs of this app'));
   });
-  return dbPromise;
+  dbPromise = thisOpen;
+  return thisOpen;
+}
+
+/** Drop the cached connection (it will be reopened on the next call). */
+export function resetDbConnection(): void {
+  const old = dbPromise;
+  dbPromise = null;
+  void old?.then(db => { try { db.close(); } catch { /* already closed */ } }).catch(() => {});
+}
+
+/** The connection died under us (as opposed to the write itself being refused). */
+export function isClosedConnectionError(err: unknown): boolean {
+  const e = err as DOMException | undefined;
+  return e?.name === 'InvalidStateError' || /connection is clos/i.test(String(e?.message ?? ''));
+}
+
+/** A short, human explanation of why a save failed. */
+export function describeStorageError(err: unknown): string {
+  const e = err as DOMException | undefined;
+  const text = `${e?.name ?? ''} ${e?.message ?? ''}`;
+  if (e?.name === 'QuotaExceededError' || /NO_SPACE|quota|disk.*full/i.test(text)) {
+    return 'This computer’s disk is full, so the browser can’t save. Free up some space on the drive that holds your browser profile (usually C:), then click to retry. Until then, new changes are not saved.';
+  }
+  if (isClosedConnectionError(err)) {
+    return 'The browser closed its storage (this usually follows a full disk or cleared site data). Click to retry.';
+  }
+  return 'The browser refused the save. Free up disk space or leave private browsing, then click to retry.';
 }
 
 function reqToPromise<T>(req: IDBRequest<T>): Promise<T> {
@@ -181,7 +212,18 @@ export async function createProject(name: string, number = ''): Promise<ProjectR
   return record;
 }
 
+/** Save, reopening the database once if its connection had been closed. */
 export async function saveProjectState(id: string, state: ProjectState): Promise<number> {
+  try {
+    return await writeProjectState(id, state);
+  } catch (err) {
+    if (!isClosedConnectionError(err)) throw err;
+    resetDbConnection();
+    return writeProjectState(id, state);
+  }
+}
+
+async function writeProjectState(id: string, state: ProjectState): Promise<number> {
   const db       = await openDb();
   const tx       = db.transaction(PROJECTS, 'readwrite');
   const store    = tx.objectStore(PROJECTS);

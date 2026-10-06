@@ -75,6 +75,9 @@ interface ViewerToolbarProps {
   snapEnabled:         boolean;
   setSnapEnabled:      (v: boolean) => void;
   showSnapSettings:    boolean;
+  /** Angle lock (0°/45°/90°). Button shown when the setter is provided. */
+  orthoEnabled?:       boolean;
+  setOrthoEnabled?:    (v: boolean) => void;
   setShowSnapSettings: (v: boolean) => void;
   scaleFactor:       number;
   handleManualScale: () => void;
@@ -119,7 +122,7 @@ export function HistoryControls({
     >
       <Undo2 className="w-4 h-4" />
       {canUndo && (
-        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
           Undo [Ctrl+Z]
           {tempPointsCount > 0 && (
             <span className="text-amber-400 ml-1">· pop point</span>
@@ -143,7 +146,7 @@ export function HistoryControls({
     >
       <Redo2 className="w-4 h-4" />
       {canRedo && (
-        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
           Redo [Ctrl+Y]
         </div>
       )}
@@ -200,13 +203,13 @@ function ScalePresets({ pageSizePt, onApply }: {
         aria-expanded={open}
         disabled={!pageSizePt}
         title={pageSizePt ? 'Set the scale from the drawing’s stated scale (e.g. 1:100)' : 'Open a drawing first'}
-        className="text-[10px] font-mono font-bold uppercase tracking-widest px-2 py-1 border border-industrial-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed"
+        className="text-[11px] font-mono font-bold uppercase tracking-widest px-2 py-1 border border-industrial-border text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 disabled:opacity-40 disabled:cursor-not-allowed"
       >
         1:N ▾
       </button>
       {open && (
-        <div className="absolute right-0 top-9 z-[80] w-64 bg-industrial-panel border border-industrial-border shadow-2xl p-4 font-mono text-[11px] text-zinc-300 space-y-3">
-          <p className="text-[10px] uppercase tracking-widest text-zinc-500">Scale from the title block</p>
+        <div className="absolute right-0 top-9 z-[80] w-64 bg-industrial-panel border border-industrial-border shadow-2xl p-4 font-mono text-xs text-zinc-300 space-y-3">
+          <p className="text-[11px] uppercase tracking-widest text-zinc-500">Scale from the title block</p>
           <label className="flex items-center justify-between gap-2">
             <span>Drawing scale</span>
             <select value={ratio} onChange={e => setRatio(Number(e.target.value))}
@@ -222,14 +225,14 @@ function ScalePresets({ pageSizePt, onApply }: {
               {Object.keys(PAPER_LONG_MM).map(p => <option key={p} value={p}>{p}</option>)}
             </select>
           </label>
-          <p className="text-[10px] leading-relaxed text-zinc-500">
+          <p className="text-[11px] leading-relaxed text-zinc-500">
             Use “Drawn for paper” when the sheet says e.g. “1:100 @ A1” but this PDF is a different size.
             Check one known dimension afterwards.
           </p>
           <button
             type="button"
             onClick={() => { onApply(presetScaleFactor(ratio, paper, pageLongPt)); setOpen(false); }}
-            className="w-full bg-amber-400 hover:bg-amber-300 text-black font-bold uppercase tracking-widest py-2 text-[10px]"
+            className="w-full bg-amber-400 hover:bg-amber-300 text-black font-bold uppercase tracking-widest py-2 text-[11px]"
           >
             Apply to this page
           </button>
@@ -251,8 +254,8 @@ export function ScaleControls({
     <div className="flex items-center gap-2">
     {/* Scale display */}
     <div className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-2 py-1">
-      <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
-      <span className="text-[10px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
+      <span className="text-[11px] font-mono text-zinc-500 uppercase tracking-tighter">Scale:</span>
+      <span className="text-[11px] font-mono font-bold text-amber-400 tracking-tighter whitespace-nowrap">
         {scaleFactor === 1 ? 'NOT CALIBRATED' : `1pt = ${scaleFactor.toFixed(4)}m`}
       </span>
     </div>
@@ -262,12 +265,12 @@ export function ScaleControls({
       className="flex items-center gap-1 border border-industrial-border bg-stone-900 px-1 py-0.5"
       title="Display unit"
     >
-      <span className="text-[9px] font-mono text-zinc-500 uppercase tracking-tighter pl-1">Unit:</span>
+      <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter pl-1">Unit:</span>
       <select
         aria-label="Display unit"
         value={displayUnit}
         onChange={e => setDisplayUnit(e.target.value as DisplayUnit)}
-        className="h-6 px-1 text-[10px] font-mono font-bold bg-transparent border-none text-amber-400 focus:outline-none cursor-pointer"
+        className="h-6 px-1 text-[11px] font-mono font-bold bg-transparent border-none text-amber-400 focus:outline-none cursor-pointer"
       >
         {UNIT_OPTIONS.map(u => (
           <option key={u.value} value={u.value} className="bg-zinc-900 text-zinc-200">
@@ -283,7 +286,7 @@ export function ScaleControls({
       aria-pressed={calibrating}
       title="Set the scale for this page (K)"
       className={cn(
-        'text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
+        'text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
         calibrating
           ? 'bg-amber-400 text-black border-amber-400'
           : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
@@ -302,6 +305,7 @@ function ViewerToolbarImpl({
   snapEnabled, setSnapEnabled,
   showSnapSettings, setShowSnapSettings,
   showPins, setShowPins,
+  orthoEnabled, setOrthoEnabled,
   scaleFactor, handleManualScale,
   analysisStatus, analysisPage, currentPageCorners,
   scale, setScale, fitToScreen,
@@ -388,7 +392,7 @@ function ViewerToolbarImpl({
         )}
 
         {/* Tooltip */}
-        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[9px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
           {tool.label} [{tool.shortcut}]{upgradeHint}
           {tool.id === 'arc' && (
             <span className="block text-teal-400 mt-0.5">
@@ -432,7 +436,7 @@ function ViewerToolbarImpl({
           <button
             onClick={togglePolyarcMode}
             className={cn(
-              'h-6 flex items-center gap-1 px-2 border text-[9px] font-mono font-bold uppercase tracking-widest transition-all ml-1',
+              'h-6 flex items-center gap-1 px-2 border text-[10px] font-mono font-bold uppercase tracking-widest transition-all ml-1',
               polyarcMode === 'arc'
                 ? 'border-teal-400 text-teal-400 bg-teal-400/10 hover:bg-teal-400/20'
                 : 'border-zinc-500 text-zinc-300 bg-zinc-800 hover:bg-zinc-700',
@@ -469,7 +473,7 @@ function ViewerToolbarImpl({
         {snapEnabled && isAnalyzing && analysisPage && (
           <div className="flex items-center gap-1.5 border border-blue-500/40 bg-blue-500/10 px-2 py-1">
             <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-            <span className="text-[9px] font-mono text-blue-400 uppercase tracking-widest">
+            <span className="text-[10px] font-mono text-blue-400 uppercase tracking-widest">
               Analyzing… {analysisPage.current}/{analysisPage.total}
             </span>
           </div>
@@ -479,7 +483,7 @@ function ViewerToolbarImpl({
         <button
           onClick={() => setSnapEnabled(!snapEnabled)}
           className={cn(
-            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+            'flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
             snapEnabled
               ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20'
               : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
@@ -489,11 +493,29 @@ function ViewerToolbarImpl({
           {snapEnabled ? 'SNAP ON' : 'SNAP OFF'}
         </button>
 
+        {/* Angle lock */}
+        {setOrthoEnabled && (
+          <button
+            type="button"
+            onClick={() => setOrthoEnabled(!orthoEnabled)}
+            aria-pressed={!!orthoEnabled}
+            className={cn(
+              'flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+              orthoEnabled
+                ? 'bg-sky-500/10 border-sky-500/50 text-sky-300 hover:bg-sky-500/20'
+                : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
+            )}
+            title="Angle lock: keep lines and polygon edges at 0° / 45° / 90° from the last point — toggle with F8. Exact snap points still win."
+          >
+            {orthoEnabled ? 'ANGLE LOCK ON' : 'ANGLE LOCK'}
+          </button>
+        )}
+
         {/* Pins toggle */}
         <button
           onClick={() => setShowPins(!showPins)}
           className={cn(
-            'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+            'flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
             showPins
               ? 'bg-blue-500/10 border-blue-500/50 text-blue-400 hover:bg-blue-500/20'
               : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
@@ -510,7 +532,7 @@ function ViewerToolbarImpl({
             onClick={() => setShowLabels(!showLabels)}
             aria-pressed={!!showLabels}
             className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+              'flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
               showLabels
                 ? 'bg-amber-400/10 border-amber-400/50 text-amber-300 hover:bg-amber-400/20'
                 : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
@@ -527,7 +549,7 @@ function ViewerToolbarImpl({
             onClick={() => setShowGeometry(!showGeometry)}
             aria-pressed={!!showGeometry}
             className={cn(
-              'flex items-center gap-1 text-[9px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
+              'flex items-center gap-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-1 border transition-all',
               showGeometry
                 ? 'bg-sky-400/10 border-sky-400/50 text-sky-300 hover:bg-sky-400/20'
                 : 'bg-transparent border-zinc-700 text-zinc-500 hover:border-zinc-500',
@@ -560,7 +582,7 @@ function ViewerToolbarImpl({
         >
           <ZoomOut className="w-4 h-4" />
         </button>
-        <span className="text-[10px] font-mono text-zinc-400 w-12 text-center font-bold">
+        <span className="text-[11px] font-mono text-zinc-400 w-12 text-center font-bold">
           {Math.round(scale * 100)}%
         </span>
         <button

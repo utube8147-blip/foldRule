@@ -38,6 +38,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { orthoState } from '@/lib/geometry/ortho';
 import { useRef, useEffect, useCallback } from 'react';
 import React from 'react';
 import { ToolType, TakeoffRow } from '@/types';
@@ -1513,7 +1514,7 @@ export function useDrawingCanvas({
 
       let snappedCanvas = { x: canvasX, y: canvasY };
 
-      if (snapEnabledRef.current && snapToCorner) {
+      if ((snapEnabledRef.current || orthoState.on) && snapToCorner) {
         const s = snapToCorner(canvasX, canvasY);
         if (s?.point) {
           snappedCanvas = { x: s.point.x, y: s.point.y };

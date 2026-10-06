@@ -16,7 +16,7 @@ function ago(ts: number, now: number): string {
 /** Small status line: "Saved just now" / "Saving…" / "Couldn't save — retry". */
 export function SaveIndicator() {
   const { saveNow, projectId } = useTakeoffData();
-  const { saveStatus, lastSavedAt } = useSaveStatus();
+  const { saveStatus, lastSavedAt, saveError } = useSaveStatus();
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -31,11 +31,11 @@ export function SaveIndicator() {
       <button
         type="button"
         onClick={() => void saveNow()}
-        className="flex items-center gap-1.5 text-[10px] font-semibold text-red-400 hover:text-red-300"
-        title="Local storage refused the save. Free up disk space or leave private browsing, then retry."
+        className="flex items-center gap-1.5 text-[11px] font-semibold text-red-400 hover:text-red-300"
+        title={saveError ?? 'The browser refused the save. Free up disk space or leave private browsing, then retry.'}
       >
         <span className="h-1.5 w-1.5 rounded-full bg-red-500" aria-hidden />
-        Couldn’t save — retry
+        {saveError && /disk is full/.test(saveError) ? 'Disk full — not saving · retry' : 'Couldn’t save — retry'}
       </button>
     );
   }
@@ -51,7 +51,7 @@ export function SaveIndicator() {
 
   return (
     <span className="flex items-center gap-1.5">
-      <span role="status" aria-live="polite" className="flex items-center gap-1.5 text-[10px] font-semibold text-zinc-500">
+      <span role="status" aria-live="polite" className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500">
         <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
         {label}
       </span>

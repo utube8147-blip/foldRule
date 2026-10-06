@@ -136,11 +136,11 @@ export function CircleCentresOverlay({ circles, pdfDimensions, scaleFactor, cali
       {chooser && (
         <div
           ref={chooserRef}
-          className="absolute z-[60] bg-industrial-panel border border-industrial-border shadow-2xl font-mono text-[11px] min-w-[160px]"
+          className="absolute z-[60] bg-industrial-panel border border-industrial-border shadow-2xl font-mono text-xs min-w-[160px]"
           style={{ left: `${(chooser.x / w) * 100}%`, top: `${(chooser.y / h) * 100}%`, transform: 'translate(14px, 14px)' }}
           role="menu"
         >
-          <p className="px-3 py-2 border-b border-industrial-border text-[9px] font-bold uppercase tracking-widest text-zinc-500">
+          <p className="px-3 py-2 border-b border-industrial-border text-[10px] font-bold uppercase tracking-widest text-zinc-500">
             {chooser.circles.length} circles here
           </p>
           {chooser.circles.map((c, i) => (
@@ -158,7 +158,7 @@ export function CircleCentresOverlay({ circles, pdfDimensions, scaleFactor, cali
             type="button"
             role="menuitem"
             onClick={() => { const cs = chooser.circles; setChooser(null); onPick(cs); }}
-            className="w-full text-left px-3 py-2 border-t border-industrial-border font-bold uppercase tracking-widest text-[10px] text-amber-400 hover:bg-amber-400/10"
+            className="w-full text-left px-3 py-2 border-t border-industrial-border font-bold uppercase tracking-widest text-[11px] text-amber-400 hover:bg-amber-400/10"
           >
             All {chooser.circles.length}
           </button>

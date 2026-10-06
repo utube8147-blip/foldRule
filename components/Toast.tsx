@@ -31,7 +31,7 @@ export function ToastContainer({ toasts, onRemove }: ToastContainerProps) {
             ) : (
               <Info className="w-4 h-4 text-amber-accent" />
             )}
-            <span className="text-[11px] font-mono font-bold text-zinc-100 uppercase tracking-widest">
+            <span className="text-xs font-mono font-bold text-zinc-100 uppercase tracking-widest">
               {toast.message}
             </span>
             <button 

@@ -30,6 +30,7 @@ import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGr
 import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type { GeometryShape } from '@/types/snapTypes';
 import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
+import { constrainToAngle, isExactSnap, ORTHO_TOOLS, orthoState } from '@/lib/geometry/ortho';
 import { buildPointGrid } from '@/lib/geometry/pointGrid';
 import { snapOutline as snapOutlineToDrawing } from '@/lib/geometry/snapOutline';
 import { useMeasurements }   from '@/hooks/measurements/useMeasurements';
@@ -122,6 +123,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
 
   // ── Settings ──────────────────────────────────────────────────────────────
   const [snapEnabled,      setSnapEnabled]      = useState(true);
+  // Angle lock (F8): next point of a line/polygon stays on 0° / 45° / 90° from the last.
+  const [orthoEnabled,     setOrthoEnabled]     = useState(false);
   const [internalShowPins, setInternalShowPins] = useState(true);
   const [snapThreshold,    setSnapThreshold]    = useState(14);
   const [confidenceFilter, setConfidenceFilter] = useState(0.1);
@@ -406,7 +409,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const ownVertexGridRef = useRef<ReturnType<typeof buildPointGrid> | null>(null);
   const canvasPerPageRef = useRef(1);
   canvasPerPageRef.current = pdfDimensions && pdfDocDims?.w ? pdfDimensions.w / pdfDocDims.w : 1;
-  const snapToCanvas = useCallback((cx: number, cy: number) => {
+  const snapCore = useCallback((cx: number, cy: number) => {
     const k = canvasPerPageRef.current || 1;
     const qx = cx / k, qy = cy / k;
     const out = (x: number, y: number, type: string) =>
@@ -481,6 +484,24 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     }
     return { ...r, point: { x: r.point.x * k, y: r.point.y * k } };
   }, [snapToCorner, pdfDocDims]);
+
+  // Angle lock sits on top of snapping: an exact snap point (end, midpoint,
+  // crossing, centre, own vertex) still wins, as in CAD; anything looser is
+  // pulled onto the nearest 45° ray from the previous point.
+  const orthoRef = useRef(orthoEnabled);
+  orthoRef.current = orthoEnabled;
+  orthoState.on = orthoEnabled;
+  const orthoFromRef = useRef<{ x: number; y: number } | null>(null);
+  const snapToCanvas = useCallback((cx: number, cy: number) => {
+    const res  = snapCore(cx, cy);
+    const from = orthoFromRef.current;
+    if (!orthoRef.current || !from || !ORTHO_TOOLS.has(activeToolRef.current)) return res;
+    if (isExactSnap((res as { type?: string }).type, res.snapped)) return res;
+    const dim = pdfDimensionsRef.current;
+    if (!dim) return res;
+    const p = constrainToAngle({ x: from.x * dim.w, y: from.y * dim.h }, { x: cx, y: cy });
+    return { ...res, snapped: false, point: { x: p.x, y: p.y } };
+  }, [snapCore]);
 
   // ── Extracted geometry: hover highlight + optional overlay ────────────────
   const geometryIndex = useMemo(() => buildGeometryIndex(pdfLines as never, pdfCurves as never), [pdfLines, pdfCurves]);
@@ -650,6 +671,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleCanvasPointerMove, handleCanvasPointerDown,
     handleCanvasPointerUp, toCanvas, setCursorPoint,
     redrawDrawingCanvas,
+    pendingBreak,
   } = useMeasurements({
     drawingCanvasRef: drawingCanvasRef as React.RefObject<HTMLCanvasElement>,
     pdfDimensionsRef: pdfDimensionsRef as React.RefObject<NonNullable<typeof pdfDimensions>>,
@@ -675,6 +697,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     findHoverGeometry,
     findPinsNear,
   } as any);
+
+  // Angle lock measures from the last placed point of the run being drawn.
+  orthoFromRef.current =
+    !pendingBreak && tempPoints.length > 0 && ORTHO_TOOLS.has(activeTool)
+      ? tempPoints[tempPoints.length - 1]
+      : null;
 
   const safePolyarcMode: 'line' | 'arc' = polyarcMode ?? 'line';
 
@@ -1177,6 +1205,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     tools: VIEWER_TOOLS as any,
     activeTool, setActiveTool: handleSetActiveTool, scale, setScale, scaleFactor,
     snapEnabled, setSnapEnabled, showSnapSettings, setShowSnapSettings,
+    orthoEnabled, setOrthoEnabled,
     showPins, setShowPins,
     snapThreshold, setSnapThreshold,
     confidenceFilter, setConfidenceFilter,
@@ -1192,7 +1221,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     pageSizePt: pdfDimensions ? { w: pdfDimensions.w / (dimsScaleRef.current || 1), h: pdfDimensions.h / (dimsScaleRef.current || 1) } : null,
   }), [
     activeTool, handleSetActiveTool, scale, scaleFactor,
-    snapEnabled, showSnapSettings,
+    snapEnabled, showSnapSettings, orthoEnabled,
     showPins, setShowPins,
     snapThreshold, confidenceFilter,
     pdfStage, resolvedSnapPoints,
@@ -1237,6 +1266,9 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         }
         if (e.key.toLowerCase() === 's') {
           e.preventDefault(); setSnapEnabled(!snapEnabled); return;
+        }
+        if (e.key === 'F8') {
+          e.preventDefault(); setOrthoEnabled(v => !v); return;
         }
         const map: Record<string, ToolType> = {
           v: 'select',    l: 'linear',   r: 'rectangle',
@@ -1543,7 +1575,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 !propAppendToGroupId &&
                 mfLastFillPos && (
                   <button
-                    className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                    className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
                     style={{ left: mfLastFillPos.x + 15, top: mfLastFillPos.y + 15 }}
                     onClick={e => { e.stopPropagation(); handleMagicFinish(); }}
                     onPointerDown={e => e.stopPropagation()}
@@ -1660,7 +1692,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-tighter">
+            <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-tighter">
               PAGE {pageNumber} OF {pdf.numPages}
             </span>
             <button
@@ -1672,7 +1704,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             </button>
           </div>
 
-          <div className="hidden md:flex items-center gap-4 text-[9px] text-zinc-500 uppercase tracking-widest">
+          <div className="hidden md:flex items-center gap-4 text-[10px] text-zinc-500 uppercase tracking-widest">
             {isMagicFillTool ? (
               <>
                 <span className={mfStagedCount > 0 ? 'text-amber-400' : ''}>
@@ -1744,6 +1776,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 {showTechInfo || (pdfStage !== 'done' && pdfStage !== 'idle')
                   ? snapStatusText
                   : snapEnabled ? 'Snapping to drawing lines' : 'Snap off — press S to turn on'}
+                {orthoEnabled && ' · Angle lock on (F8)'}
               </span>
             )}
             {showTechInfo && <span>RENDER_ENGINE: PDF.JS V{pdfLibVersion} · BUILD {process.env.NEXT_PUBLIC_BUILD_ID ?? 'dev'}</span>}
@@ -1752,7 +1785,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               onClick={() => setShowTechInfo(v => !v)}
               aria-pressed={showTechInfo}
               title={showTechInfo ? 'Hide technical details' : 'Show technical details'}
-              className="w-4 h-4 inline-flex items-center justify-center border border-zinc-700 text-[9px] text-zinc-500 hover:text-zinc-200 hover:border-zinc-500"
+              className="w-4 h-4 inline-flex items-center justify-center border border-zinc-700 text-[10px] text-zinc-500 hover:text-zinc-200 hover:border-zinc-500"
             >
               i
             </button>
@@ -1790,7 +1823,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       {pdf && !isPageCalibrated && activeTool !== 'scale' && !propAppendToGroupId && (
         <div
           role="status"
-          className="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-[11px] text-amber-200 backdrop-blur"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 border border-amber-400/60 bg-amber-400/10 px-3 py-1.5 text-xs text-amber-200 backdrop-blur"
         >
           <span>
             Page {pageNumber} isn’t calibrated — quantities are in drawing units until you set the scale.

@@ -82,7 +82,7 @@ function SectionHeader({
       onClick={onToggle}
       className="w-full flex items-center justify-between group mb-2"
     >
-      <span className="text-[10px] font-bold text-amber-accent uppercase tracking-widest flex items-center gap-2">
+      <span className="text-[11px] font-bold text-amber-accent uppercase tracking-widest flex items-center gap-2">
         <Icon className="w-3.5 h-3.5" />
         {label}
       </span>
@@ -103,7 +103,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="text-[9px] text-zinc-500 uppercase tracking-widest font-bold block mb-1">
+      <label className="text-[10px] text-zinc-500 uppercase tracking-widest font-bold block mb-1">
         {label}
       </label>
       {children}
@@ -126,7 +126,7 @@ function TextInput({
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
-      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase placeholder:normal-case placeholder:text-zinc-700 placeholder:font-normal"
+      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-xs font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase placeholder:normal-case placeholder:text-zinc-700 placeholder:font-normal"
     />
   );
 }
@@ -146,7 +146,7 @@ function NumberInput({
       value={value ?? ''}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
-      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 placeholder:font-normal"
+      className="w-full bg-[#16191C] border border-zinc-800 p-2 text-xs font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 placeholder:font-normal"
     />
   );
 }
@@ -260,7 +260,7 @@ function SidebarImpl({
     >
       {/* ── Header ── */}
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center shrink-0">
-        <span className="text-[10px] font-bold text-zinc-500 my-1 tracking-widest uppercase">
+        <span className="text-[11px] font-bold text-zinc-500 my-1 tracking-widest uppercase">
           Project Explorer
         </span>
         <div className="flex gap-2">
@@ -310,7 +310,7 @@ function SidebarImpl({
             onKeyDown={e => { if (e.key === 'Escape') { setQuery(''); setSearchOpen(false); } }}
             placeholder="Search drawings…"
             aria-label="Search drawings"
-            className="flex-1 min-w-0 bg-transparent text-[11px] text-zinc-200 placeholder:text-zinc-600 outline-none"
+            className="flex-1 min-w-0 bg-transparent text-xs text-zinc-200 placeholder:text-zinc-600 outline-none"
           />
           {query && (
             <button type="button" onClick={() => setQuery('')} aria-label="Clear search" className="text-zinc-500 hover:text-zinc-200">
@@ -325,7 +325,7 @@ function SidebarImpl({
         <button
           onClick={() => setActiveTab('drawings')}
           className={cn(
-            "flex-1 py-3 text-[10px] font-bold tracking-widest uppercase transition-colors flex items-center justify-center gap-2",
+            "flex-1 py-3 text-[11px] font-bold tracking-widest uppercase transition-colors flex items-center justify-center gap-2",
             activeTab === 'drawings'
               ? "text-amber-accent border-b-2 border-amber-accent bg-zinc-800/20"
               : "text-zinc-600 hover:text-zinc-400"
@@ -337,7 +337,7 @@ function SidebarImpl({
         <button
           onClick={() => setActiveTab('specs')}
           className={cn(
-            "flex-1 py-3 text-[10px] font-bold tracking-widest uppercase transition-colors flex items-center justify-center gap-2",
+            "flex-1 py-3 text-[11px] font-bold tracking-widest uppercase transition-colors flex items-center justify-center gap-2",
             activeTab === 'specs'
               ? "text-amber-accent border-b-2 border-amber-accent bg-zinc-800/20"
               : "text-zinc-600 hover:text-zinc-400"
@@ -358,14 +358,14 @@ function SidebarImpl({
               {projectState.drawings.length === 0 && (
                 <div className="text-center py-10 px-4 flex flex-col items-center">
                   <FileText className="w-8 h-8 text-zinc-700 mb-3" />
-                  <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">No Drawings</p>
-                  <p className="text-[9px] text-zinc-600 mt-2 uppercase tracking-widest">
+                  <p className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest">No Drawings</p>
+                  <p className="text-[10px] text-zinc-600 mt-2 uppercase tracking-widest">
                     Select files in the main view or below
                   </p>
                 </div>
               )}
               {projectState.drawings.length > 0 && visibleDrawings.length === 0 && (
-                <p className="px-4 py-6 text-[10px] text-zinc-500 uppercase tracking-widest text-center">
+                <p className="px-4 py-6 text-[11px] text-zinc-500 uppercase tracking-widest text-center">
                   {needsScale && !query ? 'Every page has a scale' : 'No drawings match'}
                 </p>
               )}
@@ -386,7 +386,7 @@ function SidebarImpl({
                         )}
                       >
                         <FileText className="w-4 h-4 shrink-0" />
-                        <span className="text-[11px] truncate font-medium uppercase tracking-tight">{file.name}</span>
+                        <span className="text-xs truncate font-medium uppercase tracking-tight">{file.name}</span>
                         {missing > 0 && (
                           <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" title={`${missing} page${missing === 1 ? '' : 's'} without a scale`} />
                         )}
@@ -414,7 +414,7 @@ function SidebarImpl({
                               aria-current={current ? 'page' : undefined}
                               title={`Page ${page}${ok ? ' · scale set' : ' · needs a scale'}`}
                               className={cn(
-                                'relative min-w-[26px] h-6 px-1.5 text-[10px] font-bold border transition-colors',
+                                'relative min-w-[26px] h-6 px-1.5 text-[11px] font-bold border transition-colors',
                                 current ? 'border-amber-accent text-amber-accent bg-amber-accent/10' : 'border-industrial-border text-zinc-400 hover:border-zinc-500 hover:text-zinc-200',
                               )}
                             >
@@ -432,7 +432,7 @@ function SidebarImpl({
 
             {projectState.drawings.length > 0 && (
               <div className="p-4 border-t border-industrial-border mt-auto shrink-0 bg-industrial-black/50">
-                <label className="w-full bg-stone-800 hover:bg-stone-700 text-zinc-300 font-bold uppercase tracking-widest text-[10px] py-2.5 transition-colors flex items-center justify-center gap-2 cursor-pointer border border-zinc-700">
+                <label className="w-full bg-stone-800 hover:bg-stone-700 text-zinc-300 font-bold uppercase tracking-widest text-[11px] py-2.5 transition-colors flex items-center justify-center gap-2 cursor-pointer border border-zinc-700">
                   <Plus className="w-3.5 h-3.5" /> Upload Drawing
                   <input
                     type="file"
@@ -538,7 +538,7 @@ function SidebarImpl({
                         type="date"
                         value={projectState.documentDate ?? ''}
                         onChange={e => onUpdateProjectMeta({ documentDate: e.target.value || undefined })}
-                        className="w-full bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors"
+                        className="w-full bg-[#16191C] border border-zinc-800 p-2 text-xs font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors"
                       />
                     </Field>
                     <Field label="Revision">
@@ -619,7 +619,7 @@ function SidebarImpl({
                         type="text"
                         value={ref}
                         onChange={e => updateDrawingRef(i, e.target.value)}
-                        className="flex-1 bg-[#16191C] border border-zinc-800 p-2 text-[11px] font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase"
+                        className="flex-1 bg-[#16191C] border border-zinc-800 p-2 text-xs font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors uppercase"
                       />
                       <button
                         onClick={() => removeDrawingRef(i)}
@@ -631,7 +631,7 @@ function SidebarImpl({
                   ))}
                   <button
                     onClick={addDrawingRef}
-                    className="w-full flex items-center justify-center gap-2 border border-dashed border-zinc-700 py-2 text-[10px] font-bold text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors uppercase tracking-widest"
+                    className="w-full flex items-center justify-center gap-2 border border-dashed border-zinc-700 py-2 text-[11px] font-bold text-zinc-500 hover:text-zinc-300 hover:border-zinc-500 transition-colors uppercase tracking-widest"
                   >
                     <Plus className="w-3 h-3" /> Add Reference
                   </button>
@@ -652,7 +652,7 @@ function SidebarImpl({
               {open.assumptions && (
                 <div className="space-y-2 mt-3">
                   {(projectState.generalAssumptions ?? []).length === 0 && (
-                    <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
+                    <p className="text-[11px] text-zinc-600 uppercase tracking-widest">
                       No assumptions recorded
                     </p>
                   )}
@@ -661,10 +661,10 @@ function SidebarImpl({
                       key={a.id}
                       className="bg-zinc-900/60 border border-zinc-800 p-2.5 space-y-1"
                     >
-                      <span className="text-[9px] font-bold text-amber-accent/70 uppercase tracking-widest">
+                      <span className="text-[10px] font-bold text-amber-accent/70 uppercase tracking-widest">
                         {a.category}
                       </span>
-                      <p className="text-[10px] text-zinc-400 leading-relaxed">
+                      <p className="text-[11px] text-zinc-400 leading-relaxed">
                         {a.content}
                       </p>
                     </div>
@@ -686,7 +686,7 @@ function SidebarImpl({
               {open.excluded && (
                 <div className="space-y-2 mt-3">
                   {(projectState.excludedItems ?? []).length === 0 && (
-                    <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
+                    <p className="text-[11px] text-zinc-600 uppercase tracking-widest">
                       No exclusions recorded
                     </p>
                   )}
@@ -695,10 +695,10 @@ function SidebarImpl({
                       key={e.id}
                       className="bg-zinc-900/60 border border-zinc-800 p-2.5 space-y-1"
                     >
-                      <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-tight">
+                      <span className="text-[11px] font-bold text-zinc-300 uppercase tracking-tight">
                         {e.item}
                       </span>
-                      <p className="text-[10px] text-zinc-500 leading-relaxed">
+                      <p className="text-[11px] text-zinc-500 leading-relaxed">
                         {e.reason}
                       </p>
                     </div>
@@ -719,12 +719,12 @@ function SidebarImpl({
               />
               {open.library && (
                 <>
-                  <p className="text-[10px] text-zinc-400 uppercase tracking-widest leading-relaxed mb-4 mt-3">
+                  <p className="text-[11px] text-zinc-400 uppercase tracking-widest leading-relaxed mb-4 mt-3">
                     Manage unit costs, labour rates, and equipment expenses globally.
                   </p>
                   <button
                     onClick={() => onOpenMaterialLibrary?.()}
-                    className="w-full bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest text-[10px] py-3.5 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(242,194,48,0.15)] hover:shadow-[0_0_20px_rgba(242,194,48,0.25)] active:scale-95"
+                    className="w-full bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest text-[11px] py-3.5 transition-colors flex items-center justify-center gap-2 shadow-[0_0_15px_rgba(242,194,48,0.15)] hover:shadow-[0_0_20px_rgba(242,194,48,0.25)] active:scale-95"
                   >
                     <Database className="w-3.5 h-3.5" /> Open Master Library
                   </button>
@@ -740,13 +740,13 @@ function SidebarImpl({
       <div className="p-4 bg-industrial-black border-t border-industrial-border shrink-0">
         <div className="flex items-center gap-2 mb-3">
           <div className={cn('w-2 h-2 rounded-full', totals.pages === 0 ? 'bg-zinc-600' : totals.done === totals.pages ? 'bg-emerald-500' : 'bg-amber-400')} />
-          <span className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest">
+          <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
             {totals.pages === 0 ? 'No drawings yet'
               : totals.done === totals.pages ? 'All pages have a scale'
               : `${totals.pages - totals.done} page${totals.pages - totals.done === 1 ? '' : 's'} need${totals.pages - totals.done === 1 ? 's' : ''} a scale`}
           </span>
         </div>
-        <div className="text-[10px] font-bold text-zinc-600 uppercase tracking-tighter flex justify-between">
+        <div className="text-[11px] font-bold text-zinc-600 uppercase tracking-tighter flex justify-between">
           <span>{fullProject.drawings.length} drawing{fullProject.drawings.length === 1 ? '' : 's'} · {totals.done}/{totals.pages} pages</span>
           <span>{totals.measured} qty</span>
         </div>

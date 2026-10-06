@@ -17,11 +17,17 @@
 //    on another computer via OneDrive) are pulled in; newer local ones pushed.
 //  • Permission is only ever requested from a click (browsers require it).
 //    If it lapses, the UI shows a small inline "Allow" — never a pop-up.
+//  • ONE folder per device. The chosen folder is stored in IndexedDB, which the
+//    browser tab and the installed app share (same browser profile). Every open
+//    window therefore uses the same folder: connecting, changing, allowing or
+//    disconnecting it in one window is announced to the others (BroadcastChannel)
+//    and each window also re-checks whenever it regains focus. Writes from
+//    different windows are serialised with a Web Lock.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
   getSetting, setSetting, deleteSetting, getProject, listProjects,
-  loadDrawingFiles, putProjectRecord, SCHEMA_VERSION, type ProjectRecord,
+  loadDrawingFiles, putProjectRecord, requestPersistentStorage, SCHEMA_VERSION, type ProjectRecord,
 } from './projectDb';
 
 const HANDLE_KEY     = 'folderHandle';
@@ -60,6 +66,74 @@ export function __resetFolderSyncForTests(): void {
   rootHandle = null; initPromise = null; status = initial; syncChain = Promise.resolve();
 }
 
+// ── Keeping every window (browser tab + installed app) on the same folder ────
+
+const CHANNEL_NAME = 'foldrule-folder';
+const LOCK_NAME    = 'foldrule-folder-write';
+let channel: BroadcastChannel | null = null;
+let watching = false;
+
+/** Tell the other open windows that the folder or its permission changed. */
+function announce(): void {
+  try { channel?.postMessage({ type: 'folder-changed' }); } catch { /* channel closed */ }
+}
+
+async function sameFolder(a: FileSystemDirectoryHandle | null, b: FileSystemDirectoryHandle | null): Promise<boolean> {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  try { return await a.isSameEntry(b); } catch { return false; }
+}
+
+/**
+ * Re-read the saved folder and its permission. Picks up a folder that was
+ * connected / changed / allowed / disconnected in another window (the browser
+ * tab or the installed app). Never prompts.
+ */
+export async function refreshFolderState(): Promise<void> {
+  if (!isFolderSupported()) return;
+  if (initPromise) await initPromise;
+  let stored: FileSystemDirectoryHandle | undefined;
+  try { stored = await getSetting<FileSystemDirectoryHandle>(HANDLE_KEY); }
+  catch { return; }
+
+  if (!stored) {
+    if (rootHandle) {
+      rootHandle = null;
+      set({ folderName: null, permission: null, lastSyncAt: null, error: null });
+    }
+    return;
+  }
+
+  const changed = !(await sameFolder(rootHandle, stored));
+  if (changed) rootHandle = stored;
+  const before     = status.permission;
+  const permission = await queryPermission(rootHandle!);
+  if (changed || permission !== before || status.folderName !== rootHandle!.name) {
+    set({
+      folderName: rootHandle!.name, permission,
+      ...(changed ? { lastSyncAt: null, error: null } : {}),
+      ...(permission === 'granted' && before !== 'granted' ? { error: null } : {}),
+    });
+  }
+  // Newly usable here (connected or allowed elsewhere): bring both sides up to date.
+  if (permission === 'granted' && (changed || before !== 'granted')) void syncFolder();
+}
+
+function startWatching(): void {
+  if (watching || typeof window === 'undefined') return;
+  watching = true;
+  if (typeof BroadcastChannel === 'function') {
+    channel = new BroadcastChannel(CHANNEL_NAME);
+    channel.onmessage = () => { void refreshFolderState(); };
+  }
+  const onWake = () => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') void refreshFolderState();
+  };
+  window.addEventListener?.('focus', onWake);
+  window.addEventListener?.('pageshow', onWake);
+  if (typeof document !== 'undefined') document.addEventListener?.('visibilitychange', onWake);
+}
+
 function set(patch: Partial<FolderStatus>) {
   status = { ...status, ...patch };
   listeners.forEach(l => l());
@@ -87,6 +161,7 @@ export function initFolderSync(): Promise<void> {
   initPromise = (async () => {
     const supported = isFolderSupported();
     if (!supported) { set({ supported, loaded: true }); return; }
+    startWatching();
     try {
       const h = await getSetting<FileSystemDirectoryHandle>(HANDLE_KEY);
       if (h) {
@@ -118,7 +193,10 @@ export async function connectFolder(): Promise<boolean> {
   rootHandle = h;
   try { await setSetting(HANDLE_KEY, h); }
   catch (err) { console.warn('[folder] could not remember the folder for next time', err); }
-  set({ folderName: h.name, permission: await queryPermission(h), error: null });
+  // Ask the browser not to evict our storage (it holds the remembered folder).
+  void requestPersistentStorage();
+  set({ folderName: h.name, permission: await queryPermission(h), lastSyncAt: null, error: null });
+  announce();
   await syncFolder();
   return true;
 }
@@ -129,7 +207,7 @@ export async function resumeFolder(): Promise<boolean> {
   try {
     const p = (await rootHandle.requestPermission?.({ mode: 'readwrite' })) ?? 'granted';
     set({ permission: p, error: null });
-    if (p === 'granted') { await syncFolder(); return true; }
+    if (p === 'granted') { announce(); await syncFolder(); return true; }
   } catch {
     set({ error: 'The browser didn’t allow access to that folder.' });
   }
@@ -141,6 +219,7 @@ export async function disconnectFolder(): Promise<void> {
   rootHandle = null;
   await deleteSetting(HANDLE_KEY);
   set({ folderName: null, permission: null, lastSyncAt: null, error: null });
+  announce();
 }
 
 // ── File helpers ─────────────────────────────────────────────────────────────
@@ -233,7 +312,13 @@ function describe(err: unknown): string {
 // ── Sync ─────────────────────────────────────────────────────────────────────
 
 let syncChain: Promise<unknown> = Promise.resolve();
-const serial = <T>(fn: () => Promise<T>): Promise<T> => {
+/** One folder operation at a time — in this window, and across windows (Web Locks). */
+const locked = <T>(fn: () => Promise<T>): Promise<T> => {
+  const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
+  return locks?.request ? (locks.request(LOCK_NAME, fn) as Promise<T>) : fn();
+};
+const serial = <T>(work: () => Promise<T>): Promise<T> => {
+  const fn = () => locked(work);
   const next = syncChain.then(fn, fn);
   syncChain = next.catch(() => {});
   return next;

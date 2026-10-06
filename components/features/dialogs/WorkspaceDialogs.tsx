@@ -38,7 +38,7 @@ function Shell({ title, onClose, children, wide = false }: {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
-      <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-3">{title}</h3>
+      <h3 className="text-[11px] font-bold uppercase tracking-widest text-zinc-500 mb-3">{title}</h3>
       {children}
     </section>
   );
@@ -112,7 +112,7 @@ export function AnalysisDialog({ measurements, drawings, materials, onClose, onF
           ['Pages without scale', String(a.pagesNoScale.length)],
         ].map(([k, v]) => (
           <div key={k} className="border border-industrial-border bg-industrial-black/40 p-3">
-            <p className="text-[9px] uppercase tracking-widest text-zinc-500">{k}</p>
+            <p className="text-[10px] uppercase tracking-widest text-zinc-500">{k}</p>
             <p className="mt-1 text-base font-bold text-zinc-100 truncate">{v}</p>
           </div>
         ))}
@@ -216,7 +216,7 @@ const SHORTCUTS: [string, [string, string][]][] = [
   ]],
   ['Drawing', [
     ['Enter / double-click', 'Finish shape'], ['Esc', 'Cancel, then back to Select'],
-    ['Ctrl Z', 'Undo'], ['Ctrl Y / Ctrl Shift Z', 'Redo'], ['S', 'Snap on / off'],
+    ['Ctrl Z', 'Undo'], ['Ctrl Y / Ctrl Shift Z', 'Redo'], ['S', 'Snap on / off'], ['F8', 'Angle lock (0° / 45° / 90°)'],
   ]],
   ['View', [
     ['Ctrl + / Ctrl −', 'Zoom in / out'], ['Ctrl 0', 'Fit to screen'],
@@ -234,7 +234,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             {rows.map(([k, d]) => (
               <React.Fragment key={k}>
                 <dt>
-                  <kbd className="inline-block min-w-[24px] text-center border border-zinc-600 bg-industrial-black px-1.5 py-0.5 text-[10px] font-bold text-amber-accent">{k}</kbd>
+                  <kbd className="inline-block min-w-[24px] text-center border border-zinc-600 bg-industrial-black px-1.5 py-0.5 text-[11px] font-bold text-amber-accent">{k}</kbd>
                 </dt>
                 <dd className="text-zinc-400 self-center">{d}</dd>
               </React.Fragment>

@@ -66,6 +66,14 @@ function buildRow(overrides: Partial<TakeoffRow> & { id: string; drawingId: stri
   };
 }
 
+const TABLE_WIDTH_KEY     = 'foldrule:takeoff-panel-width';
+const TABLE_WIDTH_DEFAULT = 384;
+const TABLE_WIDTH_MIN     = 320;
+const clampTableWidth = (w: number) => {
+  const max = typeof window === 'undefined' ? 760 : Math.max(TABLE_WIDTH_MIN, Math.min(760, window.innerWidth - 560));
+  return Math.round(Math.min(max, Math.max(TABLE_WIDTH_MIN, w)));
+};
+
 export default function Workspace() {
   const router = useRouter();
 
@@ -112,6 +120,42 @@ export default function Workspace() {
   // Viewer's toolbar API so the button always matches reality.
   // Pins are owned here and passed down to the Viewer.
   const [showPins,         setShowPins]         = useState(false);
+
+  // ── Takeoff panel width (drag the divider; remembered on this computer) ────
+  const [tableWidth, setTableWidth] = useState(TABLE_WIDTH_DEFAULT);
+  const [resizing,   setResizing]   = useState(false);
+  useEffect(() => {
+    try {
+      const saved = Number(localStorage.getItem(TABLE_WIDTH_KEY));
+      if (saved) setTableWidth(clampTableWidth(saved));
+    } catch { /* storage blocked */ }
+  }, []);
+  const startResize = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = tableWidth;
+    let latest = startW;
+    setResizing(true);
+    const onMove = (ev: PointerEvent) => {
+      latest = clampTableWidth(startW + (startX - ev.clientX));
+      setTableWidth(latest);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      setResizing(false);
+      try { localStorage.setItem(TABLE_WIDTH_KEY, String(latest)); } catch { /* ignore */ }
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }, [tableWidth]);
+  const nudgeTableWidth = useCallback((delta: number) => {
+    setTableWidth(w => {
+      const next = clampTableWidth(w + delta);
+      try { localStorage.setItem(TABLE_WIDTH_KEY, String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
 
   useEffect(() => { setIsMounted(true); }, []);
 
@@ -462,7 +506,7 @@ export default function Workspace() {
         <div className="flex-1 flex items-center justify-center">
           <div className="flex flex-col items-center gap-4">
             <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
-            <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
+            <span className="text-[11px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
               LOADING WORKSPACE...
             </span>
           </div>
@@ -538,6 +582,8 @@ export default function Workspace() {
             setSnapEnabled={(v: boolean) => api?.setSnapEnabled?.(v)}
             showSnapSettings={api?.showSnapSettings ?? false}
             setShowSnapSettings={(v: boolean) => api?.setShowSnapSettings?.(v)}
+            orthoEnabled={api?.orthoEnabled ?? false}
+            setOrthoEnabled={(v: boolean) => api?.setOrthoEnabled?.(v)}
             scaleFactor={currentScaleFactor}
             handleManualScale={() => api?.handleManualScale?.()}
             analysisStatus={api?.analysisStatus ?? 'idle'}
@@ -614,10 +660,37 @@ export default function Workspace() {
               />
             </div>
 
-            <div className={cn(
-              'flex flex-col h-full overflow-hidden transition-[width] duration-300 ease-in-out flex-shrink-0',
-              rightCollapsed ? 'w-0' : 'w-96',
-            )}>
+            {!rightCollapsed && (
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize takeoff panel"
+                aria-valuenow={tableWidth}
+                aria-valuemin={TABLE_WIDTH_MIN}
+                tabIndex={0}
+                title="Drag to resize · double-click to reset"
+                onPointerDown={startResize}
+                onDoubleClick={() => nudgeTableWidth(TABLE_WIDTH_DEFAULT - tableWidth)}
+                onKeyDown={e => {
+                  if (e.key === 'ArrowLeft')  { e.preventDefault(); nudgeTableWidth(24); }
+                  if (e.key === 'ArrowRight') { e.preventDefault(); nudgeTableWidth(-24); }
+                }}
+                className={cn(
+                  'w-1 flex-shrink-0 cursor-col-resize touch-none transition-colors outline-none',
+                  'hover:bg-amber-accent/70 focus-visible:bg-amber-accent',
+                  resizing ? 'bg-amber-accent' : 'bg-industrial-border',
+                )}
+              />
+            )}
+            {resizing && <div className="fixed inset-0 z-[90] cursor-col-resize" aria-hidden />}
+
+            <div
+              style={{ width: rightCollapsed ? 0 : tableWidth }}
+              className={cn(
+                'flex flex-col h-full overflow-hidden flex-shrink-0',
+                !resizing && 'transition-[width] duration-300 ease-in-out',
+              )}
+            >
               <TakeoffTable
                 measurements={ps.measurements}
                 materials={ps.materials as Material[]}
@@ -661,11 +734,11 @@ export default function Workspace() {
       <footer className="h-6 bg-industrial-black border-t border-industrial-border flex-shrink-0 z-50 font-mono grid grid-cols-[1fr_auto_1fr] items-center px-4 relative">
 
         <div className="flex items-center gap-6">
-          <span className="text-[9px] text-zinc-500 tracking-wide font-semibold truncate max-w-[220px]" title={ps.projectName}>
+          <span className="text-[10px] text-zinc-500 tracking-wide font-semibold truncate max-w-[220px]" title={ps.projectName}>
             {ps.projectName}
           </span>
           <div className="w-px h-3 bg-zinc-800" />
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
+          <span className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold">
             {ps.measurements.filter(m => !m.isGroupHeader).length} measurements
           </span>
         </div>
@@ -677,16 +750,16 @@ export default function Workspace() {
             'transition-all duration-150 pointer-events-none opacity-0 translate-y-1',
             'group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto',
           )}>
-            <p className="text-[8px] text-zinc-600 uppercase tracking-[0.2em] font-bold text-center mb-2">
+            <p className="text-[10px] text-zinc-600 uppercase tracking-[0.2em] font-bold text-center mb-2">
               — Presets —
             </p>
             {['Carcass Cabinet', 'Door Assembly', 'Roof Framing', 'Pipe Run', 'Window Unit'].map(label => (
               <button
                 key={label}
                 onClick={() => setShowPresetDrawer(true)}
-                className="flex items-center gap-1.5 w-full text-left text-[9px] text-zinc-500 uppercase tracking-widest font-bold py-0.5 hover:text-amber-400 transition-colors"
+                className="flex items-center gap-1.5 w-full text-left text-[10px] text-zinc-500 uppercase tracking-widest font-bold py-0.5 hover:text-amber-400 transition-colors"
               >
-                <span className="text-[8px]">▸</span>
+                <span className="text-[10px]">▸</span>
                 {label}
               </button>
             ))}
@@ -696,7 +769,7 @@ export default function Workspace() {
             onClick={() => setShowPresetDrawer(prev => !prev)}
             className={cn(
               'relative flex items-center gap-1.5 px-3 h-[22px] overflow-hidden',
-              'border text-[9px] uppercase tracking-widest font-bold transition-all duration-150 group/btn',
+              'border text-[10px] uppercase tracking-widest font-bold transition-all duration-150 group/btn',
               showPresetDrawer
                 ? 'bg-amber-400 text-black border-amber-400'
                 : 'border-amber-400/70 text-amber-400 hover:bg-amber-400 hover:text-black',
@@ -717,14 +790,14 @@ export default function Workspace() {
 
         <div className="flex items-center gap-4 justify-end">
           {activeDrawing && (
-            <span className="text-[9px] text-zinc-600 tracking-wide font-semibold">
+            <span className="text-[10px] text-zinc-600 tracking-wide font-semibold">
               Page {activePage} · {isPageCalibrated ? 'calibrated' : 'not calibrated'}
             </span>
           )}
           <button
             type="button"
             onClick={() => setShowShortcuts(true)}
-            className="text-[9px] font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-300"
+            className="text-[10px] font-bold uppercase tracking-widest text-zinc-600 hover:text-zinc-300"
             title="Keyboard shortcuts (?)"
           >
             Shortcuts <kbd className="ml-1 border border-zinc-700 px-1 text-zinc-500">?</kbd>

@@ -61,7 +61,7 @@ app/api/export/route.ts         validated POST → .xlsx
 
 `V` select · `P` polygon · `R` rectangle · `M` magic fill · `L` linear ·
 `B` arc · `Y` polyarc · `C` circle · `N` count · `T` point · `G` grid count ·
-`O` perimeter offset · `K` set scale · `Esc` cancel / back to select ·
+`O` perimeter offset · `K` set scale · `S` snap · `F8` angle lock (0°/45°/90°) · `Esc` cancel / back to select ·
 `Ctrl/⌘ Z` undo · `Ctrl/⌘ Shift Z` or `Ctrl/⌘ Y` redo ·
 `Ctrl/⌘ + / − / 0` zoom in / out / fit.
 Shortcuts ignore key presses with Ctrl/⌘/Alt and anything typed into fields.
@@ -74,6 +74,12 @@ every measurement with live formulas for amounts, group subtotals, VAT and the
 total. When the project has a material library, the Summary / BOQ matrix /
 Materials / Cost breakdown sheets are added after it.
 
+## No accounts
+
+There is no sign-in. `/register` is an optional local profile (name, firm,
+email — stored in this browser by `lib/profile.ts`, never sent anywhere) and
+`/login` redirects to it.
+
 ## Brand, SEO and icons
 
 * Brand constants (name, tagline, description, colours): `lib/brand.ts`.
@@ -84,7 +90,7 @@ Materials / Cost breakdown sheets are added after it.
 * Fonts: Inter (UI) and JetBrains Mono (labels, values) — the original app fonts — via `next/font`. Archivo is used only for the wordmark.
 * SEO: metadata in `app/layout.tsx`, `app/robots.ts`, `app/sitemap.ts`,
   `app/manifest.ts`, generated social image `app/opengraph-image.tsx`, and
-  JSON-LD on the landing page. Project screens, labs and auth placeholders are
+  JSON-LD on the landing page. Project screens, labs and the profile screen are
   `noindex`. Set `NEXT_PUBLIC_SITE_URL` in production.
 * Icons: `npm run icons` regenerates `app/icon.svg`, `app/favicon.ico`,
   `app/apple-icon.png`, `public/icons/*` and `public/brand/*` from the mark.
@@ -105,6 +111,26 @@ Materials / Cost breakdown sheets are added after it.
 * **Analysis** — "Generate Full Analysis": quantities by type, cost by group,
   unpriced rows and pages without a scale (click to jump to each).
 * Drag PDFs onto the drawing area; press `?` for all keyboard shortcuts.
+
+## Production-only pitfalls (read before touching `public/sw.js`)
+
+* **Service worker and web workers.** The bundler passes each web worker its
+  start-up config in the URL fragment (`…worker.js#params=…`). A `Response`
+  returned from `fetch()` or the Cache API carries its own URL without the
+  fragment, and the browser uses that as the worker's location — so the worker
+  boots with no config and never answers. Symptom: in a production build (the
+  only place the service worker runs) the viewer sits on "Extracting snap
+  geometry…" and snapping, pins, hover geometry and fill never start, while
+  `npm run dev` works. `public/sw.js` therefore answers worker-script requests
+  with a URL-less copy of the response. Keep that when editing the worker.
+* **Geometry timeout.** `hooks/snapEngine/usePdfDocument.ts` gives the geometry
+  worker 60 s, then reports an error instead of waiting forever.
+* **Fonts are self-hosted** (`app/fonts/*.woff2` via `next/font/local`), so
+  builds don't need to reach Google Fonts and the installed app has its fonts
+  offline.
+* **Full disk.** If the browser can't write (disk full), it closes the
+  database. Saving now reopens the connection and retries, and the save
+  indicator says "Disk full — not saving" instead of a generic failure.
 
 ## Performance notes
 
@@ -142,6 +168,16 @@ files, one sub-folder per project:
 Every save is pushed to the folder; opening the dashboard syncs both ways (the
 newer copy wins), so a OneDrive/Google Drive folder keeps two computers in step.
 Code: `lib/storage/folderSync.ts`, UI: `components/pwa/FolderControls.tsx`.
+
+**One folder per computer — browser tab and installed app share it.** The chosen
+folder is remembered in the browser's own storage, which the tab and the
+installed app both use (same browser, same profile). Connect it in either one
+and the other picks it up: changes are announced between open windows
+(`BroadcastChannel`), each window re-checks when it regains focus
+(`refreshFolderState`), and writes from different windows are serialised with a
+Web Lock. Choosing a folder also asks the browser to keep this storage
+(`navigator.storage.persist`). Note that Edge and Chrome are separate browsers:
+a folder connected in one is not visible to the other.
 
 **Permission, without nagging.** Browsers only grant folder access from a click.
 First time: the folder picker grants it. Later, in a normal tab the browser may

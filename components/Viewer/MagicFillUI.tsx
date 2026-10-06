@@ -110,12 +110,12 @@ export function MagicFillProgressOverlay({
 
         {/* Text block */}
         <div className="text-center w-full font-mono">
-          <div className="text-[9px] text-zinc-300 uppercase tracking-widest">
+          <div className="text-[10px] text-zinc-300 uppercase tracking-widest">
             {message}{dots}
           </div>
 
           {sub && (
-            <div className="text-[8px] text-zinc-600 uppercase tracking-wider mt-1">
+            <div className="text-[10px] text-zinc-600 uppercase tracking-wider mt-1">
               {sub}
             </div>
           )}
@@ -136,7 +136,7 @@ export function MagicFillProgressOverlay({
                   }}
                 />
               </div>
-              <div className="text-right text-[8px] text-zinc-600 font-mono mt-1">
+              <div className="text-right text-[10px] text-zinc-600 font-mono mt-1">
                 {progress!.done} / {progress!.total}
               </div>
             </div>
@@ -173,9 +173,9 @@ export function MagicFillHoverTooltip({ fill, metersPerPixel, holesClosed, viewp
       >
         <div className="flex items-center gap-1.5">
           <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: fill.color }} />
-          <span className="text-[8px] text-amber-400 uppercase tracking-widest flex-1">{fill.label}</span>
+          <span className="text-[10px] text-amber-400 uppercase tracking-widest flex-1">{fill.label}</span>
           {fill.groupId != null && (
-            <span className="text-[7px] text-blue-400 border border-blue-400/30 px-0.5">
+            <span className="text-[9px] text-blue-400 border border-blue-400/30 px-0.5">
               G{fill.groupId}
             </span>
           )}
@@ -186,8 +186,8 @@ export function MagicFillHoverTooltip({ fill, metersPerPixel, holesClosed, viewp
         <TooltipRow label="Corners"   value={String(fill.polygon.length)}             sub="outer polygon" />
         {holesClosed.has(fill.id) && (
           <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#1e1e1e]">
-            <span className="text-[8px] text-emerald-400">⊞</span>
-            <span className="text-[7px] text-emerald-400 uppercase tracking-wider">Holes closed</span>
+            <span className="text-[10px] text-emerald-400">⊞</span>
+            <span className="text-[9px] text-emerald-400 uppercase tracking-wider">Holes closed</span>
           </div>
         )}
       </div>
@@ -198,10 +198,10 @@ export function MagicFillHoverTooltip({ fill, metersPerPixel, holesClosed, viewp
 function TooltipRow({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="flex justify-between items-baseline">
-      <span className="text-[8px] text-zinc-600 uppercase tracking-wider">{label}</span>
+      <span className="text-[10px] text-zinc-600 uppercase tracking-wider">{label}</span>
       <div className="text-right">
-        <span className="text-[9px] text-zinc-100 font-bold">{value}</span>
-        {sub && <div className="text-[7px] text-zinc-700">{sub}</div>}
+        <span className="text-[10px] text-zinc-100 font-bold">{value}</span>
+        {sub && <div className="text-[9px] text-zinc-700">{sub}</div>}
       </div>
     </div>
   );
@@ -232,7 +232,7 @@ export function MagicFillGroupPanel({ groupFills, groupId, metersPerPixel, holes
       <div className="px-3.5 py-2.5 flex flex-col gap-1.5">
         <div className="flex items-center gap-1.5 text-blue-400">
           <span className="text-sm">⬡</span>
-          <span className="text-[8px] uppercase tracking-widest flex-1">
+          <span className="text-[10px] uppercase tracking-widest flex-1">
             {groupFills.length} regions · group {groupId}
           </span>
         </div>
@@ -244,14 +244,14 @@ export function MagicFillGroupPanel({ groupFills, groupId, metersPerPixel, holes
           {groupFills.map(f => (
             <div key={f.id} className="flex items-center gap-1.5">
               <div className="w-2 h-2 rounded-sm flex-shrink-0" style={{ background: f.color }} />
-              <span className="text-[7px] text-zinc-600 flex-1 truncate">{f.label}</span>
-              <span className="text-[7px] text-zinc-500">{fmtArea(f.areaPx, metersPerPixel)}</span>
-              {holesClosed.has(f.id) && <span className="text-[7px] text-emerald-400">⊞</span>}
+              <span className="text-[9px] text-zinc-600 flex-1 truncate">{f.label}</span>
+              <span className="text-[9px] text-zinc-500">{fmtArea(f.areaPx, metersPerPixel)}</span>
+              {holesClosed.has(f.id) && <span className="text-[9px] text-emerald-400">⊞</span>}
             </div>
           ))}
         </div>
         {!metersPerPixel && (
-          <div className="text-[7px] text-zinc-700 uppercase tracking-wider mt-1 pt-1.5 border-t border-[#181818] leading-relaxed">
+          <div className="text-[9px] text-zinc-700 uppercase tracking-wider mt-1 pt-1.5 border-t border-[#181818] leading-relaxed">
             Set calibration for real-world units
           </div>
         )}
@@ -281,8 +281,8 @@ export function MagicFillSelectedPanel({ fill, metersPerPixel, holesClosed }: Se
       <div className="px-3.5 py-2.5 flex flex-col gap-1.5">
         <div className="flex items-center gap-1.5">
           <div className="w-2.5 h-2.5 rounded-sm" style={{ background: fill.color }} />
-          <span className="text-[8px] text-amber-400 uppercase tracking-widest flex-1">{fill.label}</span>
-          <span className="text-[7px] text-zinc-600">selected</span>
+          <span className="text-[10px] text-amber-400 uppercase tracking-widest flex-1">{fill.label}</span>
+          <span className="text-[9px] text-zinc-600">selected</span>
         </div>
         <div className="h-px bg-[#1e1e1e]" />
         <TooltipRow label="Area"      value={fmtArea(fill.areaPx,   metersPerPixel)} sub={`${fill.areaPx.toLocaleString()} px²`} />
@@ -290,12 +290,12 @@ export function MagicFillSelectedPanel({ fill, metersPerPixel, holesClosed }: Se
         <TooltipRow label="Corners"   value={String(fill.polygon.length)}             sub="outer polygon" />
         {holesClosed.has(fill.id) && (
           <div className="flex items-center gap-1.5 pt-1.5 border-t border-[#1e1e1e]">
-            <span className="text-[8px] text-emerald-400">⊞</span>
-            <span className="text-[7px] text-emerald-400 uppercase tracking-wider">Holes closed</span>
+            <span className="text-[10px] text-emerald-400">⊞</span>
+            <span className="text-[9px] text-emerald-400 uppercase tracking-wider">Holes closed</span>
           </div>
         )}
         {!metersPerPixel && (
-          <div className="text-[7px] text-zinc-700 uppercase tracking-wider mt-0.5 pt-1.5 border-t border-[#181818] leading-relaxed">
+          <div className="text-[9px] text-zinc-700 uppercase tracking-wider mt-0.5 pt-1.5 border-t border-[#181818] leading-relaxed">
             Set calibration for real-world units
           </div>
         )}
@@ -335,14 +335,14 @@ export function MagicFillSidebar({
 
       {/* Header */}
       <div className="px-3 py-2 border-b border-[#1a1a1a] flex items-center justify-between">
-        <span className="text-[9px] text-[#3a3a3a] uppercase tracking-widest">
+        <span className="text-[10px] text-[#3a3a3a] uppercase tracking-widest">
           Fills ({fills.length})
         </span>
         <div className="flex gap-1">
           {canUndo && (
             <button
               onClick={onUndo}
-              className="text-[8px] text-[#555] hover:text-[#aaa] uppercase tracking-wider px-1 border border-[#222] hover:border-[#444] transition-colors"
+              className="text-[10px] text-[#555] hover:text-[#aaa] uppercase tracking-wider px-1 border border-[#222] hover:border-[#444] transition-colors"
             >
               ↩ Undo
             </button>
@@ -350,7 +350,7 @@ export function MagicFillSidebar({
           {fills.length > 0 && (
             <button
               onClick={onClear}
-              className="text-[8px] text-[#f87171] hover:text-[#f87171]/80 uppercase tracking-wider px-1 border border-[#2a1a1a] hover:border-[#f87171]/40 transition-colors"
+              className="text-[10px] text-[#f87171] hover:text-[#f87171]/80 uppercase tracking-wider px-1 border border-[#2a1a1a] hover:border-[#f87171]/40 transition-colors"
             >
               ✕ Clear
             </button>
@@ -361,7 +361,7 @@ export function MagicFillSidebar({
       {/* Totals */}
       {fills.length > 0 && (
         <div className="px-3 py-2 border-b border-[#1a1a1a]">
-          <p className="text-[7px] text-[#2e2e2e] uppercase tracking-widest mb-1.5">Total</p>
+          <p className="text-[9px] text-[#2e2e2e] uppercase tracking-widest mb-1.5">Total</p>
           <SidebarRow label="Area"  value={fmtArea(fills.reduce((s, f) => s + f.areaPx,  0), metersPerPixel)} />
           <SidebarRow label="Perim" value={fmtPerim(fills.reduce((s, f) => s + f.perimPx, 0), metersPerPixel)} />
         </div>
@@ -370,7 +370,7 @@ export function MagicFillSidebar({
       {/* Group summary */}
       {selectedGroup != null && groupFills.length > 0 && (
         <div className="px-3 py-2 border-b border-blue-400/20 bg-blue-400/[0.02]">
-          <p className="text-[7px] text-blue-400 uppercase tracking-widest mb-1.5">
+          <p className="text-[9px] text-blue-400 uppercase tracking-widest mb-1.5">
             Group {selectedGroup} · {groupFills.length} regions
           </p>
           <SidebarRow label="Area"  value={fmtArea(groupFills.reduce((s, f) => s + f.areaPx,  0), metersPerPixel)} />
@@ -381,7 +381,7 @@ export function MagicFillSidebar({
       {/* Fill list */}
       <div className="flex-1 overflow-y-auto p-1.5 flex flex-col gap-1">
         {fills.length === 0 ? (
-          <p className="text-[8px] text-[#2a2a2a] text-center uppercase tracking-widest p-6 leading-loose">
+          <p className="text-[10px] text-[#2a2a2a] text-center uppercase tracking-widest p-6 leading-loose">
             Click to fill a room<br />Drag to batch fill
           </p>
         ) : fills.map(f => {
@@ -405,9 +405,9 @@ export function MagicFillSidebar({
             >
               <div className="flex items-center gap-1.5 mb-1">
                 <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: f.color }} />
-                <span className="text-[8px] text-[#777] flex-1 truncate">{f.label}</span>
+                <span className="text-[10px] text-[#777] flex-1 truncate">{f.label}</span>
                 {isGrouped && (
-                  <span className="text-[7px] text-blue-400 border border-blue-400/30 px-0.5">
+                  <span className="text-[9px] text-blue-400 border border-blue-400/30 px-0.5">
                     G{f.groupId}
                   </span>
                 )}
@@ -415,7 +415,7 @@ export function MagicFillSidebar({
                   title="Close interior holes"
                   onClick={e => { e.stopPropagation(); onFillHoles(f.id); }}
                   className={cn(
-                    'text-[9px] transition-colors p-px',
+                    'text-[10px] transition-colors p-px',
                     holesClosed.has(f.id)
                       ? 'text-emerald-400'
                       : 'text-[#333] hover:text-emerald-400',
@@ -442,7 +442,7 @@ export function MagicFillSidebar({
                 <SidebarRow label="Corners" value={String(f.polygon.length)} />
                 {holesClosed.has(f.id) && (
                   <div className="flex items-center gap-1 mt-0.5">
-                    <span className="text-[7px] text-emerald-400">⊞ holes closed</span>
+                    <span className="text-[9px] text-emerald-400">⊞ holes closed</span>
                   </div>
                 )}
               </div>
@@ -453,7 +453,7 @@ export function MagicFillSidebar({
 
       {!metersPerPixel && fills.length > 0 && (
         <div className="px-3 py-2 border-t border-[#1a1a1a]">
-          <p className="text-[7px] text-[#2a2a2a] uppercase tracking-widest leading-relaxed">
+          <p className="text-[9px] text-[#2a2a2a] uppercase tracking-widest leading-relaxed">
             Use Draw Calibration for real-world units
           </p>
         </div>
@@ -465,8 +465,8 @@ export function MagicFillSidebar({
 function SidebarRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between items-baseline">
-      <span className="text-[7px] text-[#333] uppercase">{label}</span>
-      <span className="text-[7px] text-[#888]">{value}</span>
+      <span className="text-[9px] text-[#333] uppercase">{label}</span>
+      <span className="text-[9px] text-[#888]">{value}</span>
     </div>
   );
 }

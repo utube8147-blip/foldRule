@@ -132,7 +132,7 @@ function fmtDistance(m: number): string {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
-    <p className="text-[8px] text-zinc-500 uppercase tracking-widest mb-1">
+    <p className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">
       {children}
     </p>
   );
@@ -151,7 +151,7 @@ function UnitToggle({
           key={u}
           onClick={() => onChange(u)}
           className={cn(
-            'px-1.5 text-[8px] font-bold uppercase tracking-widest transition-all',
+            'px-1.5 text-[10px] font-bold uppercase tracking-widest transition-all',
             value === u
               ? 'bg-amber-400 text-black'
               : 'text-zinc-500 hover:text-zinc-300',
@@ -182,7 +182,7 @@ function DirectionToggle({
           key={opt.key}
           onClick={() => onChange(opt.key)}
           className={cn(
-            'flex-1 py-1 text-[9px] font-bold uppercase tracking-widest border transition-all',
+            'flex-1 py-1 text-[10px] font-bold uppercase tracking-widest border transition-all',
             value === opt.key
               ? 'bg-amber-400 text-black border-amber-400'
               : 'bg-transparent border-zinc-700 text-zinc-400 hover:border-zinc-500',
@@ -213,7 +213,7 @@ function JoinStyleSelector({
           onClick={() => onChange(opt.key)}
           title={opt.hint}
           className={cn(
-            'flex-1 py-1 text-[8px] font-bold uppercase tracking-widest border transition-all',
+            'flex-1 py-1 text-[10px] font-bold uppercase tracking-widest border transition-all',
             value === opt.key
               ? 'bg-zinc-700 text-zinc-200 border-zinc-600'
               : 'bg-transparent border-zinc-800 text-zinc-500 hover:border-zinc-700',
@@ -240,14 +240,14 @@ function DistanceInput({
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      {label && <span className="text-[8px] text-zinc-500 w-6 flex-shrink-0">{label}</span>}
+      {label && <span className="text-[10px] text-zinc-500 w-6 flex-shrink-0">{label}</span>}
       <input
         type="number"
         min="0.001"
         step={unit === 'mm' ? '5' : '0.05'}
         value={value}
         onChange={e => onChangeValue(e.target.value)}
-        className="w-20 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono px-2 py-1 focus:outline-none focus:border-amber-400"
+        className="w-20 bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs font-mono px-2 py-1 focus:outline-none focus:border-amber-400"
         placeholder={placeholder ?? (unit === 'mm' ? '200' : '0.200')}
       />
       <UnitToggle value={unit} onChange={onChangeUnit} />
@@ -259,7 +259,7 @@ function DistanceInput({
 
 function CollapseWarning({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-1.5 text-[8px] text-amber-400 border border-amber-800/50 bg-amber-900/20 px-2 py-1.5">
+    <div className="flex items-start gap-1.5 text-[10px] text-amber-400 border border-amber-800/50 bg-amber-900/20 px-2 py-1.5">
       <TriangleAlert className="w-3 h-3 flex-shrink-0 mt-0.5" />
       <span>{message}</span>
     </div>
@@ -270,7 +270,7 @@ function CollapseWarning({ message }: { message: string }) {
 
 function InfoNote({ message }: { message: string }) {
   return (
-    <div className="flex items-start gap-1.5 text-[8px] text-sky-400 border border-sky-800/50 bg-sky-900/20 px-2 py-1.5">
+    <div className="flex items-start gap-1.5 text-[10px] text-sky-400 border border-sky-800/50 bg-sky-900/20 px-2 py-1.5">
       <Info className="w-3 h-3 flex-shrink-0 mt-0.5" />
       <span>{message}</span>
     </div>
@@ -293,7 +293,7 @@ function AdvancedSection({
     <div className={cn(disabled && 'opacity-40 pointer-events-none')}>
       <button
         onClick={onToggle}
-        className="w-full flex items-center justify-between text-[8px] uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition-colors"
+        className="w-full flex items-center justify-between text-[10px] uppercase tracking-widest text-zinc-600 hover:text-zinc-400 transition-colors"
       >
         <div className="flex items-center gap-1">
           <Settings2 className="w-2.5 h-2.5" />Corner style
@@ -303,7 +303,7 @@ function AdvancedSection({
       {show && (
         <div className="mt-1.5 space-y-1">
           <JoinStyleSelector value={joinStyle} onChange={onJoinStyleChange} />
-          <p className="text-[7px] text-zinc-600 leading-relaxed px-0.5">
+          <p className="text-[9px] text-zinc-600 leading-relaxed px-0.5">
             {note ?? 'Miter = sharp corners (default). Round = arcs. Square = chamfer.'}
           </p>
         </div>
@@ -341,9 +341,9 @@ function RingRow({
     <div className="border border-zinc-800 bg-zinc-900/50 p-2 space-y-2">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-1.5">
-          <span className="text-[8px] text-zinc-500 uppercase tracking-widest">Ring {index + 1}</span>
+          <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Ring {index + 1}</span>
           {showCumulative && runningTotal != null && valid && (
-            <span className="text-[7px] text-zinc-600 font-mono">
+            <span className="text-[9px] text-zinc-600 font-mono">
               → {fmtDistance(runningTotal)} total
             </span>
           )}
@@ -351,7 +351,7 @@ function RingRow({
         <div className="flex items-center gap-1.5">
           {valid && (
             <span className={cn(
-              'text-[8px] px-1.5 py-0.5 font-mono',
+              'text-[10px] px-1.5 py-0.5 font-mono',
               ring.direction === 'both'
                 ? 'bg-violet-900/40 text-violet-400 border border-violet-800/50'
                 : ring.direction === 'outward'
@@ -412,7 +412,7 @@ function RingRow({
               key={opt.key}
               onClick={() => onChange(ring.id, { direction: opt.key })}
               className={cn(
-                'flex-1 px-2 py-1 text-[8px] font-bold uppercase tracking-widest border transition-all',
+                'flex-1 px-2 py-1 text-[10px] font-bold uppercase tracking-widest border transition-all',
                 ring.direction === opt.key
                   ? 'bg-amber-400 text-black border-amber-400'
                   : 'bg-transparent border-zinc-700 text-zinc-400 hover:border-zinc-600',
@@ -427,7 +427,7 @@ function RingRow({
             onClick={() => onChange(ring.id, { useAsymmetric: !ring.useAsymmetric })}
             title={ring.useAsymmetric ? 'Switch to equal distances' : 'Set different distances each side'}
             className={cn(
-              'px-1.5 py-1 text-[8px] border transition-all',
+              'px-1.5 py-1 text-[10px] border transition-all',
               ring.useAsymmetric
                 ? 'border-violet-500/60 text-violet-400 bg-violet-900/30'
                 : 'border-zinc-700 text-zinc-500 hover:border-zinc-600',
@@ -442,7 +442,7 @@ function RingRow({
         type="text"
         value={ring.label}
         onChange={e => onChange(ring.id, { label: e.target.value })}
-        className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-[10px] font-mono px-2 py-1 focus:outline-none focus:border-amber-400"
+        className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono px-2 py-1 focus:outline-none focus:border-amber-400"
         placeholder="Row label…"
       />
     </div>
@@ -460,7 +460,7 @@ function TradePresetsPanel({ onSelect }: { onSelect: (preset: TradePreset) => vo
         <div key={group.name} className="border border-zinc-800">
           <button
             onClick={() => setActiveGroup(activeGroup === group.name ? null : group.name)}
-            className="w-full flex items-center justify-between px-2 py-1.5 text-[9px] font-bold uppercase tracking-widest text-zinc-300 hover:bg-zinc-800/50 transition-colors"
+            className="w-full flex items-center justify-between px-2 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-300 hover:bg-zinc-800/50 transition-colors"
           >
             <div className="flex items-center gap-1.5">{group.icon}{group.name}</div>
             {activeGroup === group.name
@@ -477,11 +477,11 @@ function TradePresetsPanel({ onSelect }: { onSelect: (preset: TradePreset) => vo
                   className="w-full flex items-center justify-between px-2 py-1.5 hover:bg-zinc-800/60 transition-colors text-left"
                 >
                   <div>
-                    <p className="text-[9px] font-bold text-zinc-200 uppercase tracking-wider">{preset.label}</p>
-                    <p className="text-[8px] text-zinc-500 mt-0.5">{preset.hint}</p>
+                    <p className="text-[10px] font-bold text-zinc-200 uppercase tracking-wider">{preset.label}</p>
+                    <p className="text-[10px] text-zinc-500 mt-0.5">{preset.hint}</p>
                   </div>
                   <span className={cn(
-                    'text-[8px] px-1.5 py-0.5 font-mono flex-shrink-0 ml-2',
+                    'text-[10px] px-1.5 py-0.5 font-mono flex-shrink-0 ml-2',
                     preset.direction === 'outward'
                       ? 'bg-sky-900/40 text-sky-400 border border-sky-800/50'
                       : 'bg-orange-900/40 text-orange-400 border border-orange-800/50',
@@ -957,11 +957,11 @@ export function PerimeterOffsetPanel({
         <div className="flex items-center justify-between px-3 py-2 border-b border-industrial-border flex-shrink-0">
           <div className="flex items-center gap-2">
             <ArrowLeftRight className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-200">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-zinc-200">
               Perimeter Offset
             </span>
             {sourceIsOpen && (
-              <span className="text-[7px] px-1.5 py-0.5 bg-teal-900/40 border border-teal-600/40 text-teal-400 uppercase tracking-widest">
+              <span className="text-[9px] px-1.5 py-0.5 bg-teal-900/40 border border-teal-600/40 text-teal-400 uppercase tracking-widest">
                 Open path
               </span>
             )}
@@ -971,13 +971,13 @@ export function PerimeterOffsetPanel({
               <div className="flex border border-zinc-700">
                 <button
                   onClick={() => setMode('single')}
-                  className={cn('px-2 py-1 text-[8px] font-bold uppercase tracking-widest transition-all',
+                  className={cn('px-2 py-1 text-[10px] font-bold uppercase tracking-widest transition-all',
                     mode === 'single' ? 'bg-amber-400 text-black' : 'text-zinc-500 hover:text-zinc-300')}
                   title="Single offset"
                 >1×</button>
                 <button
                   onClick={() => setMode('multi')}
-                  className={cn('px-2 py-1 text-[8px] font-bold uppercase tracking-widest border-l border-zinc-700 transition-all',
+                  className={cn('px-2 py-1 text-[10px] font-bold uppercase tracking-widest border-l border-zinc-700 transition-all',
                     mode === 'multi' ? 'bg-amber-400 text-black' : 'text-zinc-500 hover:text-zinc-300')}
                   title="Multiple rings"
                 >N×</button>
@@ -994,7 +994,7 @@ export function PerimeterOffsetPanel({
 
           {/* ── Source indicator ── */}
           <div className={cn(
-            'px-2 py-1.5 border text-[9px] uppercase tracking-widest',
+            'px-2 py-1.5 border text-[10px] uppercase tracking-widest',
             (sourceIsValid || sourceIsOpen)
               ? 'border-green-600/50 bg-green-900/20 text-green-400'
               : 'border-zinc-700 bg-zinc-900/40 text-zinc-500',
@@ -1006,12 +1006,12 @@ export function PerimeterOffsetPanel({
                   {sourceMeasurement.label ?? sourceMeasurement.description}
                 </span>
                 {sourceIsClosedLinear && (
-                  <span className="flex-shrink-0 px-1 py-0.5 text-[7px] font-bold uppercase tracking-widest bg-sky-900/60 border border-sky-600/40 text-sky-400">
+                  <span className="flex-shrink-0 px-1 py-0.5 text-[9px] font-bold uppercase tracking-widest bg-sky-900/60 border border-sky-600/40 text-sky-400">
                     closed
                   </span>
                 )}
                 {sourceIsOpen && (
-                  <span className="flex-shrink-0 px-1 py-0.5 text-[7px] font-bold uppercase tracking-widest bg-teal-900/60 border border-teal-600/40 text-teal-400">
+                  <span className="flex-shrink-0 px-1 py-0.5 text-[9px] font-bold uppercase tracking-widest bg-teal-900/60 border border-teal-600/40 text-teal-400">
                     open
                   </span>
                 )}
@@ -1039,7 +1039,7 @@ export function PerimeterOffsetPanel({
             <div>
               <button
                 onClick={() => setShowPresets(v => !v)}
-                className="w-full flex items-center justify-between text-[8px] uppercase tracking-widest text-zinc-500 hover:text-zinc-300 transition-colors pb-1"
+                className="w-full flex items-center justify-between text-[10px] uppercase tracking-widest text-zinc-500 hover:text-zinc-300 transition-colors pb-1"
               >
                 <span>Trade presets</span>
                 {showPresets ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
@@ -1072,7 +1072,7 @@ export function PerimeterOffsetPanel({
                         setLocalError(null);
                       }}
                       className={cn(
-                        'px-1.5 py-0.5 text-[8px] font-mono border transition-all',
+                        'px-1.5 py-0.5 text-[10px] font-mono border transition-all',
                         toMetres(distanceStr, distUnit) === d
                           ? 'bg-amber-400 text-black border-amber-400'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300',
@@ -1097,7 +1097,7 @@ export function PerimeterOffsetPanel({
                       key={opt.key}
                       onClick={() => setOpenDirection(opt.key)}
                       className={cn(
-                        'flex-1 py-1 text-[8px] font-bold uppercase tracking-widest border transition-all',
+                        'flex-1 py-1 text-[10px] font-bold uppercase tracking-widest border transition-all',
                         openDirection === opt.key
                           ? 'bg-amber-400 text-black border-amber-400'
                           : 'bg-transparent border-zinc-700 text-zinc-400 hover:border-zinc-500',
@@ -1123,7 +1123,7 @@ export function PerimeterOffsetPanel({
                       key={opt.key}
                       onClick={() => handleOpenEndStyleChange(opt.key)}
                       className={cn(
-                        'w-full flex items-center justify-between px-2 py-1 text-[9px] border transition-all',
+                        'w-full flex items-center justify-between px-2 py-1 text-[10px] border transition-all',
                         openEndStyle === opt.key
                           ? opt.key === 'none'
                             ? 'bg-violet-900/30 text-violet-200 border-violet-600/60'
@@ -1132,14 +1132,14 @@ export function PerimeterOffsetPanel({
                       )}
                     >
                       <span className="font-bold uppercase tracking-widest">{opt.label}</span>
-                      <span className="text-[7px] text-zinc-500 normal-case">{opt.desc}</span>
+                      <span className="text-[9px] text-zinc-500 normal-case">{opt.desc}</span>
                     </button>
                   ))}
                 </div>
 
                 {openEndStyle === 'none' && (
                   <div className="mt-1.5 px-2 py-1.5 border border-violet-800/40 bg-violet-900/15">
-                    <p className="text-[7px] text-violet-400/80 leading-relaxed">
+                    <p className="text-[9px] text-violet-400/80 leading-relaxed">
                       {openDirection === 'both'
                         ? 'Produces two open parallel strokes — one each side. No caps, no corridor polygon. Committed as two length rows.'
                         : 'Produces a single open parallel stroke offset to the selected side. No caps, no area polygon.'}
@@ -1162,7 +1162,7 @@ export function PerimeterOffsetPanel({
                         key={opt.value}
                         onClick={() => setOpenOutputType(opt.value)}
                         className={cn(
-                          'w-full flex items-center justify-between px-2 py-1.5 text-[9px] border transition-all',
+                          'w-full flex items-center justify-between px-2 py-1.5 text-[10px] border transition-all',
                           openOutputType === opt.value
                             ? 'bg-amber-400/10 border-amber-400/50 text-amber-300'
                             : 'border-zinc-700 text-zinc-400 hover:border-zinc-600',
@@ -1170,7 +1170,7 @@ export function PerimeterOffsetPanel({
                         )}
                       >
                         <span className="font-bold uppercase tracking-widest">{opt.label}</span>
-                        <span className="text-[7px] text-zinc-500 normal-case">{opt.desc}</span>
+                        <span className="text-[9px] text-zinc-500 normal-case">{opt.desc}</span>
                       </button>
                     ))}
                   </div>
@@ -1184,7 +1184,7 @@ export function PerimeterOffsetPanel({
                   type="text"
                   value={label}
                   onChange={e => setLabel(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono px-2 py-1.5 focus:outline-none focus:border-amber-400"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs font-mono px-2 py-1.5 focus:outline-none focus:border-amber-400"
                   placeholder="e.g. Parallel kerb line"
                 />
               </div>
@@ -1235,7 +1235,7 @@ export function PerimeterOffsetPanel({
                         setLocalError(null);
                       }}
                       className={cn(
-                        'px-1.5 py-0.5 text-[8px] font-mono border transition-all',
+                        'px-1.5 py-0.5 text-[10px] font-mono border transition-all',
                         toMetres(distanceStr, distUnit) === d
                           ? 'bg-amber-400 text-black border-amber-400'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-500 hover:text-zinc-300',
@@ -1256,13 +1256,13 @@ export function PerimeterOffsetPanel({
                 />
                 {direction === 'both' && (
                   <div className="mt-1.5 flex items-center justify-between">
-                    <p className="text-[7px] text-violet-400/70 leading-relaxed">
+                    <p className="text-[9px] text-violet-400/70 leading-relaxed">
                       Commits two rows: outward + inward.
                     </p>
                     <button
                       onClick={() => setUseAsymmetric(v => !v)}
                       className={cn(
-                        'px-2 py-0.5 text-[7px] font-bold border transition-all',
+                        'px-2 py-0.5 text-[9px] font-bold border transition-all',
                         useAsymmetric
                           ? 'border-violet-500/60 text-violet-400 bg-violet-900/20'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-600',
@@ -1286,7 +1286,7 @@ export function PerimeterOffsetPanel({
                       key={opt.value}
                       onClick={() => setBaseOutputType(opt.value)}
                       className={cn(
-                        'flex-1 py-1.5 text-[9px] font-bold uppercase tracking-widest border transition-all',
+                        'flex-1 py-1.5 text-[10px] font-bold uppercase tracking-widest border transition-all',
                         baseOutputType === opt.value
                           ? 'bg-amber-400 text-black border-amber-400'
                           : 'bg-transparent border-zinc-700 text-zinc-400 hover:border-zinc-500',
@@ -1298,7 +1298,7 @@ export function PerimeterOffsetPanel({
                 </div>
 
                 {direction === 'both' && (
-                  <p className="text-[7px] text-violet-400/70 px-0.5 mt-1 leading-relaxed">
+                  <p className="text-[9px] text-violet-400/70 px-0.5 mt-1 leading-relaxed">
                     {baseOutputType === 'length'
                       ? 'Output: two perimeter rows — outward length + inward length.'
                       : 'Output: two ring-area rows — outward band + inward band (donut).'}
@@ -1310,7 +1310,7 @@ export function PerimeterOffsetPanel({
                     <button
                       onClick={() => setDonutMode(v => !v)}
                       className={cn(
-                        'w-full flex items-center gap-2 px-2 py-1.5 border text-[9px] font-bold uppercase tracking-widest transition-all',
+                        'w-full flex items-center gap-2 px-2 py-1.5 border text-[10px] font-bold uppercase tracking-widest transition-all',
                         donutMode
                           ? 'border-teal-500/60 bg-teal-900/20 text-teal-300'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-600',
@@ -1323,7 +1323,7 @@ export function PerimeterOffsetPanel({
                         {donutMode && <Check className="w-2 h-2 text-black" />}
                       </div>
                       <span>Ring area only (donut)</span>
-                      <span className="ml-auto text-zinc-600 normal-case font-normal text-[7px]">
+                      <span className="ml-auto text-zinc-600 normal-case font-normal text-[9px]">
                         offset − source
                       </span>
                     </button>
@@ -1331,7 +1331,7 @@ export function PerimeterOffsetPanel({
                 )}
 
                 {baseOutputType === 'area' && direction === 'both' && (
-                  <div className="mt-1.5 text-[7px] text-zinc-600 px-0.5 leading-relaxed">
+                  <div className="mt-1.5 text-[9px] text-zinc-600 px-0.5 leading-relaxed">
                     Ring area is automatic for both-sides: each band = offset polygon − source.
                   </div>
                 )}
@@ -1344,7 +1344,7 @@ export function PerimeterOffsetPanel({
                   type="text"
                   value={label}
                   onChange={e => setLabel(e.target.value)}
-                  className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono px-2 py-1.5 focus:outline-none focus:border-amber-400"
+                  className="w-full bg-zinc-900 border border-zinc-700 text-zinc-200 text-xs font-mono px-2 py-1.5 focus:outline-none focus:border-amber-400"
                   placeholder="e.g. Gravel border strip"
                 />
               </div>
@@ -1374,7 +1374,7 @@ export function PerimeterOffsetPanel({
                         ? 'Cumulative mode: each ring adds to the previous'
                         : 'Absolute mode: each ring measured from source'}
                       className={cn(
-                        'px-1.5 py-0.5 text-[7px] font-bold border uppercase tracking-widest transition-all',
+                        'px-1.5 py-0.5 text-[9px] font-bold border uppercase tracking-widest transition-all',
                         multiCumulative
                           ? 'border-amber-500/60 text-amber-400 bg-amber-900/20'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-600',
@@ -1384,14 +1384,14 @@ export function PerimeterOffsetPanel({
                     </button>
                     <button
                       onClick={addRing}
-                      className="flex items-center gap-1 text-[8px] text-amber-400 hover:text-amber-300 transition-colors uppercase tracking-widest"
+                      className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300 transition-colors uppercase tracking-widest"
                     >
                       <Plus className="w-3 h-3" />Add ring
                     </button>
                   </div>
                 </div>
                 {multiCumulative && (
-                  <p className="text-[7px] text-amber-400/70 mb-1.5 leading-relaxed px-0.5">
+                  <p className="text-[9px] text-amber-400/70 mb-1.5 leading-relaxed px-0.5">
                     Cumulative: each ring distance stacks from the previous ring.
                   </p>
                 )}
@@ -1418,7 +1418,7 @@ export function PerimeterOffsetPanel({
                       key={opt.value}
                       onClick={() => setMultiBaseType(opt.value)}
                       className={cn(
-                        'flex-1 py-1.5 text-[9px] font-bold uppercase tracking-widest border transition-all',
+                        'flex-1 py-1.5 text-[10px] font-bold uppercase tracking-widest border transition-all',
                         multiBaseType === opt.value
                           ? 'bg-amber-400 text-black border-amber-400'
                           : 'bg-transparent border-zinc-700 text-zinc-400 hover:border-zinc-500',
@@ -1434,7 +1434,7 @@ export function PerimeterOffsetPanel({
                     <button
                       onClick={() => setMultiDonutMode(v => !v)}
                       className={cn(
-                        'w-full flex items-center gap-2 px-2 py-1.5 border text-[9px] font-bold uppercase tracking-widest transition-all',
+                        'w-full flex items-center gap-2 px-2 py-1.5 border text-[10px] font-bold uppercase tracking-widest transition-all',
                         multiDonutMode
                           ? 'border-teal-500/60 bg-teal-900/20 text-teal-300'
                           : 'border-zinc-700 text-zinc-500 hover:border-zinc-600',
@@ -1447,7 +1447,7 @@ export function PerimeterOffsetPanel({
                         {multiDonutMode && <Check className="w-2 h-2 text-black" />}
                       </div>
                       <span>Ring area only (donut)</span>
-                      <span className="ml-auto text-zinc-600 normal-case font-normal text-[7px]">
+                      <span className="ml-auto text-zinc-600 normal-case font-normal text-[9px]">
                         offset − source
                       </span>
                     </button>
@@ -1455,7 +1455,7 @@ export function PerimeterOffsetPanel({
                 )}
 
                 {multiBaseType === 'area' && rings.some(r => r.direction === 'both') && (
-                  <p className="text-[7px] text-violet-400/70 mt-1 px-0.5 leading-relaxed">
+                  <p className="text-[9px] text-violet-400/70 mt-1 px-0.5 leading-relaxed">
                     ↔ "Both" rings auto-use donut-both (band area each side).
                   </p>
                 )}
@@ -1464,9 +1464,9 @@ export function PerimeterOffsetPanel({
               {/* Summary */}
               {rings.filter(r => toMetres(r.distance, r.unit) > 0).length > 0 && (
                 <div className="border border-zinc-800 bg-zinc-900/30 px-2 py-1.5 space-y-0.5">
-                  <p className="text-[8px] text-zinc-500 uppercase tracking-widest mb-1">Summary</p>
+                  <p className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Summary</p>
                   {rings.filter(r => toMetres(r.distance, r.unit) > 0).map((r, i) => (
-                    <div key={r.id} className="flex items-center gap-1.5 text-[9px]">
+                    <div key={r.id} className="flex items-center gap-1.5 text-[10px]">
                       <span className={cn(
                         'w-2 h-2 rounded-full flex-shrink-0',
                         r.direction === 'both'    ? 'bg-violet-400'
@@ -1483,7 +1483,7 @@ export function PerimeterOffsetPanel({
                         {r.direction === 'both' ? 'both' : r.direction}
                       </span>
                       {multiCumulative && ringRunningTotals && (
-                        <span className="text-zinc-600 text-[7px] font-mono">
+                        <span className="text-zinc-600 text-[9px] font-mono">
                           →{fmtDistance(ringRunningTotals[i])}
                         </span>
                       )}
@@ -1491,7 +1491,7 @@ export function PerimeterOffsetPanel({
                     </div>
                   ))}
                   {rings.some(r => r.direction === 'both') && (
-                    <p className="text-[7px] text-violet-400/70 pt-0.5">
+                    <p className="text-[9px] text-violet-400/70 pt-0.5">
                       ↔ "Both" rings each commit two rows (outward + inward)
                     </p>
                   )}
@@ -1509,7 +1509,7 @@ export function PerimeterOffsetPanel({
 
           {/* ── Error ── */}
           {error && (
-            <div className="flex items-center gap-1.5 text-[9px] text-red-400 border border-red-800/50 bg-red-900/20 px-2 py-1.5">
+            <div className="flex items-center gap-1.5 text-[10px] text-red-400 border border-red-800/50 bg-red-900/20 px-2 py-1.5">
               <AlertTriangle className="w-3 h-3 flex-shrink-0" />
               {error}
             </div>
@@ -1519,7 +1519,7 @@ export function PerimeterOffsetPanel({
           <div className="flex gap-2 pt-1 pb-1">
             <button
               onClick={onCancel}
-              className="flex-1 py-1.5 text-[9px] font-bold uppercase tracking-widest border border-zinc-700 text-zinc-400 hover:border-zinc-500 transition-all"
+              className="flex-1 py-1.5 text-[10px] font-bold uppercase tracking-widest border border-zinc-700 text-zinc-400 hover:border-zinc-500 transition-all"
             >
               Cancel
             </button>
@@ -1527,7 +1527,7 @@ export function PerimeterOffsetPanel({
               onClick={handleCommit}
               disabled={!isAnyValid}
               className={cn(
-                'flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[9px] font-bold uppercase tracking-widest border transition-all',
+                'flex-1 flex items-center justify-center gap-1.5 py-1.5 text-[10px] font-bold uppercase tracking-widest border transition-all',
                 isAnyValid
                   ? 'bg-amber-400 text-black border-amber-400 hover:bg-amber-300 active:scale-95'
                   : 'bg-zinc-800 text-zinc-600 border-zinc-700 cursor-not-allowed',
@@ -1541,7 +1541,7 @@ export function PerimeterOffsetPanel({
 
         {/* ── Footer ── */}
         <div className="px-3 py-2 border-t border-industrial-border flex-shrink-0">
-          <p className="text-[8px] text-zinc-600 uppercase tracking-widest">
+          <p className="text-[10px] text-zinc-600 uppercase tracking-widest">
             Esc to cancel · Enter to commit
           </p>
         </div>

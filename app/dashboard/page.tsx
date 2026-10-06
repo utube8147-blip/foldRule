@@ -7,10 +7,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  FolderOpen, Plus, Search, Upload, Download, Copy, Trash2, Pencil, LogOut, Filter, BoxSelect,
+  FolderOpen, Plus, Search, Upload, Download, Copy, Trash2, Pencil, ArrowDownUp, BoxSelect, FileText, UserRound,
 } from 'lucide-react';
 import * as motion from 'motion/react-m';
-import { getProfile, clearProfile, initials, type LocalProfile } from '@/lib/profile';
+import { getProfile, initials, type LocalProfile } from '@/lib/profile';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
 import { useConfirm } from '@/components/common/ConfirmDialog';
 import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog } from '@/components/pwa/FolderControls';
@@ -144,11 +144,6 @@ export default function Dashboard() {
     }
   };
 
-  const handleLogout = () => {
-    clearProfile();
-    router.push('/');
-  };
-
   const WEEK = 7 * 24 * 60 * 60 * 1000;
 
   return (
@@ -163,23 +158,7 @@ export default function Dashboard() {
             <Logo size={24} />
           </Link>
 
-          <nav aria-label="Dashboard sections" className="flex items-center gap-1 h-full">
-            {['Dashboard', 'Projects', 'Archives'].map((item, i) => (
-              <button
-                key={item}
-                type="button"
-                aria-current={i === 0 ? 'page' : undefined}
-                className={cn(
-                  'px-4 h-full text-xs font-bold uppercase tracking-widest flex items-center border-b-2 transition-all',
-                  i === 0
-                    ? 'border-amber-accent text-amber-accent bg-zinc-800/30'
-                    : 'border-transparent text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/10',
-                )}
-              >
-                {item}
-              </button>
-            ))}
-          </nav>
+          <span className="text-sm font-semibold text-zinc-300">My projects</span>
         </div>
 
         <div className="flex items-center gap-4">
@@ -199,29 +178,20 @@ export default function Dashboard() {
           <div className="w-px h-6 bg-industrial-border mx-2" />
 
           {profile ? (
-            <div className="flex items-center gap-3">
-              <div className="text-right flex flex-col">
-                <span className="text-[10px] font-bold text-zinc-300 uppercase tracking-widest leading-none">{profile.name}</span>
-                <span className="text-[9px] text-zinc-500 uppercase tracking-widest">{profile.firm || 'Local profile'}</span>
-              </div>
-              <div className="w-8 h-8 bg-zinc-800 border border-industrial-border flex items-center justify-center font-bold text-amber-accent" aria-hidden>
+            <Link href="/register" title="Edit your profile" className="flex items-center gap-3 group/profile">
+              <span className="text-right flex flex-col">
+                <span className="text-xs font-bold text-zinc-300 leading-tight group-hover/profile:text-white">{profile.name}</span>
+                <span className="text-[11px] text-zinc-500">{profile.firm || 'Local profile'}</span>
+              </span>
+              <span className="w-8 h-8 bg-zinc-800 border border-industrial-border flex items-center justify-center text-xs font-bold text-amber-accent group-hover/profile:border-amber-accent/60" aria-hidden>
                 {initials(profile.name)}
-              </div>
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="p-1.5 text-zinc-600 hover:text-red-400 transition-colors ml-2"
-                title="Logout"
-                aria-label="Log out"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
+              </span>
+            </Link>
           ) : (
-            <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-widest">
-              <Link href="/login" className="text-zinc-400 hover:text-zinc-200">Login</Link>
-              <Link href="/register" className="border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-3 py-1.5">Sign up</Link>
-            </div>
+            <Link href="/register" className="flex items-center gap-2 text-xs font-semibold text-zinc-400 hover:text-zinc-100">
+              <UserRound className="w-4 h-4" aria-hidden />
+              Add your name
+            </Link>
           )}
         </div>
       </header>
@@ -231,9 +201,9 @@ export default function Dashboard() {
       <main className="flex-1 overflow-auto p-8 max-w-screen-2xl mx-auto w-full">
         <div className="flex flex-wrap justify-between items-end gap-4 mb-8">
           <div>
-            <h1 className="text-3xl font-black tracking-tight uppercase mb-2">Active Projects</h1>
-            <p className="text-[11px] text-zinc-500 tracking-widest uppercase">
-              System holds {projects?.length ?? 0} records
+            <h1 className="text-3xl font-semibold tracking-tight text-white mb-2">Projects</h1>
+            <p className="text-xs text-zinc-500 tracking-widest uppercase">
+              {projects?.length ?? 0} project{projects?.length === 1 ? '' : 's'} on this computer
               {usage && <> · {formatBytes(usage.used)} of {formatBytes(usage.quota)} used in this browser</>}
             </p>
           </div>
@@ -249,16 +219,16 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => setSortBy(s => (s === 'recent' ? 'name' : 'recent'))}
-              title="Change sort order"
-              className="flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
+              title={sortBy === 'recent' ? 'Sorted by last edited — click for A–Z' : 'Sorted A–Z — click for last edited'}
+              className="flex items-center gap-2 text-[11px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
             >
-              <Filter className="w-3.5 h-3.5" aria-hidden />
-              {sortBy === 'recent' ? 'Filter: Recent' : 'Filter: A–Z'}
+              <ArrowDownUp className="w-3.5 h-3.5" aria-hidden />
+              {sortBy === 'recent' ? 'Sort: Recent' : 'Sort: A–Z'}
             </button>
             <button
               type="button"
               onClick={() => importRef.current?.click()}
-              className="flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
+              className="flex items-center gap-2 text-[11px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors"
             >
               <Upload className="w-3.5 h-3.5" aria-hidden />
               Import backup
@@ -266,7 +236,7 @@ export default function Dashboard() {
             <button
               type="button"
               onClick={() => setCreating(true)}
-              className="flex items-center gap-2 text-[10px] font-bold bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 uppercase tracking-widest transition-all"
+              className="flex items-center gap-2 text-[11px] font-bold bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 uppercase tracking-widest transition-all"
             >
               <Plus className="w-3.5 h-3.5" aria-hidden />
               New Project
@@ -288,7 +258,31 @@ export default function Dashboard() {
             {query && filtered.length === 0 && (
               <p className="mb-6 text-xs text-zinc-500 uppercase tracking-widest">No projects match “{query}”.</p>
             )}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {projects.length === 0 && !error && (
+              <div className="border border-industrial-border bg-industrial-panel px-6 py-12 md:py-16 flex flex-col items-center text-center font-sans">
+                <span className="w-14 h-14 border border-amber-accent/50 text-amber-accent flex items-center justify-center mb-6">
+                  <FileText className="w-6 h-6" aria-hidden />
+                </span>
+                <h2 className="text-xl font-semibold text-white">Start your first takeoff</h2>
+                <p className="mt-2 text-sm text-zinc-400 max-w-md leading-relaxed">
+                  Create a project, drop in a PDF drawing, set its scale, and start measuring.
+                  Everything saves on this computer as you go.
+                </p>
+                <div className="mt-7 flex flex-wrap justify-center gap-3">
+                  <button type="button" onClick={() => setCreating(true)}
+                    className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black text-sm font-bold px-5 py-2.5 transition-colors">
+                    <Plus className="w-4 h-4" aria-hidden />
+                    New project
+                  </button>
+                  <button type="button" onClick={() => importRef.current?.click()}
+                    className="flex items-center gap-2 border border-industrial-border hover:border-zinc-500 text-zinc-300 text-sm font-semibold px-5 py-2.5 transition-colors">
+                    <Upload className="w-4 h-4" aria-hidden />
+                    Import a backup
+                  </button>
+                </div>
+              </div>
+            )}
+            <div className={cn('grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6', projects.length === 0 && 'hidden')}>
               {filtered.map((project, i) => {
                 const active = Date.now() - project.updatedAt < WEEK;
                 return (
@@ -309,11 +303,20 @@ export default function Dashboard() {
                       className="h-32 bg-stone-900 border-b border-industrial-border relative overflow-hidden flex items-center justify-center focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-amber-300"
                     >
                       <span className="absolute inset-0 blueprint-grid opacity-30 group-hover:opacity-50 transition-opacity" aria-hidden />
-                      <FolderOpen className="w-10 h-10 text-zinc-700 group-hover:text-amber-accent/50 transition-colors z-10" aria-hidden />
+                      <span className="z-10 flex flex-col items-center gap-2 text-zinc-600 group-hover:text-amber-accent/70 transition-colors">
+                        {project.drawingCount > 0
+                          ? <FileText className="w-9 h-9" aria-hidden />
+                          : <FolderOpen className="w-9 h-9" aria-hidden />}
+                        <span className="text-[11px] font-bold uppercase tracking-widest">
+                          {project.drawingCount > 0
+                            ? `${project.drawingCount} drawing${project.drawingCount === 1 ? '' : 's'}`
+                            : 'No drawings yet'}
+                        </span>
+                      </span>
                       {active && (
-                        <span className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-[9px] font-bold text-emerald-400 uppercase tracking-widest">
+                        <span className="absolute top-3 right-3 flex items-center gap-1.5 px-2 py-0.5 bg-emerald-500/10 border border-emerald-500/30 text-[10px] font-bold text-emerald-400 uppercase tracking-widest">
                           <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
-                          Active
+                          Recent
                         </span>
                       )}
                     </button>
@@ -336,13 +339,13 @@ export default function Dashboard() {
                             {project.name}
                           </button>
                         )}
-                        <div className="flex items-center gap-2 mt-2 text-[10px] text-zinc-500 tracking-widest uppercase">
+                        <div className="flex items-center gap-2 mt-2 text-[11px] text-zinc-500 tracking-widest uppercase">
                           <span>Created: {new Date(project.createdAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}</span>
                           {project.number && <span>· No. {project.number}</span>}
                         </div>
                       </div>
 
-                      <div className="mt-6 pt-4 border-t border-industrial-border/50 flex justify-between items-center text-[10px] uppercase font-bold tracking-widest">
+                      <div className="mt-6 pt-4 border-t border-industrial-border/50 flex justify-between items-center text-[11px] uppercase font-bold tracking-widest">
                         <span className="text-zinc-600 flex items-center gap-1.5">
                           <BoxSelect className="w-3.5 h-3.5" aria-hidden />
                           {project.measurementCount} Quantities
@@ -368,7 +371,7 @@ export default function Dashboard() {
                 className="border-2 border-dashed border-industrial-border hover:border-amber-accent/40 bg-industrial-panel/30 hover:bg-amber-accent/5 flex flex-col items-center justify-center min-h-[260px] text-zinc-600 hover:text-amber-accent transition-all"
               >
                 <Plus className="w-8 h-8 mb-4 border border-current rounded-none" aria-hidden />
-                <span className="text-sm font-bold uppercase tracking-widest">Initialize Blank Project</span>
+                <span className="text-sm font-bold uppercase tracking-widest">New project</span>
               </button>
             </div>
           </>

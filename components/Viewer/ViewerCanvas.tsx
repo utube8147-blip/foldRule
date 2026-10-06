@@ -466,9 +466,9 @@ export function ViewerCanvas({
               ['03', 'Measure', 'Areas, lengths and counts. Export to Excel.'],
             ].map(([n, t, d]) => (
               <li key={n} className="border border-industrial-border bg-industrial-black/40 p-3">
-                <span className="text-[10px] font-bold text-amber-400">{n}</span>
-                <p className="mt-1 text-[11px] font-bold uppercase tracking-widest text-zinc-200">{t}</p>
-                <p className="mt-1 text-[10px] leading-relaxed text-zinc-500">{d}</p>
+                <span className="text-[11px] font-bold text-amber-400">{n}</span>
+                <p className="mt-1 text-xs font-bold uppercase tracking-widest text-zinc-200">{t}</p>
+                <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{d}</p>
               </li>
             ))}
           </ol>
@@ -486,7 +486,7 @@ export function ViewerCanvas({
       {loading && (
         <div className="flex flex-col items-center gap-4">
           <div className="w-12 h-12 border-4 border-zinc-800 border-t-amber-400 rounded-full animate-spin" />
-          <span className="text-[10px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
+          <span className="text-[11px] font-mono font-bold text-amber-400 tracking-[0.2em] uppercase animate-pulse">
             Processing Vector Data...
           </span>
         </div>
@@ -615,7 +615,7 @@ export function ViewerCanvas({
 
           {readyToDraw && activeTool === 'count' && tempPoints.length > 0 && lastPt && (
             <button
-              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
               style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
               onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
               onPointerDown={e => e.stopPropagation()}
@@ -629,7 +629,7 @@ export function ViewerCanvas({
             (activeTool === 'polygon' || activeTool === 'rectangle' || activeTool === 'linear') &&
             tempPoints.length > 1 && lastPt && (
               <button
-                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
+                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-amber-400 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-amber-300 active:scale-95 transition-transform"
                 style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
                 onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                 onPointerDown={e => e.stopPropagation()}
@@ -641,7 +641,7 @@ export function ViewerCanvas({
 
           {readyToDraw && activeTool === 'polyarc' && polyarcHasContent && lastPt && (
             <button
-              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-orange-500 text-white font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-orange-400 active:scale-95 transition-transform"
+              className="absolute z-[70] flex items-center justify-center gap-1.5 bg-orange-500 text-white font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-orange-400 active:scale-95 transition-transform"
               style={{ left: lastPt.x + 15, top: lastPt.y + 15 }}
               onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
               onPointerDown={e => e.stopPropagation()}
@@ -659,7 +659,7 @@ export function ViewerCanvas({
           {readyToDraw && activeTool === 'polyarc' && !polyarcHasContent && tempPoints.length === 0 && polyarcMode && (
             <div className="absolute z-[70] top-3 left-1/2 -translate-x-1/2 pointer-events-none">
               <div className={cn(
-                'flex items-center gap-1.5 px-3 py-1.5 font-mono text-[9px] uppercase tracking-widest border',
+                'flex items-center gap-1.5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-widest border',
                 polyarcMode === 'arc'
                   ? 'bg-teal-900/80 border-teal-500/50 text-teal-300'
                   : 'bg-zinc-900/80 border-zinc-600/50 text-zinc-300',
@@ -674,7 +674,7 @@ export function ViewerCanvas({
             if (stagedArcCount > 0 && arcBtnPos) {
               return (
                 <button
-                  className="absolute z-[70] flex items-center justify-center gap-1.5 bg-teal-500 text-black font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-teal-400 active:scale-95 transition-transform"
+                  className="absolute z-[70] flex items-center justify-center gap-1.5 bg-teal-500 text-black font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-teal-400 active:scale-95 transition-transform"
                   style={{ left: arcBtnPos.x + 15, top: arcBtnPos.y + 15 }}
                   onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                   onPointerDown={e => e.stopPropagation()}
@@ -690,7 +690,7 @@ export function ViewerCanvas({
             if (inProgressArcPts.length === 2 && arcBtnPos) {
               return (
                 <div
-                  className="absolute z-[70] bg-teal-900/80 border border-teal-500/50 px-3 py-1.5 font-mono text-[9px] text-teal-300 uppercase tracking-widest pointer-events-none whitespace-nowrap"
+                  className="absolute z-[70] bg-teal-900/80 border border-teal-500/50 px-3 py-1.5 font-mono text-[10px] text-teal-300 uppercase tracking-widest pointer-events-none whitespace-nowrap"
                   style={{ left: arcBtnPos.x + 15, top: arcBtnPos.y + 15 }}
                 >
                   Click end point · right-click to cancel arc
@@ -706,7 +706,7 @@ export function ViewerCanvas({
             const lastEdge = pdfPtToWrapPx(staged[staged.length - 1][1]);
             return (
               <button
-                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-purple-500 text-white font-bold font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-purple-400 active:scale-95 transition-transform"
+                className="absolute z-[70] flex items-center justify-center gap-1.5 bg-purple-500 text-white font-bold font-mono text-[11px] uppercase tracking-widest px-3 py-1.5 shadow-lg whitespace-nowrap hover:bg-purple-400 active:scale-95 transition-transform"
                 style={{ left: lastEdge.x + 15, top: lastEdge.y + 15 }}
                 onClick={e => { e.stopPropagation(); handleFinishMeasurement(); }}
                 onPointerDown={e => e.stopPropagation()}

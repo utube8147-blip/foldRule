@@ -1,191 +1,121 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { Lock } from 'lucide-react';
-import * as motion from 'motion/react-m';
-import { saveProfile, nameFromEmail } from '@/lib/profile';
+// Profile screen. Foldrule has no accounts: the name and firm entered here are
+// kept in this browser only (lib/profile.ts) and shown on the dashboard and in
+// exports. No password is asked for, because nothing is sent anywhere.
 
-export default function Register() {
+import React, { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { ArrowRight, HardDrive, ShieldCheck, UserRound } from 'lucide-react';
+import { Logo } from '@/components/brand/Logo';
+import { getProfile, saveProfile, clearProfile } from '@/lib/profile';
+
+const field =
+  'mt-1.5 w-full bg-industrial-black border border-industrial-border px-3 py-2.5 text-sm text-zinc-100 ' +
+  'outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-600';
+
+export default function ProfilePage() {
   const router = useRouter();
   const [name,  setName]  = useState('');
   const [firm,  setFirm]  = useState('');
   const [email, setEmail] = useState('');
+  const [existing, setExisting] = useState(false);
 
-  const handleRegister = () => {
-    const cleanEmail = email.trim();
-    const cleanName  = name.trim() || (cleanEmail ? nameFromEmail(cleanEmail) : '');
-    if (cleanName) saveProfile({ name: cleanName, firm: firm.trim() || undefined, email: cleanEmail || undefined });
+  useEffect(() => {
+    const p = getProfile();
+    if (!p) return;
+    setExisting(true);
+    setName(p.name ?? '');
+    setFirm(p.firm ?? '');
+    setEmail(p.email ?? '');
+  }, []);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const clean = name.trim();
+    if (!clean) return;
+    saveProfile({ name: clean, firm: firm.trim() || undefined, email: email.trim() || undefined });
+    router.push('/dashboard');
+  };
+
+  const remove = () => {
+    clearProfile();
     router.push('/dashboard');
   };
 
   return (
-    <div className="min-h-screen bg-[#16191C] flex relative overflow-hidden font-mono">
-      {/* Background decoration */}
-      <div className="absolute inset-0" style={{ 
-        backgroundImage: 'radial-gradient(circle, #333 1px, transparent 1px)', 
-        backgroundSize: '40px 40px' 
-      }} />
+    <div className="min-h-screen bg-industrial-black text-zinc-200 flex flex-col">
+      <div className="fixed inset-0 blueprint-grid opacity-10 pointer-events-none" aria-hidden />
 
-      <div className="w-full max-w-7xl mx-auto flex flex-col lg:flex-row relative z-10 p-8 lg:p-12 items-center">
-        
-        {/* Left Column */}
-        <div className="flex-1 lg:pr-24 space-y-16 hidden lg:block border-r border-zinc-800/50 h-full py-12">
-          <div className="flex justify-between items-end border-b border-zinc-800/50 pb-4 pr-12">
-            <h1 className="text-amber-accent font-bold tracking-widest uppercase">Foldrule</h1>
-            <span className="text-zinc-600 text-xs tracking-widest uppercase">EST. MOD // 2026</span>
+      <header className="relative z-10 h-16 border-b border-industrial-border px-6 flex items-center justify-between">
+        <Link href="/" aria-label="Foldrule home"><Logo size={22} /></Link>
+        <Link href="/dashboard" className="text-xs font-semibold text-zinc-400 hover:text-zinc-100">
+          Skip — go to my projects
+        </Link>
+      </header>
+
+      <main className="relative z-10 flex-1 flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md">
+          <div className="flex items-center gap-3 mb-2">
+            <span className="w-9 h-9 border border-industrial-border bg-industrial-panel flex items-center justify-center text-amber-accent">
+              <UserRound className="w-4 h-4" aria-hidden />
+            </span>
+            <h1 className="text-2xl font-semibold tracking-tight text-white">
+              {existing ? 'Your profile' : 'Set up your profile'}
+            </h1>
           </div>
+          <p className="text-sm text-zinc-400 leading-relaxed">
+            Optional. Your name and firm appear on your dashboard. Foldrule has no accounts and no
+            password — this stays in this browser.
+          </p>
 
-          <div className="space-y-12 pr-12">
-            <div className="relative pl-6">
-              <div className="absolute left-0 top-0 bottom-0 w-2 bg-amber-accent" />
-              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Precision Takeoffs</h3>
-              <p className="text-zinc-400 text-sm leading-relaxed">
-                Measurements snap to the real linework in your PDF, so every point lands exactly on the drawing.
-              </p>
-            </div>
+          <form onSubmit={submit} className="mt-8 bg-industrial-panel border border-industrial-border p-6 space-y-5">
+            <label className="block text-xs font-semibold text-zinc-300" htmlFor="pf-name">
+              Your name
+              <input id="pf-name" required autoFocus maxLength={80} autoComplete="name" value={name}
+                onChange={e => setName(e.target.value)} placeholder="e.g. Nimal Perera" className={field} />
+            </label>
+            <label className="block text-xs font-semibold text-zinc-300" htmlFor="pf-firm">
+              Firm <span className="font-normal text-zinc-500">(optional)</span>
+              <input id="pf-firm" maxLength={80} autoComplete="organization" value={firm}
+                onChange={e => setFirm(e.target.value)} placeholder="e.g. Perera Quantity Surveyors" className={field} />
+            </label>
+            <label className="block text-xs font-semibold text-zinc-300" htmlFor="pf-email">
+              Email <span className="font-normal text-zinc-500">(optional)</span>
+              <input id="pf-email" type="email" maxLength={120} autoComplete="email" value={email}
+                onChange={e => setEmail(e.target.value)} placeholder="you@firm.com" className={field} />
+            </label>
 
-            <div className="relative pl-6">
-              <div className="absolute left-0 top-0 bottom-0 w-2 border border-amber-accent bg-transparent" />
-              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Per-Page Scaling</h3>
-              <p className="text-zinc-400 text-sm leading-relaxed">
-                Calibrate each sheet from one known dimension. Mixed-scale drawing sets measure correctly.
-              </p>
-            </div>
-            
-            <div className="relative pl-6">
-              <div className="absolute left-0 top-0 bottom-0 w-2 bg-zinc-700" />
-              <h3 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-2">Excel BOQ Export</h3>
-              <p className="text-zinc-400 text-sm leading-relaxed">
-                Priced workbooks with group subtotals, VAT and totals as live Excel formulas.
-              </p>
-            </div>
-          </div>
+            <button
+              type="submit"
+              disabled={!name.trim()}
+              className="w-full bg-amber-accent hover:bg-amber-400 disabled:opacity-40 text-black font-bold text-sm py-3 flex items-center justify-center gap-2 transition-colors"
+            >
+              {existing ? 'Save profile' : 'Save and open my projects'}
+              <ArrowRight className="w-4 h-4" aria-hidden />
+            </button>
 
-          <div className="pt-8 border-t border-zinc-800/50 pr-12 flex gap-6">
-            <div className="border border-zinc-800 p-4 flex-1">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Install Required</div>
-              <div className="text-zinc-300 font-bold tracking-wide">NONE — RUNS IN BROWSER</div>
-            </div>
-            <div className="border border-zinc-800 p-4 flex-1">
-              <div className="text-[10px] text-zinc-500 uppercase tracking-widest mb-1">Drawing Storage</div>
-              <div className="text-zinc-300 font-bold tracking-wide">STAYS ON THIS DEVICE</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Column - Form */}
-        <div className="flex-1 w-full lg:pl-24 max-w-xl mx-auto py-12">
-          <motion.div 
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            className="relative bg-[#1A1A1A] p-10 border border-zinc-800"
-          >
-            {/* Corner accents */}
-            <div className="absolute top-0 left-0 w-2 h-2 bg-amber-accent -translate-x-1/2 -translate-y-1/2" />
-            <div className="absolute bottom-0 right-0 w-2 h-2 bg-amber-accent translate-x-1/2 translate-y-1/2" />
-
-            {/* Header */}
-            <div className="mb-10">
-              <h2 className="text-zinc-200 text-sm font-bold tracking-widest uppercase mb-3">New Account</h2>
-              <p className="text-zinc-400 text-sm leading-relaxed max-w-sm">
-                Set up your profile. Your name and firm appear on your dashboard; your drawings stay on this device.
-              </p>
-            </div>
-
-            {/* Form */}
-            <div className="space-y-6">
-              <div className="space-y-2">
-                <label htmlFor="reg-name" className="text-xs text-zinc-300 tracking-wide block">
-                  Full Name
-                </label>
-                <input
-                  id="reg-name"
-                  type="text"
-                  autoComplete="name"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  placeholder="ENTER OPERATOR NAME"
-                  className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="reg-firm" className="text-xs text-zinc-300 tracking-wide block">
-                  Company
-                </label>
-                <input
-                  id="reg-firm"
-                  type="text"
-                  autoComplete="organization"
-                  value={firm}
-                  onChange={e => setFirm(e.target.value)}
-                  placeholder="ENTER FIRM IDENTIFIER"
-                  className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="reg-email" className="text-xs text-zinc-300 tracking-wide block">
-                  Email Address
-                </label>
-                <input
-                  id="reg-email"
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  placeholder="SYSTEM@DOMAIN.TLD"
-                  className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
-                />
-              </div>
-
-              <div className="space-y-2">
-                <label htmlFor="reg-password" className="text-xs text-zinc-300 tracking-wide block">
-                  Password
-                </label>
-                <input
-                  id="reg-password"
-                  type="password"
-                  autoComplete="new-password"
-                  placeholder="••••••••••••"
-                  className="w-full bg-[#111] border border-zinc-800 text-zinc-200 text-xs py-3.5 px-4 outline-none focus:border-amber-accent transition-colors placeholder:text-zinc-700 uppercase"
-                />
-              </div>
-              
-              <button
-                type="button"
-                onClick={handleRegister}
-                className="w-full bg-amber-accent hover:bg-amber-400 text-[#111] font-bold tracking-widest text-xs py-4 flex items-center justify-center gap-3 transition-colors mt-8 uppercase"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                <span>Create Account</span>
+            {existing && (
+              <button type="button" onClick={remove}
+                className="w-full text-xs font-semibold text-zinc-500 hover:text-red-300 transition-colors">
+                Remove profile from this browser
               </button>
-              
-              <div className="pt-6 text-center text-sm text-zinc-400">
-                Already registered?{' '}
-                <button 
-                  onClick={() => router.push('/login')}
-                  className="text-amber-accent hover:text-amber-300 transition-colors border-b border-amber-accent/30 hover:border-amber-accent pb-0.5"
-                >
-                  Sign In
-                </button>
-              </div>
-            </div>
-          </motion.div>
-          
-          <div className="flex justify-end mt-4 text-[9px] text-zinc-600 gap-6 uppercase tracking-widest">
-            <div className="text-right">
-              <div>Storage: Local</div>
-              <div>Upload: None</div>
-            </div>
-            <div className="text-right">
-              <div>Status: Ready</div>
-              <div>Build: FR-1.0</div>
-            </div>
-          </div>
+            )}
+          </form>
+
+          <ul className="mt-6 space-y-2.5 text-xs text-zinc-500">
+            <li className="flex gap-2.5">
+              <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" aria-hidden />
+              Nothing on this page is uploaded. Your drawings and projects stay on this computer too.
+            </li>
+            <li className="flex gap-2.5">
+              <HardDrive className="w-4 h-4 text-zinc-500 shrink-0" aria-hidden />
+              Removing the profile does not touch your projects.
+            </li>
+          </ul>
         </div>
-      </div>
+      </main>
     </div>
   );
 }

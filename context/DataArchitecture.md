@@ -1,3 +1,8 @@
+> **Status: proposal, not implemented.** The app today is local-first: projects live in IndexedDB
+> (`lib/storage/projectDb.ts`), optionally mirrored to a folder (`lib/storage/folderSync.ts`), with
+> state in `context/TakeoffContext.tsx`. Nothing below (Supabase, Zustand, auth) exists in the code.
+> Keep this only as a sketch for a possible cloud version.
+
 # Cloud-Based Project Architecture
 ### Estimator Pro — Supabase + Zustand + Next.js
 

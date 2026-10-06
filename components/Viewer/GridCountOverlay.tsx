@@ -524,10 +524,10 @@ export function GridCountOverlay({
             {/* Header */}
             <div className="flex items-center gap-2 px-3 py-2 bg-green-500/10 border-b border-green-500/20">
               <div className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse flex-shrink-0" />
-              <span className="text-[10px] font-mono font-bold text-green-400 uppercase tracking-[0.15em] flex-1">
+              <span className="text-[11px] font-mono font-bold text-green-400 uppercase tracking-[0.15em] flex-1">
                 Tile Count
               </span>
-              <span className="text-[9px] font-mono text-zinc-500">
+              <span className="text-[10px] font-mono text-zinc-500">
                 {grid.vertices.length} pts {grid.isPolyClosed ? '· closed' : '· open'}
               </span>
             </div>
@@ -535,8 +535,8 @@ export function GridCountOverlay({
             {/* Status hint */}
             {!grid.isPolyClosed && (
               <div className="mx-3 mt-3 flex items-start gap-2 bg-zinc-900 border border-zinc-800 px-2.5 py-2">
-                <span className="text-green-400 text-[11px] flex-shrink-0 mt-0.5">◎</span>
-                <p className="text-[9px] font-mono text-zinc-400 leading-relaxed">
+                <span className="text-green-400 text-xs flex-shrink-0 mt-0.5">◎</span>
+                <p className="text-[10px] font-mono text-zinc-400 leading-relaxed">
                   {grid.vertices.length < MIN_VERTICES
                     ? `Add ${MIN_VERTICES - grid.vertices.length} more point${MIN_VERTICES - grid.vertices.length !== 1 ? 's' : ''} to close`
                     : 'Click first vertex or double-click to close'}
@@ -546,7 +546,7 @@ export function GridCountOverlay({
 
             {/* Shape selector */}
             <div className="px-3 pt-3 pb-0">
-              <div className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest mb-1.5">Tile shape</div>
+              <div className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest mb-1.5">Tile shape</div>
               <div className="grid grid-cols-5 gap-1">
                 {TILE_SHAPES.map(t => (
                   <button
@@ -561,20 +561,20 @@ export function GridCountOverlay({
                     )}
                   >
                     <span>{t.icon}</span>
-                    <span className="text-[7px] font-mono uppercase tracking-wide leading-none">
+                    <span className="text-[9px] font-mono uppercase tracking-wide leading-none">
                       {t.label.split(' ')[0]}
                     </span>
                   </button>
                 ))}
               </div>
-              <div className="mt-1.5 text-[8px] font-mono text-zinc-600">{shapeConfig.description}</div>
+              <div className="mt-1.5 text-[10px] font-mono text-zinc-600">{shapeConfig.description}</div>
             </div>
 
             {/* Calibration warning */}
             {isUncalibrated && (
               <div className="mx-3 mt-3 flex items-start gap-2 bg-amber-500/10 border border-amber-500/30 px-2.5 py-2">
-                <span className="text-amber-400 text-[11px] mt-0.5 flex-shrink-0">⚠</span>
-                <p className="text-[9px] font-mono text-amber-400 leading-relaxed">
+                <span className="text-amber-400 text-xs mt-0.5 flex-shrink-0">⚠</span>
+                <p className="text-[10px] font-mono text-amber-400 leading-relaxed">
                   Scale not calibrated — use Draw Calibration first.
                 </p>
               </div>
@@ -583,10 +583,10 @@ export function GridCountOverlay({
             {/* Spacing input */}
             <div className="px-3 pt-3 pb-0">
               <div className="flex items-center justify-between mb-1.5">
-                <label className="text-[9px] font-mono text-zinc-500 uppercase tracking-widest">
+                <label className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">
                   {shapeConfig.spacingLabel}
                 </label>
-                <span className="text-[9px] font-mono text-zinc-600">mm</span>
+                <span className="text-[10px] font-mono text-zinc-600">mm</span>
               </div>
               <div className="flex items-stretch border border-zinc-700 focus-within:border-green-500/60 transition-colors">
                 <button
@@ -614,7 +614,7 @@ export function GridCountOverlay({
                     key={v}
                     onClick={() => grid.setSpacingMm(String(v))}
                     className={cn(
-                      'flex-1 text-[8px] font-mono py-0.5 border transition-colors',
+                      'flex-1 text-[10px] font-mono py-0.5 border transition-colors',
                       grid.spacingMm === String(v)
                         ? 'border-green-500/50 text-green-400 bg-green-500/10'
                         : 'border-zinc-800 text-zinc-600 hover:text-zinc-400 hover:border-zinc-700',
@@ -631,7 +631,7 @@ export function GridCountOverlay({
                 <div className="mx-3 mt-3 bg-zinc-900 border border-zinc-800 px-3 py-2.5">
                   <div className="flex items-end justify-between">
                     <div>
-                      <div className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest mb-0.5">
+                      <div className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest mb-0.5">
                         {grid.result.label}
                       </div>
                       <div className={cn(
@@ -642,15 +642,15 @@ export function GridCountOverlay({
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest mb-0.5">Shape</div>
+                      <div className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest mb-0.5">Shape</div>
                       <div className="text-[20px] leading-none text-zinc-400">{shapeConfig.icon}</div>
-                      <div className="text-[8px] font-mono text-zinc-600 mt-1">
+                      <div className="text-[10px] font-mono text-zinc-600 mt-1">
                         {grid.vertices.length}-sided polygon
                       </div>
                     </div>
                   </div>
                   {isUncalibrated && (
-                    <div className="mt-1.5 text-[8px] font-mono text-amber-500/70">
+                    <div className="mt-1.5 text-[10px] font-mono text-amber-500/70">
                       Unreliable — calibrate scale first
                     </div>
                   )}
@@ -664,7 +664,7 @@ export function GridCountOverlay({
                 onClick={handleCommit}
                 disabled={!canCommit}
                 className={cn(
-                  'flex-1 text-[9px] font-mono font-bold uppercase tracking-widest py-2 border transition-all',
+                  'flex-1 text-[10px] font-mono font-bold uppercase tracking-widest py-2 border transition-all',
                   canCommit
                     ? 'border-green-400 text-green-400 hover:bg-green-400 hover:text-black active:scale-[0.98]'
                     : 'border-zinc-800 text-zinc-600 cursor-not-allowed',
@@ -674,7 +674,7 @@ export function GridCountOverlay({
               </button>
               <button
                 onClick={handleClear}
-                className="px-3 py-2 text-[9px] font-mono text-zinc-600 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-600 transition-all"
+                className="px-3 py-2 text-[10px] font-mono text-zinc-600 hover:text-zinc-300 border border-zinc-800 hover:border-zinc-600 transition-all"
               >
                 Clear
               </button>
@@ -691,7 +691,7 @@ export function GridCountOverlay({
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none" className="flex-shrink-0 text-green-400">
               <polygon points="7,1 13,12 1,12" stroke="currentColor" strokeWidth="1.2" fill="none"/>
             </svg>
-            <span className="text-[9px] font-mono font-bold text-green-400 uppercase tracking-[0.15em] whitespace-nowrap">
+            <span className="text-[10px] font-mono font-bold text-green-400 uppercase tracking-[0.15em] whitespace-nowrap">
               Click to place polygon vertices · double-click to close
             </span>
           </div>

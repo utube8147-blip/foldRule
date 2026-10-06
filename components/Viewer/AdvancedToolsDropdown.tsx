@@ -78,7 +78,7 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
       <button
         onClick={() => setOpen(o => !o)}
         className={cn(
-          'h-9 flex items-center gap-1 px-2 border transition-all text-[9px] font-mono font-bold uppercase tracking-widest',
+          'h-9 flex items-center gap-1 px-2 border transition-all text-[10px] font-mono font-bold uppercase tracking-widest',
           isAdvancedActive || open
             ? 'bg-zinc-800 border-amber-400 text-amber-400'
             : 'bg-transparent border-transparent text-zinc-500 hover:text-zinc-200',
@@ -127,18 +127,18 @@ export function AdvancedToolsDropdown({ activeTool, setActiveTool }: Props) {
 
                 <div className="flex-1 min-w-0">
                   <div className={cn(
-                    'text-[10px] font-mono font-bold uppercase tracking-widest flex items-center gap-2',
+                    'text-[11px] font-mono font-bold uppercase tracking-widest flex items-center gap-2',
                     activeTool === tool.id && !isSoon ? 'text-amber-400' : 'text-zinc-300',
                   )}>
                     {tool.label}
                     <span className="text-zinc-600">[{tool.shortcut}]</span>
                     {tool.badge && (
-                      <span className="ml-auto text-[8px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-500">
+                      <span className="ml-auto text-[10px] font-mono font-bold uppercase tracking-widest px-1.5 py-0.5 bg-zinc-800 border border-zinc-700 text-zinc-500">
                         {tool.badge}
                       </span>
                     )}
                   </div>
-                  <div className="text-[9px] text-zinc-500 mt-0.5">{tool.sub}</div>
+                  <div className="text-[10px] text-zinc-500 mt-0.5">{tool.sub}</div>
                 </div>
               </button>
             );
@@ -196,34 +196,34 @@ function PitchFactorRow() {
 
   return (
     <div className="px-3 py-2.5">
-      <div className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-300 mb-2 flex items-center gap-1.5">
+      <div className="text-[11px] font-mono font-bold uppercase tracking-widest text-zinc-300 mb-2 flex items-center gap-1.5">
         <Ruler className="w-3.5 h-3.5 text-zinc-500" />
         Pitch / slope factor
       </div>
 
       <div className="flex items-center gap-2 mb-2">
         <div className="flex flex-col items-center">
-          <span className="text-[8px] text-zinc-600 font-mono mb-0.5">RISE</span>
+          <span className="text-[10px] text-zinc-600 font-mono mb-0.5">RISE</span>
           <input
             type="number" min="0" max="24" step="1"
             value={rise}
             onChange={e => { setRise(e.target.value); setFeedback('idle'); }}
-            className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[10px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
+            className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
           />
         </div>
-        <span className="text-zinc-500 text-[9px] font-mono mt-3">:</span>
+        <span className="text-zinc-500 text-[10px] font-mono mt-3">:</span>
         <div className="flex flex-col items-center">
-          <span className="text-[8px] text-zinc-600 font-mono mb-0.5">RUN</span>
+          <span className="text-[10px] text-zinc-600 font-mono mb-0.5">RUN</span>
           <input
             type="number" min="1" max="24" step="1"
             value={run}
             onChange={e => { setRun(e.target.value); setFeedback('idle'); }}
-            className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[10px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
+            className="w-12 bg-zinc-900 border border-zinc-700 text-zinc-200 text-[11px] font-mono text-center px-1 py-1 focus:outline-none focus:border-amber-400"
           />
         </div>
-        <span className="text-[9px] font-mono text-zinc-500 mt-3">→</span>
+        <span className="text-[10px] font-mono text-zinc-500 mt-3">→</span>
         <div className="flex flex-col items-center mt-3">
-          <span className="text-[10px] font-mono font-bold text-amber-400">
+          <span className="text-[11px] font-mono font-bold text-amber-400">
             ×{ratio.toFixed(4)}
           </span>
         </div>
@@ -231,7 +231,7 @@ function PitchFactorRow() {
 
       <div className="mb-2 min-h-[28px]">
         {selectedMeasurement && canApply ? (
-          <div className="text-[9px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-700 px-2 py-1">
+          <div className="text-[10px] font-mono text-zinc-400 bg-zinc-900 border border-zinc-700 px-2 py-1">
             <span className="text-zinc-500">Selected: </span>
             <span className="text-zinc-200 truncate">
               {selectedMeasurement.label || selectedMeasurement.description}
@@ -244,12 +244,12 @@ function PitchFactorRow() {
             </span>
           </div>
         ) : selectedMeasurement && !canApply ? (
-          <div className="text-[9px] font-mono text-zinc-500 flex items-center gap-1">
+          <div className="text-[10px] font-mono text-zinc-500 flex items-center gap-1">
             <AlertTriangle className="w-3 h-3 text-amber-600" />
             Select a Length row to apply pitch
           </div>
         ) : (
-          <div className="text-[9px] text-zinc-600 font-mono">
+          <div className="text-[10px] text-zinc-600 font-mono">
             Select a length row in the takeoff table
           </div>
         )}
@@ -259,7 +259,7 @@ function PitchFactorRow() {
         onClick={handleApply}
         disabled={!canApply}
         className={cn(
-          'w-full flex items-center justify-center gap-1.5 py-1.5 font-mono font-bold text-[9px] uppercase tracking-widest transition-all',
+          'w-full flex items-center justify-center gap-1.5 py-1.5 font-mono font-bold text-[10px] uppercase tracking-widest transition-all',
           feedback === 'applied'
             ? 'bg-green-600 text-white border border-green-500'
             : feedback === 'error'

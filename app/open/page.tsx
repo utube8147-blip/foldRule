@@ -59,7 +59,7 @@ export default function OpenFilePage() {
       {error ? (
         <div role="alert" className="max-w-md text-center space-y-4">
           <p className="text-sm text-red-300">{error}</p>
-          <Link href="/dashboard" className="inline-block border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-4 py-2 text-[11px] font-bold uppercase tracking-widest">
+          <Link href="/dashboard" className="inline-block border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-4 py-2 text-xs font-bold uppercase tracking-widest">
             Go to projects
           </Link>
         </div>

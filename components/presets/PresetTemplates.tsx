@@ -58,11 +58,11 @@ export interface PresetFormComponentProps {
 // ─── Shared UI Primitives ──────────────────────────────────────────────────────
 
 export const inputBase =
-  'w-full bg-[#0d0d0d] border border-[#2a2a2a] text-white font-mono text-[11px] px-3 py-2 focus:outline-none focus:border-amber-500 transition-colors';
+  'w-full bg-[#0d0d0d] border border-[#2a2a2a] text-white font-mono text-xs px-3 py-2 focus:outline-none focus:border-amber-500 transition-colors';
 
 export function FieldLabel({ children, unit }: { children: React.ReactNode; unit?: string }) {
   return (
-    <p className="text-[9px] font-bold uppercase tracking-widest text-zinc-600 mb-1">
+    <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-600 mb-1">
       {children}
       {unit && <span className="ml-1 text-zinc-700">({unit})</span>}
     </p>
@@ -126,7 +126,7 @@ export function ToggleGroup({
             key={opt}
             type="button"
             onClick={() => onChange(fieldKey, opt)}
-            className={`flex-1 py-2 border text-[10px] font-bold uppercase tracking-widest transition-colors ${
+            className={`flex-1 py-2 border text-[11px] font-bold uppercase tracking-widest transition-colors ${
               value === opt
                 ? 'border-amber-500 text-amber-500 bg-amber-500/10'
                 : 'border-[#2a2a2a] text-zinc-600 hover:border-zinc-600 hover:text-zinc-400'
@@ -155,16 +155,16 @@ export function CheckLeaf({
             : <path d="M19 5v14H5V5h14m0-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/>
           }
         </svg>
-        <span className="text-[10px] font-mono uppercase tracking-wide text-zinc-400">{label}</span>
+        <span className="text-[11px] font-mono uppercase tracking-wide text-zinc-400">{label}</span>
       </div>
-      {qty && <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-700 shrink-0 ml-4">{qty}</span>}
+      {qty && <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-700 shrink-0 ml-4">{qty}</span>}
     </label>
   );
 }
 
 export function SectionHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h4 className="col-span-2 text-[9px] font-black uppercase tracking-widest text-amber-500/70 border-b border-[#1e1e1e] pb-1 mb-1 mt-2">
+    <h4 className="col-span-2 text-[10px] font-black uppercase tracking-widest text-amber-500/70 border-b border-[#1e1e1e] pb-1 mb-1 mt-2">
       {children}
     </h4>
   );
@@ -176,9 +176,9 @@ export function StatStrip({ stats }: { stats: { label: string; value: number | s
       style={{ gridTemplateColumns: `repeat(${stats.length}, 1fr)` }}>
       {stats.map(({ label, value, unit }) => (
         <div key={label} className="text-center">
-          <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">{label}</p>
+          <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-600">{label}</p>
           <p className="text-[20px] font-black text-amber-500 leading-none mt-0.5">{value}</p>
-          <p className="text-[8px] font-mono text-zinc-700 uppercase">{unit}</p>
+          <p className="text-[10px] font-mono text-zinc-700 uppercase">{unit}</p>
         </div>
       ))}
     </div>
@@ -450,7 +450,7 @@ function DoorForm({ formData, onChange }: PresetFormComponentProps) {
         <span className="text-[28px] font-black text-amber-500 w-12 text-center leading-none">{qty}</span>
         <button type="button" onClick={() => onChange('quantity', qty + 1)}
           className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg">+</button>
-        <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">doors</span>
+        <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">doors</span>
       </div>
 
       <SectionHeading>Dimensions</SectionHeading>
@@ -486,7 +486,7 @@ function WindowForm({ formData, onChange }: PresetFormComponentProps) {
         <span className="text-[28px] font-black text-amber-500 w-12 text-center leading-none">{qty}</span>
         <button type="button" onClick={() => onChange('quantity', qty + 1)}
           className="w-8 h-8 border border-[#2a2a2a] text-zinc-400 hover:border-zinc-500 hover:text-white transition-colors text-lg">+</button>
-        <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">windows</span>
+        <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">windows</span>
       </div>
 
       <SectionHeading>Dimensions (per unit)</SectionHeading>
@@ -590,7 +590,7 @@ function BeamForm({ formData, onChange }: PresetFormComponentProps) {
       <NumberInput fieldKey="quantity" label="Quantity"         value={formData.quantity} onChange={onChange} />
       <NumberInput fieldKey="length"   label="Length"  unit="M" value={formData.length}   onChange={onChange} />
       {total > 0 && (
-        <div className="col-span-2 text-[10px] font-mono text-zinc-500">
+        <div className="col-span-2 text-[11px] font-mono text-zinc-500">
           Total run: <span className="text-amber-500 font-black">{total} LM</span>
         </div>
       )}
@@ -648,7 +648,7 @@ function TilingForm({ formData, onChange }: PresetFormComponentProps) {
 
       {tileCount && (
         <div className="col-span-2 mt-2 border border-[#1e1e1e] p-3 bg-[#0d0d0d]">
-          <p className="text-[8px] font-mono uppercase tracking-widest text-zinc-600">Est. tile count (incl. 10% wastage)</p>
+          <p className="text-[10px] font-mono uppercase tracking-widest text-zinc-600">Est. tile count (incl. 10% wastage)</p>
           <p className="text-[28px] font-black text-amber-500 leading-none mt-1">{tileCount} <span className="text-sm font-mono text-zinc-500">tiles</span></p>
         </div>
       )}

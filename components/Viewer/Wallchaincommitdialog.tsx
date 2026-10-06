@@ -65,7 +65,7 @@ export function WallChainCommitDialog({
         <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
           <div className="flex items-center gap-2">
             <Link2 className="w-4 h-4 text-amber-400" />
-            <span className="text-[11px] font-bold text-amber-400 uppercase tracking-widest">
+            <span className="text-xs font-bold text-amber-400 uppercase tracking-widest">
               Commit Wall Chain
             </span>
           </div>
@@ -77,18 +77,18 @@ export function WallChainCommitDialog({
         {/* Stats */}
         <div className="px-4 py-3 border-b border-zinc-800 flex gap-4">
           <div className="flex flex-col">
-            <span className="text-[9px] text-zinc-500 uppercase tracking-widest">Segments</span>
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Segments</span>
             <span className="text-sm font-bold text-zinc-200">{segmentCount}</span>
           </div>
           <div className="w-px bg-zinc-800" />
           <div className="flex flex-col">
-            <span className="text-[9px] text-zinc-500 uppercase tracking-widest">Total Length</span>
+            <span className="text-[10px] text-zinc-500 uppercase tracking-widest">Total Length</span>
             <span className="text-sm font-bold text-amber-400">
               {scaleFactor > 0 ? `${totalLengthM.toFixed(3)} m` : 'Not calibrated'}
             </span>
           </div>
           {scaleFactor <= 0 && (
-            <p className="text-[9px] text-red-400 uppercase tracking-wider self-center">
+            <p className="text-[10px] text-red-400 uppercase tracking-wider self-center">
               Calibrate scale first
             </p>
           )}
@@ -96,7 +96,7 @@ export function WallChainCommitDialog({
 
         {/* Type picker */}
         <div className="px-4 py-3 border-b border-zinc-800">
-          <p className="text-[9px] text-zinc-500 uppercase tracking-widest mb-2">Measurement Type</p>
+          <p className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2">Measurement Type</p>
           <div className="flex gap-2">
             {TYPES.map(t => (
               <button
@@ -110,19 +110,19 @@ export function WallChainCommitDialog({
                 )}
               >
                 <t.icon className="w-4 h-4" />
-                <span className="text-[9px] font-bold uppercase tracking-widest">{t.label}</span>
-                <span className="text-[8px] text-zinc-600">{t.unit}</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest">{t.label}</span>
+                <span className="text-[10px] text-zinc-600">{t.unit}</span>
               </button>
             ))}
           </div>
-          <p className="text-[9px] text-zinc-600 mt-1.5">
+          <p className="text-[10px] text-zinc-600 mt-1.5">
             {TYPES.find(t => t.id === selected)?.desc}
           </p>
         </div>
 
         {/* Label input */}
         <div className="px-4 py-3 border-b border-zinc-800">
-          <p className="text-[9px] text-zinc-500 uppercase tracking-widest mb-2">Label (optional)</p>
+          <p className="text-[10px] text-zinc-500 uppercase tracking-widest mb-2">Label (optional)</p>
           <input
             ref={inputRef}
             type="text"
@@ -141,13 +141,13 @@ export function WallChainCommitDialog({
         <div className="flex gap-2 px-4 py-3">
           <button
             onClick={handleConfirm}
-            className="flex-1 bg-amber-400 hover:bg-amber-300 text-black font-bold text-[10px] uppercase tracking-widest py-2 transition-all active:scale-95"
+            className="flex-1 bg-amber-400 hover:bg-amber-300 text-black font-bold text-[11px] uppercase tracking-widest py-2 transition-all active:scale-95"
           >
             Add to Takeoff
           </button>
           <button
             onClick={onCancel}
-            className="flex-1 border border-zinc-700 hover:border-zinc-500 text-zinc-400 font-bold text-[10px] uppercase tracking-widest py-2 transition-all"
+            className="flex-1 border border-zinc-700 hover:border-zinc-500 text-zinc-400 font-bold text-[11px] uppercase tracking-widest py-2 transition-all"
           >
             Cancel
           </button>

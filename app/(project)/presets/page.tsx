@@ -79,20 +79,20 @@ function EnterpriseModal({ onClose }: { onClose: () => void }) {
           <h3 className="text-xl font-black uppercase tracking-tight text-zinc-100">
             Enterprise Feature
           </h3>
-          <p className="text-[11px] font-mono text-zinc-400 leading-relaxed max-w-xs">
+          <p className="text-xs font-mono text-zinc-400 leading-relaxed max-w-xs">
             This template is part of our Enterprise library. Upgrade to access advanced
             structural templates, custom formulas, and team collaboration tools.
           </p>
           <div className="flex gap-3 w-full mt-2">
             <button
               onClick={onClose}
-              className="flex-1 py-2.5 border border-zinc-700 text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:border-zinc-500 transition-all"
+              className="flex-1 py-2.5 border border-zinc-700 text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:border-zinc-500 transition-all"
             >
               Cancel
             </button>
             <button
               onClick={() => { window.open('https://example.com/enterprise', '_blank'); onClose(); }}
-              className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-black text-[10px] font-black uppercase tracking-widest transition-all active:scale-95"
+              className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-black uppercase tracking-widest transition-all active:scale-95"
             >
               Upgrade Now
             </button>
@@ -143,7 +143,7 @@ function TemplateCard({
         )}
         <div className="absolute bottom-2 left-3 right-3 flex items-end justify-between">
           <span className={cn(
-            'text-[8px] font-black uppercase tracking-widest px-2 py-0.5 border',
+            'text-[10px] font-black uppercase tracking-widest px-2 py-0.5 border',
             isLocked   ? 'border-zinc-700 bg-zinc-900/80 text-zinc-500' :
             isSelected ? 'border-amber-500/60 bg-amber-500/10 text-amber-400' :
                          'border-amber-600/40 bg-black/70 text-amber-500',
@@ -164,13 +164,13 @@ function TemplateCard({
         )}>
           {template.name}
         </h3>
-        <p className="text-[9px] text-zinc-600 uppercase tracking-widest font-bold mb-3">
+        <p className="text-[10px] text-zinc-600 uppercase tracking-widest font-bold mb-3">
           {template.measurementType}
         </p>
-        <p className="text-[10px] text-zinc-500 leading-relaxed line-clamp-2 flex-1">
+        <p className="text-[11px] text-zinc-500 leading-relaxed line-clamp-2 flex-1">
           {template.description}
         </p>
-        <div className="mt-3 pt-3 border-t border-zinc-800/60 text-[8px] text-zinc-600 uppercase tracking-widest font-bold">
+        <div className="mt-3 pt-3 border-t border-zinc-800/60 text-[10px] text-zinc-600 uppercase tracking-widest font-bold">
           {isLocked
             ? '— Enterprise only —'
             : isSelected
@@ -279,19 +279,19 @@ export default function PresetsPage() {
             className="flex items-center gap-2 text-zinc-500 hover:text-zinc-200 transition-colors group"
           >
             <ArrowLeft className="w-4 h-4 group-hover:-translate-x-0.5 transition-transform" />
-            <span className="text-[10px] font-black uppercase tracking-widest">Back to Workspace</span>
+            <span className="text-[11px] font-black uppercase tracking-widest">Back to Workspace</span>
           </button>
           <div className="w-px h-4 bg-zinc-800" />
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 bg-amber-500" />
-            <span className="text-[11px] font-black uppercase tracking-widest text-zinc-300">
+            <span className="text-xs font-black uppercase tracking-widest text-zinc-300">
               Preset Library
             </span>
           </div>
           {ps.projectName && (
             <>
               <div className="w-px h-4 bg-zinc-800" />
-              <span className="text-[10px] text-zinc-600 uppercase tracking-widest">{ps.projectName}</span>
+              <span className="text-[11px] text-zinc-600 uppercase tracking-widest">{ps.projectName}</span>
             </>
           )}
         </div>
@@ -304,12 +304,12 @@ export default function PresetsPage() {
               placeholder="Search templates…"
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              className="bg-[#1a1a1a] border border-zinc-800 pl-8 pr-3 py-1.5 text-[10px]
+              className="bg-[#1a1a1a] border border-zinc-800 pl-8 pr-3 py-1.5 text-[11px]
                          focus:border-amber-500 outline-none w-52 uppercase tracking-widest
                          placeholder-zinc-700 transition-colors text-zinc-300"
             />
           </div>
-          <span className="text-[9px] text-zinc-600 uppercase tracking-widest border border-zinc-800 px-2 py-1">
+          <span className="text-[10px] text-zinc-600 uppercase tracking-widest border border-zinc-800 px-2 py-1">
             {filtered.length} templates · {LOCKED_COUNT} locked
           </span>
         </div>
@@ -326,7 +326,7 @@ export default function PresetsPage() {
             <button
               onClick={() => setActiveCategory(null)}
               className={cn(
-                'px-3 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
+                'px-3 py-1 text-[10px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
                 !activeCategory
                   ? 'bg-amber-500 text-black border-amber-500'
                   : 'bg-transparent text-zinc-600 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300',
@@ -339,7 +339,7 @@ export default function PresetsPage() {
                 key={cat}
                 onClick={() => setActiveCategory(cat)}
                 className={cn(
-                  'px-3 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
+                  'px-3 py-1 text-[10px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
                   activeCategory === cat
                     ? 'bg-amber-500 text-black border-amber-500'
                     : 'bg-transparent text-zinc-600 border-zinc-800 hover:border-zinc-600 hover:text-zinc-300',
@@ -358,7 +358,7 @@ export default function PresetsPage() {
             {filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full gap-3">
                 <Lock className="w-8 h-8 text-zinc-700" />
-                <span className="text-[10px] text-zinc-600 uppercase tracking-widest">
+                <span className="text-[11px] text-zinc-600 uppercase tracking-widest">
                   No templates match your filters
                 </span>
               </div>
@@ -397,10 +397,10 @@ export default function PresetsPage() {
                 <div className="w-16 h-16 border border-zinc-800 flex items-center justify-center">
                   <Layers className="w-7 h-7 text-zinc-700" />
                 </div>
-                <p className="text-[11px] text-zinc-600 uppercase tracking-widest font-bold">
+                <p className="text-xs text-zinc-600 uppercase tracking-widest font-bold">
                   Select a template from the gallery
                 </p>
-                <p className="text-[10px] text-zinc-700 max-w-xs leading-relaxed">
+                <p className="text-[11px] text-zinc-700 max-w-xs leading-relaxed">
                   Choose any preset on the left to configure it. Your settings are preserved as you browse.
                 </p>
               </motion.div>
@@ -418,11 +418,11 @@ export default function PresetsPage() {
                   <div>
                     <div className="flex items-center gap-2 mb-1">
                       <div className="w-1.5 h-1.5 bg-amber-500" />
-                      <span className="text-[9px] text-zinc-600 uppercase tracking-widest">
+                      <span className="text-[10px] text-zinc-600 uppercase tracking-widest">
                         {selectedTemplate.category}
                       </span>
                       <ChevronRight className="w-3 h-3 text-zinc-700" />
-                      <span className="text-[9px] text-zinc-600 uppercase tracking-widest">
+                      <span className="text-[10px] text-zinc-600 uppercase tracking-widest">
                         {selectedTemplate.measurementType}
                       </span>
                     </div>
@@ -430,14 +430,14 @@ export default function PresetsPage() {
                       {selectedTemplate.name}
                     </h2>
                     {selectedTemplate.description && (
-                      <p className="text-[10px] text-zinc-500 mt-1 max-w-md leading-relaxed">
+                      <p className="text-[11px] text-zinc-500 mt-1 max-w-md leading-relaxed">
                         {selectedTemplate.description}
                       </p>
                     )}
                   </div>
                   <button
                     onClick={handleReset}
-                    className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest
+                    className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest
                                px-3 py-1.5 border border-zinc-800 text-zinc-600
                                hover:border-zinc-600 hover:text-zinc-300 transition-all shrink-0 mt-1"
                   >
@@ -459,7 +459,7 @@ export default function PresetsPage() {
                     />
                   ) : (
                     <div className="flex items-center justify-center h-full border border-dashed border-zinc-800">
-                      <p className="text-[10px] text-zinc-600 italic">
+                      <p className="text-[11px] text-zinc-600 italic">
                         No form configured for "{selectedTemplate.id}".
                       </p>
                     </div>
@@ -472,7 +472,7 @@ export default function PresetsPage() {
                     onClick={handleConfirm}
                     disabled={!activeDrawing}
                     className={cn(
-                      'flex items-center gap-2 font-black text-[11px] uppercase tracking-widest px-6 py-3 transition-all active:scale-95',
+                      'flex items-center gap-2 font-black text-xs uppercase tracking-widest px-6 py-3 transition-all active:scale-95',
                       activeDrawing
                         ? 'bg-amber-500 hover:bg-amber-400 text-black'
                         : 'bg-zinc-800 text-zinc-600 cursor-not-allowed',
@@ -485,7 +485,7 @@ export default function PresetsPage() {
 
                   <button
                     onClick={() => setSelectedTemplate(null)}
-                    className="text-[10px] font-black uppercase tracking-widest px-4 py-3
+                    className="text-[11px] font-black uppercase tracking-widest px-4 py-3
                                border border-zinc-800 text-zinc-500
                                hover:border-zinc-600 hover:text-zinc-300 transition-all"
                   >
@@ -493,12 +493,12 @@ export default function PresetsPage() {
                   </button>
 
                   {!activeDrawing && (
-                    <span className="text-[9px] font-bold text-amber-500/80 uppercase tracking-widest ml-2 border border-amber-500/30 px-2 py-1 bg-amber-500/5">
+                    <span className="text-[10px] font-bold text-amber-500/80 uppercase tracking-widest ml-2 border border-amber-500/30 px-2 py-1 bg-amber-500/5">
                       ⚠ No drawing selected — go to workspace first
                     </span>
                   )}
 
-                  <span className="text-[8px] text-zinc-700 ml-auto uppercase tracking-wider">
+                  <span className="text-[10px] text-zinc-700 ml-auto uppercase tracking-wider">
                     {selectedTemplate.measurementType?.toUpperCase()} · {selectedTemplate.category}
                   </span>
                 </div>
@@ -511,20 +511,20 @@ export default function PresetsPage() {
       {/* status bar */}
       <footer className="h-6 flex-shrink-0 bg-[#16191C] border-t border-zinc-800 flex items-center justify-between px-6">
         <div className="flex items-center gap-6">
-          <span className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold">
+          <span className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
             {ps.projectName || 'Untitled Project'}
           </span>
           <div className="w-px h-3 bg-zinc-800" />
-          <span className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold">
+          <span className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
             Objects: {ps.measurements.length}
           </span>
           <div className="w-px h-3 bg-zinc-800" />
-          <span className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold">
+          <span className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
             Drawings: {ps.drawings.length}
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold">
+          <span className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold">
             Preset Library · {ELEMENT_PRESETS.length} templates
           </span>
           <div className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />

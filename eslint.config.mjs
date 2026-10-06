@@ -37,6 +37,6 @@ export default defineConfig([
   },
   globalIgnores([
     '.next/**', 'out/**', 'node_modules/**', 'next-env.d.ts',
-    'public/**', 'lib/generate_boq.py', 'workers/svgPathUtils.js',
+    'public/**', 'workers/svgPathUtils.js',
   ]),
 ]);

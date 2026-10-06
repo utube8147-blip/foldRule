@@ -24,7 +24,7 @@ export function SnapSettingsPanel({
     <div className="absolute top-14 right-2 z-50 bg-zinc-900 border border-zinc-700 shadow-2xl shadow-black/50 p-3 w-64 font-mono">
       <div className="flex items-center gap-2 mb-3 pb-2 border-b border-zinc-800">
         <Target className="w-3.5 h-3.5 text-amber-400" />
-        <span className="text-[10px] font-bold text-zinc-200 uppercase tracking-widest">Snap Settings</span>
+        <span className="text-[11px] font-bold text-zinc-200 uppercase tracking-widest">Snap Settings</span>
       </div>
 
       {/* Snap Enable Toggle
@@ -32,11 +32,11 @@ export function SnapSettingsPanel({
           tokens (which may not be defined in tailwind.config) with the standard
           Tailwind `bg-amber-400` / `border-amber-400` utilities. */}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Corner Snap</span>
+        <span className="text-[11px] text-zinc-400 uppercase tracking-wider">Corner Snap</span>
         <button
           onClick={() => onSnapEnabledChange(!snapEnabled)}
           className={cn(
-            "text-[9px] font-bold px-2 py-0.5 border transition-all uppercase tracking-widest",
+            "text-[10px] font-bold px-2 py-0.5 border transition-all uppercase tracking-widest",
             snapEnabled
               ? "bg-amber-400 text-black border-amber-400"
               : "bg-transparent text-zinc-500 border-zinc-700 hover:border-zinc-500"
@@ -48,11 +48,11 @@ export function SnapSettingsPanel({
 
       {/* Show Pins Toggle */}
       <div className="flex items-center justify-between mb-3">
-        <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Show Pins</span>
+        <span className="text-[11px] text-zinc-400 uppercase tracking-wider">Show Pins</span>
         <button
           onClick={() => onShowPinsChange(!showPins)}
           className={cn(
-            "flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 border transition-all uppercase tracking-widest",
+            "flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 border transition-all uppercase tracking-widest",
             showPins
               ? "text-blue-400 border-blue-400/50 hover:bg-blue-400/10"
               : "text-zinc-500 border-zinc-700 hover:border-zinc-500"
@@ -66,9 +66,9 @@ export function SnapSettingsPanel({
       {/* Snap Threshold */}
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Snap Radius</span>
+          <span className="text-[11px] text-zinc-400 uppercase tracking-wider">Snap Radius</span>
           {/* FIX Bug #7: replaced text-amber-accent with text-amber-400 */}
-          <span className="text-[10px] font-bold text-amber-400">{snapThreshold}px</span>
+          <span className="text-[11px] font-bold text-amber-400">{snapThreshold}px</span>
         </div>
         <input
           type="range"
@@ -78,7 +78,7 @@ export function SnapSettingsPanel({
           onChange={e => onSnapThresholdChange(parseInt(e.target.value))}
           className="w-full h-1 accent-amber-400 cursor-pointer"
         />
-        <div className="flex justify-between text-[8px] text-zinc-600 mt-0.5">
+        <div className="flex justify-between text-[10px] text-zinc-600 mt-0.5">
           <span>8px precise</span>
           <span>30px loose</span>
         </div>
@@ -87,8 +87,8 @@ export function SnapSettingsPanel({
       {/* Confidence Filter */}
       <div>
         <div className="flex items-center justify-between mb-1">
-          <span className="text-[10px] text-zinc-400 uppercase tracking-wider">Corner Density</span>
-          <span className="text-[10px] font-bold text-blue-400">
+          <span className="text-[11px] text-zinc-400 uppercase tracking-wider">Corner Density</span>
+          <span className="text-[11px] font-bold text-blue-400">
             {confidenceFilter < 0.15 ? 'ALL' : confidenceFilter < 0.5 ? 'MAJOR' : 'KEY ONLY'}
           </span>
         </div>
@@ -100,7 +100,7 @@ export function SnapSettingsPanel({
           onChange={e => onConfidenceFilterChange(parseInt(e.target.value) / 100)}
           className="w-full h-1 accent-blue-400 cursor-pointer"
         />
-        <div className="flex justify-between text-[8px] text-zinc-600 mt-0.5">
+        <div className="flex justify-between text-[10px] text-zinc-600 mt-0.5">
           <span>All corners</span>
           <span>Key only</span>
         </div>

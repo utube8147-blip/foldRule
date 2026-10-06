@@ -208,7 +208,7 @@ function TakeoffTableImpl({
           }}
           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           onClick={(e) => e.stopPropagation()}
-          className="w-full bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
+          className="w-full bg-stone-900 border border-amber-accent text-xs font-mono p-1 outline-none text-zinc-200"
         />
       );
     }
@@ -249,7 +249,7 @@ function TakeoffTableImpl({
           }}
           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
           onClick={(e) => e.stopPropagation()}
-          className="w-20 bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200 text-right"
+          className="w-20 bg-stone-900 border border-amber-accent text-xs font-mono p-1 outline-none text-zinc-200 text-right"
         />
       );
     }
@@ -278,7 +278,7 @@ function TakeoffTableImpl({
           {value.toFixed(3)}
         </span>
         {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
-        {row.unit && <span className="text-[9px] text-zinc-600">{row.unit}</span>}
+        {row.unit && <span className="text-[10px] text-zinc-600">{row.unit}</span>}
       </div>
     );
   };
@@ -319,11 +319,11 @@ function TakeoffTableImpl({
       <span onClick={(e) => startEditing(row.id, 'materialId', e)} className="cursor-pointer hover:text-amber-accent transition-colors">
         {matched ? (
           <span className="flex flex-col gap-0.5">
-            <span className="text-[10px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0, 6)}</span>
-            <span className="text-[8px] text-zinc-500 leading-tight truncate max-w-[150px]">{matched.name}</span>
+            <span className="text-[11px] text-zinc-300 font-mono">{matched.code || matched.id.slice(0, 6)}</span>
+            <span className="text-[10px] text-zinc-500 leading-tight truncate max-w-[150px]">{matched.name}</span>
           </span>
         ) : (
-          <span className="text-[10px] text-zinc-600 italic">— assign —</span>
+          <span className="text-[11px] text-zinc-600 italic">— assign —</span>
         )}
       </span>
     );
@@ -366,7 +366,7 @@ function TakeoffTableImpl({
         onClick={open}
         title={mat ? 'Change material' : 'Assign a material from the bank'}
         className={cn(
-          'mt-0.5 block max-w-full truncate text-left text-[9px] font-mono transition-colors',
+          'mt-0.5 block max-w-full truncate text-left text-[10px] font-mono transition-colors',
           mat ? 'text-zinc-500 hover:text-amber-accent' : 'text-zinc-700 opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 hover:text-amber-accent',
         )}
       >
@@ -383,29 +383,29 @@ function TakeoffTableImpl({
           <div className="border border-zinc-800 rounded-sm bg-[#111] p-3 mt-1 space-y-3">
             {row.label && (
               <div className="flex items-start gap-3">
-                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
-                <span className="text-[9px] text-zinc-400 font-mono truncate">{row.label}</span>
+                <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
+                <span className="text-[10px] text-zinc-400 font-mono truncate">{row.label}</span>
               </div>
             )}
             <div className="flex items-start gap-3">
-              <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Material</span>
+              <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Material</span>
               <div className="flex-1 min-w-0">{renderMaterialSelect(row)}</div>
             </div>
             <div className="flex gap-4">
               <div className="flex items-center gap-3 flex-1">
-                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Rate</span>
-                {renderEditableText(row, 'unitRate', 'number', 'text-[11px] text-zinc-300 font-mono')}
-                <span className="text-[9px] text-zinc-600">/ {row.unit || 'unit'}</span>
+                <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Rate</span>
+                {renderEditableText(row, 'unitRate', 'number', 'text-xs text-zinc-300 font-mono')}
+                <span className="text-[10px] text-zinc-600">/ {row.unit || 'unit'}</span>
               </div>
               <div className="flex items-center gap-3 flex-1">
-                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Cost</span>
-                <span className="text-[11px] font-bold text-amber-accent">{formatCurrency(itemTotalCost)}</span>
+                <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Cost</span>
+                <span className="text-xs font-bold text-amber-accent">{formatCurrency(itemTotalCost)}</span>
               </div>
             </div>
             {row.notes && (
               <div className="flex items-start gap-3">
-                <span className="text-[8px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Notes</span>
-                <span className="text-[9px] text-zinc-500 font-mono truncate">{row.notes}</span>
+                <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Notes</span>
+                <span className="text-[10px] text-zinc-500 font-mono truncate">{row.notes}</span>
               </div>
             )}
           </div>
@@ -418,18 +418,18 @@ function TakeoffTableImpl({
     <aside className="w-full min-w-0 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
 
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center flex-shrink-0">
-        <span className="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
+        <span className="text-[11px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
         <div className="flex items-center gap-3">
-          <button onClick={() => onToggleVisibility()} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold" title={allVisible ? 'Hide All' : 'Show All'}>
+          <button onClick={() => onToggleVisibility()} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[11px] font-bold" title={allVisible ? 'Hide All' : 'Show All'}>
             {allVisible ? <Eye className="w-3 h-3" /> : <EyeOff className="w-3 h-3" />}
           </button>
-          <button onClick={onAddManual} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[10px] font-bold">
+          <button onClick={onAddManual} className="text-zinc-500 hover:text-amber-accent transition-colors flex items-center gap-1 text-[11px] font-bold">
             <Plus className="w-3 h-3" /> ADD ROW
           </button>
           {onExpand && (
             <>
               <div className="w-px h-3 bg-zinc-700" />
-              <button onClick={onExpand} className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[10px] font-bold" title="Open full-page takeoff view">
+              <button onClick={onExpand} className="text-zinc-500 hover:text-amber-400 transition-colors flex items-center gap-1 text-[11px] font-bold" title="Open full-page takeoff view">
                 <ExternalLink className="w-3 h-3" /> EXPAND
               </button>
             </>
@@ -452,7 +452,7 @@ function TakeoffTableImpl({
       </div>
 
       <div ref={bodyRef} className="flex-1 overflow-auto custom-scrollbar">
-        <table className="w-full text-[10px] border-collapse">
+        <table className="w-full text-[11px] border-collapse">
           <thead className="bg-stone-900/80 sticky top-0 z-20">
             <tr className="border-b border-industrial-border text-zinc-500 uppercase tracking-tighter">
               <th className="p-2 text-center w-8 border-r border-industrial-border">#</th>
@@ -502,11 +502,11 @@ function TakeoffTableImpl({
                             }}
                             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                             onClick={(e) => e.stopPropagation()}
-                            className="bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200 flex-1 min-w-0"
+                            className="bg-stone-900 border border-amber-accent text-xs font-mono p-1 outline-none text-zinc-200 flex-1 min-w-0"
                           />
                         ) : (
                           <span
-                            className="text-[11px] font-bold text-amber-500 uppercase tracking-wider truncate cursor-text hover:text-amber-300 transition-colors"
+                            className="text-xs font-bold text-amber-500 uppercase tracking-wider truncate cursor-text hover:text-amber-300 transition-colors"
                             style={{
                               display: 'block',
                               overflow: 'hidden',
@@ -519,7 +519,7 @@ function TakeoffTableImpl({
                             {header.groupName || header.description}
                           </span>
                         )}
-                        <span className="text-[8px] text-zinc-600 shrink-0">({items.length})</span>
+                        <span className="text-[10px] text-zinc-600 shrink-0">({items.length})</span>
                       </div>
                     </td>
                     <td className="p-2 text-right pr-3">
@@ -618,7 +618,7 @@ function TakeoffTableImpl({
                             item.id === selectedId ? 'bg-amber-400/[0.08] shadow-[inset_2px_0_0_#F2C230]' : isRowExpanded ? 'bg-stone-900' : 'hover:bg-stone-900/50')}
                           onClick={() => { toggleRowExpand(item.id); focusMeasurement(item.id); }}
                         >
-                          <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[9px] whitespace-nowrap">
+                          <td className="p-2 text-center border-r border-industrial-border text-zinc-600 text-[10px] whitespace-nowrap">
                             {groupIdx + 1}.{itemIdx + 1}
                           </td>
                           <td className="p-2 border-r border-industrial-border pl-7 max-w-[150px]">
@@ -632,7 +632,7 @@ function TakeoffTableImpl({
                                   onBlur={(e) => { onUpdate(item.id, { description: e.target.value }); stopEditing(); }}
                                   onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                                   onClick={(e) => e.stopPropagation()}
-                                  className="flex-1 min-w-0 bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
+                                  className="flex-1 min-w-0 bg-stone-900 border border-amber-accent text-xs font-mono p-1 outline-none text-zinc-200"
                                 />
                               ) : (
                                 <span
@@ -692,7 +692,7 @@ function TakeoffTableImpl({
                             onBlur={(e) => { onUpdate(row.id, { description: e.target.value }); stopEditing(); }}
                             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                             onClick={(e) => e.stopPropagation()}
-                            className="flex-1 min-w-0 bg-stone-900 border border-amber-accent text-[11px] font-mono p-1 outline-none text-zinc-200"
+                            className="flex-1 min-w-0 bg-stone-900 border border-amber-accent text-xs font-mono p-1 outline-none text-zinc-200"
                           />
                         ) : (
                           <span
@@ -740,7 +740,7 @@ function TakeoffTableImpl({
       <div className="p-4 bg-stone-900 border-t border-industrial-border">
         <div className="mb-4">
           <div className="flex justify-between items-end mb-1">
-            <span className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Total Estimated Cost</span>
+            <span className="text-[11px] font-bold text-zinc-500 uppercase tracking-widest">Total Estimated Cost</span>
             <span className="text-xl font-bold text-amber-accent tracking-tighter">{formatCurrency(totalCost)}</span>
           </div>
           <div className="h-0.5 bg-zinc-800 w-full rounded-full overflow-hidden">
@@ -750,7 +750,7 @@ function TakeoffTableImpl({
             />
           </div>
           {pricing.total > 0 && (
-            <p className="mt-2 text-[10px] text-zinc-500">
+            <p className="mt-2 text-[11px] text-zinc-500">
               {pricing.unpriced === 0
                 ? 'Every row is priced.'
                 : <>
@@ -764,7 +764,7 @@ function TakeoffTableImpl({
           type="button"
           onClick={onOpenAnalysis}
           disabled={!onOpenAnalysis}
-          className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+          className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
         >
           Generate Full Analysis
         </button>

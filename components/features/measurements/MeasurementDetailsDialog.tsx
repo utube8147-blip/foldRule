@@ -61,7 +61,7 @@ export function MeasurementDetailsDialog({
         
         <div className="space-y-4">
           <div>
-            <label className="block text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
+            <label className="block text-[11px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
               Name
             </label>
             <input
@@ -75,7 +75,7 @@ export function MeasurementDetailsDialog({
           </div>
           
           <div>
-            <label htmlFor="md-material" className="block text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
+            <label htmlFor="md-material" className="block text-[11px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-1.5">
               Material <span className="normal-case tracking-normal font-normal text-zinc-600">(optional — sets the rate)</span>
             </label>
             {materials.length > 0 ? (
@@ -92,12 +92,12 @@ export function MeasurementDetailsDialog({
                   const chosen = materials.find(m => m.id === material);
                   if (!chosen || materialRate(chosen) > 0) return null;
                   return (
-                    <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-mono text-zinc-400">
+                    <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-zinc-400">
                       <span><span className="text-amber-400">No rate set</span> for this material yet — its cost won’t be counted until it has one.</span>
                       <button
                         type="button"
                         onClick={() => setMaterialLibraryOpen(true)}
-                        className="font-bold uppercase tracking-widest text-[10px] text-amber-400 hover:text-amber-300"
+                        className="font-bold uppercase tracking-widest text-[11px] text-amber-400 hover:text-amber-300"
                       >
                         Set rate
                       </button>
@@ -108,11 +108,11 @@ export function MeasurementDetailsDialog({
               </>
             ) : (
               <div className="flex items-center justify-between gap-3 border border-dashed border-industrial-border px-3 py-2">
-                <span className="text-[11px] font-mono text-zinc-500">Your material bank is empty.</span>
+                <span className="text-xs font-mono text-zinc-500">Your material bank is empty.</span>
                 <button
                   type="button"
                   onClick={() => setMaterialLibraryOpen(true)}
-                  className="shrink-0 flex items-center gap-1.5 text-[10px] font-mono font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300"
+                  className="shrink-0 flex items-center gap-1.5 text-[11px] font-mono font-bold uppercase tracking-widest text-amber-400 hover:text-amber-300"
                 >
                   <Library className="w-3.5 h-3.5" /> Open material bank
                 </button>
@@ -122,7 +122,7 @@ export function MeasurementDetailsDialog({
 
           {isCountType && (
             <div>
-              <label className="block text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-2">
+              <label className="block text-[11px] font-mono font-bold text-zinc-400 uppercase tracking-widest mb-2">
                 Icon Type
               </label>
               <div className="grid grid-cols-5 gap-2">
@@ -151,13 +151,13 @@ export function MeasurementDetailsDialog({
         <div className="flex gap-3 mt-6">
           <button
             onClick={onSkip}
-            className="flex-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-2 border border-zinc-700 text-zinc-400 hover:border-zinc-500 transition-all"
+            className="flex-1 text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-2 border border-zinc-700 text-zinc-400 hover:border-zinc-500 transition-all"
           >
             Skip
           </button>
           <button
             onClick={() => onConfirm(name, material, selectedIcon)}
-            className="flex-1 text-[10px] font-mono font-bold uppercase tracking-widest px-3 py-2 bg-amber-400 text-black hover:bg-amber-300 transition-all"
+            className="flex-1 text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-2 bg-amber-400 text-black hover:bg-amber-300 transition-all"
           >
             Apply
           </button>

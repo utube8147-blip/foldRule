@@ -184,20 +184,20 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
           <Logo size={18} />
           <span className="w-px h-6 bg-industrial-border" aria-hidden />
           <div className="min-w-0">
-            <p className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Material bank</p>
+            <p className="text-[11px] font-bold uppercase tracking-widest text-zinc-500">Material bank</p>
             <p className="text-sm font-bold text-zinc-100 truncate" title={projectState.projectName}>{projectState.projectName}</p>
           </div>
         </div>
         <div className="flex items-center gap-4">
-          <span className="hidden md:block text-[10px] text-zinc-600 uppercase tracking-widest">Changes save automatically</span>
+          <span className="hidden md:block text-[11px] text-zinc-600 uppercase tracking-widest">Changes save automatically</span>
           <button
             type="button"
             onClick={onClose}
             title="Close (Esc)"
-            className="flex items-center gap-2 border border-industrial-border px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-300 hover:text-amber-accent hover:border-amber-accent/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+            className="flex items-center gap-2 border border-industrial-border px-3 py-2 text-[11px] font-bold uppercase tracking-widest text-zinc-300 hover:text-amber-accent hover:border-amber-accent/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
           >
             <X className="w-3.5 h-3.5" /> Close
-            <kbd className="border border-zinc-700 px-1 text-[9px] text-zinc-500">Esc</kbd>
+            <kbd className="border border-zinc-700 px-1 text-[10px] text-zinc-500">Esc</kbd>
           </button>
         </div>
       </header>
@@ -205,7 +205,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
       <div className="flex flex-1 min-h-0">
         {/* ── Divisions ── */}
         <aside className="w-64 shrink-0 border-r border-industrial-border bg-industrial-panel flex flex-col">
-          <div className="px-4 py-3 border-b border-industrial-border text-[10px] text-zinc-500 uppercase tracking-widest">
+          <div className="px-4 py-3 border-b border-industrial-border text-[11px] text-zinc-500 uppercase tracking-widest">
             {view === 'project' ? `${materials.length} in this project` : `${DEFAULT_MATERIALS.length} in catalogue`}
           </div>
           <nav aria-label="Divisions" className="flex-1 overflow-y-auto custom-scrollbar py-2 text-xs font-bold uppercase tracking-tight">
@@ -225,7 +225,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                 >
                   <Icon className="w-4 h-4 shrink-0" />
                   <span className="flex-1 min-w-0 truncate">{c.code} {c.name}</span>
-                  <span className="text-[9px] text-zinc-600 tabular-nums">{counts.get(c.code) ?? 0}</span>
+                  <span className="text-[10px] text-zinc-600 tabular-nums">{counts.get(c.code) ?? 0}</span>
                 </button>
               );
             })}
@@ -235,7 +235,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
               <button
                 type="button"
                 onClick={() => addFromCatalogue(DEFAULT_MATERIALS)}
-                className="w-full border border-industrial-border py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60"
+                className="w-full border border-industrial-border py-2 text-[11px] font-bold uppercase tracking-widest text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60"
               >
                 Add {catalogueMissingAll} missing catalogue items
               </button>
@@ -250,11 +250,11 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
               <h1 className="text-2xl font-bold text-amber-accent uppercase tracking-widest">
                 Division {cat ? categoryLabel(cat) : division}
               </h1>
-              <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
+              <p className="text-[11px] text-zinc-500 font-bold uppercase tracking-widest mt-1">
                 {view === 'project' ? 'Rates used in this project' : 'Built-in catalogue — add items to use them'}
               </p>
             </div>
-            <div className="flex bg-industrial-panel p-1 border border-industrial-border text-[10px] font-bold uppercase tracking-widest" role="tablist">
+            <div className="flex bg-industrial-panel p-1 border border-industrial-border text-[11px] font-bold uppercase tracking-widest" role="tablist">
               {([['project', 'This project', FolderOpen], ['catalogue', 'Catalogue', Library]] as const).map(([v, label, Icon]) => (
                 <button
                   key={v}
@@ -285,7 +285,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
             <button
               type="button"
               onClick={() => setSortBy(s => (s === 'code' ? 'name' : s === 'name' ? 'rate' : 'code'))}
-              className="flex items-center gap-2 px-4 py-2.5 border border-industrial-border text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-100"
+              className="flex items-center gap-2 px-4 py-2.5 border border-industrial-border text-[11px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-100"
               title="Change sort order"
             >
               <ArrowUpDown className="w-3.5 h-3.5" /> Sort: {sortBy === 'code' ? 'Code' : sortBy === 'name' ? 'Name' : 'Rate'}
@@ -295,7 +295,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                 type="button"
                 onClick={() => setUnratedOnly(v => !v)}
                 aria-pressed={unratedOnly}
-                className={cn('px-4 py-2.5 border text-[10px] font-bold uppercase tracking-widest',
+                className={cn('px-4 py-2.5 border text-[11px] font-bold uppercase tracking-widest',
                   unratedOnly ? 'border-amber-accent/60 text-amber-accent bg-amber-accent/10' : 'border-industrial-border text-zinc-400 hover:text-zinc-100')}
               >
                 Rate not set ({unratedCount})
@@ -306,7 +306,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
               <button
                 type="button"
                 onClick={addNew}
-                className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest"
+                className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest"
               >
                 <Plus className="w-3.5 h-3.5" /> New material
               </button>
@@ -314,7 +314,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
               <button
                 type="button"
                 onClick={() => addFromCatalogue(rows)}
-                className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2.5 text-[10px] font-bold uppercase tracking-widest"
+                className="flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2.5 text-[11px] font-bold uppercase tracking-widest"
               >
                 <Plus className="w-3.5 h-3.5" /> Add {catalogueMissingInDivision} to project
               </button>
@@ -326,7 +326,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
             <div className="flex-1 min-w-0 bg-industrial-panel border border-industrial-border flex flex-col">
               <div className="flex-1 overflow-auto custom-scrollbar">
                 <table className="w-full text-left border-collapse whitespace-nowrap">
-                  <thead className="sticky top-0 bg-industrial-panel z-10 text-[10px] uppercase tracking-widest text-zinc-500 font-bold">
+                  <thead className="sticky top-0 bg-industrial-panel z-10 text-[11px] uppercase tracking-widest text-zinc-500 font-bold">
                     <tr className="border-b border-industrial-border">
                       <th className="p-3 pl-4">Code</th>
                       <th className="p-3">Description</th>
@@ -362,7 +362,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                           <td className="p-3 text-zinc-200 max-w-[360px] truncate" title={m.name}>
                             {m.name}
                             {used > 0 && view === 'project' && (
-                              <span className="ml-2 text-[9px] text-zinc-500 border border-industrial-border px-1">{used} row{used === 1 ? '' : 's'}</span>
+                              <span className="ml-2 text-[10px] text-zinc-500 border border-industrial-border px-1">{used} row{used === 1 ? '' : 's'}</span>
                             )}
                           </td>
                           <td className="p-3 text-zinc-500">{m.unit}</td>
@@ -378,14 +378,14 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                           ) : (
                             <td className="p-3 pr-4 text-right">
                               {inProject ? (
-                                <span className="inline-flex items-center gap-1 text-emerald-400 text-[10px] font-bold uppercase tracking-widest">
+                                <span className="inline-flex items-center gap-1 text-emerald-400 text-[11px] font-bold uppercase tracking-widest">
                                   <Check className="w-3.5 h-3.5" /> Added
                                 </span>
                               ) : (
                                 <button
                                   type="button"
                                   onClick={() => addFromCatalogue([m])}
-                                  className="inline-flex items-center gap-1 border border-industrial-border px-2 py-1 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60"
+                                  className="inline-flex items-center gap-1 border border-industrial-border px-2 py-1 text-[11px] font-bold uppercase tracking-widest text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60"
                                 >
                                   <Plus className="w-3 h-3" /> Add
                                 </button>
@@ -406,11 +406,11 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                           {view === 'project' && !query && !unratedOnly && (
                             <div className="mt-4 flex justify-center gap-2">
                               <button type="button" onClick={() => setView('catalogue')}
-                                className="border border-industrial-border px-3 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-300 hover:text-amber-accent">
+                                className="border border-industrial-border px-3 py-2 text-[11px] font-bold uppercase tracking-widest text-zinc-300 hover:text-amber-accent">
                                 Browse catalogue
                               </button>
                               <button type="button" onClick={addNew}
-                                className="bg-amber-accent hover:bg-amber-400 text-black px-3 py-2 text-[10px] font-bold uppercase tracking-widest">
+                                className="bg-amber-accent hover:bg-amber-400 text-black px-3 py-2 text-[11px] font-bold uppercase tracking-widest">
                                 New material
                               </button>
                             </div>
@@ -421,7 +421,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                   </tbody>
                 </table>
               </div>
-              <div className="px-4 py-2.5 border-t border-industrial-border text-[9px] text-zinc-600 uppercase tracking-widest flex justify-between">
+              <div className="px-4 py-2.5 border-t border-industrial-border text-[10px] text-zinc-600 uppercase tracking-widest flex justify-between">
                 <span>{rows.length} item{rows.length === 1 ? '' : 's'} shown</span>
                 <span>Rates in {projectState.currency || 'LKR'}</span>
               </div>
@@ -431,7 +431,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
             {view === 'project' && selected && (
               <aside className="w-80 shrink-0 bg-industrial-panel border border-industrial-border flex flex-col overflow-y-auto custom-scrollbar">
                 <div className="flex items-center justify-between px-4 py-3 border-b border-industrial-border">
-                  <span className="text-amber-accent font-bold uppercase tracking-widest text-[11px]">Edit material</span>
+                  <span className="text-amber-accent font-bold uppercase tracking-widest text-xs">Edit material</span>
                   <button type="button" onClick={() => void remove(selected)} title="Delete material" aria-label="Delete material"
                     className="p-1 text-zinc-600 hover:text-red-400">
                     <Trash2 className="w-4 h-4" />
@@ -460,12 +460,12 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                   <datalist id="material-units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>
 
                   <div className="border-t border-industrial-border pt-4 space-y-2">
-                    <h3 className="text-[10px] text-amber-accent font-bold uppercase tracking-widest">Rate per {selected.unit || 'unit'}</h3>
+                    <h3 className="text-[11px] text-amber-accent font-bold uppercase tracking-widest">Rate per {selected.unit || 'unit'}</h3>
                     {([['materialCost', 'Material'], ['laborCost', 'Labour'], ['equipmentCost', 'Equipment']] as const).map(([k, label]) => (
                       <label key={k} className="flex items-center justify-between gap-3 bg-industrial-black border border-industrial-border px-3 py-2">
-                        <span className="text-[10px] uppercase tracking-widest text-zinc-500">{label}</span>
+                        <span className="text-[11px] uppercase tracking-widest text-zinc-500">{label}</span>
                         <span className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-zinc-600">{projectState.currency || 'LKR'}</span>
+                          <span className="text-[11px] text-zinc-600">{projectState.currency || 'LKR'}</span>
                           <input
                             type="number" min={0} step="0.01" inputMode="decimal"
                             value={selected[k] || ''}
@@ -477,7 +477,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                       </label>
                     ))}
                     <div className="flex items-center justify-between border-l-2 border-amber-accent bg-industrial-black px-3 py-2">
-                      <span className="text-[10px] uppercase tracking-widest text-amber-accent font-bold">Total rate</span>
+                      <span className="text-[11px] uppercase tracking-widest text-amber-accent font-bold">Total rate</span>
                       <span className="text-sm font-bold text-amber-accent">{formatCurrency(totalRate(selected))}</span>
                     </div>
                   </div>
@@ -491,7 +491,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                         <button
                           type="button"
                           onClick={() => applyRateToRows(selected)}
-                          className="w-full border border-amber-accent/60 text-amber-accent hover:bg-amber-accent/10 py-2 text-[10px] font-bold uppercase tracking-widest"
+                          className="w-full border border-amber-accent/60 text-amber-accent hover:bg-amber-accent/10 py-2 text-[11px] font-bold uppercase tracking-widest"
                         >
                           Apply this rate to {staleRows} row{staleRows === 1 ? '' : 's'}
                         </button>
@@ -510,7 +510,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                     </Field>
                   </div>
                   {selected.builtIn && (
-                    <p className="text-[10px] text-zinc-600">From the built-in catalogue. Your edits apply to this project only.</p>
+                    <p className="text-[11px] text-zinc-600">From the built-in catalogue. Your edits apply to this project only.</p>
                   )}
                 </div>
               </aside>
@@ -525,7 +525,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="block">
-      <span className="block text-[10px] text-zinc-500 uppercase tracking-widest font-bold mb-1">{label}</span>
+      <span className="block text-[11px] text-zinc-500 uppercase tracking-widest font-bold mb-1">{label}</span>
       {children}
     </label>
   );

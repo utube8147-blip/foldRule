@@ -251,7 +251,7 @@ export function MaterialPicker({
 
   const selectedLabel = selected ? selected.name : '';
   const selectedRate  = selected ? materialRate(selected) : 0;
-  const h = size === 'sm' ? 'h-8 text-[11px]' : 'h-10 text-sm';
+  const h = size === 'sm' ? 'h-8 text-xs' : 'h-10 text-sm';
 
   return (
     <div ref={wrapRef} className={cn('relative', className)}>
@@ -282,7 +282,7 @@ export function MaterialPicker({
           spellCheck={false}
         />
         {!open && selected && (
-          <span className={cn('shrink-0 font-mono text-[10px]', selectedRate ? 'text-amber-400' : 'text-zinc-500')}>
+          <span className={cn('shrink-0 font-mono text-[11px]', selectedRate ? 'text-amber-400' : 'text-zinc-500')}>
             {selectedRate ? `${formatCurrency(selectedRate)}/${selected.unit}` : 'no rate'}
           </span>
         )}
@@ -311,7 +311,7 @@ export function MaterialPicker({
           onMouseDown={e => e.preventDefault() /* keep focus in the search box */}
         >
           {wantKind && (
-            <div className="flex items-center justify-between gap-3 border-b border-industrial-border px-3 py-1.5 text-[10px] text-zinc-500">
+            <div className="flex items-center justify-between gap-3 border-b border-industrial-border px-3 py-1.5 text-[11px] text-zinc-500">
               <span>
                 {allUnits ? 'All units' : <>Materials priced <span className="text-zinc-300">{KIND_LABEL[wantKind]}</span></>}
               </span>
@@ -326,10 +326,10 @@ export function MaterialPicker({
           )}
           <div id={listId} role="listbox" aria-label="Materials" style={{ maxHeight: pos.maxH }} className="overflow-y-auto custom-scrollbar py-1">
             {matchCount === 0 && (
-              <p className="px-3 py-6 text-center text-[11px] text-zinc-500">
+              <p className="px-3 py-6 text-center text-xs text-zinc-500">
                 {query ? <>No materials match “{query}”.</> : 'No materials in this unit yet.'}
                 {wantKind && !allUnits && (
-                  <button type="button" onClick={() => setAllUnits(true)} className="block mx-auto mt-2 font-bold uppercase tracking-widest text-[10px] text-amber-400 hover:text-amber-300">
+                  <button type="button" onClick={() => setAllUnits(true)} className="block mx-auto mt-2 font-bold uppercase tracking-widest text-[11px] text-amber-400 hover:text-amber-300">
                     Show all units
                   </button>
                 )}
@@ -345,7 +345,7 @@ export function MaterialPicker({
                     onMouseEnter={() => { setActive(idx); hoverGroup(e.label); }}
                     onClick={() => { if (!query) toggleGroup(e.label); }}
                     className={cn(
-                      'flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-[10px] font-bold uppercase tracking-widest border-b border-industrial-border/40',
+                      'flex items-center gap-2 px-3 py-2 cursor-pointer select-none text-[11px] font-bold uppercase tracking-widest border-b border-industrial-border/40',
                       e.open ? 'text-amber-300 bg-zinc-800/40' : 'text-zinc-400',
                       isActive && 'bg-amber-400/10 text-zinc-100',
                     )}
@@ -361,7 +361,7 @@ export function MaterialPicker({
                   <div
                     key="none" id={`${listId}-opt-${idx}`} data-opt={idx} role="option" aria-selected={!value}
                     onMouseEnter={() => setActive(idx)} onClick={() => pick(null)}
-                    className={cn('px-3 py-2 text-[11px] cursor-pointer text-zinc-400 border-b border-industrial-border/40', isActive && 'bg-amber-400/10 text-zinc-100')}
+                    className={cn('px-3 py-2 text-xs cursor-pointer text-zinc-400 border-b border-industrial-border/40', isActive && 'bg-amber-400/10 text-zinc-100')}
                   >
                     — No material —
                   </div>
@@ -381,14 +381,14 @@ export function MaterialPicker({
                 >
                   <span className="flex-1 min-w-0">
                     <span className="block truncate text-[12px] text-zinc-100"><Highlight text={m.name} query={query.trim()} /></span>
-                    <span className="block truncate text-[9px] text-zinc-500"><Highlight text={m.code || ''} query={query.trim()} /></span>
+                    <span className="block truncate text-[10px] text-zinc-500"><Highlight text={m.code || ''} query={query.trim()} /></span>
                   </span>
                   {rate > 0 ? (
-                    <span className="shrink-0 text-right text-[11px] text-amber-400 tabular-nums">
+                    <span className="shrink-0 text-right text-xs text-amber-400 tabular-nums">
                       {formatCurrency(rate)}<span className="text-zinc-500">/{m.unit}</span>
                     </span>
                   ) : (
-                    <span className="shrink-0 text-right text-[10px] text-zinc-500">
+                    <span className="shrink-0 text-right text-[11px] text-zinc-500">
                       Set rate <span className="text-zinc-600">· {m.unit}</span>
                     </span>
                   )}
@@ -396,7 +396,7 @@ export function MaterialPicker({
               );
             })}
           </div>
-          <div className="flex items-center justify-between gap-3 border-t border-industrial-border px-3 py-2 text-[10px] text-zinc-500">
+          <div className="flex items-center justify-between gap-3 border-t border-industrial-border px-3 py-2 text-[11px] text-zinc-500">
             <span className="hidden sm:inline">Type to search · ↑↓ move · → open · Enter choose</span>
             {onOpenBank && (
               <button

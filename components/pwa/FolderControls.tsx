@@ -35,7 +35,7 @@ export function InstallAppButton({ className }: { className?: string }) {
       onClick={() => void promptInstall()}
       title="Install Foldrule as an app on this computer"
       className={cn(
-        'flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-1.5 text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60 uppercase tracking-widest transition-colors',
+        'flex items-center gap-2 text-[11px] font-bold border border-industrial-border px-3 py-1.5 text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60 uppercase tracking-widest transition-colors',
         className,
       )}
     >
@@ -60,7 +60,7 @@ export function StorageButton({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       title={connected ? `Projects are also saved to the folder “${f.folderName}”` : 'Choose where projects are saved'}
-      className="flex items-center gap-2 text-[10px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors max-w-[220px]"
+      className="flex items-center gap-2 text-[11px] font-bold border border-industrial-border px-3 py-2 text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 uppercase tracking-widest transition-colors max-w-[220px]"
     >
       {connected ? <FolderSync className="w-3.5 h-3.5 shrink-0" aria-hidden /> : <HardDrive className="w-3.5 h-3.5 shrink-0" aria-hidden />}
       <span className="truncate">{connected ? f.folderName : 'Save location'}</span>
@@ -89,7 +89,7 @@ export function FolderPermissionStrip({ onAfterResume }: { onAfterResume?: () =>
 
   const blocked = f.permission === 'denied' || !!f.error;
   return (
-    <div role="status" className="border-b border-amber-400/30 bg-amber-400/[0.07] px-6 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] font-mono">
+    <div role="status" className="border-b border-amber-400/30 bg-amber-400/[0.07] px-6 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs font-mono">
       <FolderSync className="w-4 h-4 text-amber-400 shrink-0" aria-hidden />
       <span className="text-amber-100/90 flex-1 min-w-[240px]">
         {blocked
@@ -99,22 +99,22 @@ export function FolderPermissionStrip({ onAfterResume }: { onAfterResume?: () =>
       {blocked ? (
         <>
           <button type="button" onClick={() => void connectFolder().then(ok => ok && onAfterResume?.())}
-            className="bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest px-3 py-1.5 text-[10px]">
+            className="bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest px-3 py-1.5 text-[11px]">
             Choose folder again
           </button>
           <button type="button" onClick={() => void disconnectFolder()}
-            className="text-zinc-400 hover:text-zinc-200 uppercase tracking-widest text-[10px] font-bold">
+            className="text-zinc-400 hover:text-zinc-200 uppercase tracking-widest text-[11px] font-bold">
             Stop using folder
           </button>
         </>
       ) : (
         <button type="button" onClick={() => void resumeFolder().then(ok => ok && onAfterResume?.())}
-          className="bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest px-3 py-1.5 text-[10px]">
+          className="bg-amber-accent hover:bg-amber-400 text-black font-bold uppercase tracking-widest px-3 py-1.5 text-[11px]">
           Allow access
         </button>
       )}
       <button type="button" onClick={dismiss} aria-label="Hide for now"
-        className="text-zinc-500 hover:text-zinc-200 uppercase tracking-widest text-[10px] font-bold">
+        className="text-zinc-500 hover:text-zinc-200 uppercase tracking-widest text-[11px] font-bold">
         Not now
       </button>
     </div>
@@ -163,7 +163,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
           <section className="flex gap-3">
             <HardDrive className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" aria-hidden />
             <div>
-              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-[11px]">This browser · always on</h3>
+              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-xs">This browser · always on</h3>
               <p className="mt-1 text-zinc-400">
                 Every change saves here automatically, including offline. This is what the app works from.
               </p>
@@ -173,7 +173,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
           <section className="flex gap-3">
             <FolderOpen className={cn('w-5 h-5 shrink-0 mt-0.5', connected ? 'text-amber-accent' : 'text-zinc-500')} aria-hidden />
             <div className="flex-1">
-              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-[11px]">
+              <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-xs">
                 A folder on this computer {connected ? '' : '· optional'}
               </h3>
 
@@ -191,25 +191,27 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
                   <div className="mt-3 flex flex-wrap gap-2">
                     {f.permission === 'granted' ? (
                       <button type="button" disabled={busy || f.syncing} onClick={() => void act(syncFolder)}
-                        className="border border-industrial-border px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest hover:border-zinc-500 disabled:opacity-50">
+                        className="border border-industrial-border px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest hover:border-zinc-500 disabled:opacity-50">
                         Sync now
                       </button>
                     ) : f.permission === 'prompt' && !f.error ? (
                       <button type="button" disabled={busy} onClick={() => void act(resumeFolder)}
-                        className="bg-amber-accent hover:bg-amber-400 text-black px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest disabled:opacity-50">
+                        className="bg-amber-accent hover:bg-amber-400 text-black px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest disabled:opacity-50">
                         Allow access
                       </button>
                     ) : null}
                     <button type="button" disabled={busy} onClick={() => void act(connectFolder)}
-                      className="border border-industrial-border px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest hover:border-zinc-500 disabled:opacity-50">
+                      className="border border-industrial-border px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest hover:border-zinc-500 disabled:opacity-50">
                       Change folder
                     </button>
                     <button type="button" disabled={busy} onClick={() => void act(disconnectFolder)}
-                      className="px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-zinc-500 hover:text-red-300 disabled:opacity-50">
+                      className="px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-zinc-500 hover:text-red-300 disabled:opacity-50">
                       Stop saving to folder
                     </button>
                   </div>
                   <p className="mt-3 text-zinc-500">
+                    This folder is used by Foldrule everywhere on this computer — the browser tab and the installed
+                    app share it, so you only choose it once.{' '}
                     Each project is a sub-folder with a <span className="text-zinc-300">project.json</span> and its PDFs.
                     Point this at a OneDrive or Google Drive folder to keep projects in sync across computers.
                     Stopping leaves the files where they are.
@@ -222,7 +224,7 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
                     between computers through OneDrive or Google Drive. Your browser will ask once to allow access.
                   </p>
                   <button type="button" disabled={busy} onClick={() => void act(connectFolder)}
-                    className="mt-3 flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 text-[10px] font-bold uppercase tracking-widest disabled:opacity-50">
+                    className="mt-3 flex items-center gap-2 bg-amber-accent hover:bg-amber-400 text-black px-4 py-2 text-[11px] font-bold uppercase tracking-widest disabled:opacity-50">
                     <FolderOpen className="w-3.5 h-3.5" aria-hidden />
                     Choose folder
                   </button>
@@ -235,14 +237,14 @@ export function StorageDialog({ onClose, onChanged }: { onClose: () => void; onC
             <section className="border-t border-industrial-border pt-5 flex gap-3">
               <MonitorDown className="w-5 h-5 text-zinc-500 shrink-0 mt-0.5" aria-hidden />
               <div className="flex-1">
-                <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-[11px]">Tip: install Foldrule</h3>
+                <h3 className="font-bold uppercase tracking-widest text-zinc-200 text-xs">Tip: install Foldrule</h3>
                 <p className="mt-1 text-zinc-400">
                   As an installed app, your browser can remember folder access (“Allow on every visit”), so you’re not asked
                   again. It also gets its own window, works offline, and opens PDFs and .foldrule files from File Explorer.
                 </p>
                 {canInstall ? (
                   <button type="button" onClick={() => void promptInstall()}
-                    className="mt-3 flex items-center gap-2 border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest">
+                    className="mt-3 flex items-center gap-2 border border-amber-accent text-amber-accent hover:bg-amber-accent/10 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest">
                     <MonitorDown className="w-3.5 h-3.5" aria-hidden />
                     Install app
                   </button>
@@ -264,16 +266,16 @@ export function FolderSaveHint() {
   const f = useFolderStatus();
   if (!f.folderName) return null;
   if (f.permission === 'granted' && !f.error) {
-    return <span className="text-[10px] text-zinc-600 font-semibold" title={`Also saved to the folder “${f.folderName}”`}>· folder</span>;
+    return <span className="text-[11px] text-zinc-600 font-semibold" title={`Also saved to the folder “${f.folderName}”`}>· folder</span>;
   }
   if (f.permission === 'prompt' && !f.error) {
     return (
       <button type="button" onClick={() => void resumeFolder()}
         title={`Saving to “${f.folderName}” is paused. Click to allow it again.`}
-        className="text-[10px] font-bold text-amber-400 hover:text-amber-300 border border-amber-400/40 px-1.5 py-0.5">
+        className="text-[11px] font-bold text-amber-400 hover:text-amber-300 border border-amber-400/40 px-1.5 py-0.5">
         Folder paused · Allow
       </button>
     );
   }
-  return <span className="text-[10px] font-semibold text-red-400" title={f.error ?? 'Folder access blocked'}>· folder not saving</span>;
+  return <span className="text-[11px] font-semibold text-red-400" title={f.error ?? 'Folder access blocked'}>· folder not saving</span>;
 }

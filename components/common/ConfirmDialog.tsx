@@ -134,7 +134,7 @@ function Dialog({ req, onClose }: { req: Request; onClose: (ok: boolean) => void
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-industrial-border">
           <div className="flex items-center gap-2.5 min-w-0">
             <span className="p-1.5 bg-industrial-black/60">{tone.icon}</span>
-            <h2 id="confirm-title" className="text-[11px] font-bold uppercase tracking-widest text-zinc-100 truncate">{req.title}</h2>
+            <h2 id="confirm-title" className="text-xs font-bold uppercase tracking-widest text-zinc-100 truncate">{req.title}</h2>
           </div>
           <button type="button" onClick={() => onClose(false)} aria-label="Close" className="p-1 text-zinc-500 hover:text-zinc-200">
             <X className="w-4 h-4" />
@@ -143,7 +143,7 @@ function Dialog({ req, onClose }: { req: Request; onClose: (ok: boolean) => void
 
         <div id="confirm-message" className="px-4 py-4 space-y-2">
           <div className="text-xs text-zinc-300 leading-relaxed break-words">{req.message}</div>
-          {req.detail && <div className="text-[11px] text-zinc-500 leading-relaxed">{req.detail}</div>}
+          {req.detail && <div className="text-xs text-zinc-500 leading-relaxed">{req.detail}</div>}
         </div>
 
         <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-industrial-border bg-industrial-black/40">
@@ -152,7 +152,7 @@ function Dialog({ req, onClose }: { req: Request; onClose: (ok: boolean) => void
               ref={cancelRef}
               type="button"
               onClick={() => onClose(false)}
-              className="px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-100 border border-transparent hover:border-industrial-border focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+              className="px-4 py-2 text-[11px] font-bold uppercase tracking-widest text-zinc-400 hover:text-zinc-100 border border-transparent hover:border-industrial-border focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
             >
               {req.cancelText ?? 'Cancel'}
             </button>
@@ -161,7 +161,7 @@ function Dialog({ req, onClose }: { req: Request; onClose: (ok: boolean) => void
             ref={confirmRef}
             type="button"
             onClick={() => onClose(true)}
-            className={cn('px-4 py-2 text-[10px] font-bold uppercase tracking-widest transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300', tone.button)}
+            className={cn('px-4 py-2 text-[11px] font-bold uppercase tracking-widest transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-300', tone.button)}
           >
             {req.confirmText ?? (req.alertOnly ? 'OK' : 'Delete')}
           </button>

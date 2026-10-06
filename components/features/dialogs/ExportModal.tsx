@@ -40,7 +40,7 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
         <div className="p-6 space-y-6">
           {/* Filename Input */}
           <div>
-            <label className="block text-[10px] text-stone-500 uppercase tracking-[0.2em] mb-3 font-bold">
+            <label className="block text-[11px] text-stone-500 uppercase tracking-[0.2em] mb-3 font-bold">
               Target Filename
             </label>
             <div className="bg-[#16191C] border border-[#2E353C] px-4 py-3 flex items-center gap-3 group focus-within:border-amber-accent transition-colors">
@@ -57,17 +57,17 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
           {/* Two Column Settings */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <label className="block text-[10px] text-stone-500 uppercase tracking-[0.2em] font-bold">Includes</label>
+              <label className="block text-[11px] text-stone-500 uppercase tracking-[0.2em] font-bold">Includes</label>
               <div className="flex items-center gap-3 bg-[#16191C] border border-[#2E353C] p-3 cursor-pointer hover:border-stone-700 transition-colors">
                 <div className="w-3 h-3 bg-amber-accent"></div>
-                <span className="text-[10px] uppercase text-stone-300 font-bold tracking-widest">ALL MEASUREMENTS</span>
+                <span className="text-[11px] uppercase text-stone-300 font-bold tracking-widest">ALL MEASUREMENTS</span>
               </div>
             </div>
             <div className="space-y-2">
-              <label className="block text-[10px] text-stone-500 uppercase tracking-[0.2em] font-bold">Format</label>
+              <label className="block text-[11px] text-stone-500 uppercase tracking-[0.2em] font-bold">Format</label>
               <div className="flex items-center gap-3 bg-[#16191C] border border-[#2E353C] p-3 cursor-pointer hover:border-stone-700 transition-colors">
                 <Table className="w-4 h-4 text-stone-500" />
-                <span className="text-[10px] uppercase text-stone-300 font-bold tracking-widest">STANDARD XLSX</span>
+                <span className="text-[11px] uppercase text-stone-300 font-bold tracking-widest">STANDARD XLSX</span>
               </div>
             </div>
           </div>
@@ -75,8 +75,8 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
           {/* Calculation Engine Status */}
           <div className="bg-[#1a1a1a] p-4 border border-[#2E353C] space-y-3">
             <div className="flex justify-between items-center">
-              <span className="text-[9px] text-stone-500 uppercase tracking-widest font-bold">CALCULATION ENGINE</span>
-              <span className="text-amber-accent text-[9px] uppercase font-black tracking-widest">VERIFIED</span>
+              <span className="text-[10px] text-stone-500 uppercase tracking-widest font-bold">CALCULATION ENGINE</span>
+              <span className="text-amber-accent text-[10px] uppercase font-black tracking-widest">VERIFIED</span>
             </div>
             <div className="h-1 bg-[#16191C] w-full">
               <div className="h-full bg-amber-accent w-full"></div>
@@ -93,7 +93,7 @@ export function ExportModal({ projectState, onClose, onExport }: ExportModalProp
             <Download className="w-5 h-5 pointer-events-none text-black stroke-[3]" />
             Download .xlsx
           </button>
-          <p className="text-[9px] text-center text-stone-600 mt-4 uppercase tracking-widest font-bold">
+          <p className="text-[10px] text-center text-stone-600 mt-4 uppercase tracking-widest font-bold">
             EXPORTING {filesCount} FILES WITH {pointsCount} TOTAL TAKEOFF POINTS
           </p>
         </div>

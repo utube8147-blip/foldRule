@@ -1,9 +1,9 @@
-// Sign-in screens. There is no account server yet: signing in stores a local
-// profile in this browser (lib/profile.ts) and opens the dashboard.
+// Profile screen. There are no accounts: the profile is stored in this browser
+// only (lib/profile.ts). /login redirects to /register.
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title:  'Log in',
+  title:  'Profile',
   robots: { index: false, follow: true },
 };
 

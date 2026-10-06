@@ -143,6 +143,9 @@ async function extractOperators(page: any, isStale: () => boolean = () => false)
 // ─── Inline worker ────────────────────────────────────────────────────────────
 
 
+/** Generous: very dense sheets take a few seconds; a dead worker takes forever. */
+const GEOMETRY_TIMEOUT_MS = 60_000;
+
 function createGeometryWorker(): Worker {
   return new Worker(new URL('../../workers/pdfGeometry.worker.js', import.meta.url));
 }
@@ -196,6 +199,7 @@ export function usePdfDocument(): UsePdfDocumentReturn {
     const worker = createGeometryWorker();
     workerRef.current = worker;
 
+    try {
     await new Promise<void>((resolve, reject) => {
       worker.onmessage = (e) => {
         const msg = e.data;
@@ -217,7 +221,17 @@ export function usePdfDocument(): UsePdfDocumentReturn {
           reject(new Error(msg.message));
         }
       };
-      worker.onerror = (err) => reject(err);
+      worker.onerror = (err) => reject(new Error(err.message || 'The snap geometry worker failed to start.'));
+      worker.onmessageerror = () => reject(new Error('The snap geometry worker sent an unreadable reply.'));
+      // Never wait forever: a worker that fails to start is otherwise silent
+      // and the viewer would sit on "Extracting snap geometry…" indefinitely.
+      const watchdog = setTimeout(
+        () => reject(new Error('Reading the drawing’s lines took too long. Snapping is off for this page — reload to try again.')),
+        GEOMETRY_TIMEOUT_MS,
+      );
+      const settle = <A extends unknown[]>(fn: (...a: A) => void) => (...a: A) => { clearTimeout(watchdog); fn(...a); };
+      resolve = settle(resolve);
+      reject  = settle(reject);
       // Transfer the path buffers (zero-copy) instead of cloning them.
       const transfer: ArrayBuffer[] = [];
       for (const op of operators) {
@@ -226,8 +240,10 @@ export function usePdfDocument(): UsePdfDocumentReturn {
       }
       worker.postMessage({ type: 'PARSE', operators, dims: pageDims, viewportTransform }, transfer);
     });
-    worker.terminate();
-    if (workerRef.current === worker) workerRef.current = null;
+    } finally {
+      worker.terminate();
+      if (workerRef.current === worker) workerRef.current = null;
+    }
     if (reqId === requestIdRef.current) setStage('done');
   }, []);
 

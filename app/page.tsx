@@ -1,4 +1,4 @@
-// Landing page. The design lives in components/landing/Landing.tsx (a client
+// Landing page. The design lives in components/landing/landing.tsx (a client
 // component, for its animations); this server wrapper adds SEO metadata and
 // structured data, which a client component can't export.
 

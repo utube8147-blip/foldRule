@@ -1,30 +1,36 @@
 import type { Metadata, Viewport } from 'next';
-import { Inter, JetBrains_Mono, Archivo } from 'next/font/google';
+import localFont from 'next/font/local';
 import './globals.css';
 import { MotionProvider } from '@/components/MotionProvider';
 import { PwaProvider } from '@/components/pwa/PwaProvider';
 import { ConfirmProvider } from '@/components/common/ConfirmDialog';
 import { BRAND } from '@/lib/brand';
 
-// App typography (unchanged from the original design): Inter + JetBrains Mono.
-const inter = Inter({
-  subsets: ['latin'],
+// Fonts are self-hosted (app/fonts/*.woff2, variable fonts from Fontsource), so
+// the build never depends on reaching Google Fonts and the installed app has
+// its fonts offline. Inter (UI) + JetBrains Mono (labels, values).
+const inter = localFont({
+  src: [
+    { path: './fonts/inter-latin-wght-normal.woff2',     weight: '100 900', style: 'normal' },
+  ],
   variable: '--font-inter',
   display: 'swap',
 });
 
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
+const jetbrainsMono = localFont({
+  src: './fonts/jetbrains-mono-latin-wght-normal.woff2',
+  weight: '100 800',
   variable: '--font-jetbrains',
   display: 'swap',
 });
 
-// Archivo is used only for the Foldrule wordmark (the logo).
-const archivo = Archivo({
-  subsets: ['latin'],
+// Archivo (width + weight axes) is used only for the Foldrule wordmark.
+const archivo = localFont({
+  src: './fonts/archivo-latin-wdth-normal.woff2',
+  weight: '100 900',
   variable: '--font-archivo',
-  axes: ['wdth'],
   display: 'swap',
+  declarations: [{ prop: 'font-stretch', value: '62% 125%' }],
 });
 
 const defaultTitle = `${BRAND.name} — ${BRAND.tagline}`;

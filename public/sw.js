@@ -58,13 +58,23 @@ self.addEventListener('fetch', (event) => {
   }
 
   if (isAsset(url)) {
+    // Worker scripts need special care. The bundler passes each worker its
+    // start-up config in the URL fragment (…worker.js#params=…). A Response
+    // that comes from fetch() or the cache carries its own URL — WITHOUT the
+    // fragment — and the browser uses that as the worker's location, so the
+    // worker starts with no config, never installs its message handler, and
+    // snapping / geometry / fill silently hang. Handing back a copy with no
+    // URL makes the browser keep the requested URL, fragment included.
+    const isWorkerScript = req.destination === 'worker' || req.destination === 'sharedworker';
     event.respondWith((async () => {
       const cache = await caches.open(ASSETS);
-      const hit = await cache.match(req);
-      if (hit) return hit;
-      const res = await fetch(req);
-      if (res.ok) cache.put(req, res.clone());
-      return res;
+      let res = await cache.match(req, { ignoreSearch: false });
+      if (!res) {
+        res = await fetch(req);
+        if (res.ok) cache.put(req, res.clone());
+      }
+      if (!isWorkerScript || !res.ok) return res;
+      return new Response(await res.blob(), { status: res.status, statusText: res.statusText, headers: res.headers });
     })());
   }
 });

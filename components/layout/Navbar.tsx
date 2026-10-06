@@ -29,7 +29,7 @@ function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets,
         </Link>
         
         <div className="flex flex-col">
-          <label htmlFor="project-name" className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-1">Project</label>
+          <label htmlFor="project-name" className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest leading-none mb-1">Project</label>
           <input
             id="project-name"
             maxLength={120}

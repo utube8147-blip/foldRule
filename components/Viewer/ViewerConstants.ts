@@ -321,6 +321,8 @@ export interface ViewerToolbarAPI {
 
   snapEnabled: boolean;
   setSnapEnabled: (v: boolean) => void;
+  orthoEnabled?: boolean;
+  setOrthoEnabled?: (v: boolean) => void;
 
   showSnapSettings: boolean;
   setShowSnapSettings: (v: boolean) => void;

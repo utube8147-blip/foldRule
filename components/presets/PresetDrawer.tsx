@@ -93,20 +93,20 @@ function EnterpriseUpgradeModal({ onClose }: { onClose: () => void }) {
           <h3 className="text-lg font-black uppercase tracking-tight text-zinc-100">
             Enterprise Feature
           </h3>
-          <p className="text-[11px] font-mono text-zinc-400 leading-relaxed">
+          <p className="text-xs font-mono text-zinc-400 leading-relaxed">
             This template is part of our Enterprise library. Upgrade to access
             advanced structural templates, custom formulas, and team collaboration.
           </p>
           <div className="flex items-center gap-3 mt-2 w-full">
             <button
               onClick={onClose}
-              className="flex-1 px-4 py-2 border border-[#2a2a2a] text-[10px] font-black uppercase tracking-widest text-zinc-400 hover:border-zinc-500 transition-all"
+              className="flex-1 px-4 py-2 border border-[#2a2a2a] text-[11px] font-black uppercase tracking-widest text-zinc-400 hover:border-zinc-500 transition-all"
             >
               Cancel
             </button>
             <button
               onClick={() => { window.open('https://example.com/enterprise', '_blank'); onClose(); }}
-              className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black text-[10px] font-black uppercase tracking-widest transition-all active:scale-95"
+              className="flex-1 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-black text-[11px] font-black uppercase tracking-widest transition-all active:scale-95"
             >
               Upgrade Now
             </button>
@@ -163,7 +163,7 @@ function TemplateCard({
         </div>
         <div className="flex flex-col items-end gap-1.5 shrink-0">
           <span className={cn(
-            'text-[8px] font-black uppercase tracking-widest px-2 py-0.5 border',
+            'text-[10px] font-black uppercase tracking-widest px-2 py-0.5 border',
             isLocked
               ? 'border-zinc-700 bg-zinc-800/30 text-zinc-500'
               : isSelected
@@ -186,15 +186,15 @@ function TemplateCard({
         )}>
           {template.name}
         </h3>
-        <p className="text-[9px] text-zinc-700 uppercase tracking-widest font-bold mb-3">
+        <p className="text-[10px] text-zinc-700 uppercase tracking-widest font-bold mb-3">
           {template.measurementType}
         </p>
         <div className="flex-1 border-t border-[#1e1e1e] pt-3 mb-3">
-          <p className="text-[9px] text-zinc-600 leading-relaxed line-clamp-2">
+          <p className="text-[10px] text-zinc-600 leading-relaxed line-clamp-2">
             {template.description}
           </p>
         </div>
-        <div className="flex items-center gap-1 text-[8px] text-zinc-700 uppercase tracking-widest font-bold mt-auto">
+        <div className="flex items-center gap-1 text-[10px] text-zinc-700 uppercase tracking-widest font-bold mt-auto">
           {isLocked
             ? <><Lock className="w-2.5 h-2.5" /><span>Enterprise only</span></>
             : <><Copy className="w-2.5 h-2.5" /><span>Click to configure</span></>
@@ -326,7 +326,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                 <div className="w-2 h-2 bg-amber-500 shrink-0" />
                 <button
                   onClick={() => setSelectedTemplate(null)}
-                  className="text-[10px] font-mono font-black uppercase tracking-widest text-zinc-300 hover:text-amber-400 transition-colors shrink-0"
+                  className="text-[11px] font-mono font-black uppercase tracking-widest text-zinc-300 hover:text-amber-400 transition-colors shrink-0"
                 >
                   PRESET TEMPLATES
                 </button>
@@ -334,12 +334,12 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                 {selectedTemplate ? (
                   <>
                     <ChevronRight className="w-3 h-3 text-zinc-600 shrink-0" />
-                    <span className="text-[10px] font-mono font-black uppercase tracking-widest text-amber-500 truncate">
+                    <span className="text-[11px] font-mono font-black uppercase tracking-widest text-amber-500 truncate">
                       {selectedTemplate.name}
                     </span>
                   </>
                 ) : (
-                  <span className="text-[9px] font-mono text-zinc-600 border border-[#1e1e1e] px-1.5 py-0.5 shrink-0">
+                  <span className="text-[10px] font-mono text-zinc-600 border border-[#1e1e1e] px-1.5 py-0.5 shrink-0">
                     {filteredTemplates.length} templates · {LOCKED_COUNT} locked
                   </span>
                 )}
@@ -347,7 +347,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
 
               <div className="flex items-center gap-2 shrink-0">
                 {selectedTemplate && !activeDrawing && (
-                  <span className="text-[8px] font-mono font-black uppercase tracking-widest text-amber-500/80 border border-amber-500/30 px-2 py-0.5 bg-amber-500/5">
+                  <span className="text-[10px] font-mono font-black uppercase tracking-widest text-amber-500/80 border border-amber-500/30 px-2 py-0.5 bg-amber-500/5">
                     ⚠ No drawing
                   </span>
                 )}
@@ -355,7 +355,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                 <button
                   onClick={handleOpenFullPage}
                   className={cn(
-                    'flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest',
+                    'flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest',
                     'px-2.5 py-1 border border-amber-500/40 text-amber-500',
                     'hover:bg-amber-500 hover:text-black transition-all',
                   )}
@@ -372,7 +372,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       placeholder="Search…"
                       value={searchTerm}
                       onChange={e => setSearchTerm(e.target.value)}
-                      className="bg-[#1a1a1a] border border-[#2a2a2a] pl-7 pr-2 py-1 text-[10px]
+                      className="bg-[#1a1a1a] border border-[#2a2a2a] pl-7 pr-2 py-1 text-[11px]
                                  focus:border-amber-500 outline-none w-36 uppercase tracking-widest
                                  placeholder-zinc-700 transition-colors font-mono"
                     />
@@ -396,7 +396,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                   initial={{ opacity: 0, y: -4 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0 }}
-                  className="flex-shrink-0 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[9px] font-mono font-black uppercase tracking-widest text-amber-400"
+                  className="flex-shrink-0 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[10px] font-mono font-black uppercase tracking-widest text-amber-400"
                 >
                   {toastMsg}
                 </motion.div>
@@ -413,7 +413,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       <button
                         onClick={() => setActiveCategory(null)}
                         className={cn(
-                          'px-2.5 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
+                          'px-2.5 py-1 text-[10px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
                           !activeCategory ? 'bg-amber-500 text-black border-amber-500' : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
                         )}
                       >
@@ -424,7 +424,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                           key={cat}
                           onClick={() => setActiveCategory(cat)}
                           className={cn(
-                            'px-2.5 py-1 text-[9px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
+                            'px-2.5 py-1 text-[10px] font-black uppercase tracking-widest border flex-shrink-0 transition-all',
                             activeCategory === cat ? 'bg-amber-500 text-black border-amber-500' : 'bg-transparent text-zinc-600 border-[#2a2a2a] hover:border-zinc-600 hover:text-zinc-300',
                           )}
                         >
@@ -438,7 +438,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                       {filteredTemplates.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
                           <Lock className="w-8 h-8 text-zinc-700" />
-                          <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No templates match your filters</span>
+                          <span className="text-[11px] font-mono text-zinc-600 uppercase tracking-widest">No templates match your filters</span>
                         </div>
                       ) : (
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
@@ -462,8 +462,8 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
 
                     {/* Footer */}
                     <div className="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-t border-[#1e1e1e] bg-[#0d0d0d]">
-                      <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">Want more space to configure?</span>
-                      <button onClick={handleOpenFullPage} className="flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest text-amber-500 hover:text-amber-400 transition-colors">
+                      <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">Want more space to configure?</span>
+                      <button onClick={handleOpenFullPage} className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-amber-500 hover:text-amber-400 transition-colors">
                         <ExternalLink className="w-3 h-3" />
                         Open Full Preset Library
                       </button>
@@ -479,14 +479,14 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                             {selectedTemplate.name}
                           </h3>
                           {selectedTemplate.description && (
-                            <p className="text-[10px] font-mono text-zinc-500 mt-1 leading-relaxed">{selectedTemplate.description}</p>
+                            <p className="text-[11px] font-mono text-zinc-500 mt-1 leading-relaxed">{selectedTemplate.description}</p>
                           )}
                           <div className="flex items-center gap-2 mt-1.5">
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.category}</span>
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.measurementType}</span>
+                            <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.category}</span>
+                            <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest border border-[#2a2a2a] px-1.5 py-0.5">{selectedTemplate.measurementType}</span>
                           </div>
                         </div>
-                        <button onClick={handleReset} className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest px-3 py-1.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all shrink-0">
+                        <button onClick={handleReset} className="flex items-center gap-1.5 text-[10px] font-mono font-black uppercase tracking-widest px-3 py-1.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all shrink-0">
                           <RotateCcw className="w-2.5 h-2.5" />
                           Reset
                         </button>
@@ -502,7 +502,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                           />
                         ) : (
                           <div className="flex items-center justify-center h-full border border-dashed border-[#2a2a2a]">
-                            <p className="text-[10px] font-mono text-zinc-600 italic">No form configured for "{selectedTemplate.id}".</p>
+                            <p className="text-[11px] font-mono text-zinc-600 italic">No form configured for "{selectedTemplate.id}".</p>
                           </div>
                         )}
                       </div>
@@ -513,7 +513,7 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
                           onClick={handleConfirm}
                           disabled={!activeDrawing}
                           className={cn(
-                            'flex items-center gap-2 font-mono font-black text-[10px] uppercase tracking-widest px-5 py-2.5 transition-all active:scale-95',
+                            'flex items-center gap-2 font-mono font-black text-[11px] uppercase tracking-widest px-5 py-2.5 transition-all active:scale-95',
                             activeDrawing
                               ? 'bg-amber-500 hover:bg-amber-400 text-black'
                               : 'bg-zinc-800 text-zinc-600 cursor-not-allowed',
@@ -525,14 +525,14 @@ export function PresetDrawer({ isOpen, onClose, onSelectPreset }: PresetDrawerPr
 
                         <button
                           onClick={() => setSelectedTemplate(null)}
-                          className="text-[10px] font-mono font-black uppercase tracking-widest px-4 py-2.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all"
+                          className="text-[11px] font-mono font-black uppercase tracking-widest px-4 py-2.5 border border-[#2a2a2a] text-zinc-500 hover:border-zinc-500 hover:text-zinc-300 transition-all"
                         >
                           ← BACK TO GALLERY
                         </button>
 
                         <button
                           onClick={handleOpenFullPage}
-                          className="flex items-center gap-1.5 text-[9px] font-mono font-black uppercase tracking-widest text-amber-500/70 hover:text-amber-400 transition-colors ml-auto border border-amber-500/20 px-2.5 py-1.5 hover:border-amber-500/50"
+                          className="flex items-center gap-1.5 text-[10px] font-mono font-black uppercase tracking-widest text-amber-500/70 hover:text-amber-400 transition-colors ml-auto border border-amber-500/20 px-2.5 py-1.5 hover:border-amber-500/50"
                         >
                           <ExternalLink className="w-3 h-3" />
                           Continue in Full Page

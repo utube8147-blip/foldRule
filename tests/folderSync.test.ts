@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as db from '@/lib/storage/projectDb';
 import * as fs from '@/lib/storage/folderSync';
 
@@ -143,5 +143,32 @@ describe('folder sync', () => {
 
     expect(root.entries.size).toBe(0);             // folder copy removed…
     expect(await db.getProject(id)).toBeNull();    // …and not re-imported
+  });
+
+  it('a second window (browser tab ↔ installed app) picks up the folder connected in the first', async () => {
+    const id = await seedProject('Shared');
+    // This window started with no folder connected.
+    await db.deleteSetting('folderHandle');
+    await fs.initFolderSync();
+    expect(fs.getFolderStatus().folderName).toBeNull();
+
+    // The other window connects a folder: the handle lands in the shared IndexedDB.
+    const spy = vi.spyOn(db, 'getSetting').mockImplementation(async (key: string) =>
+      (key === 'folderHandle' ? root : undefined) as never);
+    try {
+      await fs.refreshFolderState();               // what focus / the broadcast triggers
+      expect(fs.getFolderStatus().folderName).toBe('Projects');
+      expect(fs.getFolderStatus().permission).toBe('granted');
+      await fs.syncFolder();
+      expect(root.entries.size).toBe(1);           // and it starts saving there
+      expect(await db.getProject(id)).not.toBeNull();
+
+      // The other window stops using the folder: this one lets go too.
+      spy.mockImplementation(async () => undefined as never);
+      await fs.refreshFolderState();
+      expect(fs.getFolderStatus().folderName).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

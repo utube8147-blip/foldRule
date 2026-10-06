@@ -40,7 +40,7 @@ import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/sc
 import { defaultMaterialBank } from '@/data/materials';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
-  saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions,
+  saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions, describeStorageError,
 } from '@/lib/storage/projectDb';
 import { initFolderSync, pushProjectToFolder } from '@/lib/storage/folderSync';
 import type { DisplayUnit } from '@/hooks/measurements/useMeasurements/unitConversion';
@@ -269,7 +269,7 @@ const InteractionContext = createContext<InteractionValue>({ tempPoints: [], pen
 
 // Save status changes several times per edit (unsaved → saving → saved). It has
 // its own context so only the save indicator re-renders, not the workspace.
-interface SaveStatusValue { saveStatus: SaveStatus; lastSavedAt: number | null; }
+interface SaveStatusValue { saveStatus: SaveStatus; lastSavedAt: number | null; /** Why the last save failed (when saveStatus is 'error'). */ saveError?: string | null; }
 const SaveStatusContext = createContext<SaveStatusValue>({ saveStatus: 'saved', lastSavedAt: null });
 export function useSaveStatus(): SaveStatusValue { return useContext(SaveStatusContext); }
 
@@ -287,6 +287,7 @@ export function TakeoffProvider({
   const [loadError,    setLoadError]    = useState<string | null>(null);
   const [saveStatus,   setSaveStatus]   = useState<SaveStatus>('saved');
   const [lastSavedAt,  setLastSavedAt]  = useState<number | null>(null);
+  const [saveError,    setSaveError]    = useState<string | null>(null);
   const [activeTool,   setActiveTool]   = useState<string>('select');
   const [selectedId,   setSelectedId]   = useState<string | null>(null);
   const [pendingPage,  setPendingPage]  = useState<number | null>(null);
@@ -1023,10 +1024,12 @@ export function TakeoffProvider({
       const at = await saveProjectState(pid, latestStateRef.current);
       setLastSavedAt(at);
       setSaveStatus('saved');
+      setSaveError(null);
       // Mirror to the user's folder if they chose one (never prompts, never blocks).
       void pushProjectToFolder(pid);
     } catch (err) {
       console.error('[storage] autosave failed', err);
+      setSaveError(describeStorageError(err));
       setSaveStatus('error');
     }
   }, []);
@@ -1123,7 +1126,7 @@ export function TakeoffProvider({
     () => ({ tempPoints, pendingMeasurement }),
     [tempPoints, pendingMeasurement],
   );
-  const saveStatusValue = useMemo(() => ({ saveStatus, lastSavedAt }), [saveStatus, lastSavedAt]);
+  const saveStatusValue = useMemo(() => ({ saveStatus, lastSavedAt, saveError }), [saveStatus, lastSavedAt, saveError]);
 
   return (
     <TakeoffContext.Provider value={value}>
