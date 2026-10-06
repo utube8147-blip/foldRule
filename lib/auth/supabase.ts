@@ -7,8 +7,8 @@
 //   NEXT_PUBLIC_SUPABASE_URL=https://xxxx.supabase.co
 //   NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
 //
-// Without them the app runs in "local mode": no accounts, nothing is gated
-// (handy for development). See README → Accounts.
+// Without them the app uses mock accounts kept in the browser (lib/auth/mockAuth.ts),
+// so the flow works for development and demos. See README → Accounts.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 

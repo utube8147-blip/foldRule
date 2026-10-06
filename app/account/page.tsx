@@ -2,16 +2,14 @@
 
 import React, { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { ArrowLeft, LogOut } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
-import { RequireAuth } from '@/components/auth/RequireAuth';
+import { RequireAuth, goAfterSignOut } from '@/components/auth/RequireAuth';
 import { Logo } from '@/components/brand/Logo';
 import { Field, SubmitButton, FormMessage, LocalModeNotice } from '@/components/auth/AuthShell';
 
 function Account() {
-  const { status, user, updateProfile, updatePassword, signOut } = useAuth();
-  const router = useRouter();
+  const { status, mode, user, updateProfile, updatePassword, signOut } = useAuth();
   const [name, setName] = useState('');
   const [firm, setFirm] = useState('');
   const [pBusy, setPBusy] = useState(false);
@@ -56,6 +54,14 @@ function Account() {
           <p className="mt-1 text-sm text-zinc-400">{user.email} · Free plan</p>
         </div>
 
+        {mode === 'mock' && (
+          <p role="note" className="border border-amber-400/40 bg-amber-400/[0.07] px-4 py-3 text-xs text-amber-100/90 leading-relaxed">
+            <strong className="font-semibold">Demo account.</strong> It is stored in this browser only: it won’t exist on
+            another computer or browser, and no emails are sent. Real accounts replace demo ones when the sign-in
+            service is connected.
+          </p>
+        )}
+
         <form onSubmit={saveProfile} className="bg-industrial-panel border border-industrial-border p-6 space-y-5">
           <h2 className="text-sm font-semibold text-zinc-100">Profile</h2>
           <Field label="Your name" required maxLength={80} autoComplete="name" value={name} onChange={e => setName(e.target.value)} />
@@ -83,12 +89,7 @@ function Account() {
 
         <button
           type="button"
-          onClick={() => {
-            // Leave this (gated) page first, so logging out lands on the home page
-            // rather than bouncing through "log in to see your account".
-            router.replace('/');
-            setTimeout(() => { void signOut(); }, 150);
-          }}
+          onClick={() => { goAfterSignOut('/'); void signOut(); }}
           className="flex items-center gap-2 text-sm font-semibold text-zinc-400 hover:text-red-300"
         >
           <LogOut className="w-4 h-4" aria-hidden /> Log out

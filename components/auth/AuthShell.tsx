@@ -8,10 +8,12 @@ import React from 'react';
 import Link from 'next/link';
 import { ShieldCheck } from 'lucide-react';
 import { Logo } from '@/components/brand/Logo';
+import { useAuth } from '@/context/AuthContext';
 
 export function AuthShell({ title, subtitle, children, footer }: {
   title: string; subtitle?: React.ReactNode; children: React.ReactNode; footer?: React.ReactNode;
 }) {
+  const { mode } = useAuth();
   return (
     <div className="min-h-screen bg-industrial-black text-zinc-200 flex flex-col relative overflow-hidden">
       <div className="absolute inset-0 pointer-events-none" aria-hidden
@@ -19,6 +21,7 @@ export function AuthShell({ title, subtitle, children, footer }: {
 
       <header className="relative z-10 h-16 px-6 flex items-center justify-between">
         <Link href="/" aria-label="Foldrule home"><Logo size={22} /></Link>
+        {mode === 'mock' && <DemoBadge />}
       </header>
 
       <main className="relative z-10 flex-1 flex items-center justify-center px-4 pb-16">
@@ -38,6 +41,18 @@ export function AuthShell({ title, subtitle, children, footer }: {
         </div>
       </main>
     </div>
+  );
+}
+
+/** Marks screens running on the stand-in accounts (lib/auth/mockAuth.ts). */
+export function DemoBadge() {
+  return (
+    <span
+      className="text-[11px] font-mono font-bold uppercase tracking-widest text-amber-300 border border-amber-400/50 bg-amber-400/10 px-2 py-1"
+      title="Demo accounts: they are stored in this browser only, no emails are sent, and they don’t exist on other computers. Real accounts replace them once the sign-in service is connected."
+    >
+      Demo accounts
+    </span>
   );
 }
 

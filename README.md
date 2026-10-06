@@ -101,8 +101,15 @@ off the same user id.)
    Supabase's built-in sender is rate-limited to a few emails per hour.
 5. Restart `npm run dev` / redeploy (the values are read at build time).
 
-Without those two variables the app runs in **local mode**: no accounts,
-nothing gated — convenient for development.
+**Until then: mock accounts.** Without those two variables every account
+screen still works, on stand-in accounts kept in the browser's localStorage
+(`lib/auth/mockAuth.ts`): sign up, log in, log out, profile, change password,
+and a reset screen that sets a new password directly (there is no email). The
+screens carry a "Demo accounts" badge. This is for building and demos only —
+the accounts exist in that one browser, and it is not security. Setting the
+two variables switches everything to real accounts with no code changes; mock
+accounts do not carry over (their local projects can be moved with
+"Download backup" → "Import backup").
 
 **How it fits together**
 

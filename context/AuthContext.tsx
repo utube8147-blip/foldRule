@@ -11,8 +11,13 @@
 //    'loading'    — finding out whether someone is signed in
 //    'signed-in'  — `user` is set
 //    'signed-out' — nobody is signed in
-//    'local'      — accounts are not configured on this deployment; nothing is
-//                   gated and all local projects are shown
+//    'local'      — (unused at present) no accounts at all, nothing gated
+//
+//  mode:
+//    'supabase'   — real accounts (the two NEXT_PUBLIC_SUPABASE_* values are set)
+//    'mock'       — stand-in accounts kept in this browser only, so the whole
+//                   flow works before Supabase is connected. See
+//                   lib/auth/mockAuth.ts — not for public launch.
 //
 //  Cloud sync (planned, paid) will hang off the same user id.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -21,6 +26,10 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import type { User } from '@supabase/supabase-js';
 import { AUTH_CONFIGURED, getSupabase } from '@/lib/auth/supabase';
 import { setStorageOwner } from '@/lib/storage/projectDb';
+import {
+  mockCurrentUser, mockSignIn, mockSignUp, mockSignOut, mockResetPassword, mockUpdate, onMockSessionChange,
+  type MockUser,
+} from '@/lib/auth/mockAuth';
 
 export type AuthStatus = 'loading' | 'signed-in' | 'signed-out' | 'local';
 
@@ -33,8 +42,13 @@ export interface AccountUser {
 
 type Result = { ok: true; needsEmailConfirm?: boolean } | { ok: false; error: string };
 
+export type AuthMode = 'supabase' | 'mock';
+
 interface AuthValue {
   status: AuthStatus;
+  mode:   AuthMode;
+  /** Mock mode only (there is no email): set a new password for an account directly. */
+  resetDirect: (email: string, password: string) => Promise<Result>;
   user:   AccountUser | null;
   signIn:         (email: string, password: string) => Promise<Result>;
   signUp:         (p: { email: string; password: string; name: string; firm?: string }) => Promise<Result>;
@@ -46,7 +60,7 @@ interface AuthValue {
 
 const noop = async (): Promise<Result> => ({ ok: false, error: 'Accounts are not set up on this deployment.' });
 const AuthContext = createContext<AuthValue>({
-  status: AUTH_CONFIGURED ? 'loading' : 'local', user: null,
+  status: 'loading', mode: AUTH_CONFIGURED ? 'supabase' : 'mock', user: null, resetDirect: noop,
   signIn: noop, signUp: noop, signOut: async () => {}, sendReset: noop, updatePassword: noop, updateProfile: noop,
 });
 
@@ -74,13 +88,26 @@ function explain(message: string | undefined): string {
   return message || 'Something went wrong. Please try again.';
 }
 
+const fromMock = (u: MockUser): AccountUser => ({ id: u.id, email: u.email, name: u.name, firm: u.firm });
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [status, setStatus] = useState<AuthStatus>(AUTH_CONFIGURED ? 'loading' : 'local');
+  const mode: AuthMode = AUTH_CONFIGURED ? 'supabase' : 'mock';
+  const [status, setStatus] = useState<AuthStatus>('loading');
   const [user,   setUser]   = useState<AccountUser | null>(null);
 
   useEffect(() => {
     const sb = getSupabase();
-    if (!sb) { setStorageOwner(null); setStatus('local'); return; }
+    if (!sb) {
+      // Mock accounts: read the saved session from this browser.
+      const sync = () => {
+        const u = mockCurrentUser();
+        setStorageOwner(u ? u.id : null);
+        setUser(u ? fromMock(u) : null);
+        setStatus(u ? 'signed-in' : 'signed-out');
+      };
+      sync();
+      return onMockSessionChange(sync);
+    }
     let alive = true;
     const apply = (u: User | null | undefined) => {
       if (!alive) return;
@@ -98,14 +125,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const origin = () => (typeof window !== 'undefined' ? window.location.origin : '');
 
+  const applyMock = useCallback((u: MockUser | null) => {
+    setStorageOwner(u ? u.id : null);
+    setUser(u ? fromMock(u) : null);
+    setStatus(u ? 'signed-in' : 'signed-out');
+  }, []);
+
+  const resetDirect = useCallback<AuthValue['resetDirect']>(async (email, password) => {
+    if (getSupabase()) return { ok: false, error: 'Use the link in the reset email.' };
+    const r = await mockResetPassword(email, password);
+    return r.ok ? { ok: true } : r;
+  }, []);
+
   const signIn = useCallback<AuthValue['signIn']>(async (email, password) => {
-    const sb = getSupabase(); if (!sb) return noop();
+    const sb = getSupabase();
+    if (!sb) { const r = await mockSignIn(email, password); if (!r.ok) return r; applyMock(r.user); return { ok: true }; }
     const { error } = await sb.auth.signInWithPassword({ email: email.trim(), password });
     return error ? { ok: false, error: explain(error.message) } : { ok: true };
   }, []);
 
   const signUp = useCallback<AuthValue['signUp']>(async ({ email, password, name, firm }) => {
-    const sb = getSupabase(); if (!sb) return noop();
+    const sb = getSupabase();
+    if (!sb) { const r = await mockSignUp({ email, password, name, firm }); if (!r.ok) return r; applyMock(r.user); return { ok: true }; }
     const { data, error } = await sb.auth.signUp({
       email: email.trim(), password,
       options: { data: { name: name.trim(), firm: (firm ?? '').trim() }, emailRedirectTo: `${origin()}/dashboard` },
@@ -116,7 +157,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
-    const sb = getSupabase(); if (!sb) return;
+    const sb = getSupabase();
+    if (!sb) { mockSignOut(); applyMock(null); return; }
     await sb.auth.signOut().catch(() => {});
   }, []);
 
@@ -127,21 +169,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const updatePassword = useCallback<AuthValue['updatePassword']>(async (password) => {
-    const sb = getSupabase(); if (!sb) return noop();
+    const sb = getSupabase();
+    if (!sb) { const me = mockCurrentUser(); if (!me) return noop(); const r = await mockUpdate(me.id, { password }); return r.ok ? { ok: true } : r; }
     const { error } = await sb.auth.updateUser({ password });
     return error ? { ok: false, error: explain(error.message) } : { ok: true };
   }, []);
 
   const updateProfile = useCallback<AuthValue['updateProfile']>(async ({ name, firm }) => {
-    const sb = getSupabase(); if (!sb) return noop();
+    const sb = getSupabase();
+    if (!sb) { const me = mockCurrentUser(); if (!me) return noop(); const r = await mockUpdate(me.id, { name, firm }); if (!r.ok) return r; applyMock(r.user); return { ok: true }; }
     const { data, error } = await sb.auth.updateUser({ data: { name: name.trim(), firm: (firm ?? '').trim() } });
     if (error) return { ok: false, error: explain(error.message) };
     if (data.user) setUser(toAccount(data.user));
     return { ok: true };
   }, []);
 
-  const value = useMemo(() => ({ status, user, signIn, signUp, signOut, sendReset, updatePassword, updateProfile }),
-    [status, user, signIn, signUp, signOut, sendReset, updatePassword, updateProfile]);
+  const value = useMemo(() => ({ status, mode, resetDirect, user, signIn, signUp, signOut, sendReset, updatePassword, updateProfile }),
+    [status, mode, resetDirect, user, signIn, signUp, signOut, sendReset, updatePassword, updateProfile]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

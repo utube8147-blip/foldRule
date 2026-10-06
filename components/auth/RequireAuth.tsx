@@ -13,6 +13,13 @@ import { useEffect } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 
+/**
+ * Where to go when the user logs out on purpose (instead of "log in to see
+ * this page"). Set just before calling signOut().
+ */
+let afterSignOut: string | null = null;
+export function goAfterSignOut(path: string): void { afterSignOut = path; }
+
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { status } = useAuth();
   const router   = useRouter();
@@ -21,6 +28,7 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (status !== 'signed-out') return;
+    if (afterSignOut) { const to = afterSignOut; afterSignOut = null; router.replace(to); return; }
     const here = pathname + (search.size ? `?${search.toString()}` : '');
     router.replace(`/login?next=${encodeURIComponent(here)}`);
   }, [status, pathname, search, router]);

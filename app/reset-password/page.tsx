@@ -11,7 +11,7 @@ import { useAuth } from '@/context/AuthContext';
 import { AuthShell, Field, SubmitButton, FormMessage, LocalModeNotice } from '@/components/auth/AuthShell';
 
 export default function ResetPasswordPage() {
-  const { status, updatePassword } = useAuth();
+  const { status, mode, updatePassword } = useAuth();
   const router = useRouter();
   const [password, setPassword] = useState('');
   const [again, setAgain] = useState('');
@@ -19,6 +19,16 @@ export default function ResetPasswordPage() {
   const [error, setError] = useState<string | null>(null);
   const [done, setDone]   = useState(false);
   if (status === 'local') return <LocalModeNotice />;
+
+  if (status === 'signed-out' && mode === 'mock') {
+    return (
+      <AuthShell title="Reset your password" subtitle="Demo accounts have no reset emails — set a new password directly instead.">
+        <Link href="/forgot-password" className="block w-full text-center bg-amber-accent hover:bg-amber-400 text-black font-bold text-sm py-3">
+          Set a new password
+        </Link>
+      </AuthShell>
+    );
+  }
 
   if (status === 'signed-out') {
     return (
