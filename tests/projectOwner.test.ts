@@ -62,3 +62,19 @@ describe('projects belong to the signed-in account', () => {
     expect(await db.listProjects()).toHaveLength(2);
   });
 });
+
+describe('demo-account ids never lock a project', () => {
+  afterEach(wipe);
+
+  it('a project stamped by a demo account is adopted by the first real account', async () => {
+    await wipe();
+    const p = await db.createProject('Made in demo mode');
+    await db.putProjectRecord({ ...p, ownerId: 'mock-1234' }, new Map());
+
+    db.setStorageOwner('real-user');
+    expect((await db.listProjects()).map(x => x.name)).toEqual(['Made in demo mode']);
+    expect((await db.getProject(p.id))?.ownerId).toBe('real-user');
+    expect(db.isForeignProject({ ownerId: 'mock-9999' })).toBe(false);
+    expect(db.isForeignProject({ ownerId: 'someone-else' })).toBe(true);
+  });
+});

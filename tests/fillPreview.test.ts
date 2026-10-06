@@ -50,4 +50,17 @@ describe('whole-page regions are not rooms', () => {
     const lasso: [number, number][] = [[50, 50], [950, 50], [950, 950], [50, 950]];
     expect(fillPreview(all, lasso, null, pageAreaPx).tops).toEqual([room]);
   });
+
+  it('a neighbour sharing a wall is not shown as part of the hovered room', () => {
+    // L-shaped room; the neighbour fills the notch, and one of its corners has
+    // been nudged a hair across the shared wall (as snapping can do).
+    const room: StoredRegion = { x0: 0, y0: 0, x1: 100, y1: 100, areaPx: 7600, perimPx: 0,
+      polygon: [[0, 0], [100, 0], [100, 40], [60, 40], [60, 100], [0, 100]] };
+    const neighbour: StoredRegion = { x0: 60, y0: 41, x1: 100, y1: 100, areaPx: 2300, perimPx: 0,
+      polygon: [[59.9, 60], [62, 42], [100, 42], [100, 100], [62, 100]] };
+    const cupboard = rect(10, 10, 30, 30);                       // genuinely inside the room
+    const p = fillPreview([room, neighbour, cupboard], null, room);
+    expect(p.tops).toEqual([room]);
+    expect(p.inner).toEqual([cupboard]);
+  });
 });

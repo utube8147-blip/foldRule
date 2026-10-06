@@ -34,7 +34,7 @@
 
 import {
   getSetting, setSetting, deleteSetting, getProject, listProjects,
-  loadDrawingFiles, putProjectRecord, requestPersistentStorage, getStorageOwner, SCHEMA_VERSION, type ProjectRecord,
+  loadDrawingFiles, putProjectRecord, requestPersistentStorage, isForeignProject, SCHEMA_VERSION, type ProjectRecord,
   getStorageMode, isFolderPrimary, setFolderPrimary, setFolderFileLoader, copyProjectDataToDisk,
   copyMyDiskProjectsToMemory, deleteDiskProjects,
 } from './projectDb';
@@ -410,8 +410,7 @@ async function syncOnce(): Promise<{ pulled: number; pushed: number } | null> {
         const rec = await readFolderProject(dir);
         if (!rec) continue;
         // Someone else's project (several accounts can share one folder): leave it alone.
-        const me = getStorageOwner();
-        if (me && rec.ownerId && rec.ownerId !== me) continue;
+        if (isForeignProject(rec)) continue;
         if (tombstones.has(rec.id)) {                 // deleted in the app
           await root.removeEntry(entry.name, { recursive: true }).catch(() => {});
           continue;

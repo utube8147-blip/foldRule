@@ -14,6 +14,11 @@
 //      the stored accounts. Passwords are salted and hashed only so that real
 //      passwords typed during a demo aren't left lying around in plain text.
 //
+//  Demo accounts do not own projects: every project on this computer is shown
+//  to whoever is logged in, and nothing is stamped with a demo id — so clearing
+//  the browser, or switching to real accounts, never strands a project. (The
+//  first REAL account to open the list adopts them.)
+//
 //  Do not launch to the public on this. Setting the two Supabase variables
 //  switches every screen to real accounts with no code changes.
 // ─────────────────────────────────────────────────────────────────────────────

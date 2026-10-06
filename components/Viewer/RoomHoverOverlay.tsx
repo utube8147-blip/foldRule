@@ -62,7 +62,23 @@ function overlapsLasso(r: StoredRegion, lasso: Pt[], lb: { x0: number; y0: numbe
 function nestedIn(outer: StoredRegion, all: StoredRegion[]): StoredRegion[] {
   return all.filter(r => r !== outer && r.areaPx < outer.areaPx &&
     r.x0 >= outer.x0 && r.x1 <= outer.x1 && r.y0 >= outer.y0 && r.y1 <= outer.y1 &&
-    inPoly(outer.polygon, r.polygon[0][0], r.polygon[0][1]));
+    mostlyInside(r, outer));
+}
+
+/**
+ * Is `r` really inside `outer`? Judged on many of its corners, not one: a
+ * NEIGHBOUR that merely shares a wall has corners sitting right on that wall,
+ * where "inside or outside" is a coin toss — testing a single corner used to
+ * show such neighbours in the preview as if a click would fill them too.
+ */
+function mostlyInside(r: StoredRegion, outer: StoredRegion): boolean {
+  const step = Math.max(1, Math.floor(r.polygon.length / 24));
+  let total = 0, inside = 0;
+  for (let i = 0; i < r.polygon.length; i += step) {
+    total++;
+    if (inPoly(outer.polygon, r.polygon[i][0], r.polygon[i][1])) inside++;
+  }
+  return total > 0 && inside / total >= 0.8;
 }
 
 /**

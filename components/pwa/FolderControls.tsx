@@ -10,6 +10,8 @@ import { useEffect, useState } from 'react';
 import { FolderOpen, FolderSync, HardDrive, MonitorDown, TriangleAlert, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useFolderStatus, useInstallState, useStorageMode } from './hooks';
+import { isBrowserStorageUnusable, repairBrowserStorage } from '@/lib/storage/projectDb';
+import { useConfirm } from '@/components/common/ConfirmDialog';
 import { connectFolder, resumeFolder, disconnectFolder, syncFolder } from '@/lib/storage/folderSync';
 import { promptInstall } from '@/lib/pwa/install';
 
@@ -133,10 +135,32 @@ export function FolderPermissionStrip({ onAfterResume }: { onAfterResume?: () =>
 export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnect?: () => void; className?: string }) {
   const mode = useStorageMode();
   const f    = useFolderStatus();
+  const usingFolderNow = !!f.folderName && f.permission === 'granted' && !f.error;
   const [busy, setBusy] = useState(false);
+  const [repairFailed, setRepairFailed] = useState(false);
+  const { confirm } = useConfirm();
   if (mode === 'browser') return null;
 
-  const usingFolder = !!f.folderName && f.permission === 'granted' && !f.error;
+  // The browser can't keep even the note of which folder you chose — that is
+  // why it asks again after every reload. Usually its database for this site
+  // was damaged when the disk filled up; rebuilding it fixes that.
+  const repair = async () => {
+    const ok = await confirm({
+      title: 'Repair browser storage',
+      message: <>Rebuild this site’s storage in the browser so it can remember your projects folder again?</>,
+      detail: usingFolderNow
+        ? 'Your projects are in your folder and are not touched. Anything that was stored only inside this browser (not in the folder) will be erased.'
+        : 'Choose your projects folder first if you can, so your work is safely there. Anything stored only inside this browser will be erased.',
+      confirmText: 'Repair',
+    });
+    if (!ok) return;
+    setBusy(true);
+    const fixed = await repairBrowserStorage().catch(() => false);
+    setBusy(false);
+    if (fixed) window.location.reload(); else setRepairFailed(true);
+  };
+
+  const usingFolder = usingFolderNow;
   // Projects live in the folder by choice and it is reachable: nothing to say.
   if (mode === 'folder' && (usingFolder || !f.loaded)) return null;
   if (mode === 'folder') {
@@ -184,9 +208,8 @@ export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnec
       <span className="flex-1 min-w-[260px] leading-relaxed">
         {usingFolder ? (
           <>
-            <strong className="font-semibold">Saving to the folder “{f.folderName}” only.</strong>{' '}
-            This browser’s own storage isn’t working on this computer, so the folder is the only copy.
-            You’ll need to choose it again after closing or reloading this window.
+            <strong className="font-semibold">Your projects are in the folder “{f.folderName}”, but the browser can’t remember it.</strong>{' '}
+            Its own storage for this site isn’t working, so it asks for the folder again after every reload.
           </>
         ) : (
           <>
@@ -196,8 +219,18 @@ export function StorageModeBanner({ onAfterConnect, className }: { onAfterConnec
               : 'Use “Download backup” on a project before closing this window.'}
           </>
         )}
-        <span className="block opacity-70 mt-0.5">This usually means the drive that holds your browser profile (usually C:) is full. Freeing space there brings normal saving back.</span>
+        <span className="block opacity-80 mt-0.5">
+          {repairFailed
+            ? 'The automatic repair didn’t work. Free some space on the drive that holds your browser profile (usually C:), then clear this site’s data by hand: press F12 → Application → Storage → “Clear site data”, and reload. Projects in your folder are not affected.'
+            : 'This happens when the drive holding your browser profile (usually C:) filled up, which can leave the browser’s storage for this site damaged even after space is freed. Free some space, then use Repair.'}
+        </span>
       </span>
+      {isBrowserStorageUnusable() && !repairFailed && (
+        <button type="button" disabled={busy} onClick={() => void repair()}
+          className="border border-current font-bold px-3 py-1.5 hover:bg-white/10 disabled:opacity-50">
+          Repair browser storage
+        </button>
+      )}
       {!usingFolder && f.supported && (
         f.folderName && f.permission === 'prompt' ? (
           <button type="button" disabled={busy} onClick={() => void act(resumeFolder)}

@@ -121,6 +121,8 @@ let folderPrimary: boolean = (() => {
   catch { return false; }
 })();
 let memDataPromise: Promise<IDBDatabase> | null = null;
+/** The disk database opens, but project data can't be written to it (e.g. quota). */
+let dataOnDiskBroken = false;
 
 export const isFolderPrimary = (): boolean => folderPrimary;
 
@@ -209,7 +211,10 @@ export async function copyProjectDataToDisk(): Promise<void> {
 let storageMode: StorageMode = 'browser';
 let storageModeReason: string | null = null;
 const modeListeners = new Set<() => void>();
-export const getStorageMode = (): StorageMode => (storageMode === 'memory' ? 'memory' : folderPrimary ? 'folder' : 'browser');
+export const getStorageMode = (): StorageMode =>
+  (storageMode === 'memory' ? 'memory' : folderPrimary ? 'folder' : dataOnDiskBroken ? 'memory' : 'browser');
+/** True when even the small settings store (which remembers the folder) can't be kept on disk. */
+export const isBrowserStorageUnusable = (): boolean => storageMode === 'memory';
 export const getServerStorageMode = (): StorageMode => 'browser';
 export const getStorageModeReason = (): string | null => storageModeReason;
 export function subscribeStorageMode(cb: () => void): () => void {
@@ -220,7 +225,7 @@ export function subscribeStorageMode(cb: () => void): () => void {
 /** Test hook: back to on-disk storage. */
 export function __resetStorageModeForTests(): void {
   storageMode = 'browser'; storageModeReason = null; dbPromise = null;
-  folderPrimary = false; memDataPromise = null; hydratedFromFolder.clear();
+  folderPrimary = false; memDataPromise = null; dataOnDiskBroken = false; hydratedFromFolder.clear();
   try { if (typeof localStorage !== 'undefined') localStorage.removeItem(FOLDER_PRIMARY_KEY); } catch { /* ignore */ }
 }
 
@@ -283,11 +288,46 @@ function openDiskDb(): Promise<IDBDatabase> {
 
 /** The database project data goes through: memory when projects live in the folder, else disk. */
 function openDb(): Promise<IDBDatabase> {
-  if (folderPrimary && storageMode !== 'memory') {
+  if ((folderPrimary || dataOnDiskBroken) && storageMode !== 'memory') {
     if (!memDataPromise) memDataPromise = openMemoryDb();
     return memDataPromise;
   }
   return openDiskDb();
+}
+
+/**
+ * Last resort when the browser's database for this site can't be opened even
+ * though the disk has room again (a full disk can leave it damaged): delete it
+ * and start a clean one. Everything stored ONLY in the browser is lost —
+ * projects kept in a folder are untouched. Returns true if storage works again.
+ */
+export async function repairBrowserStorage(): Promise<boolean> {
+  if (!isStorageAvailable()) return false;
+  const old = dbPromise;
+  dbPromise = null;
+  await old?.then(db => { try { db.close(); } catch { /* ignore */ } }).catch(() => {});
+  const deleted = await new Promise<boolean>(resolve => {
+    try {
+      const req = indexedDB.deleteDatabase(DB_NAME);
+      req.onsuccess = () => resolve(true);
+      req.onerror   = () => resolve(false);
+      req.onblocked = () => resolve(false);
+    } catch { resolve(false); }
+  });
+  const works = deleted && await new Promise<boolean>(resolve => {
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => createStores(req.result);
+      req.onsuccess = () => { req.result.close(); resolve(true); };
+      req.onerror   = (e) => { e.preventDefault?.(); resolve(false); };
+      req.onblocked = () => resolve(false);
+    } catch { resolve(false); }
+  });
+  if (works) {
+    storageMode = 'browser'; storageModeReason = null; dataOnDiskBroken = false;
+    modeListeners.forEach(l => l());
+  }
+  return works;
 }
 
 /** Drop the cached connection (it will be reopened on the next call). */
@@ -372,10 +412,15 @@ let storageOwner: string | null = null;
 export function setStorageOwner(id: string | null): void { storageOwner = id; }
 export const getStorageOwner = (): string | null => storageOwner;
 
-const isMine = (r: { ownerId?: string }) => !storageOwner || !r.ownerId || r.ownerId === storageOwner;
+/** Demo-account ids (lib/auth/mockAuth.ts) are not real owners: such projects count as unclaimed. */
+const realOwner = (id: string | undefined): string | undefined => (id && !id.startsWith('mock-') ? id : undefined);
+/** True when the record belongs to another real account. */
+export const isForeignProject = (r: { ownerId?: string }): boolean =>
+  !!storageOwner && !!realOwner(r.ownerId) && r.ownerId !== storageOwner;
+const isMine = (r: { ownerId?: string }) => !isForeignProject(r);
 /** Stamp a record with the current owner unless it already has one. */
 function owned<T extends { ownerId?: string }>(r: T): T {
-  return storageOwner && !r.ownerId ? { ...r, ownerId: storageOwner } : r;
+  return storageOwner && !realOwner(r.ownerId) ? { ...r, ownerId: storageOwner } : r;
 }
 
 // ── Projects ─────────────────────────────────────────────────────────────────
@@ -387,7 +432,7 @@ export async function listProjects(): Promise<ProjectSummary[]> {
   const mine = all.filter(isMine);
   // Adopt projects that have no owner yet (they were made on this computer
   // before anyone signed in), so they stay with this account from now on.
-  const unclaimed = storageOwner ? mine.filter(r => !r.ownerId) : [];
+  const unclaimed = storageOwner ? mine.filter(r => !realOwner(r.ownerId)) : [];
   if (unclaimed.length > 0) {
     const wtx = db.transaction(PROJECTS, 'readwrite');
     for (const r of unclaimed) { r.ownerId = storageOwner!; wtx.objectStore(PROJECTS).put(r); }
@@ -441,7 +486,12 @@ export async function saveProjectState(id: string, state: ProjectState): Promise
     // session alive in memory; the projects folder, if connected, still gets
     // every save (see pushProjectToFolder).
     if (!isDiskFailure(err)) throw err;
-    await fallBackToMemory(err);
+    // Only project DATA moves to memory. The settings store (which remembers
+    // the projects folder) stays on disk as long as it can be opened at all.
+    dataOnDiskBroken = true;
+    storageModeReason = describeStorageError(err);
+    console.warn('[storage] could not write project data to the browser — keeping it in memory', err);
+    modeListeners.forEach(l => l());
     return writeProjectState(id, state);
   }
 }

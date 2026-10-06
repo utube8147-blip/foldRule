@@ -101,7 +101,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Mock accounts: read the saved session from this browser.
       const sync = () => {
         const u = mockCurrentUser();
-        setStorageOwner(u ? u.id : null);
+        setStorageOwner(null);   // demo accounts don't own projects (see mockAuth.ts)
         setUser(u ? fromMock(u) : null);
         setStatus(u ? 'signed-in' : 'signed-out');
       };
@@ -126,7 +126,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const origin = () => (typeof window !== 'undefined' ? window.location.origin : '');
 
   const applyMock = useCallback((u: MockUser | null) => {
-    setStorageOwner(u ? u.id : null);
+    setStorageOwner(null);   // demo accounts don't own projects (see mockAuth.ts)
     setUser(u ? fromMock(u) : null);
     setStatus(u ? 'signed-in' : 'signed-out');
   }, []);

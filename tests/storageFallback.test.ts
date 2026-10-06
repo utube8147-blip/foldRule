@@ -29,3 +29,26 @@ describe('browser storage unavailable → run from memory', () => {
     off();
   });
 });
+
+describe('repairing browser storage', () => {
+  afterEach(() => { vi.restoreAllMocks(); db.__resetStorageModeForTests(); });
+
+  it('rebuilds the database and goes back to normal storage', async () => {
+    db.__resetStorageModeForTests();
+    const realOpen = indexedDB.open.bind(indexedDB);
+    let damaged = true;
+    vi.spyOn(indexedDB, 'open').mockImplementation((...a: Parameters<typeof indexedDB.open>) => {
+      if (damaged) throw new DOMException('Internal error opening backing store for indexedDB.open.', 'UnknownError');
+      return realOpen(...a);
+    });
+    const realDelete = indexedDB.deleteDatabase.bind(indexedDB);
+    vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation((name: string) => { damaged = false; return realDelete(name); });
+
+    await db.listProjects();                                   // trips the fallback
+    expect(db.isBrowserStorageUnusable()).toBe(true);
+
+    expect(await db.repairBrowserStorage()).toBe(true);
+    expect(db.isBrowserStorageUnusable()).toBe(false);
+    expect(db.getStorageMode()).toBe('browser');
+  });
+});
