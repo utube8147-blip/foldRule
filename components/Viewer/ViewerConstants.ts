@@ -233,14 +233,7 @@ export const ADVANCED_CANVAS_TOOLS: AdvancedToolMeta[] = [
     disabled: true,
     badge:    'Soon',
   },
-  {
-    id:       'polar-mode' as ToolType,
-    label:    'Polar mode',
-    sub:      'Constrain lines to 0° / 45° / 90°',
-    shortcut: 'F8',
-    disabled: true,
-    badge:    'Soon',
-  },
+  // (Angle lock — 0° / 45° / 90° — shipped as the F8 toggle under the drawing.)
   {
     id:       'annotation' as ToolType,
     label:    'Annotation',

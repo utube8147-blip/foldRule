@@ -30,6 +30,7 @@ import { CentreAnchorOverlay, angleInArc, alignSweep, type Anchor, type CentreGr
 import { RADIUS_SENTINEL, ARC_SENTINEL, isRadiusSentinel } from '@/hooks/measurements/useMeasurements/useMeasurementCommit';
 import type { GeometryShape } from '@/types/snapTypes';
 import { buildGeometryIndex } from '@/lib/geometry/geometryIndex';
+import { ViewerStatusControls } from './ViewerStatusControls';
 import { constrainToAngle, isExactSnap, ORTHO_TOOLS, orthoState } from '@/lib/geometry/ortho';
 import { buildPointGrid } from '@/lib/geometry/pointGrid';
 import { snapOutline as snapOutlineToDrawing } from '@/lib/geometry/snapOutline';
@@ -148,6 +149,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     selectedId, setSelectedId, projectState, updateMeasurement,
     setActivePage, showLabels, pendingPage, clearPendingPage,
     setDrawingPageCount, focusSeq, setNextMaterial, showGeometry, projectId: takeoffProjectId,
+    setShowLabels, setShowGeometry,
   } = useTakeoffContext();
   const selectedIdRef = useRef<string | null>(selectedId);
   selectedIdRef.current = selectedId;
@@ -1683,8 +1685,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       )}
 
       {pdf && (
-        <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-4 flex items-center justify-between z-20 font-mono relative shadow-sm">
-          <div className="flex items-center gap-4">
+        <div className="h-10 flex-shrink-0 bg-industrial-panel border-t border-industrial-border px-3 flex items-center justify-between gap-4 z-20 font-mono relative shadow-sm">
+          <div className="flex items-center gap-2 flex-shrink-0">
             <button
               onClick={() => setPageNumber(Math.max(1, pageNumber - 1))}
               disabled={pageNumber <= 1}
@@ -1692,8 +1694,8 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-tighter">
-              PAGE {pageNumber} OF {pdf.numPages}
+            <span className="text-[11px] font-bold text-zinc-400 uppercase tracking-tighter whitespace-nowrap tabular-nums" title={`Page ${pageNumber} of ${pdf.numPages}`}>
+              {pageNumber} / {pdf.numPages}
             </span>
             <button
               onClick={() => setPageNumber(Math.min(pdf.numPages, pageNumber + 1))}
@@ -1702,9 +1704,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
             >
               <ChevronRight className="w-4 h-4" />
             </button>
+            <span className="w-px h-4 bg-industrial-border" aria-hidden />
+            <ViewerStatusControls
+              snapEnabled={snapEnabled}   setSnapEnabled={setSnapEnabled}
+              orthoEnabled={orthoEnabled} setOrthoEnabled={setOrthoEnabled}
+              showPins={showPins}         setShowPins={setShowPins}
+              showLabels={showLabels}     setShowLabels={setShowLabels}
+              showGeometry={showGeometry} setShowGeometry={setShowGeometry}
+              scale={scale}
+              zoomIn={() => setScale(s => Math.min(MAX_ZOOM, s + ZOOM_SENSITIVITY))}
+              zoomOut={() => setScale(s => Math.max(MIN_ZOOM, s - ZOOM_SENSITIVITY))}
+              fitToScreen={() => fitToScreen()}
+            />
           </div>
 
-          <div className="hidden md:flex items-center gap-4 text-[10px] text-zinc-500 uppercase tracking-widest">
+          <div className="hidden md:flex flex-1 min-w-0 items-center justify-end gap-3 text-[10px] text-zinc-500 uppercase tracking-widest whitespace-nowrap [&>span]:min-w-0 [&>span]:truncate [&>button]:shrink-0">
             {isMagicFillTool ? (
               <>
                 <span className={mfStagedCount > 0 ? 'text-amber-400' : ''}>
@@ -1776,7 +1790,6 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
                 {showTechInfo || (pdfStage !== 'done' && pdfStage !== 'idle')
                   ? snapStatusText
                   : snapEnabled ? 'Snapping to drawing lines' : 'Snap off — press S to turn on'}
-                {orthoEnabled && ' · Angle lock on (F8)'}
               </span>
             )}
             {showTechInfo && <span>RENDER_ENGINE: PDF.JS V{pdfLibVersion} · BUILD {process.env.NEXT_PUBLIC_BUILD_ID ?? 'dev'}</span>}

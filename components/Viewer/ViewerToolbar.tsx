@@ -49,6 +49,12 @@ import { AdvancedToolsDropdown } from './AdvancedToolsDropdown';
 
 
 interface ViewerToolbarProps {
+  /**
+   * 'vertical' renders only the tools as a narrow rail for the left edge of the
+   * drawing (the workspace layout). Drawing aids and zoom then live in the bar
+   * under the drawing — see ViewerStatusControls.
+   */
+  orientation?: 'horizontal' | 'vertical';
   /** Quantity labels on the drawing (toggle shown when provided). */
   showLabels?: boolean;
   setShowLabels?: (v: boolean) => void;
@@ -312,6 +318,7 @@ function ViewerToolbarImpl({
   MIN_ZOOM, MAX_ZOOM, ZOOM_SENSITIVITY,
   polyarcMode,
   togglePolyarcMode,
+  orientation = 'horizontal',
   hideHistory = false,
   hideScale = false,
   leading,
@@ -329,9 +336,14 @@ function ViewerToolbarImpl({
     (activeTool === 'linear' || activeTool === 'arc');
 
   // Render a divider between tool groups
+  const vertical = orientation === 'vertical';
   const divider = (key: string) => (
-    <div key={key} className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" />
+    <div key={key} className={cn('bg-zinc-700/60 self-center', vertical ? 'h-px w-6 my-1' : 'w-px h-5 mx-0.5')} />
   );
+  // Tooltips open under the button in the top bar, beside it in the rail.
+  const tipPos = vertical
+    ? 'left-11 top-1/2 -translate-y-1/2 text-left'
+    : 'top-10 left-1/2 -translate-x-1/2';
 
   // Build tool buttons with group dividers
   const toolButtons: React.ReactNode[] = [];
@@ -392,7 +404,7 @@ function ViewerToolbarImpl({
         )}
 
         {/* Tooltip */}
-        <div className="absolute top-10 transform -translate-x-1/2 left-1/2 px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-50">
+        <div className={cn('absolute transform px-2 py-1 bg-zinc-900 border border-industrial-border text-[10px] text-zinc-400 invisible group-hover:visible group-focus-visible:visible whitespace-nowrap pointer-events-none uppercase tracking-widest font-mono z-[70] shadow-lg', tipPos)}>
           {tool.label} [{tool.shortcut}]{upgradeHint}
           {tool.id === 'arc' && (
             <span className="block text-teal-400 mt-0.5">
@@ -421,6 +433,37 @@ function ViewerToolbarImpl({
       </button>
     );
   });
+
+  if (vertical) {
+    return (
+      <nav
+        aria-label="Measuring tools"
+        className="w-12 flex-shrink-0 bg-industrial-panel border-r border-industrial-border flex flex-col items-center gap-0.5 py-2 z-[60] relative"
+      >
+        {leading}
+        {toolButtons}
+
+        {activeTool === 'polyarc' && polyarcMode && togglePolyarcMode && (
+          <button
+            onClick={togglePolyarcMode}
+            className={cn(
+              'w-9 h-6 flex items-center justify-center border text-[9px] font-mono font-bold uppercase tracking-wider transition-all',
+              polyarcMode === 'arc'
+                ? 'border-teal-400 text-teal-400 bg-teal-400/10 hover:bg-teal-400/20'
+                : 'border-zinc-500 text-zinc-300 bg-zinc-800 hover:bg-zinc-700',
+            )}
+            title="Polyarc segment type — click or press A to switch between line and arc"
+          >
+            {polyarcMode === 'arc' ? 'ARC' : 'LINE'}
+          </button>
+        )}
+
+        {divider('div-before-advanced')}
+        <AdvancedToolsDropdown activeTool={activeTool} setActiveTool={setActiveTool} placement="right" />
+        {trailing}
+      </nav>
+    );
+  }
 
   return (
     <div className="h-12 bg-industrial-panel border-b border-industrial-border flex flex-shrink-0 items-center justify-between px-4 z-30 shadow-sm relative">

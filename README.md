@@ -97,6 +97,22 @@ email — stored in this browser by `lib/profile.ts`, never sent anywhere) and
 * Storage keys (`quantity-savior` database, backup format id) intentionally
   keep their old names so existing projects and backups keep working.
 
+## Workspace layout
+
+```
+header        project name · undo/redo · scale · unit · calibrate · save · export
+left          Project Explorer ([ to hide)
+tool rail     the measuring tools, grouped, on the left edge of the drawing
+              (ViewerToolbar orientation="vertical"; "More tools" opens sideways)
+drawing
+bar under it  page · zoom · Snap (S) · Angle lock (F8) · Show ▾ (labels, pins,
+              PDF geometry) · tool hint          (ViewerStatusControls)
+right         takeoff panel (] to hide, drag its edge to resize)
+```
+
+There is no horizontal toolbar row; the horizontal `ViewerToolbar` layout is
+kept only for the Viewer used on its own (`hideToolbar={false}`).
+
 ## Workspace features
 
 * **Row ↔ shape linking** — click a takeoff row to select its shape (switching

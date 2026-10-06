@@ -559,81 +559,66 @@ export default function Workspace() {
 
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
 
-          {/* ── Toolbar (hoisted to workspace) ── */}
-          {/* FIXED: setActiveTool now routes through api.setActiveTool which is
-              Viewer's handleSetActiveTool — so the polyarc upgrade logic runs
-              correctly when toolbar buttons are clicked at workspace level.
-              polyarcMode / togglePolyarcMode are read from toolbarAPI so the
-              toolbar pill stays in sync with Viewer's internal state. */}
-          <ViewerToolbar
-            activeTool={activeTool as ToolType}
-            setActiveTool={(tool: ToolType) => api?.setActiveTool
-              ? api.setActiveTool(tool)
-              : setActiveTool(tool)
-            }
-            canUndo={api?.canUndo ?? false}
-            canRedo={api?.canRedo ?? false}
-            handleUndo={() => api?.handleUndo?.()}
-            handleRedo={() => api?.handleRedo?.()}
-            tempPointsCount={api?.tempPointsCount ?? 0}
-            showPins={showPins}
-            setShowPins={setShowPins}
-            snapEnabled={api?.snapEnabled ?? true}
-            setSnapEnabled={(v: boolean) => api?.setSnapEnabled?.(v)}
-            showSnapSettings={api?.showSnapSettings ?? false}
-            setShowSnapSettings={(v: boolean) => api?.setShowSnapSettings?.(v)}
-            orthoEnabled={api?.orthoEnabled ?? false}
-            setOrthoEnabled={(v: boolean) => api?.setOrthoEnabled?.(v)}
-            scaleFactor={currentScaleFactor}
-            handleManualScale={() => api?.handleManualScale?.()}
-            analysisStatus={api?.analysisStatus ?? 'idle'}
-            analysisPage={api?.analysisPage ?? null}
-            currentPageCorners={api?.currentPageCorners ?? 0}
-            scale={api?.scale ?? 1}
-            setScale={(s) => api?.setScale?.(s)}
-            fitToScreen={() => api?.fitToScreen?.()}
-            MIN_ZOOM={0.1}
-            MAX_ZOOM={5}
-            ZOOM_SENSITIVITY={0.1}
-            polyarcMode={api?.polyarcMode}
-            togglePolyarcMode={api?.togglePolyarcMode}
-            hideHistory
-            hideScale
-            showLabels={showLabels}
-            setShowLabels={setShowLabels}
-            showGeometry={showGeometry}
-            setShowGeometry={setShowGeometry}
-            leading={leftCollapsed ? (
-              <>
-                <button
-                  type="button"
-                  onClick={expandSidebar}
-                  title="Show Project Explorer ([)"
-                  aria-label="Show Project Explorer"
-                  className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
-                >
-                  <PanelLeftOpen className="w-4 h-4" />
-                </button>
-                <div className="w-px h-5 bg-zinc-700/60 self-center mx-0.5" aria-hidden />
-              </>
-            ) : undefined}
-            trailing={rightCollapsed ? (
-              <>
-                <div className="w-px h-4 bg-industrial-border mx-1" aria-hidden />
-                <button
-                  type="button"
-                  onClick={expandTable}
-                  title="Show takeoff panel (])"
-                  aria-label="Show takeoff panel"
-                  className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
-                >
-                  <PanelRightOpen className="w-4 h-4" />
-                </button>
-              </>
-            ) : undefined}
-          />
-
           <div className="flex flex-1 overflow-hidden relative min-h-0">
+
+            {/* ── Tool rail (left edge of the drawing) ──
+                Tool changes go through the Viewer's handler (api.setActiveTool)
+                so the linear↔arc → polyarc upgrade logic runs. Drawing aids and
+                zoom are in the bar under the drawing. */}
+            <ViewerToolbar
+              orientation="vertical"
+              activeTool={activeTool as ToolType}
+              setActiveTool={(tool: ToolType) => api?.setActiveTool
+                ? api.setActiveTool(tool)
+                : setActiveTool(tool)
+              }
+              canUndo={api?.canUndo ?? false}
+              canRedo={api?.canRedo ?? false}
+              handleUndo={() => api?.handleUndo?.()}
+              handleRedo={() => api?.handleRedo?.()}
+              tempPointsCount={api?.tempPointsCount ?? 0}
+              showPins={showPins}
+              setShowPins={setShowPins}
+              snapEnabled={api?.snapEnabled ?? true}
+              setSnapEnabled={(v: boolean) => api?.setSnapEnabled?.(v)}
+              showSnapSettings={api?.showSnapSettings ?? false}
+              setShowSnapSettings={(v: boolean) => api?.setShowSnapSettings?.(v)}
+              orthoEnabled={api?.orthoEnabled ?? false}
+              setOrthoEnabled={(v: boolean) => api?.setOrthoEnabled?.(v)}
+              scaleFactor={currentScaleFactor}
+              handleManualScale={() => api?.handleManualScale?.()}
+              analysisStatus={api?.analysisStatus ?? 'idle'}
+              analysisPage={api?.analysisPage ?? null}
+              currentPageCorners={api?.currentPageCorners ?? 0}
+              scale={api?.scale ?? 1}
+              setScale={(s) => api?.setScale?.(s)}
+              fitToScreen={() => api?.fitToScreen?.()}
+              MIN_ZOOM={0.1}
+              MAX_ZOOM={5}
+              ZOOM_SENSITIVITY={0.1}
+              polyarcMode={api?.polyarcMode}
+              togglePolyarcMode={api?.togglePolyarcMode}
+              hideHistory
+              hideScale
+              showLabels={showLabels}
+              setShowLabels={setShowLabels}
+              showGeometry={showGeometry}
+              setShowGeometry={setShowGeometry}
+leading={leftCollapsed ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={expandSidebar}
+                    title="Show Project Explorer ([)"
+                    aria-label="Show Project Explorer"
+                    className="w-9 h-9 flex items-center justify-center border border-transparent text-zinc-500 hover:text-amber-accent hover:border-zinc-700 transition-colors"
+                  >
+                    <PanelLeftOpen className="w-4 h-4" />
+                  </button>
+                  <div className="h-px w-6 bg-zinc-700/60 my-1" aria-hidden />
+                </>
+              ) : undefined}
+            />
 
             <div className="flex-1 min-w-0 relative">
               <Viewer
@@ -658,6 +643,17 @@ export default function Workspace() {
                 showPins={showPins}
                 onShowPinsChange={setShowPins}
               />
+              {rightCollapsed && (
+                <button
+                  type="button"
+                  onClick={expandTable}
+                  title="Show takeoff panel (])"
+                  aria-label="Show takeoff panel"
+                  className="absolute top-2 right-2 z-40 w-9 h-9 flex items-center justify-center bg-industrial-panel border border-industrial-border text-zinc-400 hover:text-amber-accent hover:border-amber-accent/60 shadow-lg transition-colors"
+                >
+                  <PanelRightOpen className="w-4 h-4" />
+                </button>
+              )}
             </div>
 
             {!rightCollapsed && (
