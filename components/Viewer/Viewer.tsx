@@ -281,6 +281,23 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     shouldPreserveFillCanvas: isMagicFillActiveRef,
   });
 
+  // Zooming: hide the measurements until the page has been redrawn at the new
+  // size (the page is only stretched in the meantime, so they wouldn't line up).
+  const [zoomSettling, setZoomSettling] = useState(false);
+  useEffect(() => {
+    if (Math.abs(scale - committedScale) > 1e-6) { setZoomSettling(true); return; }
+    // Zoom has stopped changing; the redraw that follows bumps pdfRenderCount.
+    const t = setTimeout(() => setZoomSettling(false), 900);         // safety net if no redraw comes
+    return () => clearTimeout(t);
+  }, [scale, committedScale]);
+  useEffect(() => {
+    if (Math.abs(scale - committedScale) > 1e-6) return;
+    const f = requestAnimationFrame(() => setZoomSettling(false));   // redrawn → show them again
+    return () => cancelAnimationFrame(f);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pdfRenderCount]);
+
+
   const appendToGroupId = propAppendToGroupId ?? undefined;
 
   // ── Page scoping ──────────────────────────────────────────────────────────
@@ -1866,6 +1883,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
               readyToDraw={true}
               handleCanvasClick={isOffsetTool ? handleOffsetCanvasClick : handleCanvasClickWithSelect}
               handleContextMenu={handleContextMenuWithShapes}
+              settling={zoomSettling}
               handleCanvasPointerMove={isOffsetTool ? handleOffsetCanvasPointerMove : (e => { if (!shapePointerMove(e)) wrappedPointerMove(e); })}
               handleCanvasPointerDown={(e => ((handleCanvasPointerDown(e) as unknown as boolean) || shapePointerDown(e))) as (e: React.PointerEvent<HTMLCanvasElement>) => boolean | undefined}
               handleCanvasPointerUp={e => { if (!shapePointerUp(e)) handleCanvasPointerUp(e); }}

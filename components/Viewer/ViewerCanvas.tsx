@@ -98,6 +98,8 @@ interface ViewerCanvasProps {
   onGridCountCommit: (count: number, spacingMm: number, cols: number, rows: number) => void;
 
   children?: React.ReactNode;
+  /** The zoom is still changing: measurements are hidden until the page has been redrawn at the new size. */
+  settling?: boolean;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -371,6 +373,7 @@ export function ViewerCanvas({
   scaleFactor,
   onGridCountCommit,
   children,
+  settling = false,
 }: ViewerCanvasProps) {
 
   const isOffsetTool = activeTool === 'perimeter-offset';
@@ -496,6 +499,7 @@ export function ViewerCanvas({
         <div
           className="relative shadow-2xl border border-industrial-border bg-white"
           style={canvasWrapStyle}
+          data-settling={settling ? 'true' : undefined}
         >
           {/* FIX: FillCanvasSizer keeps fillCanvasRef bitmap + CSS size in
               sync with pdfDimensions whenever dimensions change. This is the
@@ -505,7 +509,7 @@ export function ViewerCanvas({
             pdfDimensions={pdfDimensions}
           />
 
-          <canvas ref={pdfCanvasRef} className="absolute inset-0 z-0 pointer-events-none" />
+          <canvas ref={pdfCanvasRef} data-pdf-page className="absolute inset-0 z-0 pointer-events-none" />
 
           <canvas
             ref={vectorCanvasRef}

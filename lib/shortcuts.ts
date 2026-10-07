@@ -137,3 +137,6 @@ export function isDeleteKey(e: { key: string; code?: string }): boolean {
   return e.key === 'Delete' || e.key === 'Del' || e.key === 'Backspace' || e.key === 'Insert' ||
     e.code === 'Delete' || (e.code === 'NumpadDecimal' && e.key !== '.' && e.key !== ',');
 }
+
+/** PlanSwift style also pans the drawing by holding the right mouse button and dragging. */
+export const rightDragPans = () => activePreset() === 'planswift';

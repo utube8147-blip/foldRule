@@ -14,7 +14,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { wheelMode } from '@/lib/shortcuts';
+import { wheelMode, rightDragPans } from '@/lib/shortcuts';
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react';
@@ -39,7 +39,7 @@ import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type { PdfDimensions } from '@/types/viewerTypes';
 
 import {
-  CANVAS_PADDING, ZOOM_SENSITIVITY, MIN_ZOOM, MAX_ZOOM,
+  CANVAS_PADDING, MIN_ZOOM, MAX_ZOOM,
 } from '@/components/Viewer/ViewerConstants';
 
 // ── Public interface ───────────────────────────────────────────────────────────
@@ -473,10 +473,76 @@ export function useViewerPdf({
     if (pdf && pdfDimensions) centerDocumentInViewport();
   }, [pageNumber, pdfDimensions, centerDocumentInViewport, pdf]);
 
+  // ── Right-button drag pans (PlanSwift style) ───────────────────────────────
+  // Hold the right button and drag to move the drawing; a right click without
+  // dragging still opens the menu. The browser's own "contextmenu" event fires
+  // on press on some systems and on release on others, so it is held back and
+  // sent again on release only when the pointer did not move.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    let start: { x: number; y: number; id: number; target: EventTarget | null } | null = null;
+    let moved = false, resend = false;
+    const down = (e: PointerEvent) => {
+      if (e.button !== 2 || !rightDragPans()) return;
+      start = { x: e.clientX, y: e.clientY, id: e.pointerId, target: e.target };
+      moved = false;
+    };
+    const move = (e: PointerEvent) => {
+      if (!start || e.pointerId !== start.id) return;
+      if (!moved) {
+        if (Math.hypot(e.clientX - start.x, e.clientY - start.y) < 5) return;
+        moved = true;
+        try { el.setPointerCapture(e.pointerId); } catch { /* pointer already gone */ }
+        el.style.cursor = 'grabbing';
+        setIsPanning(true);
+      }
+      el.scrollLeft -= e.movementX;
+      el.scrollTop  -= e.movementY;
+      e.preventDefault();
+    };
+    const up = (e: PointerEvent) => {
+      if (!start || e.pointerId !== start.id) return;
+      const s = start; start = null;
+      if (moved) {
+        try { el.releasePointerCapture(e.pointerId); } catch { /* not captured */ }
+        el.style.cursor = '';
+        setIsPanning(false);
+        return;
+      }
+      // A plain right click: now deliver the menu event that was held back.
+      resend = true;
+      (s.target as Element | null)?.dispatchEvent(new MouseEvent('contextmenu', {
+        bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY, button: 2, buttons: 0,
+      }));
+      resend = false;
+    };
+    const menu = (e: MouseEvent) => {
+      if (!rightDragPans() || resend) return;
+      e.preventDefault(); e.stopPropagation();
+    };
+    el.addEventListener('pointerdown', down, true);
+    el.addEventListener('pointermove', move, true);
+    el.addEventListener('pointerup', up, true);
+    el.addEventListener('pointercancel', up, true);
+    el.addEventListener('contextmenu', menu, true);
+    return () => {
+      el.removeEventListener('pointerdown', down, true);
+      el.removeEventListener('pointermove', move, true);
+      el.removeEventListener('pointerup', up, true);
+      el.removeEventListener('pointercancel', up, true);
+      el.removeEventListener('contextmenu', menu, true);
+    };
+  }, [containerRef]);
+
   // ── Wheel zoom ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    let pendingZoom = 0, zoomFrame = 0;
+    let lastWheelAt = 0, fromTouchpad = false;
+    let hold: { x: number; y: number; fx: number; fy: number; until: number } | null = null;
+    let holdFrame = 0;
     const onWheel = (e: WheelEvent) => {
       // The wheel zooms. Ctrl + wheel scrolls up/down, Shift + wheel sideways.
       // (A trackpad pinch also arrives as Ctrl + wheel, with small fractional
@@ -484,6 +550,20 @@ export function useViewerPdf({
       if (e.shiftKey && !e.ctrlKey && !e.metaKey) return;                 // browser scrolls sideways
       const mod = e.ctrlKey || e.metaKey;
       const pinch = mod && (!Number.isInteger(e.deltaY) || Math.abs(e.deltaY) < 40);
+      // A touchpad always pans with two fingers and zooms only with a pinch;
+      // a mouse wheel zooms. Both arrive as "wheel" events, so they are told
+      // apart: a mouse wheel moves in big whole steps, straight up or down; a
+      // touchpad starts with small, fractional or diagonal steps. The answer is kept for
+      // the rest of one continuous gesture so its tail isn't misread.
+      if (!mod) {
+        const now = performance.now();
+        const notch = e.deltaMode === 1 ||
+          (e.deltaX === 0 && Number.isInteger(e.deltaY) && Math.abs(e.deltaY) >= 30);
+        if (now - lastWheelAt > 180) fromTouchpad = !notch;      // a new gesture
+        else if (!notch) fromTouchpad = true;                    // one small step is enough to know
+        lastWheelAt = now;
+        if (fromTouchpad) { hold = null; return; }               // the browser scrolls the drawing (pan)
+      }
       // The user can swap the two (Shortcuts panel): wheel scrolls, Ctrl + wheel zooms.
       if (wheelMode() === 'scroll' && !mod) return;                       // browser scrolls
       if (wheelMode() === 'zoom' && mod && !pinch) {
@@ -494,30 +574,53 @@ export function useViewerPdf({
       }
       e.preventDefault();
       onZoomRef.current?.();
-      const delta =
-        (e.deltaY > 0 ? -1 : 1) *
-        ZOOM_SENSITIVITY *
-        (1 + Math.min(Math.abs(e.deltaY) / 100, 1) * 0.5);
-      const rect = el.getBoundingClientRect();
-      const cx   = e.clientX - rect.left + el.scrollLeft;
-      const cy   = e.clientY - rect.top  + el.scrollTop;
-      setScale(prev => {
-        const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev + delta));
-        if (next === prev) return prev;
-        const ratio = next / prev;
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => {
-            const c = containerRef.current;
-            if (!c) return;
-            c.scrollLeft = cx * ratio - (e.clientX - rect.left);
-            c.scrollTop  = cy * ratio - (e.clientY - rect.top);
-          }),
-        );
-        return next;
+      // Zoom in proportion to how far the wheel / fingers actually moved. A
+      // touchpad sends dozens of tiny events per swipe; treating each as a full
+      // step (as before) zoomed wildly and flooded the page with re-renders.
+      // The movement is added up and applied once per frame.
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;      // lines / pages → px
+      const dy = Math.max(-150, Math.min(150, e.deltaY * unit));
+      pendingZoom += -dy * (pinch ? 0.01 : 0.0015);     // one mouse notch (100) ≈ 16 %
+      // Keep the spot under the cursor where it is while zooming: remember
+      // which point of the page it is (as a fraction of the page), then hold
+      // that point under the cursor for a short while — the page is laid out
+      // again a moment after the zoom changes, so one correction isn't enough.
+      const page = el.querySelector('canvas');
+      if (page) {
+        const r = page.getBoundingClientRect();
+        const samePlace = hold && Math.hypot(hold.x - e.clientX, hold.y - e.clientY) < 4 && performance.now() < hold.until;
+        if (!samePlace && r.width > 0 && r.height > 0) {
+          hold = { x: e.clientX, y: e.clientY, fx: (e.clientX - r.left) / r.width, fy: (e.clientY - r.top) / r.height, until: 0 };
+        }
+        if (hold) hold.until = performance.now() + 700;
+        if (!holdFrame) {
+          const keep = () => {
+            holdFrame = 0;
+            const h = hold, pg = el.querySelector('canvas');
+            if (!h || !pg || performance.now() > h.until) return;
+            const q = pg.getBoundingClientRect();
+            el.scrollLeft += q.left + h.fx * q.width  - h.x;
+            el.scrollTop  += q.top  + h.fy * q.height - h.y;
+            holdFrame = requestAnimationFrame(keep);
+          };
+          holdFrame = requestAnimationFrame(keep);
+        }
+      }
+      if (zoomFrame) return;
+      zoomFrame = requestAnimationFrame(() => {
+        zoomFrame = 0;
+        const amount = pendingZoom; pendingZoom = 0;
+        if (!amount) return;
+        setScale(prev => {
+          const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, prev * Math.exp(amount)));
+          return Math.abs(next - prev) < 1e-4 ? prev : next;
+        });
       });
     };
+    const release = () => { hold = null; };                     // dragging or clicking takes over from the zoom anchor
+    el.addEventListener('pointerdown', release, true);
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
+    return () => { el.removeEventListener('wheel', onWheel); if (zoomFrame) cancelAnimationFrame(zoomFrame); if (holdFrame) cancelAnimationFrame(holdFrame); el.removeEventListener('pointerdown', release, true); };
   }, [containerRef]);
 
   // ── Spacebar pan ───────────────────────────────────────────────────────────

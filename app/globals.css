@@ -99,3 +99,8 @@
 
 /* The "what are you measuring?" box, when someone tries to draw before answering. */
 @keyframes itemnudge { 0%,100% { transform: translateX(0); } 20% { transform: translateX(-7px); } 40% { transform: translateX(7px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(4px); } }
+
+/* While zooming, the page is stretched for a moment before it is redrawn at
+   the new size; measurements drawn on top would look out of place, so they
+   are hidden until the page has settled. */
+[data-settling="true"] > :not([data-pdf-page]) { opacity: 0 !important; transition: none !important; }

@@ -267,7 +267,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
             <button
               key={name} aria-pressed={activePreset() === name}
               onClick={() => { applyPreset(name); setEditing(null); setNote(name === 'planswift'
-                ? 'PlanSwift style: 1 Area · 2 Length · 4 Count · R pause / resume · C finish · A curve · F3 snap. Rectangle moved to Q, Circle to W.'
+                ? 'PlanSwift style: 1 Area · 2 Length · 4 Count · R pause / resume · C finish · A curve · F3 snap. Hold the right mouse button and drag to pan. Rectangle moved to Q, Circle to W.'
                 : 'Foldrule shortcuts are back.'); }}
               className={`flex-1 text-left text-xs px-3 py-2 border ${activePreset() === name ? 'border-amber-accent text-amber-accent' : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'}`}
             >{PRESETS[name].label}</button>
