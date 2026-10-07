@@ -13,6 +13,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { findScales } from '@/lib/takeoff/detectScale';
+import { presetScaleFactor } from '@/components/Viewer/ViewerToolbar';
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
 } from 'react';
@@ -384,6 +386,23 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     const t = window.setTimeout(run, 50);
     return () => { if (!ran) { clearTimeout(t); w.done = false; } };
   }, [pdf, pageNumber, activeDrawingId, pdfRenderCount, loadPdfPage, clearSnapGeometry]);
+
+  // The scale written on the sheet ("SCALE 1:100"), read from the page's text and offered, never applied silently.
+  const [statedScale, setStatedScale] = useState<{ key: string; ratio: number; confident: boolean } | null>(null);
+  useEffect(() => {
+    if (!pdf) return;
+    let cancelled = false;
+    const key = `${activeDrawingId}:${pageNumber}`;
+    (async () => {
+      try {
+        const page = await pdf.getPage(pageNumber);
+        const text = await page.getTextContent();
+        const found = findScales(text.items.map(i => ('str' in i ? i.str : '')));
+        if (!cancelled) setStatedScale(found[0] ? { key, ratio: found[0].ratio, confident: found[0].confident } : null);
+      } catch { if (!cancelled) setStatedScale(null); }
+    })();
+    return () => { cancelled = true; };
+  }, [pdf, pageNumber, activeDrawingId]);
 
   // ── Stable pan ────────────────────────────────────────────────────────────
   const stablePan = useMemo(
@@ -2345,7 +2364,18 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         >
           <span>
             Page {pageNumber} isn’t calibrated — quantities are in drawing units until you set the scale.
+            {statedScale?.key === `${activeDrawingId}:${pageNumber}` && pdfDocDims && <> The drawing says <b>1:{statedScale.ratio}</b>.</>}
           </span>
+          {statedScale?.key === `${activeDrawingId}:${pageNumber}` && pdfDocDims && (
+            <button
+              type="button"
+              title="Use the scale written on the drawing, then check it against one printed dimension"
+              onClick={() => onScaleSetRef.current(presetScaleFactor(statedScale.ratio, 'actual', Math.max(pdfDocDims.w, pdfDocDims.h)))}
+              className="bg-amber-400 px-2 py-0.5 font-semibold text-black hover:bg-amber-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-300"
+            >
+              Use 1:{statedScale.ratio}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => handleSetActiveTool('scale' as ToolType)}

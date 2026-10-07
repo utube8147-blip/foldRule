@@ -298,11 +298,12 @@ export function ScaleControls({
     <button
       onClick={onCalibrate}
       aria-pressed={calibrating}
+      data-guide="scale"
       title={scaleFactor === 1
         ? 'Set the scale for this page (K)'
         : 'Draw along a printed dimension to check this page’s scale (K)'}
       className={cn(
-        'text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
+        'text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border whitespace-nowrap shrink-0',
         calibrating
           ? 'bg-amber-400 text-black border-amber-400'
           : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',

@@ -8,6 +8,7 @@
 //  the folder or on a permission. The folder is a mirror of real files:
 //
 //    <chosen folder>/
+//      master-bank.json               ← your price list (all currencies), merged item by item
 //      Colombo-Residence__1a2b3c4d/
 //        project.json                 ← project state (measurements, groups…)
 //        drawings/A-101__9f8e7d6c.pdf ← the original PDFs, written once
@@ -38,6 +39,7 @@ import {
   getStorageMode, isFolderPrimary, setFolderPrimary, setFolderFileLoader, copyProjectDataToDisk,
   copyMyDiskProjectsToMemory, deleteDiskProjects,
 } from './projectDb';
+import { mergeBanksWithCopy, MASTER_BANK_CHANGED, type StoredBank } from '@/lib/takeoff/masterBank';
 
 /** Fired on `window` after a sync brought projects in from the folder. */
 export const PROJECTS_PULLED_EVENT = 'foldrule:projects-pulled';
@@ -47,6 +49,9 @@ const TOMBSTONES_KEY = 'deletedProjectIds';
 const PROJECT_FILE   = 'project.json';
 const DRAWINGS_DIR   = 'drawings';
 const FORMAT         = 'foldrule-project-folder';
+/** The company price list, kept beside the projects so it survives a cleared browser and travels with the folder. */
+const BANK_FILE      = 'master-bank.json';
+const BANK_FORMAT    = 'foldrule-master-bank';
 /** Ignore tiny clock differences when comparing copies. */
 const NEWER_BY_MS    = 1000;
 
@@ -186,6 +191,7 @@ export function initFolderSync(): Promise<void> {
     const supported = isFolderSupported();
     if (!supported) { set({ supported, loaded: true }); return; }
     startWatching();
+    watchMasterBank();
     registerFileLoader();
     try {
       const h = await getSetting<FileSystemDirectoryHandle>(HANDLE_KEY);
@@ -433,6 +439,7 @@ async function syncOnce(): Promise<{ pulled: number; pushed: number } | null> {
           if (rec) { await writeProjectToDir(root, rec, await loadDrawingFiles(p.id)); pushed++; }
         }
       }
+      await syncBankFile(root);
       await deleteSetting(TOMBSTONES_KEY);
       await deleteDiskProjects(fromDisk).catch(err => console.warn('[folder] could not clear the browser copies', err));
       set({ syncing: false, lastSyncAt: Date.now(), error: null });
@@ -447,6 +454,49 @@ async function syncOnce(): Promise<{ pulled: number; pushed: number } | null> {
     }
     return { pulled, pushed };
   }
+}
+
+// ── Master bank ──────────────────────────────────────────────────────────────
+
+async function syncBankFile(root: FileSystemDirectoryHandle): Promise<boolean> {
+  let remote: Record<string, StoredBank> = {};
+  let exists = false;
+  try {
+    const fh = await root.getFileHandle(BANK_FILE);
+    const data = JSON.parse(await (await fh.getFile()).text());
+    if (data?.format === BANK_FORMAT && data.banks && typeof data.banks === 'object') { remote = data.banks; exists = true; }
+  } catch { /* no file yet, or unreadable: this computer's copy is written */ }
+  const { banks, localChanged, remoteChanged } = mergeBanksWithCopy(remote);
+  const anything = Object.values(banks).some(b => Object.keys(b.items).length || Object.keys(b.stamps).length);
+  if (anything && (!exists || remoteChanged)) {
+    await writeFile(root, BANK_FILE, JSON.stringify({ format: BANK_FORMAT, savedAt: new Date().toISOString(), banks }, null, 1));
+  }
+  return localChanged;
+}
+
+/**
+ * Two-way sync of the master bank with `master-bank.json` in the folder. Returns true when
+ * newer prices were brought in. No-op unless access is granted; never prompts.
+ */
+export function syncMasterBank(): Promise<boolean> {
+  if (!rootHandle) return Promise.resolve(false);
+  return serial(async () => {
+    if (!rootHandle || (await queryPermission(rootHandle)) !== 'granted') return false;
+    try { return await syncBankFile(rootHandle); }
+    catch (err) { console.error('[folder] master bank not saved', err); set({ error: describe(err) }); return false; }
+  });
+}
+
+let bankTimer: ReturnType<typeof setTimeout> | null = null;
+let bankWatching = false;
+/** Write the bank to the folder shortly after it changes. */
+function watchMasterBank(): void {
+  if (bankWatching || typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  bankWatching = true;
+  window.addEventListener(MASTER_BANK_CHANGED, () => {
+    if (bankTimer) clearTimeout(bankTimer);
+    bankTimer = setTimeout(() => { void syncMasterBank(); }, 600);
+  });
 }
 
 /** Push one project after it was saved (workspace autosave). Never prompts. */

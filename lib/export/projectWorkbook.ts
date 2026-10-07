@@ -6,6 +6,8 @@
 //       (the bank holds the whole catalogue, most of it unused per project).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { addVeSheet } from './veSheet';
+import { addEstimateSheets } from './estimateSheets';
 import { addRevisionSheet } from './revisionSheet';
 import { addBillSheet } from './billSheet';
 import * as ExcelJS from 'exceljs';
@@ -22,6 +24,8 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
   addTakeoffSheet(workbook, input);
   addBillSheet(workbook, input);
   addRevisionSheet(workbook, input);
+  addVeSheet(workbook, input);
+  addEstimateSheets(workbook, input);
 
   const usedIds = new Set(input.measurements.map(m => m.materialId).filter(Boolean) as string[]);
   const usedMaterials = input.materials.filter(m => usedIds.has(m.id));

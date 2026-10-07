@@ -1,5 +1,9 @@
 'use client';
 
+import { markExported } from '@/components/features/onboarding/GettingStarted';
+import { veSummary } from '@/lib/takeoff/valueEngineering';
+import { buildUp } from '@/lib/takeoff/estimate';
+import { orderSchedule } from '@/lib/takeoff/materialRate';
 import { revisionChanges as revisionChanges_ } from '@/lib/takeoff/revisions';
 import type { Material } from '@/types';
 import { billedRows } from '@/lib/takeoff/timesing';
@@ -11,6 +15,12 @@ import { downloadBlob, toStoredState } from '@/lib/storage/projectDb';
  * Returns the filename that was saved.
  */
 export async function exportProjectToExcel(ps: ProjectState, filename?: string): Promise<string> {
+  const saved = await exportProjectToExcelInner(ps, filename);
+  markExported();
+  return saved;
+}
+
+async function exportProjectToExcelInner(ps: ProjectState, filename?: string): Promise<string> {
   const stored = toStoredState(ps);
   const project = {
     ...stored,
@@ -22,7 +32,20 @@ export async function exportProjectToExcel(ps: ProjectState, filename?: string):
 
   const revisionChanges = (ps.revisionLog ?? []).filter(r => !r.reverted).map(r =>
     revisionChanges_(r, ps.measurements, ps.drawings, ps.materials as Material[]));
-  Object.assign(project, { revisionChanges, revisionLog: undefined });
+  const ve = veSummary(ps.veProposals ?? [], ps.measurements, ps.drawings, ps.materials as Material[]);
+  const valueEngineering = {
+    pending: ve.pending,
+    lines: ve.lines.map(({ proposal, ...l }) => ({ ...l, status: proposal.status, note: proposal.note })),
+  };
+  // Build-up to the tender sum, and what to buy.
+  const billed = billedRows(stored.measurements, stored.drawings);
+  const measured = billed.reduce((s, m) => s + (m.isGroupHeader ? 0 : m.quantity * (m.unitRate || 0)), 0);
+  const estimate = {
+    lines: buildUp(measured, ps.markups, ps.vatPercent).map(({ key: _k, ...l }) => l),
+    provisional: (ps.markups?.provisional ?? []).map(p => ({ name: p.name, amount: p.amount })),
+    order: orderSchedule(billed, ps.materials as Material[]),
+  };
+  Object.assign(project, { revisionChanges, valueEngineering, estimate, revisionLog: undefined, veProposals: undefined, markups: undefined });
 
   const res = await fetch('/api/export', {
     method:  'POST',

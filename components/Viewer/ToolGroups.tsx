@@ -187,6 +187,7 @@ export function ToolRail({
   return (
     <nav
       aria-label="Measuring tools"
+      data-guide="tools"
       className="w-14 flex-shrink-0 bg-industrial-panel border-r border-industrial-border flex flex-col items-center gap-1 py-2 z-[60] relative"
       onKeyDown={e => { if (e.key === 'Escape') setOpenId(null); }}
     >

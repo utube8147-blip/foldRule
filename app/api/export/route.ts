@@ -75,6 +75,26 @@ const ProjectSchema = z.object({
   }).passthrough()).max(500).catch([]),
   measurements: z.array(MeasurementSchema).max(MAX_MEASUREMENTS),
   materials:    z.array(MaterialSchema).max(5_000).catch([]),
+  estimate: z.object({
+    lines: z.array(z.object({ label: z.string().catch(''), percent: z.number().nullable().optional().catch(undefined), amount: num, total: z.boolean().optional().catch(undefined), note: z.string().optional().catch(undefined) })).max(40).catch([]),
+    provisional: z.array(z.object({ name: z.string().catch(''), amount: num })).max(500).optional().catch(undefined),
+    order: z.array(z.object({
+      code: z.string().catch(''), name: z.string().catch(''), net: num, unit: z.string().catch(''), wastePercent: num, orderQty: num,
+      buyUnit: z.string().catch(''), covers: num, price: num, cost: num, supplier: z.string().optional().catch(undefined),
+    })).max(5_000).catch([]),
+  }).optional().catch(undefined),
+  auditLog: z.array(z.object({
+    at: z.string().catch(''), by: z.string().catch(''), what: z.string().catch(''), target: z.string().catch(''),
+    from: z.string().optional().catch(undefined), to: z.string().optional().catch(undefined),
+  })).max(5_000).optional().catch(undefined),
+  valueEngineering: z.object({
+    pending: num,
+    lines: z.array(z.object({
+      designed: z.string().catch(''), alternative: z.string().catch(''), unit: z.string().catch(''),
+      quantity: num, designedRate: num, designedCost: num, alternativeRate: num, alternativeCost: num,
+      status: z.string().catch('proposed'), note: z.string().optional().catch(undefined),
+    })).max(2_000).catch([]),
+  }).optional().catch(undefined),
   revisionChanges: z.array(z.object({
     record: z.object({
       at: z.string().catch(''),
@@ -146,6 +166,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       })),
       measurements:  project.measurements as unknown as TakeoffRow[],
       revisionChanges: project.revisionChanges,
+      valueEngineering: project.valueEngineering,
+      estimate: project.estimate,
+      auditLog: project.auditLog,
       materials:     project.materials as unknown as Material[],
     });
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());

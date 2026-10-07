@@ -39,6 +39,7 @@ export function excelMoneyFormat(code?: string | null): string {
 
 let displayCurrency = DEFAULT_CURRENCY;
 /** Currency the open project is priced in; used by formatMoney everywhere in the app. */
+export const getDisplayCurrency = () => displayCurrency;
 export const setDisplayCurrency = (code?: string | null) => { displayCurrency = (code ?? '').trim() || DEFAULT_CURRENCY; };
 
 export function formatMoney(value: number, code: string = displayCurrency): string {

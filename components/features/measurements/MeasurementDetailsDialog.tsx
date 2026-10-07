@@ -1,3 +1,4 @@
+import { unitRateOf } from '@/lib/takeoff/materialRate';
 import React, { useState, useEffect, useRef } from 'react';
 import { DoorOpen, Wind, Fan, Zap, Plug, Library } from 'lucide-react';
 import { useTakeoffData } from '@/context/TakeoffContext';
@@ -37,7 +38,7 @@ export function MeasurementDetailsDialog({
   const isCountType = measurementType === 'Count';
   const { projectState, setMaterialLibraryOpen } = useTakeoffData();
   const materials = projectState.materials as Material[];
-  const rateOf = (m: Material) => (m.materialCost ?? 0) + (m.laborCost ?? 0) + (m.equipmentCost ?? 0) || m.unitRate || 0;
+  const rateOf = (m: Material) => unitRateOf(m);
 
   useEffect(() => {
     if (isOpen) {

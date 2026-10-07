@@ -30,6 +30,13 @@ export interface Material {
   division?: string;
   /** Came from the built-in catalogue (data/materials.ts). */
   builtIn?: boolean;
+  /** Material bought but not billed (offcuts, breakage), as a percentage. It goes into the rate. */
+  wastePercent?: number;
+  /**
+   * How it is bought, when that differs from how it is measured: tiles by the box, blocks by
+   * the piece. `materialCost` is then the price of one buying unit, which `covers` this many takeoff units.
+   */
+  purchase?: { unit: string; covers: number };
 }
 
 export type MaterialSpec = Material;

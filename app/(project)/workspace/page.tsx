@@ -39,10 +39,12 @@ import { takeoffToCsv, downloadCsv } from '@/lib/export/csvExport';
 import { actionForKey } from '@/lib/shortcuts';
 import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
 import { useProjectHref } from '@/lib/nav/projectHref';
+import { GettingStarted } from '@/components/features/onboarding/GettingStarted';
 // Loaded on first open — they cost nothing until used.
 const AnalysisDialog  = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.AnalysisDialog),  { ssr: false });
 const RevisionCompareDialog = dynamic(() => import('@/components/features/dialogs/RevisionCompareDialog').then(m => m.RevisionCompareDialog), { ssr: false });
 const RevisionChangesDialog = dynamic(() => import('@/components/features/dialogs/RevisionChangesDialog').then(m => m.RevisionChangesDialog), { ssr: false });
+const ValueEngineeringDialog = dynamic(() => import('@/components/features/dialogs/ValueEngineeringDialog').then(m => m.ValueEngineeringDialog), { ssr: false });
 const ShortcutsDialog = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.ShortcutsDialog), { ssr: false });
 
 // ─── Stable color palette for presets ────────────────────────────────────────
@@ -467,6 +469,7 @@ export default function Workspace() {
   // Once opened, the compare page stays loaded so closing it does not lose the plans being compared.
   const [compareOpened, setCompareOpened] = useState(false);
   const [showChanges,   setShowChanges]   = useState(false);
+  const [showVe,        setShowVe]        = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const openAnalysis        = useCallback(() => setShowAnalysis(true), []);
   const expandTable         = useCallback(() => setRightCollapsed(false), []);
@@ -545,6 +548,7 @@ export default function Workspace() {
         onProjectNameChange={handleProjectNameChange}
         onExport={handleExport}
         onOpenPresets={openPresetDrawer}
+        extra={<GettingStarted project={ps} page="workspace" />}
         center={
           <>
             <HistoryControls
@@ -712,6 +716,7 @@ export default function Workspace() {
                 onCollapse={collapseTable}
                 onOpenAnalysis={openAnalysis}
                 onOpenCompare={() => { setCompareOpened(true); setShowCompare(true); }}
+                onOpenVe={() => setShowVe(true)}
                 onOpenChanges={(ps.revisionLog?.length ?? 0) > 0 ? () => setShowChanges(true) : undefined}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={handleAddManual}
@@ -891,6 +896,21 @@ export default function Workspace() {
           materials={ps.materials as Material[]}
           onClose={() => setShowChanges(false)}
           onFocus={focusMeasurement}
+        />
+      )}
+      {showVe && (
+        <ValueEngineeringDialog
+          measurements={ps.measurements}
+          drawings={ps.drawings}
+          materials={ps.materials as Material[]}
+          proposals={ps.veProposals ?? []}
+          onClose={() => setShowVe(false)}
+          onChange={next => setProjectState((prev: typeof ps) => ({
+            ...prev,
+            ...(next.measurements ? { measurements: next.measurements } : {}),
+            ...(next.materials ? { materials: next.materials } : {}),
+            veProposals: next.proposals,
+          }))}
         />
       )}
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}

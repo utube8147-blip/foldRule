@@ -18,6 +18,10 @@ interface Props {
   projectName: string;
   /** Make another version the live one; returns a message when it cannot be done. */
   onSwitch: (recordId: string, target: 'from' | 'to', keepNew: boolean) => string | null;
+  /** Version to open on (a key from versionNodes). */
+  initialKey?: string;
+  /** Render as a section of a page instead of a full page of its own. */
+  embedded?: boolean;
 }
 
 const q = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -31,11 +35,11 @@ const STATUS: Record<string, { label: string; cls: string }> = {
 
 const DOT: Record<string, string> = { current: 'bg-green-500 border-green-500', superseded: 'bg-transparent border-zinc-500', 'set aside': 'bg-transparent border-amber-500 border-dashed' };
 
-export function RevisionChangesDialog({ log, measurements, drawings, materials, onClose, onFocus, projectName, onSwitch }: Props) {
+export function RevisionChangesDialog({ log, measurements, drawings, materials, onClose, onFocus, projectName, onSwitch, initialKey, embedded }: Props) {
   const nodes = useMemo(() => versionNodes(log), [log]);
   // Newest first, like a commit list.
   const list = useMemo(() => [...nodes].reverse(), [nodes]);
-  const [key, setKey] = useState(() => (list.find(n => n.status === 'current') ?? list[0])?.key ?? '');
+  const [key, setKey] = useState(() => (list.find(n => n.key === initialKey) ?? list.find(n => n.status === 'current') ?? list[0])?.key ?? '');
   const [all, setAll] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const node = list.find(n => n.key === key) ?? list[0];
@@ -50,9 +54,9 @@ export function RevisionChangesDialog({ log, measurements, drawings, materials, 
   const newWork = node.restore?.target === 'from' && restoreRecord ? newWorkSince(restoreRecord, measurements).filter(m => !m.isGroupHeader).length : 0;
 
   return (
-    <div className="fixed inset-0 z-[160] flex bg-[#1D2125] font-mono">
-      <div className="w-full h-full flex flex-col">
-        <div className="bg-[#1a1a1a] border-b border-amber-accent px-5 py-3 flex items-center gap-3">
+    <div className={embedded ? 'flex-1 min-h-0 flex bg-[#1D2125] font-mono' : 'fixed inset-0 z-[160] flex bg-[#1D2125] font-mono'}>
+      <div className="w-full h-full flex flex-col min-h-0">
+        <div className={embedded ? 'hidden' : 'bg-[#1a1a1a] border-b border-amber-accent px-5 py-3 flex items-center gap-3'}>
           <GitBranch className="w-4 h-4 text-amber-accent" />
           <h2 className="text-amber-accent text-sm uppercase tracking-widest font-black flex-1">Revision history</h2>
           <button onClick={onClose} className="flex items-center gap-2 border border-zinc-600 px-3 py-1.5 text-[11px] font-bold uppercase tracking-widest text-zinc-200 hover:border-amber-accent hover:text-amber-accent">
@@ -93,7 +97,7 @@ export function RevisionChangesDialog({ log, measurements, drawings, materials, 
                     key={node.key} node={node} drawings={drawings} projectName={projectName} newWork={newWork}
                     onRestore={node.restore ? keepNew => {
                       const err = onSwitch(node.restore!.recordId, node.restore!.target, keepNew);
-                      if (err) setMessage(err); else onClose();
+                      if (err) setMessage(err); else if (!embedded) onClose();
                     } : undefined}
                   />
                 : <p className="p-5 text-xs text-zinc-400 max-w-xl leading-relaxed">

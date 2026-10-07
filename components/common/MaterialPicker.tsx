@@ -1,4 +1,5 @@
 'use client';
+import { unitRateOf } from '@/lib/takeoff/materialRate';
 
 // ─── components/common/MaterialPicker.tsx ────────────────────────────────────
 //
@@ -18,8 +19,7 @@ import type { Material } from '@/types';
 import { cn, formatCurrency } from '@/lib/utils';
 import { groupMaterialsByDivision } from '@/data/materials';
 
-export const materialRate = (m: Material) =>
-  (m.materialCost ?? 0) + (m.laborCost ?? 0) + (m.equipmentCost ?? 0) || m.unitRate || 0;
+export const materialRate = (m: Material) => unitRateOf(m);
 
 // ── Unit compatibility ───────────────────────────────────────────────────────
 type UnitKind = 'length' | 'area' | 'volume' | 'count' | 'other';

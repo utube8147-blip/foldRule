@@ -9,7 +9,9 @@ import Link from 'next/link';
 import {
   ArrowRight, Layers, FileSpreadsheet, Maximize, Shapes, Wand2, Frame, FolderTree, Box,
   ShieldCheck, HardHat, Ruler, Calculator, Hammer, MousePointer2, Spline, Hash, Download,
+  GitCompareArrows, PiggyBank, Landmark, Send, Copy, BrickWall, Stamp, Compass, ScanSearch,
 } from 'lucide-react';
+import { STAGES, FAQ } from '@/lib/guide/stages';
 import * as motion from 'motion/react-m';
 import { cn } from '@/lib/utils';
 import { Logo } from '@/components/brand/Logo';
@@ -18,7 +20,10 @@ import { useAuth } from '@/context/AuthContext';
 const NAV = [
   { label: 'Features',     href: '#features' },
   { label: 'How it works', href: '#how-it-works' },
+  { label: 'Gulf-ready',   href: '#gulf' },
   { label: 'Privacy',      href: '#privacy' },
+  { label: 'Questions',    href: '#faq' },
+  { label: 'Guide',        href: '/guide' },
 ];
 
 const FEATURES = [
@@ -33,11 +38,26 @@ const FEATURES = [
   { icon: ShieldCheck,     title: 'Private by design',         desc: 'Drawings open straight in your browser and never upload. Projects save automatically on your computer — optionally into a folder you choose.' },
 ];
 
-const STEPS = [
-  { title: 'Open a PDF',  desc: 'Drop in single sheets or a full multi-page set. The linework is read straight away for snapping.' },
-  { title: 'Set the scale', desc: 'Click two points on a known dimension and type its length. Each page keeps its own scale.' },
-  { title: 'Measure',     desc: 'Trace areas, lengths and counts. Group them and add rates — the BOQ builds as you go.' },
-  { title: 'Export',      desc: 'Download a priced BOQ workbook for Excel, with live formulas, subtotals and VAT.' },
+const MORE = [
+  { icon: BrickWall,        title: 'Assemblies and deductions', desc: 'Draw a wall once and get blockwork, plaster, paint and skirting, with door and window openings taken off. Change the line and every quantity follows.' },
+  { icon: Copy,             title: 'Multipliers',               desc: 'Six identical flats? Measure one and give the page, group or row a “× 6”. The bill shows the multiplied quantity and says so.' },
+  { icon: ScanSearch,       title: 'Scale read and checked',    desc: 'Foldrule reads the scale written on the sheet and offers it. After calibrating, draw along a second printed dimension. Foldrule tells you if the two disagree before a wrong scale reaches the bill.' },
+  { icon: GitCompareArrows, title: 'Drawing revisions',         desc: 'Lay a revised plan over the old one: removed in red, added in blue, unchanged in grey. Measurements that still fit carry over; the rest are flagged to check. Every version is kept.' },
+  { icon: PiggyBank,        title: 'Value engineering',         desc: 'Over budget? Propose an equivalent, cheaper material and see the saving across the whole takeoff. Accept or reject it; the designed material can always be put back.' },
+  { icon: Landmark,         title: 'Your own price bank',       desc: 'Prices you enter are remembered, saved in your projects folder, and offered on the next project. Where a job is priced differently, both prices are shown and you choose.' },
+  { icon: Send,             title: 'Price requests',            desc: 'Download the materials and quantities as a sheet to send to suppliers, then import their reply. A supplier’s own price list can be matched by name or code.' },
+  { icon: Stamp,            title: 'Marked-up PDF',             desc: 'Export the drawing with every measurement drawn on it and a legend, so anyone can see where each number came from.' },
+  { icon: Calculator,       title: 'From cost to tender price', desc: 'Add preliminaries, provisional sums, contingency, overheads and profit on top of the measured work, and see the tender sum before and after VAT.' },
+  { icon: Box,              title: 'Waste and pack sizes',      desc: 'Tiles sold by the box, blocks by the piece: say what one covers and how much is wasted. The rate is worked out, and a buying list tells you how many to order.' },
+  { icon: ShieldCheck,      title: 'Checks and a change log',   desc: 'Unlikely numbers are flagged: a suspicious scale, a shape measured twice, a rate far from your usual. Every change is logged with who made it and when.' },
+  { icon: Compass,          title: 'A guide that follows you',  desc: 'An eight-step checklist inside the app ticks itself off as you work and points at the button to press next. No training course needed.' },
+];
+
+const GULF = [
+  ['Bill in POMI-style sections', 'The Bill of Quantities is arranged in the lettered work sections estimators in the region expect, with quantities rounded for billing.'],
+  ['Gulf currencies', 'AED, SAR, QAR, OMR, BHD and KWD, with three decimals where the currency uses them.'],
+  ['VAT suggested, never forced', 'Choosing a currency suggests that country’s usual VAT rate. Change it for zero-rated or exempt work.'],
+  ['Metric throughout', 'Metres, square metres and cubic metres from calibration to export.'],
 ];
 
 const AUDIENCE = [
@@ -48,7 +68,7 @@ const AUDIENCE = [
 ];
 
 export function Landing() {
-  const { status } = useAuth();
+  const { status, signOut } = useAuth();
   // Signed in (or accounts not configured) → straight to the projects.
   const inApp   = status === 'signed-in' || status === 'local';
   const startHref  = inApp ? '/dashboard' : '/register';
@@ -71,6 +91,9 @@ export function Landing() {
         <div className="flex items-center gap-5">
           {!inApp && (
             <Link href="/login" className="text-sm font-semibold text-zinc-300 hover:text-white transition-colors">Log in</Link>
+          )}
+          {status === 'signed-in' && (
+            <button type="button" onClick={() => void signOut()} className="text-sm font-semibold text-zinc-300 hover:text-white transition-colors">Log out</button>
           )}
           <Link
             href={startHref}
@@ -106,7 +129,7 @@ export function Landing() {
           >
             Foldrule is quantity takeoff for PDF drawings. Tools snap to the linework, every page
             keeps its own scale, and the result exports as a priced BOQ in Excel — without your
-            drawings ever leaving your computer.
+            drawings ever leaving your computer. New to estimating? A built-in guide takes you from the plan to the bill, one step at a time.
           </motion.p>
 
           <motion.div
@@ -173,23 +196,73 @@ export function Landing() {
 
         {/* ── How it works ── */}
         <section id="how-it-works" className="w-full max-w-6xl mx-auto py-20 md:py-24 border-t border-industrial-border scroll-mt-16">
-          <h2 className="text-3xl md:text-4xl font-semibold text-white tracking-tight">From PDF to BOQ in four steps</h2>
+          <h2 className="text-3xl md:text-4xl font-semibold text-white tracking-tight">From a drawing to a priced bill in eight steps</h2>
+          <p className="mt-4 text-sm md:text-base text-zinc-400 max-w-2xl leading-relaxed">
+            Quantity comes from the drawing, the rate comes from you, and the amount is worked out. The app walks you through each step and ticks it off.
+          </p>
           <div className="w-14 h-1 bg-rule mt-5 mb-12" aria-hidden />
 
-          <ol className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-8">
-            {STEPS.map((step, i) => (
-              <li key={step.title}>
+          <ol className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-8 gap-y-10">
+            {STAGES.filter(st => !st.later).map((step, i, arr) => (
+              <li key={step.id}>
                 <div className={cn(
                   'w-12 h-12 flex items-center justify-center mb-5 font-mono font-semibold text-base',
-                  i === STEPS.length - 1 ? 'bg-rule text-black' : 'border border-rule text-rule',
+                  i === arr.length - 1 ? 'bg-rule text-black' : 'border border-rule text-rule',
                 )}>
                   0{i + 1}
                 </div>
                 <h3 className="text-base font-semibold text-white mb-2">{step.title}</h3>
-                <p className="text-sm text-zinc-400 leading-relaxed">{step.desc}</p>
+                <p className="text-sm text-zinc-400 leading-relaxed">{step.short}</p>
               </li>
             ))}
           </ol>
+          <Link href="/guide" className="mt-12 inline-flex items-center gap-2 border border-industrial-border hover:border-rule bg-industrial-panel px-6 py-3 text-sm font-semibold text-zinc-200 transition-colors">
+            Read the full walkthrough
+            <ArrowRight className="w-4 h-4" aria-hidden />
+          </Link>
+        </section>
+
+        {/* ── Beyond the first estimate ── */}
+        <section className="w-full max-w-6xl mx-auto py-20 md:py-24 border-t border-industrial-border">
+          <h2 className="text-3xl md:text-4xl font-semibold text-white tracking-tight max-w-2xl text-balance">
+            For the work that comes after the first measure
+          </h2>
+          <div className="w-14 h-1 bg-rule mt-5 mb-12" aria-hidden />
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-px bg-industrial-border border border-industrial-border">
+            {MORE.map(feat => (
+              <div key={feat.title} className="p-7 bg-industrial-panel group transition-colors hover:bg-[#22272C]">
+                <div className="w-10 h-10 border border-[#3A4148] flex items-center justify-center mb-5 text-rule group-hover:bg-rule group-hover:text-black transition-colors">
+                  <feat.icon className="w-[18px] h-[18px]" aria-hidden />
+                </div>
+                <h3 className="text-base font-semibold text-white mb-2">{feat.title}</h3>
+                <p className="text-sm text-zinc-400 leading-relaxed">{feat.desc}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+
+        {/* ── Gulf ── */}
+        <section id="gulf" className="w-full max-w-6xl mx-auto py-20 md:py-24 border-t border-industrial-border scroll-mt-16">
+          <div className="grid lg:grid-cols-[1fr_1.2fr] gap-10 items-start">
+            <div>
+              <h2 className="text-3xl md:text-4xl font-semibold text-white tracking-tight text-balance">Made for estimating in the Gulf</h2>
+              <div className="w-14 h-1 bg-rule mt-5" aria-hidden />
+              <p className="mt-6 text-sm text-zinc-500 leading-relaxed">
+                Have your surveyor confirm the bill layout and tax rate against your contract before a bill is issued.
+              </p>
+            </div>
+            <dl className="space-y-6 text-sm leading-relaxed">
+              {GULF.map(([t, d]) => (
+                <div key={t} className="flex gap-4">
+                  <span className="w-1.5 h-1.5 bg-rule shrink-0 mt-2" aria-hidden />
+                  <div>
+                    <dt className="font-semibold text-white">{t}</dt>
+                    <dd className="text-zinc-400 mt-1">{d}</dd>
+                  </div>
+                </div>
+              ))}
+            </dl>
+          </div>
         </section>
 
         {/* ── Privacy ── */}
@@ -217,6 +290,22 @@ export function Landing() {
                 </div>
               ))}
             </dl>
+          </div>
+        </section>
+
+        {/* ── Questions ── */}
+        <section id="faq" className="w-full max-w-6xl mx-auto py-20 md:py-24 border-t border-industrial-border scroll-mt-16">
+          <h2 className="text-3xl md:text-4xl font-semibold text-white tracking-tight">Questions people ask first</h2>
+          <div className="w-14 h-1 bg-rule mt-5 mb-8" aria-hidden />
+          <div className="divide-y divide-industrial-border border-y border-industrial-border max-w-4xl">
+            {FAQ.map(([q, a]) => (
+              <details key={q} className="group py-4">
+                <summary className="cursor-pointer list-none flex items-center justify-between gap-4 text-base font-semibold text-white">
+                  {q}<span className="font-mono text-rule group-open:rotate-45 transition-transform" aria-hidden>+</span>
+                </summary>
+                <p className="mt-3 text-sm text-zinc-400 leading-relaxed max-w-3xl">{a}</p>
+              </details>
+            ))}
           </div>
         </section>
 

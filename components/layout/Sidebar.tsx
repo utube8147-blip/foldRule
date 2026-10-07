@@ -223,6 +223,15 @@ function SidebarImpl({
     library:      true,
   });
 
+  // Money settings every estimate needs before it can be trusted or exported.
+  const usualVat = currencyInfo(projectState.currency)?.vat;
+  const moneyMissing = [
+    !projectState.currency ? 'currency' : '',
+    projectState.vatPercent === undefined ? 'VAT' : '',
+  ].filter(Boolean);
+  const vatUnusual = projectState.vatPercent !== undefined && usualVat !== undefined && projectState.vatPercent !== usualVat;
+  const goToMoney = () => { setActiveTab('specs'); setOpen(prev => ({ ...prev, document: true })); };
+
   const toggle = (key: keyof typeof open) =>
     setOpen(prev => ({ ...prev, [key]: !prev[key] }));
 
@@ -336,7 +345,8 @@ function SidebarImpl({
           Drawings
         </button>
         <button
-          onClick={() => setActiveTab('specs')}
+          data-guide="money"
+          onClick={goToMoney}
           className={cn(
             "flex-1 py-3 text-[11px] font-bold tracking-widest uppercase transition-colors flex items-center justify-center gap-2",
             activeTab === 'specs'
@@ -346,6 +356,7 @@ function SidebarImpl({
         >
           <Settings2 className="w-3.5 h-3.5" />
           Scope / Specs
+          {moneyMissing.length > 0 && <span className="w-1.5 h-1.5 rounded-full bg-amber-accent" title={`Set the ${moneyMissing.join(' and ')}`} />}
         </button>
       </div>
 
@@ -439,7 +450,7 @@ function SidebarImpl({
 
             {projectState.drawings.length > 0 && (
               <div className="p-4 border-t border-industrial-border mt-auto shrink-0 bg-industrial-black/50">
-                <label className="w-full bg-stone-800 hover:bg-stone-700 text-zinc-300 font-bold uppercase tracking-widest text-[11px] py-2.5 transition-colors flex items-center justify-center gap-2 cursor-pointer border border-zinc-700">
+                <label data-guide="upload" className="w-full bg-stone-800 hover:bg-stone-700 text-zinc-300 font-bold uppercase tracking-widest text-[11px] py-2.5 transition-colors flex items-center justify-center gap-2 cursor-pointer border border-zinc-700">
                   <Plus className="w-3.5 h-3.5" /> Upload Drawing
                   <input
                     type="file"
@@ -532,6 +543,11 @@ function SidebarImpl({
               />
               {open.document && (
                 <div className="space-y-3 mt-3">
+                  {moneyMissing.length > 0 && (
+                    <div role="status" className="border border-amber-accent/60 bg-amber-accent/10 p-2 text-[11px] text-amber-200 leading-relaxed">
+                      Set the <b>{moneyMissing.join(' and ')}</b> below. Every total and the exported bill use them.
+                    </div>
+                  )}
                   <Field label="Document Title">
                     <TextInput
                       value={projectState.documentTitle ?? ''}
@@ -582,6 +598,15 @@ function SidebarImpl({
                       />
                     </Field>
                   </div>
+                  {usualVat !== undefined && (projectState.vatPercent === undefined || vatUnusual) && (
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      {projectState.vatPercent === undefined ? 'No VAT set.' : `VAT is ${projectState.vatPercent}%.`} The usual rate with {projectState.currency} is {usualVat}%.{' '}
+                      <button type="button" onClick={() => onUpdateProjectMeta({ vatPercent: usualVat })} className="text-amber-accent underline underline-offset-2 hover:text-amber-300">
+                        Use {usualVat}%
+                      </button>
+                      <span className="block text-zinc-600">Check the rate with your accountant; leave it if this job is different.</span>
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -763,6 +788,15 @@ function SidebarImpl({
               : `${totals.pages - totals.done} page${totals.pages - totals.done === 1 ? '' : 's'} need${totals.pages - totals.done === 1 ? 's' : ''} a scale`}
           </span>
         </div>
+        {(moneyMissing.length > 0 || vatUnusual) && (
+          <button type="button" onClick={goToMoney}
+            className="w-full flex items-center gap-2 mb-3 text-left group">
+            <div className={cn('w-2 h-2 rounded-full', moneyMissing.length ? 'bg-amber-400' : 'bg-zinc-600')} />
+            <span className={cn('text-[10px] font-bold uppercase tracking-widest group-hover:text-amber-accent', moneyMissing.length ? 'text-amber-300' : 'text-zinc-500')}>
+              {moneyMissing.length ? `Set the ${moneyMissing.join(' and ')}` : `VAT ${projectState.vatPercent}% · usual is ${usualVat}% · check`}
+            </span>
+          </button>
+        )}
         <div className="text-[11px] font-bold text-zinc-600 uppercase tracking-tighter flex justify-between">
           <span>{fullProject.drawings.length} drawing{fullProject.drawings.length === 1 ? '' : 's'} · {totals.done}/{totals.pages} pages</span>
           <span>{totals.measured} qty</span>

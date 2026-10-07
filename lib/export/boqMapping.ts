@@ -1,3 +1,4 @@
+import { unitRateOf } from '@/lib/takeoff/materialRate';
 // ─── lib/boqMapping.ts ────────────────────────────────────────────────────────
 //
 //  Maps ProjectState (TakeoffContext) → BOQData (Excel export JSON schema)
@@ -127,7 +128,7 @@ export function contextToBOQData(ps: Pick<ProjectState, 'projectName' | 'measure
     display_name:     m.name,
     calculation_type: unitToCalcType(m.unit ?? ''),
     column_width:     16,
-    unit_rate:        (m.materialCost ?? 0) + (m.laborCost ?? 0) + (m.equipmentCost ?? 0),
+    unit_rate:        unitRateOf(m),
     remarks:          `Per ${m.unit ?? 'unit'} supplied`,
   }));
 

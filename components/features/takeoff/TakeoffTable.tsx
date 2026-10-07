@@ -1,4 +1,6 @@
+import { unitRateOf } from '@/lib/takeoff/materialRate';
 // components/TakeoffTable.tsx
+import { BarChart3 as ActAnalysis, GitCompareArrows as ActCompare, History as ActHistory, PiggyBank as ActSavings } from 'lucide-react';
 import { reviewProgress } from '@/lib/takeoff/revisions';
 import { POMI_SECTIONS, classify } from '@/lib/takeoff/pomi';
 import { timesIndex, billedQuantities, timesLabel } from '@/lib/takeoff/timesing';
@@ -27,6 +29,7 @@ interface TakeoffTableProps {
   onOpenAnalysis?: () => void;
   onOpenCompare?: () => void;
   onOpenChanges?: () => void;
+  onOpenVe?: () => void;
   onAddSegmentToGroup?: (groupId: string, groupType: string) => void;
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
@@ -76,6 +79,7 @@ function TakeoffTableImpl({
   onOpenAnalysis,
   onOpenCompare,
   onOpenChanges,
+  onOpenVe,
   onAddSegmentToGroup,
   batchUpdateMeasurements,
 }: TakeoffTableProps) {
@@ -410,7 +414,7 @@ function TakeoffTableImpl({
   const renderMaterialSelect = (row: TakeoffRow) => {
     const isEditing = editingId === row.id && editingField === 'materialId';
     const matched = getMaterial(row.materialId);
-    const getMaterialTotal = (mat: Material) => (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
+    const getMaterialTotal = (mat: Material) => unitRateOf(mat);
 
     if (isEditing) {
       return (
@@ -630,7 +634,7 @@ function TakeoffTableImpl({
   };
 
   return (
-    <aside className="w-full min-w-0 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
+    <aside data-guide="takeoff" className="w-full min-w-0 bg-industrial-panel border-l border-industrial-border flex flex-col h-full font-mono">
 
       <div className="p-3 border-b border-industrial-border bg-stone-900/50 flex justify-between items-center flex-shrink-0">
         <span className="text-[11px] font-bold text-zinc-500 tracking-widest uppercase">Takeoff Data</span>
@@ -666,19 +670,12 @@ function TakeoffTableImpl({
         </div>
       </div>
 
-      {(review.total > 0 || onOpenChanges) && (
+      {review.open > 0 && (
         <div className="px-3 py-2 border-b border-industrial-border bg-red-500/10 flex items-center gap-2 text-[11px] flex-shrink-0">
           <span className="flex-1 min-w-0 text-zinc-200">
-            {review.total === 0 ? 'Revision accepted: nothing to check.'
-              : review.open > 0 ? <><span className="font-bold text-red-400">{review.open}</span> of {review.total} to check after the revision</>
-              : <span className="text-green-400">Revision checked: all {review.total} done</span>}
+            <span className="font-bold text-red-400">{review.open}</span> of {review.total} to check after the revision
           </span>
-          {review.open > 0 && (
-            <button onClick={() => focusMeasurement(review.openIds[0])} className="font-bold uppercase tracking-widest text-[10px] text-amber-accent hover:underline">Next</button>
-          )}
-          {onOpenChanges && (
-            <button onClick={onOpenChanges} className="font-bold uppercase tracking-widest text-[10px] border border-zinc-600 px-2 py-1 text-zinc-200 hover:border-amber-accent hover:text-amber-accent">Revision history</button>
-          )}
+          <button onClick={() => focusMeasurement(review.openIds[0])} className="font-bold uppercase tracking-widest text-[10px] border border-zinc-600 px-2 py-1 text-zinc-200 hover:border-amber-accent hover:text-amber-accent">Next</button>
         </div>
       )}
       <div ref={bodyRef} className="flex-1 overflow-auto custom-scrollbar">
@@ -771,7 +768,7 @@ function TakeoffTableImpl({
                             onClose={stopEditing}
                             onChange={(id) => {
                               const mat = id ? materials.find(m => m.id === id) : undefined;
-                              const rate = mat ? ((mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0) : 0;
+                              const rate = unitRateOf(mat);
                               const upd = mat ? { materialId: mat.id, unitRate: rate } : { materialId: undefined, unitRate: 0 };
                               onUpdate(header.id, upd);
                               batchUpdateGroup(groupId, items, upd);
@@ -999,8 +996,8 @@ function TakeoffTableImpl({
         </table>
       </div>
 
-      <div className="p-4 bg-stone-900 border-t border-industrial-border">
-        <div className="mb-4">
+      <div className="px-3 pt-3 pb-3 bg-stone-900 border-t border-industrial-border flex-shrink-0">
+        <div className="mb-3">
           <div className="flex justify-between items-end mb-1">
             <span className="text-[11px] font-bold text-zinc-500 uppercase tracking-widest">Total Estimated Cost</span>
             <span className="text-xl font-bold text-amber-accent tracking-tighter">{formatCurrency(totalCost)}</span>
@@ -1022,23 +1019,26 @@ function TakeoffTableImpl({
             </p>
           )}
         </div>
-        <button
-          type="button"
-          onClick={onOpenAnalysis}
-          disabled={!onOpenAnalysis}
-          className="w-full bg-[#2E353C] hover:bg-zinc-800 border border-industrial-border text-zinc-400 hover:text-zinc-200 py-3 text-[11px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
-        >
-          Generate Full Analysis
-        </button>
-        {onOpenCompare && (
-          <button
-            type="button"
-            onClick={onOpenCompare}
-            className="w-full mt-2 border border-industrial-border text-zinc-400 hover:text-amber-accent hover:border-amber-accent py-2.5 text-[11px] font-bold uppercase tracking-widest transition-all"
-          >
-            Compare with a new revision
-          </button>
-        )}
+        {/* One compact row of actions, so the table keeps the height. */}
+        <div className="grid grid-cols-4 gap-1.5" role="toolbar" aria-label="Takeoff actions" data-guide="revision">
+          {([
+            { key: 'analysis', label: 'Analysis', icon: ActAnalysis, run: onOpenAnalysis, hint: 'Full analysis: totals by type and group, unpriced rows, pages without a scale' },
+            { key: 'compare', label: 'New revision', icon: ActCompare, run: onOpenCompare, hint: 'Compare this drawing with a new revision and carry your measurements across' },
+            { key: 'history', label: 'History', icon: ActHistory, run: onOpenChanges, hint: onOpenChanges ? 'Revision history: every version of a sheet and what each revision changed' : 'Revision history: nothing yet, no revision has been accepted', badge: review.open },
+            { key: 've', label: 'Savings', icon: ActSavings, run: onOpenVe, hint: 'Value engineering: propose cheaper alternative materials and see the saving' },
+          ] as const).map(a => (
+            <button
+              key={a.key} type="button" onClick={a.run} disabled={!a.run} title={a.hint} aria-label={a.hint}
+              className="relative flex flex-col items-center justify-center gap-1 py-2 border border-industrial-border bg-[#2E353C]/60 text-zinc-400 hover:text-amber-accent hover:border-amber-accent transition-colors disabled:opacity-40 disabled:hover:text-zinc-400 disabled:hover:border-industrial-border"
+            >
+              <a.icon className="w-4 h-4" />
+              <span className="text-[9px] font-bold uppercase tracking-wider leading-none whitespace-nowrap">{a.label}</span>
+              {'badge' in a && a.badge > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 min-w-[16px] h-4 px-1 bg-red-500 text-white text-[9px] font-black flex items-center justify-center">{a.badge}</span>
+              )}
+            </button>
+          ))}
+        </div>
       </div>
       {rowMenu && (() => {
         const row = measurements.find(m => m.id === rowMenu.rowId);

@@ -13,11 +13,13 @@ interface NavbarProps {
   onOpenPresets?: () => void;
   /** Project-level controls shown in the middle of the header (undo/redo, scale). */
   center?: React.ReactNode;
+  /** Extra controls on the right, before the save status (the guide button). */
+  extra?: React.ReactNode;
 }
 
-function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets, center }: NavbarProps) {
+function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets, center, extra }: NavbarProps) {
   return (
-    <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between gap-6 px-6 z-50 fixed top-0 w-full">
+    <header className="h-14 bg-industrial-panel border-b border-industrial-border flex items-center justify-between gap-4 px-6 z-50 fixed top-0 w-full">
       <div className="flex items-center gap-6 h-full min-w-0">
         <Link
           href="/dashboard"
@@ -36,21 +38,23 @@ function NavbarImpl({ projectName, onProjectNameChange, onExport, onOpenPresets,
             type="text"
             value={projectName}
             onChange={(e) => onProjectNameChange(e.target.value)}
-            className="bg-transparent border-none p-0 m-0 text-sm font-mono font-bold text-zinc-200 focus:ring-0 focus:text-amber-accent transition-colors w-40 xl:w-64"
+            className="bg-transparent border-none p-0 m-0 text-sm font-mono font-bold text-zinc-200 focus:ring-0 focus:text-amber-accent transition-colors w-36 2xl:w-64"
           />
         </div>
       </div>
 
       {center && (
-        <div className="flex flex-1 items-center justify-center gap-3 min-w-0">
+        <div className="flex flex-1 items-center justify-center gap-2 min-w-0 whitespace-nowrap">
           {center}
         </div>
       )}
 
-      <div className="flex items-center gap-4 flex-shrink-0">
+      <div className="flex items-center gap-3 flex-shrink-0">
+        {extra}
         <SaveIndicator />
 
         <button
+          data-guide="export"
           onClick={onExport}
           className="bg-amber-accent hover:bg-amber-400 text-black font-mono font-bold text-xs px-4 py-2 flex items-center gap-2 transition-all active:scale-95 shadow-lg shadow-amber-accent/10"
         >

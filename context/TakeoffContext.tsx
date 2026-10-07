@@ -1,4 +1,5 @@
 'use client';
+import { unitRateOf } from '@/lib/takeoff/materialRate';
 
 // ─── TakeoffContext.tsx ───────────────────────────────────────────────────────
 //
@@ -32,6 +33,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import type { VeProposal } from '@/lib/takeoff/valueEngineering';
 import { planCarryOver, switchVersion, type RevisionRecord } from '@/lib/takeoff/revisions';
 import { setDisplayCurrency } from '@/lib/takeoff/currency';
 import { followDerived } from '@/lib/takeoff/assemblies';
@@ -41,6 +43,9 @@ import React, {
 import { TakeoffRow, Drawing, Material } from '@/types';
 import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/scale';
 import { defaultMaterialBank } from '@/data/materials';
+import type { Markups } from '@/lib/takeoff/estimate';
+import { diffAudit, appendAudit, type AuditEntry } from '@/lib/takeoff/audit';
+import { useAuth } from '@/context/AuthContext';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
   saveProjectState, requestPersistentStorage, newId, deleteDrawingRegions, describeStorageError, getStorageMode,
@@ -98,6 +103,12 @@ export type ProjectState = {
   excludedItems?:        ExcludedItem[];
   /** Accepted drawing revisions, with the quantities as they stood before each. */
   revisionLog?:          RevisionRecord[];
+  /** Value engineering: alternatives proposed for the designed materials. */
+  veProposals?:          VeProposal[];
+  /** Preliminaries, contingency, overheads, profit and provisional sums on top of the measured work. */
+  markups?:              Markups;
+  /** Who changed which quantity, rate, material or setting, and when. */
+  auditLog?:             AuditEntry[];
 };
 
 // ─── InProgressPoint ──────────────────────────────────────────────────────────
@@ -391,7 +402,7 @@ export function TakeoffProvider({
     if (!id || m.isGroupHeader || m.materialId) return m;
     const mat = materialsRef.current.find(x => x.id === id);
     if (!mat) return m;
-    const rate = (mat.materialCost ?? 0) + (mat.laborCost ?? 0) + (mat.equipmentCost ?? 0) || mat.unitRate || 0;
+    const rate = unitRateOf(mat);
     return { ...m, materialId: mat.id, unitRate: m.unitRate > 0 ? m.unitRate : rate };
   }, []);
 
@@ -1230,6 +1241,25 @@ export function TakeoffProvider({
       objectUrlsRef.current = [];
     };
   }, [projectId, resetHistory, reloadTick]);
+
+  // ── Audit trail ────────────────────────────────────────────────────────────
+  // Worked out from the state before and after, so every way of editing is covered.
+  const { user: signedIn } = useAuth();
+  const whoRef = useRef('');
+  whoRef.current = signedIn?.name || signedIn?.email || 'Unknown';
+  const auditPrevRef = useRef<ProjectState | null>(null);
+  useEffect(() => {
+    const prev = auditPrevRef.current;
+    auditPrevRef.current = projectState;
+    if (!prev || !hydratedRef.current || !projectIdRef.current) return;
+    const entries = diffAudit(prev as unknown as Parameters<typeof diffAudit>[0], projectState as unknown as Parameters<typeof diffAudit>[0], whoRef.current);
+    if (!entries.length) return;
+    setProjectState(s => {
+      const next = { ...s, auditLog: appendAudit(s.auditLog, entries) };
+      auditPrevRef.current = next;
+      return next;
+    });
+  }, [projectState]);
 
   // ── Autosave (debounced) ───────────────────────────────────────────────────
   const latestStateRef = useRef(projectState);

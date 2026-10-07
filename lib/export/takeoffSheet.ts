@@ -29,6 +29,19 @@ export interface TakeoffExportInput {
   drawings:       TakeoffExportDrawing[];
   measurements:   TakeoffRow[];
   materials:      Material[];
+  /** Build-up from measured work to the tender sum, and the buying list. */
+  estimate?: {
+    lines: Array<{ label: string; percent?: number | null; amount: number; total?: boolean; note?: string }>;
+    provisional?: Array<{ name: string; amount: number }>;
+    order: Array<{ code: string; name: string; net: number; unit: string; wastePercent: number; orderQty: number; buyUnit: string; covers: number; price: number; cost: number; supplier?: string }>;
+  };
+  /** Who changed what, and when. */
+  auditLog?: Array<{ at: string; by: string; what: string; target: string; from?: string; to?: string }>;
+  /** Value engineering: alternatives priced against the designed materials. */
+  valueEngineering?: {
+    pending: number;
+    lines: Array<{ designed: string; alternative: string; unit: string; quantity: number; designedRate: number; designedCost: number; alternativeRate: number; alternativeCost: number; status: string; note?: string }>;
+  };
   /** One entry per accepted drawing revision: what it did to the quantities. */
   revisionChanges?: Array<{
     record: { at: string; from: { name: string }; to: { name: string } };
