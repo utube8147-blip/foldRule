@@ -2313,6 +2313,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       <CalibrationDialog
         show={showCalibrationDialog} calibrationInput={calibrationInput}
         setCalibrationInput={setCalibrationInput}
+        ptLen={pendingPtLen} currentScale={isPageCalibrated ? scaleFactor : null}
         onConfirm={handleCalibrationConfirm} onCancel={() => setShowCalibrationDialog(false)}
       />
       <MeasurementDetailsWired

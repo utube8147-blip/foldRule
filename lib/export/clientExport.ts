@@ -1,5 +1,8 @@
 'use client';
 
+import { revisionChanges as revisionChanges_ } from '@/lib/takeoff/revisions';
+import type { Material } from '@/types';
+import { billedRows } from '@/lib/takeoff/timesing';
 import type { ProjectState } from '@/context/TakeoffContext';
 import { downloadBlob, toStoredState } from '@/lib/storage/projectDb';
 
@@ -13,8 +16,13 @@ export async function exportProjectToExcel(ps: ProjectState, filename?: string):
     ...stored,
     // Strip preset payloads and point arrays' extra fields — the export only
     // needs identity, quantities and grouping.
-    measurements: stored.measurements.map(({ presetData: _p, ...m }) => m),
+    // Timesing is applied here, so the workbook shows billed quantities.
+    measurements: billedRows(stored.measurements, stored.drawings).map(({ presetData: _p, ...m }) => m),
   };
+
+  const revisionChanges = (ps.revisionLog ?? []).filter(r => !r.reverted).map(r =>
+    revisionChanges_(r, ps.measurements, ps.drawings, ps.materials as Material[]));
+  Object.assign(project, { revisionChanges, revisionLog: undefined });
 
   const res = await fetch('/api/export', {
     method:  'POST',

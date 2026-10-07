@@ -14,6 +14,7 @@
 //  swap the implementation (or sync from here) — callers won't need to change.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { DEFAULT_CURRENCY, currencyInfo } from '@/lib/takeoff/currency';
 import type { ProjectState } from '@/context/TakeoffContext';
 import type { Drawing } from '@/types';
 import { defaultMaterialBank } from '@/data/materials';
@@ -394,8 +395,8 @@ export function emptyProjectState(name: string, number = ''): StoredProjectState
     activeDrawingId: null,
     measurements:    [],
     materials:       defaultMaterialBank(),
-    currency:        'LKR',
-    vatPercent:      0,
+    currency:        DEFAULT_CURRENCY,
+    vatPercent:      currencyInfo(DEFAULT_CURRENCY)?.vat ?? 0,
     documentDate:    new Date().toISOString().slice(0, 10),
   };
 }

@@ -51,8 +51,24 @@ export interface TakeoffRow {
   /** Cut-outs inside an area. Each is an outline; its area is deducted. */
   holes?: Array<Array<{ x: number; y: number }>>;
   /** A quantity worked out from another row (source quantity × factor). Follows the source. */
-  derived?: { sourceId: string; factor: number; what: string };
+  derived?: {
+    sourceId: string; factor: number; what: string;
+    /** Deductions: each counted item in `sourceId` takes `each` off the quantity. */
+    less?: Array<{ sourceId: string; each: number; what: string }>;
+    /** Name of the assembly that produced this row. */
+    assembly?: string;
+  };
   isOverridden: boolean;
+  /** Set when a drawing revision was accepted and this row sat on a change: check it, then tick it off. */
+  review?: {
+    revision: string; status: 'check' | 'done';
+    /** Outline proposed from the new revision's linework (corners moved to where they went). */
+    suggest?: { points: Array<{ x: number; y: number }>; quantity: number };
+  };
+  /** POMI work section letter chosen by hand (otherwise worked out from the material or wording). */
+  section?: string;
+  /** Timesing: this row (or, on a group header, every row in the group) is billed this many times. */
+  times?: number;
   presetData?: Record<string, any>;
   presetId?: string;
   groupId?: string;
@@ -98,6 +114,12 @@ export interface Drawing {
   /** Calibrated real-world units per PDF point, keyed by 1-based page number. */
   pageScales?: Record<number, number>;
   pageCount: number;
+  /** This sheet replaced that drawing (an accepted revision). */
+  revisionOf?: string;
+  /** This sheet was replaced by that drawing; it is kept as history. */
+  supersededBy?: string;
+  /** Timesing per page (1-based): everything drawn on the page is billed this many times. */
+  pageTimes?: Record<number, number>;
 }
 
 

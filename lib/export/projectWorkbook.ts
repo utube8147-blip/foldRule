@@ -6,6 +6,8 @@
 //       (the bank holds the whole catalogue, most of it unused per project).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { addRevisionSheet } from './revisionSheet';
+import { addBillSheet } from './billSheet';
 import * as ExcelJS from 'exceljs';
 import { addTakeoffSheet, type TakeoffExportInput } from './takeoffSheet';
 import { contextToBOQData } from './boqMapping';
@@ -18,6 +20,8 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
   workbook.modified = new Date();
 
   addTakeoffSheet(workbook, input);
+  addBillSheet(workbook, input);
+  addRevisionSheet(workbook, input);
 
   const usedIds = new Set(input.measurements.map(m => m.materialId).filter(Boolean) as string[]);
   const usedMaterials = input.materials.filter(m => usedIds.has(m.id));

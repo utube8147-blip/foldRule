@@ -258,7 +258,7 @@ export function contextToBOQData(ps: Pick<ProjectState, 'projectName' | 'measure
         title:       ps.documentTitle,
         date:        ps.documentDate,
         revision:    ps.revision,
-        currency:    ps.currency    || 'LKR',
+        currency:    ps.currency    || 'AED',
         vat_percent: ps.vatPercent  ?? 0,
       },
       stakeholders: {

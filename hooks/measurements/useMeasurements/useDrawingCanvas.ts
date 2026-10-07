@@ -38,6 +38,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { tessellateArc } from '@/lib/geometry/pathShapes';
+import { tessellatePoints, isSentinel } from '@/hooks/perimeterOffset/perimeterOffsetGeometry';
 import { orthoState } from '@/lib/geometry/ortho';
 import { useRef, useEffect, useCallback } from 'react';
 import React from 'react';
@@ -850,11 +852,29 @@ export function useDrawingCanvas({
         const sel = measurements.find(m => m.id === selId);
         selNo += 1;
         if (sel && sel.isVisible !== false && sel.points?.length) {
-          const pts = sel.points.map(p => toCanvas(p.x, p.y));
+          // Curves are stored as three-point arcs between markers: follow the real curve
+          // for the highlight, and keep only the real corners for the handles.
+          const dim = pdfDimensionsRef.current;
+          const corners = sel.points.filter(p => !isSentinel(p)).map(p => toCanvas(p.x, p.y));
+          const hasArcs = sel.points.some(isSentinel);
+          const fullCircle = sel.arcRadius != null && Math.abs((sel.sweepAngle ?? 0) - 2 * Math.PI) < 0.01;
+          let pts = hasArcs
+            ? tessellatePoints(sel.points, dim?.w ?? 1, dim?.h ?? 1).map(p => toCanvas(p.x, p.y))
+            : corners;
+          if (sel.arcRadius != null && !fullCircle && corners.length === 3) {
+            // A single arc: start, a point on the curve, end.
+            pts = tessellateArc(corners[0], corners[1], corners[2], 3);
+          } else if (fullCircle && corners.length === 2) {
+            // A circle: centre and a point on the edge.
+            const r = Math.hypot(corners[1].x - corners[0].x, corners[1].y - corners[0].y);
+            pts = Array.from({ length: 73 }, (_, i) => ({
+              x: corners[0].x + r * Math.cos((i / 72) * Math.PI * 2), y: corners[0].y + r * Math.sin((i / 72) * Math.PI * 2),
+            }));
+          }
           const closed = sel.type === 'Area' || sel.type === 'Polygon' || sel.type === 'Rectangle';
           ctx.save();
           if (pts.length === 1 || sel.type === 'Count' || sel.type === 'Point') {
-            for (const p of pts) {
+            for (const p of corners) {
               ctx.beginPath(); ctx.arc(p.x, p.y, 13, 0, Math.PI * 2);
               ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(242,194,48,0.95)'; ctx.stroke();
             }
@@ -889,7 +909,7 @@ export function useDrawingCanvas({
             ctx.lineWidth = 2;  ctx.setLineDash([8, 5]); ctx.strokeStyle = 'rgba(242,194,48,1)'; ctx.stroke();
             if (selCount === 1 && !(sel.arcRadius != null)) {
               ctx.setLineDash([]);
-              for (const p of pts) {
+              for (const p of corners) {
                 ctx.fillStyle = '#1d2125'; ctx.strokeStyle = 'rgba(242,194,48,1)'; ctx.lineWidth = 1.5;
                 ctx.fillRect(p.x - 3.5, p.y - 3.5, 7, 7); ctx.strokeRect(p.x - 3.5, p.y - 3.5, 7, 7);
               }

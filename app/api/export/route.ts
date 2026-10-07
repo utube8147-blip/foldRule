@@ -75,6 +75,18 @@ const ProjectSchema = z.object({
   }).passthrough()).max(500).catch([]),
   measurements: z.array(MeasurementSchema).max(MAX_MEASUREMENTS),
   materials:    z.array(MaterialSchema).max(5_000).catch([]),
+  revisionChanges: z.array(z.object({
+    record: z.object({
+      at: z.string().catch(''),
+      from: z.object({ name: z.string().catch('') }).passthrough(),
+      to:   z.object({ name: z.string().catch('') }).passthrough(),
+    }).passthrough(),
+    cost: num,
+    lines: z.array(z.object({
+      description: z.string().catch(''), group: z.string().optional().catch(undefined), unit: z.string().catch(''),
+      before: num, after: num, diff: num, rate: num, cost: num, status: z.string().catch('same'),
+    })).max(MAX_MEASUREMENTS).catch([]),
+  })).max(200).optional().catch(undefined),
 });
 
 const BodySchema = z.object({
@@ -133,6 +145,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
           : undefined,
       })),
       measurements:  project.measurements as unknown as TakeoffRow[],
+      revisionChanges: project.revisionChanges,
       materials:     project.materials as unknown as Material[],
     });
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());

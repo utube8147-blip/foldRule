@@ -32,6 +32,9 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { planCarryOver, switchVersion, type RevisionRecord } from '@/lib/takeoff/revisions';
+import { setDisplayCurrency } from '@/lib/takeoff/currency';
+import { followDerived } from '@/lib/takeoff/assemblies';
 import React, {
   createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState,
 } from 'react';
@@ -93,6 +96,8 @@ export type ProjectState = {
   drawingReferences?: string[];
   generalAssumptions?:   ScopeAssumption[];
   excludedItems?:        ExcludedItem[];
+  /** Accepted drawing revisions, with the quantities as they stood before each. */
+  revisionLog?:          RevisionRecord[];
 };
 
 // ─── InProgressPoint ──────────────────────────────────────────────────────────
@@ -176,6 +181,19 @@ interface TakeoffContextValue {
   setActiveDrawingId:  (id: string) => void;
   /** Calibrate one page of a drawing. Rescales that page's existing measurements. */
   updateDrawingScale:  (id: string, factor: number, page?: number) => void;
+  /** Timesing for one page: everything drawn on it is billed `times` times (1 clears it). */
+  updatePageTimes:     (id: string, page: number, times: number) => void;
+  /**
+   * Accept a new revision of a sheet: carry the measurements of `from` onto `to`
+   * (an existing drawing, or a new PDF), mark the flagged ones for checking and
+   * keep a record of the quantities before. Returns the revision id.
+   */
+  acceptRevision:      (a: AcceptRevisionArgs) => string | null;
+  /**
+   * Make another version of a revision the live one: 'from' restores the old sheet's takeoff,
+   * 'to' goes back to the new sheet's. Returns a message when it cannot be done.
+   */
+  switchRevisionVersion: (recordId: string, target: 'from' | 'to', keepNew?: boolean) => string | null;
 
   /** Page currently shown in the viewer (1-based). */
   activePage:          number;
@@ -228,6 +246,17 @@ interface TakeoffContextValue {
   setDisplayUnit: (unit: DisplayUnit) => void;
 }
 
+export interface AcceptRevisionArgs {
+  from: { drawingId: string; page: number };
+  to: { drawingId?: string; newFile?: File; page: number };
+  /** Old sheet's offset on the new one, as a fraction of the page. */
+  shift?: { x: number; y: number };
+  flaggedIds: string[];
+  suggestions?: Record<string, { points: Array<{ x: number; y: number }>; quantity: number }>;
+  /** Scale for the new page (metres per PDF point); omitted = leave as it is. */
+  scale?: number | null;
+}
+
 // ─── Default project state ────────────────────────────────────────────────────
 const defaultProject = (): ProjectState => ({
   projectName:     'New Project',
@@ -274,25 +303,6 @@ interface SaveStatusValue { saveStatus: SaveStatus; lastSavedAt: number | null; 
 const SaveStatusContext = createContext<SaveStatusValue>({ saveStatus: 'saved', lastSavedAt: null });
 export function useSaveStatus(): SaveStatusValue { return useContext(SaveStatusContext); }
 
-/**
- * Rows worked out from another row (volume = area × depth, …) follow their
- * source: when the source's quantity changes, so does theirs.
- */
-function followDerived(list: TakeoffRow[]): TakeoffRow[] {
-  if (!list.some(m => m.derived)) return list;
-  const byId = new Map(list.map(m => [m.id, m]));
-  let changed = false;
-  const out = list.map(m => {
-    if (!m.derived || m.isOverridden) return m;
-    const src = byId.get(m.derived.sourceId);
-    if (!src) return m;
-    const q = parseFloat((src.quantity * m.derived.factor).toFixed(4));
-    if (Math.abs(q - m.quantity) < 1e-9) return m;
-    changed = true;
-    return { ...m, quantity: q };
-  });
-  return changed ? out : list;
-}
 
 export function TakeoffProvider({
   children,
@@ -772,13 +782,19 @@ export function TakeoffProvider({
 
   // ── toggleVisibility ───────────────────────────────────────────────────────
   const toggleVisibility = useCallback((id?: string) => {
-    if (!id) return;
-    syncedSetProjectState(prev => ({
-      ...prev,
-      measurements: prev.measurements.map(m =>
-        m.id === id ? { ...m, isVisible: !m.isVisible } : m
-      ),
-    }));
+    syncedSetProjectState(prev => {
+      // No id = the table's eye button: hide everything, or show everything again.
+      if (!id) {
+        const show = prev.measurements.some(m => m.isVisible === false);
+        return { ...prev, measurements: prev.measurements.map(m => ((m.isVisible !== false) === show ? m : { ...m, isVisible: show })) };
+      }
+      return {
+        ...prev,
+        measurements: prev.measurements.map(m =>
+          m.id === id ? { ...m, isVisible: m.isVisible === false } : m
+        ),
+      };
+    });
   }, [syncedSetProjectState]);
 
   // ── clearAll ───────────────────────────────────────────────────────────────
@@ -1021,6 +1037,113 @@ export function TakeoffProvider({
     });
   }, [syncedSetProjectState, pushEntry, recalcAllParents]);
 
+  const acceptRevision = useCallback((a: AcceptRevisionArgs): string | null => {
+    const dBefore = drawingsRef.current;
+    const mBefore = measurementsRef.current;
+    const fromD = dBefore.find(d => d.id === a.from.drawingId);
+    if (!fromD) return null;
+
+    let dAfter = dBefore;
+    let toId = a.to.drawingId;
+    if (!toId && a.to.newFile) {
+      // The new revision came from the computer: it joins the project as a drawing.
+      const file = a.to.newFile;
+      toId = newId();
+      dAfter = [...dAfter, { id: toId, name: file.name, fileUrl: URL.createObjectURL(file), file, scaleFactor: 1, pageScales: {}, pageCount: 1 }];
+      const pid = projectIdRef.current;
+      const savedId = toId;
+      if (pid) {
+        saveDrawingFile(pid, savedId, file).then(() => pushProjectToFolder(pid)).catch(err => {
+          console.error('[storage] failed to store drawing file', err);
+          setSaveStatus('error');
+        });
+      }
+    }
+    const toD = dAfter.find(d => d.id === toId);
+    if (!toD || !toId || toId === fromD.id) return null;
+
+    const revisionId = newId();
+    const { updates, record } = planCarryOver({
+      measurements: mBefore, drawings: dAfter, materials: materialsRef.current,
+      from: a.from, to: { drawingId: toId, name: toD.name, page: a.to.page },
+      shift: a.shift, flaggedIds: a.flaggedIds, suggestions: a.suggestions, revisionId, previous: latestStateRef.current.revisionLog,
+    });
+    const times = fromD.pageTimes?.[a.from.page];
+    dAfter = dAfter.map(d => {
+      if (d.id === toId) {
+        return {
+          ...d, revisionOf: fromD.id,
+          ...(a.scale && a.scale > 0 ? { pageScales: { ...(d.pageScales ?? {}), [a.to.page]: a.scale } } : {}),
+          ...(times && times !== 1 ? { pageTimes: { ...(d.pageTimes ?? {}), [a.to.page]: times } } : {}),
+        };
+      }
+      return d.id === fromD.id ? { ...d, supersededBy: toId } : d;
+    });
+    const mAfter = followDerived(mBefore.map(m => (updates[m.id] ? { ...m, ...updates[m.id] } : m)));
+
+    measurementsRef.current = mAfter;
+    drawingsRef.current     = dAfter;
+    syncedSetProjectState(prev => ({
+      ...prev, drawings: dAfter, measurements: mAfter, activeDrawingId: toId!,
+      revisionLog: [...(prev.revisionLog ?? []), record],
+    }));
+    setActivePage(a.to.page);
+    pushEntry({
+      measurementsBefore: mBefore, tempPointsBefore: tempPointsRef.current,
+      measurementsAfter:  mAfter,  tempPointsAfter:  tempPointsRef.current,
+      drawingsBefore: dBefore, drawingsAfter: dAfter,
+    });
+    return revisionId;
+  }, [syncedSetProjectState, pushEntry]);
+
+  const switchRevisionVersion = useCallback((recordId: string, target: 'from' | 'to', keepNew = false): string | null => {
+    const log = latestStateRef.current.revisionLog ?? [];
+    const record = log.find(r => r.id === recordId);
+    if (!record) return 'That revision is no longer in the history.';
+    const mBefore = measurementsRef.current;
+    const dBefore = drawingsRef.current;
+    const res = switchVersion(record, mBefore, log, target, keepNew);
+    if (res.error) return res.error;
+
+    // The drawing list shows which sheet is in force.
+    const restoring = target === 'from';
+    const dAfter = dBefore.map(d => {
+      if (d.id === record.from.drawingId) return { ...d, supersededBy: restoring ? undefined : record.to.drawingId };
+      if (d.id === record.to.drawingId) return { ...d, revisionOf: restoring ? undefined : record.from.drawingId, supersededBy: restoring ? record.from.drawingId : undefined };
+      return d;
+    });
+    const live = restoring ? record.from : record.to;
+    measurementsRef.current = res.measurements;
+    drawingsRef.current     = dAfter;
+    syncedSetProjectState(prev => ({
+      ...prev, drawings: dAfter, measurements: res.measurements,
+      activeDrawingId: dAfter.some(d => d.id === live.drawingId) ? live.drawingId : prev.activeDrawingId,
+      revisionLog: (prev.revisionLog ?? []).map(r => (r.id === recordId ? res.record : r)),
+    }));
+    setActivePage(live.page);
+    pushEntry({
+      measurementsBefore: mBefore, tempPointsBefore: tempPointsRef.current,
+      measurementsAfter:  res.measurements, tempPointsAfter: tempPointsRef.current,
+      drawingsBefore: dBefore, drawingsAfter: dAfter,
+    });
+    return null;
+  }, [syncedSetProjectState, pushEntry]);
+
+  // Money everywhere in the app is shown in the project's currency.
+  setDisplayCurrency(projectState.currency);
+
+  const updatePageTimes = useCallback((id: string, page: number, times: number) => {
+    const t = Number.isFinite(times) && times > 0 ? times : 1;
+    const dAfter = drawingsRef.current.map(d => {
+      if (d.id !== id) return d;
+      const next = { ...(d.pageTimes ?? {}) };
+      if (t === 1) delete next[page]; else next[page] = t;
+      return { ...d, pageTimes: next };
+    });
+    drawingsRef.current = dAfter;
+    syncedSetProjectState(prev => ({ ...prev, drawings: dAfter }));
+  }, [syncedSetProjectState]);
+
   // ── Load project from local storage ────────────────────────────────────────
   const hydratedRef = useRef(false);
   const objectUrlsRef = useRef<string[]>([]);
@@ -1198,6 +1321,9 @@ export function TakeoffProvider({
     saveNow,
     setActiveDrawingId,
     updateDrawingScale,
+    updatePageTimes,
+    acceptRevision,
+    switchRevisionVersion,
     addMeasurement,
     updateMeasurement,
     deleteMeasurement,

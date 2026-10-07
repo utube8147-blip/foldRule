@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { CURRENCIES, currencyInfo } from '@/lib/takeoff/currency';
 import {
   FileText, FolderOpen, Filter, Search, Settings2, Plus, PanelLeftClose,
   Database, Info, Layers, Building2, FileCheck2, Users2,
@@ -387,6 +388,12 @@ function SidebarImpl({
                       >
                         <FileText className="w-4 h-4 shrink-0" />
                         <span className="text-xs truncate font-medium uppercase tracking-tight">{file.name}</span>
+                        {(file.supersededBy || file.revisionOf) && (
+                          <span
+                            title={file.supersededBy ? 'Replaced by a newer revision. Its old takeoff is kept under Revision history.' : 'The current revision of this sheet.'}
+                            className={`shrink-0 text-[9px] font-bold uppercase tracking-widest px-1 border ${file.supersededBy ? 'border-zinc-600 text-zinc-500' : 'border-green-700 text-green-500'}`}
+                          >{file.supersededBy ? 'Superseded' : 'Current'}</span>
+                        )}
                         {missing > 0 && (
                           <span className="ml-auto shrink-0 w-1.5 h-1.5 rounded-full bg-amber-400" title={`${missing} page${missing === 1 ? '' : 's'} without a scale`} />
                         )}
@@ -551,11 +558,21 @@ function SidebarImpl({
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="Currency">
-                      <TextInput
+                      <select
+                        aria-label="Currency"
                         value={projectState.currency ?? ''}
-                        placeholder="e.g. AED"
-                        onChange={v => onUpdateProjectMeta({ currency: v || undefined })}
-                      />
+                        onChange={e => {
+                          const info = currencyInfo(e.target.value);
+                          // Picking a currency suggests that country's standard VAT; it stays editable.
+                          onUpdateProjectMeta({ currency: e.target.value || undefined, ...(info ? { vatPercent: info.vat } : {}) });
+                        }}
+                        className="w-full bg-[#16191C] border border-zinc-800 p-2 text-xs font-bold text-zinc-200 outline-none focus:border-amber-accent transition-colors"
+                      >
+                        {!currencyInfo(projectState.currency) && (
+                          <option value={projectState.currency ?? ''}>{projectState.currency || 'Choose…'}</option>
+                        )}
+                        {CURRENCIES.map(c => <option key={c.code} value={c.code}>{c.code} — {c.name}</option>)}
+                      </select>
                     </Field>
                     <Field label="VAT %">
                       <NumberInput

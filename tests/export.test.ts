@@ -41,7 +41,7 @@ describe('Takeoff sheet', () => {
 
   it('exports the user’s real measurements (not sample data)', async () => {
     const wb = await roundTrip(await buildProjectWorkbook(input()));
-    expect(wb.worksheets.map(w => w.name)).toEqual(['Takeoff']);
+    expect(wb.worksheets.map(w => w.name)).toEqual(['Takeoff', 'Bill of Quantities']);
     const ws = wb.getWorksheet('Takeoff')!;
     const descs: string[] = [];
     ws.eachRow(r => { const v = r.getCell(2).value; if (typeof v === 'string') descs.push(v.trim()); });
@@ -72,7 +72,7 @@ describe('Takeoff sheet', () => {
     const mat = { id: 'm1', name: 'MDF 18mm', code: 'MDF18', category: 'Board', unit: 'm²', unitRate: 10, materialCost: 8, laborCost: 2, equipmentCost: 0 };
     const unused = input();
     unused.materials = [mat];
-    expect((await buildProjectWorkbook(unused)).worksheets.map(w => w.name)).toEqual(['Takeoff']);
+    expect((await buildProjectWorkbook(unused)).worksheets.map(w => w.name)).toEqual(['Takeoff', 'Bill of Quantities']);
 
     const used = input();
     used.materials = [mat];

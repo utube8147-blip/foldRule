@@ -9,6 +9,9 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { isAreaRow, hasPlainPoints, type ShapeActionsApi, type ConvertKind } from '@/hooks/shapes/useShapeActions';
+import {
+  BUILT_IN_ASSEMBLIES, STANDARD_OPENINGS, DEFAULT_MIN_VOID_M2, assemblyFits, type Opening, type OpeningDeduction,
+} from '@/lib/takeoff/assemblies';
 
 export interface ShapeMenuState { x: number; y: number; at: { x: number; y: number }; tol: number }
 
@@ -47,7 +50,7 @@ function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert
       if (primary.holes?.length) items.push({ key: 'fill', label: 'Remove cut-outs', hint: 'Fill the cut-outs back in', icon: SquareDashed, run: api.removeCutouts });
     }
     if (isAreaRow(primary) || primary.type === 'Length') {
-      items.push({ key: 'convert', label: 'Convert', hint: 'Work out another quantity from this shape (perimeter, volume, wall area…)', icon: Calculator, run: openConvert });
+      items.push({ key: 'convert', label: 'Convert', hint: 'Work out other quantities from this shape: perimeter, volume, wall area, or a whole assembly', icon: Calculator, run: openConvert });
     }
     if (hasPlainPoints(primary) && !primary.parentId && !primary.holes?.length) {
       items.push(primary.type === 'Length'
@@ -68,8 +71,117 @@ function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert
   return items;
 }
 
+const fieldCls = 'bg-zinc-800 border border-zinc-600 px-2 py-1 text-xs font-mono text-zinc-100 focus:outline-none focus:border-amber-400';
+
+/** Several BOQ rows from one shape (wall → blockwork, plaster, paint, skirting), less counted openings. */
+function AssemblyPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => void }) {
+  const m = api.primary;
+  const fits = BUILT_IN_ASSEMBLIES.filter(a => m && assemblyFits(a, m));
+  const [id, setId] = useState(fits[0]?.id ?? '');
+  const [params, setParams] = useState<Record<string, string>>({});
+  /** Count row id → opening id ('' = not an opening, 'custom' = typed size). */
+  const [picked, setPicked] = useState<Record<string, string>>({});
+  const [custom, setCustom] = useState<Record<string, { w: string; h: string }>>({});
+  const [minVoid, setMinVoid] = useState(String(DEFAULT_MIN_VOID_M2));
+  const a = fits.find(x => x.id === id) ?? fits[0];
+  if (!m || !a) return <div className="w-80 p-3 text-[11px] text-zinc-500">No assembly starts from this kind of shape.</div>;
+
+  const num = (v: string | undefined, fallback: number) => { const n = parseFloat(v ?? ''); return Number.isFinite(n) && n > 0 ? n : fallback; };
+  const values = Object.fromEntries(a.params.map(p => [p.key, num(params[p.key], p.value)]));
+  const canDeduct = a.lines.some(l => l.deduct);
+  const deductions: OpeningDeduction[] = [];
+  for (const c of api.countRows) {
+    const pick = picked[c.id];
+    if (!pick) continue;
+    let o: Opening | undefined = STANDARD_OPENINGS.find(x => x.id === pick);
+    if (pick === 'custom') {
+      const w = num(custom[c.id]?.w, 0), h = num(custom[c.id]?.h, 0);
+      o = w && h ? { id: 'custom', name: `Opening ${w} × ${h}`, kind: 'door', width: w, height: h } : undefined;
+    }
+    if (o) deductions.push({ sourceId: c.id, opening: o });
+  }
+  const opts = { params: values, deductions, minVoid: num(minVoid, 0) };
+  const rows = api.assemblyRows(a, opts);
+
+  return (
+    <div className="space-y-2">
+      <select aria-label="Assembly" value={a.id} onChange={e => setId(e.target.value)} className={`w-full ${fieldCls}`}>
+        {fits.map(x => <option key={x.id} value={x.id}>{x.name}</option>)}
+      </select>
+      {a.params.map(p => (
+        <label key={p.key} className="flex items-center gap-2 text-[11px] text-zinc-400">
+          <span className="flex-1">{p.label}</span>
+          <input
+            inputMode="decimal" value={params[p.key] ?? String(p.value)}
+            onChange={e => setParams(s => ({ ...s, [p.key]: e.target.value }))}
+            onKeyDown={e => e.stopPropagation()} className={`w-20 ${fieldCls}`}
+          />
+          <span className="w-6">{p.unit}</span>
+        </label>
+      ))}
+      {canDeduct && (
+        <div className="border border-zinc-700 p-2 space-y-1.5">
+          <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">Deduct counted openings</div>
+          {api.countRows.length === 0 && (
+            <div className="text-[11px] text-zinc-500">Count the doors and windows in this wall first, then pick their size here.</div>
+          )}
+          {api.countRows.map(c => (
+            <div key={c.id} className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="flex-1 min-w-0 truncate text-[11px] text-zinc-200" title={c.name}>{c.quantity} nr {c.name}</span>
+                <select
+                  aria-label={`Opening size for ${c.name}`} value={picked[c.id] ?? ''}
+                  onChange={e => setPicked(s => ({ ...s, [c.id]: e.target.value }))} className={`w-36 ${fieldCls}`}
+                >
+                  <option value="">Not in this wall</option>
+                  {STANDARD_OPENINGS.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  <option value="custom">Other size…</option>
+                </select>
+              </div>
+              {picked[c.id] === 'custom' && (
+                <div className="flex items-center justify-end gap-1 text-[11px] text-zinc-400">
+                  <input aria-label="Opening width in metres" placeholder="width" inputMode="decimal" value={custom[c.id]?.w ?? ''}
+                    onChange={e => setCustom(s => ({ ...s, [c.id]: { w: e.target.value, h: s[c.id]?.h ?? '' } }))}
+                    onKeyDown={e => e.stopPropagation()} className={`w-16 ${fieldCls}`} />
+                  ×
+                  <input aria-label="Opening height in metres" placeholder="height" inputMode="decimal" value={custom[c.id]?.h ?? ''}
+                    onChange={e => setCustom(s => ({ ...s, [c.id]: { w: s[c.id]?.w ?? '', h: e.target.value } }))}
+                    onKeyDown={e => e.stopPropagation()} className={`w-16 ${fieldCls}`} />
+                  m
+                </div>
+              )}
+            </div>
+          ))}
+          <label className="flex items-center gap-2 text-[11px] text-zinc-500 pt-1">
+            <span className="flex-1">Ignore voids smaller than</span>
+            <input aria-label="Minimum void in square metres" inputMode="decimal" value={minVoid} onChange={e => setMinVoid(e.target.value)}
+              onKeyDown={e => e.stopPropagation()} className={`w-16 ${fieldCls}`} />
+            <span>sq m</span>
+          </label>
+        </div>
+      )}
+      <div className="border border-zinc-700 divide-y divide-zinc-800">
+        {rows.map(r => (
+          <div key={r.id} className="flex items-baseline gap-2 px-2 py-1 text-[11px]">
+            <span className="flex-1 min-w-0 truncate text-zinc-300">{r.description.split(' – ').pop()}</span>
+            <span className="font-mono text-zinc-100 tabular-nums">{r.quantity.toFixed(2)}</span>
+            <span className="w-8 text-zinc-500">{r.unit}</span>
+          </div>
+        ))}
+      </div>
+      <button
+        disabled={!rows.length}
+        onClick={() => { api.applyAssembly(a, opts); onDone(); }}
+        className="w-full text-[10px] font-mono font-bold uppercase tracking-widest px-2.5 py-1.5 bg-amber-400 text-black hover:bg-amber-300 disabled:opacity-40"
+      >Add {rows.length} rows</button>
+      <div className="text-[11px] text-zinc-500">These rows follow the shape and the counts: change either and they update.</div>
+    </div>
+  );
+}
+
 function ConvertPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => void }) {
   const m = api.primary;
+  const [mode, setMode] = useState<'row' | 'assembly'>('row');
   const [vals, setVals] = useState<Record<string, string>>({ volume: '0.15', wallArea: '2.7', stripArea: '0.6', waste: '10', slope: '25' });
   if (!m) return null;
   const area = isAreaRow(m);
@@ -84,8 +196,17 @@ function ConvertPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => voi
   );
   return (
     <div className="w-80 p-3 space-y-2 max-h-[60vh] overflow-y-auto custom-scrollbar" onPointerDown={e => e.stopPropagation()}>
-      <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">Add a row worked out from this shape</div>
-      {rows.map(r => {
+      <div role="tablist" className="flex border border-zinc-700">
+        {([['row', 'One row'], ['assembly', 'Assembly']] as const).map(([k, label]) => (
+          <button
+            key={k} role="tab" aria-selected={mode === k} onClick={() => setMode(k)}
+            className={`flex-1 text-[10px] font-mono font-bold uppercase tracking-widest py-1.5 ${mode === k ? 'bg-amber-400 text-black' : 'text-zinc-400 hover:bg-zinc-800'}`}
+          >{label}</button>
+        ))}
+      </div>
+      {mode === 'assembly' && <AssemblyPanel api={api} onDone={onDone} />}
+      {mode === 'row' && <div className="text-[10px] font-mono uppercase tracking-widest text-zinc-400">Add a row worked out from this shape</div>}
+      {mode === 'row' && rows.map(r => {
         const v = parseFloat(vals[r.kind] ?? '');
         const ok = !r.unit || (Number.isFinite(v) && v > 0);
         return (
@@ -113,7 +234,7 @@ function ConvertPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => voi
           </div>
         );
       })}
-      <div className="text-[11px] text-zinc-500">Volume and area rows follow the shape: edit the shape and they update.</div>
+      {mode === 'row' && <div className="text-[11px] text-zinc-500">Volume and area rows follow the shape: edit the shape and they update.</div>}
     </div>
   );
 }

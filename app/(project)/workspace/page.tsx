@@ -5,6 +5,8 @@
 //  Keyboard shortcuts are owned by Viewer.tsx (single registry).
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { downloadBlob } from '@/lib/storage/projectDb';
+import { billedRows } from '@/lib/takeoff/timesing';
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/layout/Sidebar';
@@ -39,6 +41,8 @@ import { getPageScale, effectivePageScale } from '@/lib/takeoff/scale';
 import { useProjectHref } from '@/lib/nav/projectHref';
 // Loaded on first open — they cost nothing until used.
 const AnalysisDialog  = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.AnalysisDialog),  { ssr: false });
+const RevisionCompareDialog = dynamic(() => import('@/components/features/dialogs/RevisionCompareDialog').then(m => m.RevisionCompareDialog), { ssr: false });
+const RevisionChangesDialog = dynamic(() => import('@/components/features/dialogs/RevisionChangesDialog').then(m => m.RevisionChangesDialog), { ssr: false });
 const ShortcutsDialog = dynamic(() => import('@/components/features/dialogs/WorkspaceDialogs').then(m => m.ShortcutsDialog), { ssr: false });
 
 // ─── Stable color palette for presets ────────────────────────────────────────
@@ -105,6 +109,8 @@ export default function Workspace() {
     setMaterialLibraryOpen: setShowMaterialLibrary,
     focusMeasurement,
     goToPage,
+    acceptRevision,
+    switchRevisionVersion,
   } = useTakeoffData();
   const href = useProjectHref();
 
@@ -457,6 +463,10 @@ export default function Workspace() {
   }, [setActiveDrawingId]);
   const collapseTable       = useCallback(() => setRightCollapsed(true), []);
   const [showAnalysis,  setShowAnalysis]  = useState(false);
+  const [showCompare,   setShowCompare]   = useState(false);
+  // Once opened, the compare page stays loaded so closing it does not lose the plans being compared.
+  const [compareOpened, setCompareOpened] = useState(false);
+  const [showChanges,   setShowChanges]   = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const openAnalysis        = useCallback(() => setShowAnalysis(true), []);
   const expandTable         = useCallback(() => setRightCollapsed(false), []);
@@ -701,6 +711,8 @@ export default function Workspace() {
                 onExpand={openFullTable}
                 onCollapse={collapseTable}
                 onOpenAnalysis={openAnalysis}
+                onOpenCompare={() => { setCompareOpened(true); setShowCompare(true); }}
+                onOpenChanges={(ps.revisionLog?.length ?? 0) > 0 ? () => setShowChanges(true) : undefined}
                 onAddSegmentToGroup={handleAddSegmentToGroup}
                 onAddManual={handleAddManual}
               />
@@ -723,8 +735,22 @@ export default function Workspace() {
             projectState={ps}
             onClose={() => setShowExportModal(false)}
             onExport={executeExport}
+            onExportMarkup={activeDrawing ? async () => {
+              try {
+                const bytes = activeDrawing.file
+                  ? await activeDrawing.file.arrayBuffer()
+                  : await (await fetch(activeDrawing.fileUrl)).arrayBuffer();
+                const { buildMarkedUpPdf } = await import('@/lib/export/markupPdf');
+                const pdf = await buildMarkedUpPdf({ pdfBytes: bytes, drawing: activeDrawing, measurements: ps.measurements, projectName: ps.projectName });
+                downloadBlob(new Blob([pdf as BlobPart], { type: 'application/pdf' }), `${activeDrawing.name.replace(/\.pdf$/i, '')}-marked-up.pdf`);
+                addToast('Exported marked-up PDF', 'success');
+                setShowExportModal(false);
+              } catch (e) {
+                addToast(`Could not build the marked-up PDF: ${e instanceof Error ? e.message : 'unknown error'}`, 'info');
+              }
+            } : undefined}
             onExportCsv={filename => {
-              downloadCsv(takeoffToCsv({ projectName: ps.projectName, measurements: ps.measurements, materials: ps.materials as never, drawings: ps.drawings }), filename || `${ps.projectName}-takeoff`);
+              downloadCsv(takeoffToCsv({ projectName: ps.projectName, measurements: billedRows(ps.measurements, ps.drawings), materials: ps.materials as never, drawings: ps.drawings }), filename || `${ps.projectName}-takeoff`);
               addToast('Exported CSV', 'success');
               setShowExportModal(false);
             }}
@@ -820,12 +846,51 @@ export default function Workspace() {
 
       {showAnalysis && (
         <AnalysisDialog
-          measurements={ps.measurements}
+          measurements={billedRows(ps.measurements, ps.drawings)}
           drawings={ps.drawings}
           materials={ps.materials as Material[]}
           onClose={() => setShowAnalysis(false)}
           onFocus={focusMeasurement}
           onGoToPage={goToPage}
+        />
+      )}
+      {compareOpened && (
+        <RevisionCompareDialog
+          hidden={!showCompare}
+          drawings={ps.drawings}
+          measurements={ps.measurements}
+          activeDrawingId={ps.activeDrawingId}
+          activePage={activePage}
+          onClose={() => setShowCompare(false)}
+          onFocus={focusMeasurement}
+          onAccept={req => {
+            const fromD = ps.drawings.find(d => d.id === req.from.drawingId);
+            const s = getPageScale(fromD, req.from.page);
+            const id = acceptRevision({
+              from: req.from, to: req.to, shift: req.shift, flaggedIds: req.flaggedIds, suggestions: req.suggestions,
+              scale: s ? s * req.sizeRatio : null,
+            });
+            if (!id) { addToast('Could not accept the revision: pick a different drawing as the new plan', 'info'); return; }
+            setShowCompare(false);
+            setCompareOpened(false);          // that comparison is finished
+            addToast(`Revision accepted: ${req.flaggedIds.length} measurements to check`, 'success');
+          }}
+        />
+      )}
+      {showChanges && (ps.revisionLog?.length ?? 0) > 0 && (
+        <RevisionChangesDialog
+          log={ps.revisionLog!}
+          projectName={ps.projectName}
+          onSwitch={(recordId, target, keepNew) => {
+            const err = switchRevisionVersion(recordId, target, keepNew);
+            if (!err) addToast(target === 'from' ? 'Earlier version restored' : 'Back on the newer version', 'success');
+            return err;
+          }}
+          measurements={ps.measurements}
+          drawings={ps.drawings}
+          materials={ps.materials as Material[]}
+          onClose={() => setShowChanges(false)}
+          onFocus={focusMeasurement}
         />
       )}
       {showShortcuts && <ShortcutsDialog onClose={() => setShowShortcuts(false)} />}

@@ -6,6 +6,7 @@
 //  for amounts, group subtotals, VAT and grand total.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { excelMoneyFormat } from '@/lib/takeoff/currency';
 import type * as ExcelJS from 'exceljs';
 import type { TakeoffRow, Material } from '@/types';
 
@@ -28,6 +29,12 @@ export interface TakeoffExportInput {
   drawings:       TakeoffExportDrawing[];
   measurements:   TakeoffRow[];
   materials:      Material[];
+  /** One entry per accepted drawing revision: what it did to the quantities. */
+  revisionChanges?: Array<{
+    record: { at: string; from: { name: string }; to: { name: string } };
+    cost: number;
+    lines: Array<{ description: string; group?: string; unit: string; before: number; after: number; diff: number; rate: number; cost: number; status: string }>;
+  }>;
 }
 
 const COLS = [
@@ -102,7 +109,7 @@ export function addTakeoffSheet(workbook: ExcelJS.Workbook, input: TakeoffExport
   ];
 
   const currency   = input.currency || '';
-  const moneyFmt   = currency ? `"${currency.replace(/"/g, '')} "#,##0.00` : '#,##0.00';
+  const moneyFmt   = excelMoneyFormat(currency);
   const qtyFmt     = '#,##0.00';
   const drawings   = new Map(input.drawings.map(d => [d.id, d]));
   const materials  = new Map(input.materials.map(m => [m.id, m]));

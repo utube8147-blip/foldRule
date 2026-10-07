@@ -8,6 +8,7 @@
 //  Rate edits can be pushed to the takeoff rows that use the material.
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { DEFAULT_CURRENCY } from '@/lib/takeoff/currency';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   X, Search, ArrowUpDown, Plus, Trash2, Check, Library, FolderOpen, Info,
@@ -423,7 +424,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
               </div>
               <div className="px-4 py-2.5 border-t border-industrial-border text-[10px] text-zinc-600 uppercase tracking-widest flex justify-between">
                 <span>{rows.length} item{rows.length === 1 ? '' : 's'} shown</span>
-                <span>Rates in {projectState.currency || 'LKR'}</span>
+                <span>Rates in {projectState.currency || DEFAULT_CURRENCY}</span>
               </div>
             </div>
 
@@ -465,7 +466,7 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose }: Mater
                       <label key={k} className="flex items-center justify-between gap-3 bg-industrial-black border border-industrial-border px-3 py-2">
                         <span className="text-[11px] uppercase tracking-widest text-zinc-500">{label}</span>
                         <span className="flex items-center gap-1.5">
-                          <span className="text-[11px] text-zinc-600">{projectState.currency || 'LKR'}</span>
+                          <span className="text-[11px] text-zinc-600">{projectState.currency || DEFAULT_CURRENCY}</span>
                           <input
                             type="number" min={0} step="0.01" inputMode="decimal"
                             value={selected[k] || ''}

@@ -13,6 +13,7 @@ import {
   type Pt, type Shape,
 } from '@/lib/geometry/regionOps';
 
+import { buildAssemblyRows, effectiveQuantity, type Assembly, type BuildAssemblyOptions } from '@/lib/takeoff/assemblies';
 export type PendingOp = { kind: 'cutout' | 'split' | 'gap'; targetId: string; label: string; targetIds?: string[] };
 export type ConvertKind = 'perimeter' | 'volume' | 'wallArea' | 'stripArea' | 'waste' | 'slope';
 
@@ -537,6 +538,24 @@ export function useShapeActions({
     say(`Added “${row.label}”: ${row.quantity} ${row.unit}.`);
   }, [primary, outline, lengthOf, replaceMeasurements, say]);
 
+  // ── Assemblies: several BOQ rows from one shape, less counted openings ────
+  const assemblyRows = useCallback((a: Assembly, opts: Omit<BuildAssemblyOptions, 'newId'>) =>
+    (primary ? buildAssemblyRows(primary, a, all.current, { ...opts, newId }) : []), [primary]);
+  const applyAssembly = useCallback((a: Assembly, opts: Omit<BuildAssemblyOptions, 'newId'>) => {
+    const rows = assemblyRows(a, opts);
+    if (!rows.length) return;
+    replaceMeasurements([], rows);
+    say(`Added ${rows.length} rows from “${a.name}”.`);
+  }, [assemblyRows, replaceMeasurements, say]);
+  /** Counts that can be deducted as openings (doors, windows). */
+  const countRows = useMemo(() => {
+    const byId = new Map(measurements.map(m => [m.id, m]));
+    return measurements
+      .filter(m => (m.type === 'Count' || m.type === 'Point') && !m.parentId && !m.derived)
+      .map(m => ({ id: m.id, name: m.label || m.description || 'Count', quantity: effectiveQuantity(m, byId) }))
+      .filter(c => c.quantity > 0);
+  }, [measurements]);
+
   // ── Move to another group ────────────────────────────────────────────────
   const kindOfType = (t: string) => (AREA_TYPES.has(t) ? 'area' : t);
   /** Groups the whole selection could go into (same kind of quantity). */
@@ -613,7 +632,7 @@ export function useShapeActions({
     beginCutout: () => begin('cutout'), beginSplit: () => begin('split'), beginGap: () => begin('gap'), cancelPending, consumeDrawn,
     probe, addPoint, deletePoint, removeCutouts, toggleClosed,
     groupTargets, inGroup, moveToGroup, canMakeGroup, makeGroup,
-    duplicate, remove, convert, moveBy, mirror, repeat, edgeLength, overlaps, selectPair, movable,
+    duplicate, remove, convert, assemblyRows, applyAssembly, countRows, moveBy, mirror, repeat, edgeLength, overlaps, selectPair, movable,
     clearSelection: () => { setExtraSelected([]); setSelectedId(null); },
   };
 }

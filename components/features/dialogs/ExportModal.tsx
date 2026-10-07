@@ -7,9 +7,11 @@ interface ExportModalProps {
   onClose: () => void;
   onExport: (filename: string) => void; // ← now accepts filename
   onExportCsv?: (filename: string) => void;
+  /** Download the open drawing with the measurements drawn on it, plus a legend page. */
+  onExportMarkup?: () => void;
 }
 
-export function ExportModal({ projectState, onClose, onExport, onExportCsv }: ExportModalProps) {
+export function ExportModal({ projectState, onClose, onExport, onExportCsv, onExportMarkup }: ExportModalProps) {
   const [fileName, setFileName] = useState(
     `${projectState.projectName.toLowerCase().replace(/\s+/g, '-')}-takeoff.xlsx`
   );
@@ -100,6 +102,14 @@ export function ExportModal({ projectState, onClose, onExport, onExportCsv }: Ex
               className="w-full mt-2 border border-[#2E353C] text-stone-300 font-black text-[11px] py-3 hover:border-amber-accent hover:text-amber-accent transition-colors uppercase tracking-[0.2em]"
             >
               Download .csv (rows + totals by type)
+            </button>
+          )}
+          {onExportMarkup && (
+            <button
+              onClick={onExportMarkup}
+              className="w-full mt-2 border border-[#2E353C] text-stone-300 font-black text-[11px] py-3 hover:border-amber-accent hover:text-amber-accent transition-colors uppercase tracking-[0.2em]"
+            >
+              Download marked-up PDF (open drawing + legend)
             </button>
           )}
           <p className="text-[10px] text-center text-stone-600 mt-4 uppercase tracking-widest font-bold">

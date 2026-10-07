@@ -1,4 +1,8 @@
 // components/TakeoffTable.tsx
+import { reviewProgress } from '@/lib/takeoff/revisions';
+import { POMI_SECTIONS, classify } from '@/lib/takeoff/pomi';
+import { timesIndex, billedQuantities, timesLabel } from '@/lib/takeoff/timesing';
+import { explainDerived } from '@/lib/takeoff/assemblies';
 import { ColorSwatchPicker } from '@/components/common/ColorSwatchPicker';
 import { PALETTE_GRID } from '@/hooks/measurements/useMeasurements/colors';
 import React, { useState, useCallback } from 'react';
@@ -21,6 +25,8 @@ interface TakeoffTableProps {
   onCollapse?: () => void;
   /** Open the project analysis (totals, unpriced rows, pages without a scale). */
   onOpenAnalysis?: () => void;
+  onOpenCompare?: () => void;
+  onOpenChanges?: () => void;
   onAddSegmentToGroup?: (groupId: string, groupType: string) => void;
   batchUpdateMeasurements?: (updates: { id: string; updates: Partial<TakeoffRow> }[]) => void;
 }
@@ -68,6 +74,8 @@ function TakeoffTableImpl({
   onExpand,
   onCollapse,
   onOpenAnalysis,
+  onOpenCompare,
+  onOpenChanges,
   onAddSegmentToGroup,
   batchUpdateMeasurements,
 }: TakeoffTableProps) {
@@ -75,7 +83,13 @@ function TakeoffTableImpl({
   const [editingField, setEditingField] = useState<string | null>(null);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
-  const { selectedId, focusMeasurement, setMaterialLibraryOpen, replaceMeasurements, ungroupMeasurements } = useTakeoffData();
+  const { selectedId, focusMeasurement, setMaterialLibraryOpen, replaceMeasurements, ungroupMeasurements, projectState } = useTakeoffData();
+  // Timesing: rows show what was measured; costs and totals use the billed quantity.
+  const drawings = projectState.drawings;
+  const timesOf = React.useMemo(() => timesIndex(measurements, drawings), [measurements, drawings]);
+  const billed  = React.useMemo(() => billedQuantities(measurements, drawings), [measurements, drawings]);
+  const bq = (r: TakeoffRow) => billed.get(r.id) ?? r.quantity;
+  const review = React.useMemo(() => reviewProgress(measurements), [measurements]);
 
   // ── Moving a row to another group (drag & drop, or right-click → Move to) ──
   const [dragId, setDragId] = useState<string | null>(null);
@@ -247,8 +261,8 @@ function TakeoffTableImpl({
 
   const calculateGroupTotal = (items: TakeoffRow[], type: 'cost' | 'quantity' = 'cost') =>
     type === 'quantity'
-      ? items.reduce((sum, i) => sum + i.quantity, 0)
-      : items.reduce((sum, i) => sum + i.quantity * i.unitRate, 0);
+      ? items.reduce((sum, i) => sum + bq(i), 0)
+      : items.reduce((sum, i) => sum + bq(i) * i.unitRate, 0);
 
   // Bring the selected row into view (expanding its group if needed) when the
   // selection comes from the drawing.
@@ -277,8 +291,8 @@ function TakeoffTableImpl({
   }, [measurements, materials]);
 
   const totalCost  = React.useMemo(
-    () => measurements.reduce((sum, m) => sum + m.quantity * m.unitRate, 0),
-    [measurements],
+    () => measurements.reduce((sum, m) => sum + (m.isGroupHeader ? m.quantity : billed.get(m.id) ?? m.quantity) * m.unitRate, 0),
+    [measurements, billed],
   );
   const allVisible = React.useMemo(() => measurements.every((m) => m.isVisible !== false), [measurements]);
 
@@ -383,6 +397,12 @@ function TakeoffTableImpl({
         </span>
         {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
         {row.unit && <span className="text-[10px] text-zinc-600">{row.unit}</span>}
+        {timesOf(row).total !== 1 && (
+          <span
+            className="text-[10px] font-mono font-bold text-black bg-amber-accent px-1"
+            title={`Timesing: billed as ${bq(row).toFixed(3)} ${row.unit ?? ''}`}
+          >{timesLabel(timesOf(row).total)}</span>
+        )}
       </div>
     );
   };
@@ -438,6 +458,32 @@ function TakeoffTableImpl({
 
   const renderRowActions = (row: TakeoffRow) => (
     <div className="flex items-center justify-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+      {row.review?.status === 'check' && row.review.suggest && (
+        <button
+          type="button"
+          onClick={() => {
+            const s = row.review!.suggest!;
+            replaceMeasurements([], [], { [row.id]: {
+              points: s.points.map((p, i) => ({ ...row.points[i], ...p })), quantity: s.quantity,
+              review: { revision: row.review!.revision, status: 'done' },
+            } });
+            focusMeasurement(row.id);
+          }}
+          title={`Suggested from the new plan’s lines: move the corners that shifted. Quantity ${row.quantity.toFixed(2)} → ${row.review.suggest.quantity.toFixed(2)} ${row.unit}. Ctrl+Z undoes it.`}
+          className="text-[9px] font-mono font-black uppercase px-1 py-0.5 border border-amber-accent bg-amber-accent text-black"
+        >Fix</button>
+      )}
+      {row.review && (
+        <button
+          type="button"
+          onClick={() => onUpdate(row.id, { review: { ...row.review!, status: row.review!.status === 'check' ? 'done' : 'check' } })}
+          title={row.review.status === 'check'
+            ? 'This sits on a change in the new revision. Adjust it on the drawing, then click to tick it off.'
+            : 'Checked against the new revision. Click to mark it for checking again.'}
+          className={cn('text-[9px] font-mono font-black uppercase px-1 py-0.5 border',
+            row.review.status === 'check' ? 'bg-red-500 border-red-500 text-white' : 'border-green-600 text-green-500')}
+        >{row.review.status === 'check' ? 'Check' : '✓'}</button>
+      )}
       <ColorSwatchPicker
         value={row.color || '#EF9F27'} used={usedColors} label={row.label || row.description}
         onChange={color => onUpdate(row.id, { color })}
@@ -477,11 +523,33 @@ function TakeoffTableImpl({
   };
 
   const renderDetailPanel = (row: TakeoffRow) => {
-    const itemTotalCost = row.quantity * row.unitRate;
+    const itemTotalCost = bq(row) * row.unitRate;
+    const t = timesOf(row);
+    const header = measurements.find(m => m.isGroupHeader && m.id !== row.id && (m.id === row.parentId || (!!row.groupId && m.groupId === row.groupId)));
+    const timesInput = (target: TakeoffRow, label: string) => (
+      <label className="flex items-center gap-1 text-[10px] text-zinc-500">
+        {label} ×
+        <input
+          key={`${target.id}-${target.times ?? 1}`}
+          aria-label={`${label} multiplier`} inputMode="decimal" defaultValue={target.times ?? 1}
+          onClick={e => e.stopPropagation()}
+          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.currentTarget.blur(); }}
+          onBlur={e => {
+            const n = parseFloat(e.target.value);
+            const next = Number.isFinite(n) && n > 0 && n !== 1 ? n : undefined;
+            if (next !== target.times) onUpdate(target.id, { times: next });
+          }}
+          className="w-12 bg-stone-900 border border-zinc-700 focus:border-amber-accent text-xs font-mono px-1 py-0.5 outline-none text-zinc-200 text-right"
+        />
+      </label>
+    );
+    const autoCode = classify({ ...row, section: undefined }, new Map(materials.map(m => [m.id, m])));
+    const autoSection = POMI_SECTIONS.find(s => s.code === autoCode);
+    const working = row.derived ? explainDerived(row, new Map(measurements.map(m => [m.id, m]))) : null;
     return (
       <tr key={`${row.id}-detail`} className="bg-[#0d0d0d]">
         <td colSpan={3} className="px-3 pb-3 pt-0">
-          <div className="border border-zinc-800 rounded-sm bg-[#111] p-3 mt-1 space-y-3">
+          <div className="w-0 min-w-full border border-zinc-800 rounded-sm bg-[#111] p-3 mt-1 space-y-3">
             {row.label && (
               <div className="flex items-start gap-3">
                 <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Label</span>
@@ -503,6 +571,52 @@ function TakeoffTableImpl({
                 <span className="text-xs font-bold text-amber-accent">{formatCurrency(itemTotalCost)}</span>
               </div>
             </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Section</span>
+              <select
+                aria-label="Bill section" value={row.section ?? ''}
+                onClick={e => e.stopPropagation()}
+                onChange={e => onUpdate(row.id, { section: e.target.value || undefined })}
+                className="flex-1 min-w-0 bg-stone-900 border border-zinc-700 focus:border-amber-accent text-[11px] font-mono px-1 py-0.5 outline-none text-zinc-300"
+              >
+                <option value="">{autoSection ? `Auto: ${autoSection.code} ${autoSection.title}` : 'Auto: not classified yet'}</option>
+                {POMI_SECTIONS.map(s => <option key={s.code} value={s.code}>{s.code} {s.title}</option>)}
+              </select>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0">Times</span>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 flex-1 min-w-0">
+                {timesInput(row, 'This row')}
+                {header && !row.derived && timesInput(header, 'Group')}
+                {t.page !== 1 && <span className="text-[10px] text-zinc-500">Page × {parseFloat(t.page.toFixed(3))}</span>}
+                {row.derived && t.total !== (row.times ?? 1) && <span className="text-[10px] text-zinc-500">follows its shape</span>}
+                {t.total !== 1 && (
+                  <span className="text-[10px] font-mono text-zinc-200 ml-auto">= {bq(row).toFixed(2)} {row.unit}</span>
+                )}
+              </div>
+            </div>
+            {working && (
+              <div className="flex items-start gap-3">
+                <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Working</span>
+                <div className="flex-1 min-w-0 space-y-0.5">
+                  {working.map((w, i) => (
+                    <button
+                      key={i} type="button" disabled={!w.sourceId}
+                      title={w.sourceId ? 'Show on the drawing' : undefined}
+                      onClick={e => { e.stopPropagation(); if (w.sourceId) focusMeasurement(w.sourceId); }}
+                      className="w-full flex items-baseline gap-2 text-left text-[10px] font-mono text-zinc-400 enabled:hover:text-amber-accent"
+                    >
+                      <span className="flex-1 min-w-0">{w.text}</span>
+                      <span className="tabular-nums shrink-0">{w.value.toFixed(2)}</span>
+                    </button>
+                  ))}
+                  <div className="flex items-baseline gap-2 border-t border-zinc-800 pt-0.5 text-[10px] font-mono text-zinc-200">
+                    <span className="flex-1">{row.isOverridden ? 'Quantity typed in by hand' : 'Quantity'}</span>
+                    <span className="tabular-nums">{row.quantity.toFixed(2)} {row.unit}</span>
+                  </div>
+                </div>
+              </div>
+            )}
             {row.notes && (
               <div className="flex items-start gap-3">
                 <span className="text-[10px] text-zinc-600 uppercase tracking-widest w-16 shrink-0 pt-0.5">Notes</span>
@@ -552,6 +666,21 @@ function TakeoffTableImpl({
         </div>
       </div>
 
+      {(review.total > 0 || onOpenChanges) && (
+        <div className="px-3 py-2 border-b border-industrial-border bg-red-500/10 flex items-center gap-2 text-[11px] flex-shrink-0">
+          <span className="flex-1 min-w-0 text-zinc-200">
+            {review.total === 0 ? 'Revision accepted: nothing to check.'
+              : review.open > 0 ? <><span className="font-bold text-red-400">{review.open}</span> of {review.total} to check after the revision</>
+              : <span className="text-green-400">Revision checked: all {review.total} done</span>}
+          </span>
+          {review.open > 0 && (
+            <button onClick={() => focusMeasurement(review.openIds[0])} className="font-bold uppercase tracking-widest text-[10px] text-amber-accent hover:underline">Next</button>
+          )}
+          {onOpenChanges && (
+            <button onClick={onOpenChanges} className="font-bold uppercase tracking-widest text-[10px] border border-zinc-600 px-2 py-1 text-zinc-200 hover:border-amber-accent hover:text-amber-accent">Revision history</button>
+          )}
+        </div>
+      )}
       <div ref={bodyRef} className="flex-1 overflow-auto custom-scrollbar">
         <table className="w-full text-[11px] border-collapse">
           <thead className="bg-stone-900/80 sticky top-0 z-20">
@@ -901,6 +1030,15 @@ function TakeoffTableImpl({
         >
           Generate Full Analysis
         </button>
+        {onOpenCompare && (
+          <button
+            type="button"
+            onClick={onOpenCompare}
+            className="w-full mt-2 border border-industrial-border text-zinc-400 hover:text-amber-accent hover:border-amber-accent py-2.5 text-[11px] font-bold uppercase tracking-widest transition-all"
+          >
+            Compare with a new revision
+          </button>
+        )}
       </div>
       {rowMenu && (() => {
         const row = measurements.find(m => m.id === rowMenu.rowId);

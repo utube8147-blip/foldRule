@@ -53,3 +53,40 @@ export function rescaleMeasurementsForPage(
   });
   return changed ? out : measurements;
 }
+
+/** A scale is treated as wrong when a printed dimension reads more than this far out. */
+export const SCALE_CHECK_TOLERANCE = 0.02;
+
+export interface ScaleCheck {
+  /** What the current page scale says the drawn line measures, in metres. */
+  measured: number;
+  /** Signed error of the current scale against the printed dimension (0.05 = reads 5% long). */
+  error: number;
+  /** Resulting error on areas, which grow with the square of the scale. */
+  areaError: number;
+  ok: boolean;
+  /** Scale (metres per PDF point) that would make the drawn line match the printed dimension. */
+  corrected: number;
+}
+
+/**
+ * Compare the page scale with a dimension printed on the drawing: the user draws along
+ * the dimension (`ptLen` PDF points) and types the figure printed next to it (`printed` metres).
+ */
+export function checkScale(
+  ptLen: number,
+  printed: number,
+  currentScale: number,
+  tolerance = SCALE_CHECK_TOLERANCE,
+): ScaleCheck | null {
+  if (!(ptLen > 0) || !(printed > 0) || !(currentScale > 0)) return null;
+  const measured = ptLen * currentScale;
+  const error = measured / printed - 1;
+  return {
+    measured,
+    error,
+    areaError: (1 + error) ** 2 - 1,
+    ok: Math.abs(error) <= tolerance,
+    corrected: printed / ptLen,
+  };
+}

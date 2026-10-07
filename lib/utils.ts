@@ -1,3 +1,4 @@
+import { formatMoney } from '@/lib/takeoff/currency';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 
@@ -5,11 +6,9 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Money in the open project's currency (set from the project, AED by default). */
 export function formatCurrency(value: number) {
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'LKR',
-  }).format(value);
+  return formatMoney(value);
 }
 
 export function formatQuantity(value: number, unit: string) {

@@ -33,7 +33,8 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React from 'react';
+import { pageTimesOf } from '@/lib/takeoff/timesing';
+import React, { useState } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize,
   Undo2, Redo2, Target,
@@ -255,7 +256,14 @@ export function ScaleControls({
   pageSizePt?: { w: number; h: number } | null;
   onApplyScale?: (factor: number) => void;
 }) {
-  const { displayUnit, setDisplayUnit } = useTakeoffData();
+  const { displayUnit, setDisplayUnit, projectState, activePage, updatePageTimes } = useTakeoffData();
+  const drawingId = projectState.activeDrawingId;
+  const times = drawingId ? pageTimesOf(projectState.drawings, drawingId, activePage) : 1;
+  const [timesDraft, setTimesDraft] = useState<string | null>(null);
+  const commitTimes = () => {
+    if (timesDraft !== null && drawingId) updatePageTimes(drawingId, activePage, parseFloat(timesDraft));
+    setTimesDraft(null);
+  };
   return (
     <div className="flex items-center gap-2">
     {/* Scale display */}
@@ -290,7 +298,9 @@ export function ScaleControls({
     <button
       onClick={onCalibrate}
       aria-pressed={calibrating}
-      title="Set the scale for this page (K)"
+      title={scaleFactor === 1
+        ? 'Set the scale for this page (K)'
+        : 'Draw along a printed dimension to check this page’s scale (K)'}
       className={cn(
         'text-[11px] font-mono font-bold uppercase tracking-widest px-3 py-1 transition-all border',
         calibrating
@@ -298,9 +308,25 @@ export function ScaleControls({
           : 'text-amber-400 border-amber-400 hover:bg-amber-400 hover:text-black',
       )}
     >
-      CALIBRATE
+      {scaleFactor === 1 ? 'CALIBRATE' : 'CHECK SCALE'}
     </button>
     {onApplyScale && <ScalePresets pageSizePt={pageSizePt} onApply={onApplyScale} />}
+    {drawingId && (
+      <label
+        className={cn('flex items-center gap-1 border bg-stone-900 px-2 py-0.5', times !== 1 ? 'border-amber-400' : 'border-industrial-border')}
+        title="Timesing: bill everything drawn on this page this many times (a typical floor × 12)"
+      >
+        <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-tighter whitespace-nowrap">Page ×</span>
+        <input
+          aria-label="Page multiplier" inputMode="decimal"
+          value={timesDraft ?? String(times)}
+          onChange={e => setTimesDraft(e.target.value)}
+          onBlur={commitTimes}
+          onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') setTimesDraft(null); }}
+          className="w-10 h-6 bg-transparent text-[11px] font-mono font-bold text-amber-400 text-right focus:outline-none"
+        />
+      </label>
+    )}
     </div>
   );
 }

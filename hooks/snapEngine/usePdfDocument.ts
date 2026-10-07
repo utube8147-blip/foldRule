@@ -150,6 +150,41 @@ function createGeometryWorker(): Worker {
   return new Worker(new URL('../../workers/pdfGeometry.worker.js', import.meta.url));
 }
 
+/**
+ * Linework of one PDF page (corners, line ends, crossings and the lines themselves),
+ * in page points with the origin at the top-left as seen in the viewer. Used outside
+ * the viewer, e.g. to check measurements against a new revision.
+ */
+export async function extractPageGeometry(page: any): Promise<{ points: { x: number; y: number }[]; lines: [{ x: number; y: number }, { x: number; y: number }][]; w: number; h: number }> {
+  const vp = page.getViewport({ scale: 1 });
+  const dims: PdfDimensions = { w: vp.width, h: vp.height };
+  const operators = await extractOperators(page);
+  const worker = createGeometryWorker();
+  try {
+    const msg = await new Promise<any>((resolve, reject) => {
+      const watchdog = setTimeout(() => reject(new Error('Reading the drawing’s lines took too long.')), GEOMETRY_TIMEOUT_MS);
+      worker.onmessage = e => {
+        if (e.data.type === 'RESULT') { clearTimeout(watchdog); resolve(e.data); }
+        else if (e.data.type === 'ERROR') { clearTimeout(watchdog); reject(new Error(e.data.message)); }
+      };
+      worker.onerror = err => { clearTimeout(watchdog); reject(new Error(err.message || 'The snap geometry worker failed to start.')); };
+      const transfer: ArrayBuffer[] = [];
+      for (const op of operators) {
+        const buf = op.fn === 91 ? op.args[1] : null;
+        if (buf && ArrayBuffer.isView(buf) && buf.buffer instanceof ArrayBuffer) transfer.push(buf.buffer);
+      }
+      worker.postMessage({ type: 'PARSE', operators, dims, viewportTransform: vp.transform as number[] }, transfer);
+    });
+    const points = (msg.snapPoints as SnapPoint[])
+      .filter(s => s.type === 'endpoint' || s.type === 'intersection' || s.type === 'curve-node')
+      .map(s => ({ x: s.nx * dims.w, y: s.ny * dims.h }));
+    const lines = (msg.lines as PdfLine[]).map(l => [l.vertices[0], l.vertices[1]] as [{ x: number; y: number }, { x: number; y: number }]);
+    return { points, lines, w: dims.w, h: dims.h };
+  } finally {
+    worker.terminate();
+  }
+}
+
 // ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function usePdfDocument(): UsePdfDocumentReturn {

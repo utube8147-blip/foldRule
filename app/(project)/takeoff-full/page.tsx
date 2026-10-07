@@ -11,6 +11,7 @@
 
 'use client';
 
+import { billedQuantities } from '@/lib/takeoff/timesing';
 import React, { useState, useMemo } from 'react';
 import { exportProjectToExcel } from '@/lib/export/clientExport';
 import { useProjectHref } from '@/lib/nav/projectHref';
@@ -189,6 +190,9 @@ export default function TakeoffFullPage() {
   const [pendingSync, setPendingSync] = useState(false);
 
   const all = ps.measurements;
+  // Costs and totals use billed quantities (timesing applied); cells stay editable as measured.
+  const billed = billedQuantities(ps.measurements, ps.drawings);
+  const bq = (r: { id: string; quantity: number }) => billed.get(r.id) ?? r.quantity;
 
   // Determine "flagged" rows: items that have a unitRate > 0 (i.e. configured/changed)
   const isFlagged = (row: TakeoffRow) => row.unitRate > 0 && row.isOverridden;
@@ -259,13 +263,13 @@ export default function TakeoffFullPage() {
     return { groups, ungrouped };
   }, [filtered]);
 
-  const totalCost = all.reduce((s: number, m: { quantity: number; unitRate: number; }) => s + m.quantity * m.unitRate, 0);
+  const totalCost = all.reduce((s: number, m: TakeoffRow) => s + (m.isGroupHeader ? m.quantity : bq(m)) * m.unitRate, 0);
   const totalArea = all.filter((m: { unit: string; }) => m.unit === 'm²').reduce((s: any, m: { quantity: any; }) => s + m.quantity, 0);
   const flaggedRows = [...ungrouped, ...Array.from(groups.values()).flatMap(g => g.items)].filter(isFlagged);
   const costDelta = flaggedRows.reduce((s, r) => s + r.quantity * r.unitRate * 0.33, 0);
 
-  const groupCost = (items: TakeoffRow[]) => items.reduce((s, i) => s + i.quantity * i.unitRate, 0);
-  const groupQty = (items: TakeoffRow[]) => items.reduce((s, i) => s + i.quantity, 0);
+  const groupCost = (items: TakeoffRow[]) => items.reduce((s, i) => s + bq(i) * i.unitRate, 0);
+  const groupQty = (items: TakeoffRow[]) => items.reduce((s, i) => s + bq(i), 0);
 
   const toggleGroup = (id: string) =>
     setExpandedGroups(prev => {
@@ -650,7 +654,7 @@ export default function TakeoffFullPage() {
                                 <EditableCell row={item} field="unitRate" type="number" onUpdate={updateMeasurement} />
                                </td>
                               <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-300')}>
-                                {formatCurrency(item.quantity * item.unitRate)}
+                                {formatCurrency(bq(item) * item.unitRate)}
                                </td>
                               <td className="p-2 text-center border-l border-zinc-800">
                                 <div className="flex items-center justify-center gap-1.5">
@@ -746,7 +750,7 @@ export default function TakeoffFullPage() {
                           <EditableCell row={row} field="unitRate" type="number" onUpdate={updateMeasurement} />
                          </td>
                         <td className={cn('p-2 text-right font-bold', flagged ? 'text-amber-500' : 'text-zinc-300')}>
-                          {formatCurrency(row.quantity * row.unitRate)}
+                          {formatCurrency(bq(row) * row.unitRate)}
                          </td>
                         <td className="p-2 text-center border-l border-zinc-800">
                           <div className="flex items-center justify-center gap-1.5">
