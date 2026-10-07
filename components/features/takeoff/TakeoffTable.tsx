@@ -111,6 +111,21 @@ function TakeoffTableImpl({
     points: (r.points ?? []).map((q: any) => (q && typeof q.x === 'number' && q.segmentId == null ? { ...q, x: q.x + 0.012, y: q.y + 0.012 } : q)),
     holes: r.holes?.map(h => h.map(q => ({ x: q.x + 0.012, y: q.y + 0.012 }))),
   });
+  /** Turn one loose row into a group of its own, so more can be added to it later. */
+  const makeGroupFrom = (rowId: string) => {
+    const row = measurements.find(m => m.id === rowId);
+    if (!row || row.isGroupHeader || row.parentId) return;
+    const name = (row.description || row.label || 'Group').replace(/\s+\d+$/, '');
+    const id = uid();
+    replaceMeasurements([row.id], [
+      { id, drawingId: row.drawingId, pageNumber: row.pageNumber, label: name, description: name, groupName: name,
+        type: kindOf(row.type) === 'area' ? 'Polygon' : row.type, quantity: row.quantity, unit: row.unit, unitRate: row.unitRate ?? 0,
+        materialId: row.materialId, notes: '', points: [], isOverridden: false, isGroupHeader: true, isExpanded: true,
+        color: row.color, isVisible: true, childIds: [row.id] } as TakeoffRow,
+      { ...row, parentId: id, groupId: id, label: `${name} 1`, description: `${name} 1` },
+    ]);
+    setExpandedGroups(prev => new Set(prev).add(id));
+  };
   /** A copy of one row, placed just beside the original, in the same group. */
   const duplicateRow = (rowId: string) => {
     const row = measurements.find(m => m.id === rowId);
@@ -910,8 +925,10 @@ function TakeoffTableImpl({
           const items = measurements.filter(m => !m.isGroupHeader && (m.parentId === row.id || m.groupId === gid));
           const name = row.groupName || row.label || row.description || 'Group';
           return (
-            <div data-row-menu role="menu" className={shell} style={place(7)} onContextMenu={e => e.preventDefault()}>
+            <div data-row-menu role="menu" className={shell} style={place(8)} onContextMenu={e => e.preventDefault()}>
               <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500 truncate">{name}</div>
+              <Item label={`Select all ${items.filter(i => (i.points?.length ?? 0) > 0).length} on the drawing`} hint="Selects every shape in this group at once, ready to move, join, merge or delete"
+                onClick={() => window.dispatchEvent(new CustomEvent('foldrule:select-rows', { detail: { ids: items.filter(i => (i.points?.length ?? 0) > 0).map(i => i.id) } }))} />
               <Item label="Set material for the group" hint="One material and rate for every row in it" onClick={() => { setEditingId(row.id); setEditingField('groupMaterial'); }} />
               <Item label="Duplicate as an empty group" hint="Same material, rate and unit — ready for the next floor or area" onClick={() => duplicateGroup(row.id, false)} />
               <Item label="Duplicate with its shapes" hint="Copies every shape too, placed just beside the originals" onClick={() => duplicateGroup(row.id, true)} />
@@ -931,7 +948,7 @@ function TakeoffTableImpl({
             <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500 truncate">{row.description || row.label}</div>
             <Item label={row.materialId ? 'Change material' : 'Set material'} hint="For this row only" onClick={() => { setExpandedRows(prev => new Set(prev).add(row.id)); setEditingId(row.id); setEditingField('materialId'); }} />
             {(row.points?.length ?? 0) > 0 && <Item label="Duplicate" hint="A copy just beside it, in the same group" onClick={() => duplicateRow(row.id)} />}
-            {(targets.length > 0 || row.parentId) && <Divider />}
+            <Divider />
             {targets.length > 0 && <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-widest text-zinc-500">Move to</div>}
             {targets.map(h => (
               <button key={h.id} role="menuitem" onClick={() => { moveRow(row.id, h.id); close(); }}
@@ -941,6 +958,7 @@ function TakeoffTableImpl({
               </button>
             ))}
             {row.parentId && <Item label="Take it out of its group" onClick={() => moveRow(row.id, null)} />}
+            {!row.parentId && ['area', 'length', 'count'].includes(kindOf(row.type)) && <Item label="Make it a group" hint="Turns this row into a group of its own, so you can add more to it with +" onClick={() => makeGroupFrom(row.id)} />}
             <Divider />
             <Item danger label="Delete" hint="Ctrl+Z brings it back" onClick={() => onDelete(row.id)} />
           </div>

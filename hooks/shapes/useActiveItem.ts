@@ -84,6 +84,17 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     setItems(s => ({ ...s, [k]: { id: g.id, name: g.groupName || g.label || g.description || 'Item', color: g.color } }));
   }, []);
 
+  /** The tool was left for good (Esc / Select): next time, ask what is being measured. */
+  const lastUsed = useRef<Partial<Record<ItemKind, string>>>({});
+  const forget = useCallback((k: ItemKind) => {
+    setItems(s => {
+      const cur = s[k];
+      if (cur === undefined) return s;
+      if (cur !== 'none') lastUsed.current[k] = cur.id;
+      const n = { ...s }; delete n[k]; return n;
+    });
+  }, []);
+
   /** Ask again (undefined) or stop grouping for this kind ('none'). */
   const clear = useCallback((mode: 'ask' | 'none') => {
     const k = kindRef.current;
@@ -95,8 +106,10 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
   const existing = useMemo(() => {
     if (!kind) return [];
     const ok = new Set(KIND_TYPES[kind].types);
+    const last = lastUsed.current[kind];
     return measurements.filter(m => m.isGroupHeader && ok.has(m.type) && !m.presetId)
-      .map(m => ({ id: m.id, name: m.label || m.groupName || m.description || 'Group', quantity: m.quantity, unit: m.unit }));
+      .map(m => ({ id: m.id, name: m.label || m.groupName || m.description || 'Group', quantity: m.quantity, unit: m.unit }))
+      .sort((a, b) => Number(b.id === last) - Number(a.id === last));       // the one just used comes first
   }, [measurements, kind]);
 
   /**
@@ -126,6 +139,6 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [replaceMeasurements, activeDrawingId]);
 
-  return { kind, item, header, needsName, existing, start, use, useFor, clear, adopt, what: kind ? KIND_TYPES[kind].what : '' };
+  return { kind, item, header, needsName, existing, start, use, useFor, clear, forget, adopt, what: kind ? KIND_TYPES[kind].what : '' };
 }
 export type ActiveItemApi = ReturnType<typeof useActiveItem>;

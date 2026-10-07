@@ -13,7 +13,7 @@ import {
   type Pt, type Shape,
 } from '@/lib/geometry/regionOps';
 
-export type PendingOp = { kind: 'cutout' | 'split'; targetId: string; label: string };
+export type PendingOp = { kind: 'cutout' | 'split' | 'gap'; targetId: string; label: string; targetIds?: string[] };
 export type ConvertKind = 'perimeter' | 'volume' | 'wallArea' | 'stripArea' | 'waste' | 'slope';
 
 interface Params {
@@ -146,13 +146,51 @@ export function useShapeActions({
     applyPieces(rows[0], out, rows.slice(1).map(r => r.id));
   }, [selectedRows, shapeOf, applyPieces, say]);
 
+  /** Join lines that meet end to end into one continuous line (straight and curved pieces of one run). */
+  const joinLines = useCallback(() => {
+    const rows = selectedRows.filter(m => !m.isGroupHeader && m.type === 'Length' && (m.points?.length ?? 0) >= 2);
+    if (rows.length < 2) return say('Select two or more lines that meet end to end (Shift-click adds to the selection).');
+    const near = (a: Pt, b: Pt) => Math.hypot((a.x - b.x) * W, (a.y - b.y) * H) < 6;
+    const left = rows.map(r => ({ r, pts: outline(r) })).filter(x => x.pts.length >= 2);
+    let chain = left.shift()!.pts;
+    for (let guard = 0; left.length && guard < 500; guard++) {
+      const head = chain[0], tail = chain[chain.length - 1];
+      const i = left.findIndex(x => near(x.pts[0], tail) || near(x.pts[x.pts.length - 1], tail) || near(x.pts[0], head) || near(x.pts[x.pts.length - 1], head));
+      if (i < 0) break;
+      const p = left.splice(i, 1)[0].pts;
+      if (near(p[0], tail)) chain = [...chain, ...p.slice(1)];
+      else if (near(p[p.length - 1], tail)) chain = [...chain, ...p.slice(0, -1).reverse()];
+      else if (near(p[p.length - 1], head)) chain = [...p.slice(0, -1), ...chain];
+      else chain = [...p.slice(1).reverse(), ...chain];
+    }
+    if (left.length) return say('These lines don’t all meet end to end, so they can’t become one line.');
+    const base = rows[0];
+    replaceMeasurements(rows.slice(1).map(r => r.id), [], {
+      [base.id]: {
+        points: chain, quantity: round(rows.reduce((t, r) => t + r.quantity, 0)), isOverridden: false,
+        arcRadius: undefined, sweepAngle: undefined,
+      },
+    });
+    setExtraSelected([]); setSelectedId(base.id);
+    say(`Joined ${rows.length} pieces into one line.`);
+  }, [selectedRows, outline, W, H, replaceMeasurements, setExtraSelected, setSelectedId, say]);
+
   // ── Cut out / split by drawing ────────────────────────────────────────────
   const begin = useCallback((kind: PendingOp['kind']) => {
-    if (!isAreaRow(primary)) return say('Select an area first.');
+    if (kind === 'gap') {
+      // Any of the selected lines can be the one the part is taken from.
+      const lines = selectedRows.filter(m => !m.isGroupHeader && m.type === 'Length' && (m.points?.length ?? 0) >= 2);
+      if (!lines.length) return say('Select a line first.');
+      setExtraSelected([]);
+      setPending({ kind, targetId: lines[0].id, targetIds: lines.map(l => l.id),
+        label: lines.length > 1 ? `the ${lines.length} selected lines` : lines[0].label || lines[0].description || 'line' });
+      startDrawing('line');
+      return;
+    } else if (!isAreaRow(primary)) return say('Select an area first.');
     setExtraSelected([]);
     setPending({ kind, targetId: primary!.id, label: primary!.label || primary!.description || 'area' });
     startDrawing(kind === 'cutout' ? 'area' : 'line');
-  }, [primary, say, setExtraSelected, startDrawing]);
+  }, [primary, selectedRows, say, setExtraSelected, startDrawing]);
 
   const cancelPending = useCallback(() => {
     if (!pendingRef.current) return;
@@ -176,6 +214,53 @@ export function useShapeActions({
     backToSelect();
     if (!target) return true;
     setSelectedId(target.id);
+    if (op.kind === 'gap') {
+      // Take a stretch out of a line (a doorway in a wall run): the two drawn
+      // points are dropped onto the line and what lies between them goes.
+      if (drawn.length < 2) { say('Click the two ends of the part to remove.'); return true; }
+      const onLineOf = (pts: Pt[]) => (q: Pt) => {
+        let best = { i: 0, t: 0, d: Infinity, p: pts[0] };
+        for (let i = 0; i < pts.length - 1; i++) {
+          const a = pts[i], b = pts[i + 1];
+          const ax = a.x * W, ay = a.y * H, bx = b.x * W, by = b.y * H, px = q.x * W, py = q.y * H;
+          const l2 = (bx - ax) ** 2 + (by - ay) ** 2 || 1;
+          const t = Math.max(0, Math.min(1, ((px - ax) * (bx - ax) + (py - ay) * (by - ay)) / l2));
+          const d = Math.hypot(px - (ax + t * (bx - ax)), py - (ay + t * (by - ay)));
+          if (d < best.d) best = { i, t, d, p: { x: a.x + t * (b.x - a.x), y: a.y + t * (b.y - a.y) } };
+        }
+        return best;
+      };
+      // Of the lines that were selected, the one the two clicks sit on.
+      const cands = (op.targetIds ?? [op.targetId]).map(id => all.current.find(m => m.id === id)).filter(Boolean) as TakeoffRow[];
+      let gapRow = target, pts = outline(target), bestD = Infinity;
+      for (const c of cands) {
+        const o = outline(c);
+        if (o.length < 2) continue;
+        const f = onLineOf(o);
+        const d = Math.max(f(drawn[0]).d, f(drawn[drawn.length - 1]).d);
+        if (d < bestD) { bestD = d; gapRow = c; pts = o; }
+      }
+      const onLine = onLineOf(pts);
+      let p1 = onLine(drawn[0]), p2 = onLine(drawn[drawn.length - 1]);
+      if (p1.i + p1.t > p2.i + p2.t) [p1, p2] = [p2, p1];
+      if (Math.max(p1.d, p2.d) > 40) { say('Click on the line itself, at each end of the part to remove.'); return true; }
+      const first = [...pts.slice(0, p1.i + 1), p1.p], second = [p2.p, ...pts.slice(p2.i + 1)];
+      const before = lengthOf(pts, false);
+      const pieces = [first, second].filter(r => r.length >= 2 && lengthOf(r, false) > 1e-6);
+      const removed = before - pieces.reduce((t, r) => t + lengthOf(r, false), 0);
+      if (removed < 1e-6) { say('Those two points are in the same place, so nothing was removed.'); return true; }
+      if (!pieces.length) { say('That would remove the whole line — delete it instead.'); return true; }
+      const plain = { isOverridden: false, arcRadius: undefined, sweepAngle: undefined };
+      const rest = pieces.slice(1).map((r, n) => ({
+        ...gapRow, ...plain, id: newId(), childIds: [], points: r, quantity: round(lengthOf(r, false)),
+        label: `${gapRow.label || gapRow.description} (${n + 2})`, description: `${gapRow.description || gapRow.label} (${n + 2})`,
+      } as TakeoffRow));
+      replaceMeasurements([], rest, { [gapRow.id]: { ...plain, points: pieces[0], quantity: round(lengthOf(pieces[0], false)) } });
+      setSelectedId(gapRow.id);
+      setExtraSelected(rest.map(r => r.id));
+      say(`Removed ${round(removed)} m.`);
+      return true;
+    }
     if (op.kind === 'cutout') {
       if (drawn.length < 3) { say('A cut-out needs at least three points.'); return true; }
       const before = areaOf(shapeOf(target));
@@ -192,7 +277,7 @@ export function useShapeActions({
       say(`Split into ${out.length} areas.`);
     }
     return true;
-  }, [outline, shapeOf, areaOf, applyPieces, backToSelect, setSelectedId, say]);
+  }, [outline, shapeOf, areaOf, lengthOf, W, H, applyPieces, backToSelect, setSelectedId, setExtraSelected, replaceMeasurements, say]);
 
   // Esc cancels a cut-out / split that hasn't been started; leaving the drawing tool cancels too.
   useEffect(() => {
@@ -479,6 +564,27 @@ export function useShapeActions({
     say(header ? `Moved to “${name}”.` : 'Taken out of its group.');
   }, [selectedRows, measurements, replaceMeasurements, say]);
 
+  /** Turn the selected loose shape(s) into a group, so more can be added to it later. */
+  const canMakeGroup = selectedRows.some(m => !m.isGroupHeader && !m.parentId) &&
+    new Set(selectedRows.filter(m => !m.isGroupHeader).map(m => kindOfType(m.type))).size === 1;
+  const makeGroup = useCallback(() => {
+    const rows = selectedRows.filter(m => !m.isGroupHeader && !m.parentId);
+    if (!rows.length) return;
+    const k = kindOfType(rows[0].type);
+    if (rows.some(r => kindOfType(r.type) !== k)) return say('Only shapes of the same kind can go in one group.');
+    const name = (rows[0].description || rows[0].label || 'Group').replace(/\s+\d+$/, '');
+    const id = newId();
+    const kids = rows.map((r, i) => ({ ...r, parentId: id, groupId: id, color: rows[0].color, label: `${name} ${i + 1}`, description: `${name} ${i + 1}` } as TakeoffRow));
+    const header = {
+      id, drawingId: rows[0].drawingId, pageNumber: rows[0].pageNumber, label: name, description: name, groupName: name,
+      type: k === 'area' ? 'Polygon' : rows[0].type, quantity: round(kids.reduce((t, r) => t + r.quantity, 0)), unit: rows[0].unit,
+      unitRate: rows[0].unitRate ?? 0, materialId: rows[0].materialId, notes: '', points: [], isOverridden: false,
+      isGroupHeader: true, isExpanded: true, color: rows[0].color, isVisible: true, childIds: kids.map(r => r.id),
+    } as TakeoffRow;
+    replaceMeasurements(rows.map(r => r.id), [header, ...kids]);
+    say(`“${name}” is now a group — use + on it in the takeoff to add more.`);
+  }, [selectedRows, replaceMeasurements, say]);
+
   // Delete or Backspace removes the selection (not while typing).
   useEffect(() => {
     // Not while something is being drawn (Backspace steps back there) or in Magic fill (it undoes a fill).
@@ -503,10 +609,10 @@ export function useShapeActions({
 
   return {
     selectedRows, primary, message, pending,
-    merge, subtract, intersect,
-    beginCutout: () => begin('cutout'), beginSplit: () => begin('split'), cancelPending, consumeDrawn,
+    merge, subtract, intersect, joinLines,
+    beginCutout: () => begin('cutout'), beginSplit: () => begin('split'), beginGap: () => begin('gap'), cancelPending, consumeDrawn,
     probe, addPoint, deletePoint, removeCutouts, toggleClosed,
-    groupTargets, inGroup, moveToGroup,
+    groupTargets, inGroup, moveToGroup, canMakeGroup, makeGroup,
     duplicate, remove, convert, moveBy, mirror, repeat, edgeLength, overlaps, selectPair, movable,
     clearSelection: () => { setExtraSelected([]); setSelectedId(null); },
   };

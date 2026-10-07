@@ -21,6 +21,9 @@ function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert
   if (!primary) return items;
 
   if (selectedRows.length >= 2) {
+    if (selectedRows.filter(m => !m.isGroupHeader && m.type === 'Length').length >= 2) {
+      items.push({ key: 'join', label: 'Join lines', hint: 'Make the selected lines one continuous line (they must meet end to end)', icon: SquaresUnite, run: api.joinLines });
+    }
     if (areas.length >= 2) {
       items.push(
         { key: 'merge', label: 'Merge', hint: 'Join the selected areas into one', icon: SquaresUnite, run: api.merge },
@@ -55,7 +58,10 @@ function useItems(api: ShapeActionsApi, menu: ShapeMenuState | null, openConvert
   if (selectedRows.some(m => !m.isGroupHeader && m.points?.length)) {
     items.push({ key: 'copy', label: 'Copy', hint: 'Duplicate, mirror, or repeat at a spacing', icon: Copy, run: openCopy });
   }
-  if (api.groupTargets.length > 0 || api.inGroup) {
+  if (selectedRows.some(m => !m.isGroupHeader && m.type === 'Length' && (m.points?.length ?? 0) >= 2)) {
+    items.splice(Math.min(items.length, 1), 0, { key: 'gap', label: 'Remove a part', hint: 'Click the two ends of a stretch to take out of the line (a doorway, an opening)', icon: Scissors, run: api.beginGap });
+  }
+  if (api.groupTargets.length > 0 || api.inGroup || api.canMakeGroup) {
     items.push({ key: 'group', label: 'Move to group', hint: 'Put it in another group — it takes that group’s name, colour and material', icon: FolderInput, run: openGroup });
   }
   items.push({ key: 'del', label: 'Delete', hint: 'Remove from the takeoff (Ctrl+Z brings it back)', icon: Trash2, run: api.remove, danger: true });
@@ -152,6 +158,10 @@ function GroupPanel({ api, onDone }: { api: ShapeActionsApi; onDone: () => void 
           <span className="truncate">{g.groupName || g.label || g.description}</span>
         </button>
       ))}
+      {api.canMakeGroup && (
+        <button onClick={() => { api.makeGroup(); onDone(); }}
+          className="w-full px-3 py-1.5 text-left text-xs text-amber-300 hover:bg-zinc-800 border-t border-zinc-700 mt-1">Make it a new group</button>
+      )}
       {api.inGroup && (
         <button onClick={() => { api.moveToGroup(null); onDone(); }}
           className="w-full px-3 py-1.5 text-left text-xs text-zinc-400 hover:bg-zinc-800 border-t border-zinc-700 mt-1">Take it out of its group</button>
@@ -195,6 +205,8 @@ export function ShapeActions({ api, visible, menu, onCloseMenu, hasShapes }: {
           <span className="text-xs font-medium">
             {api.pending.kind === 'cutout'
               ? <>Draw the part to cut out of <b>{api.pending.label}</b> — click round it and back on the first point.</>
+              : api.pending.kind === 'gap'
+              ? <>Click the two ends of the part to remove from <b>{api.pending.label}</b>, then press Enter.</>
               : <>Draw a line across <b>{api.pending.label}</b> where it should split, then press Enter.</>}
           </span>
           <button onClick={api.cancelPending} className="text-[10px] font-mono font-bold uppercase tracking-widest border border-black/40 px-2 py-0.5 hover:bg-black/10">Cancel</button>

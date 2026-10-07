@@ -190,9 +190,31 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     commitMeasurement(m);
   }, [commitMeasurement]);
   const batchCommitOrConsume = useCallback((rows: TakeoffRow[]) => {
+    // A run drawn with straight and curved parts arrives as a group of
+    // pieces. Keep it as ONE line (curves become fine steps), so selecting it
+    // selects the whole run and its length is one row.
+    const head = rows.find(r => r.isGroupHeader);
+    const parts = rows.filter(r => !r.isGroupHeader);
+    if (activeToolRef.current === 'polyarc' && !drawModeState.area && head && head.type === 'Length' && parts.length > 1 &&
+        parts.every(p => p.type === 'Length' && p.parentId === head.id)) {
+      const dim = pdfDimensionsRef.current;
+      const pts = tessellatePoints(getEffectivePoints(head, rows), dim?.w ?? 1, dim?.h ?? 1).map(q => ({ x: q.x, y: q.y }));
+      if (pts.length >= 2) {
+        const curved = parts.filter(p => p.arcRadius != null).length;
+        rows = [{
+          ...parts[0], id: head.id, parentId: undefined, groupId: undefined, isGroupHeader: false, childIds: [],
+          label: head.label, description: head.description, points: pts, quantity: head.quantity, unit: head.unit,
+          arcRadius: undefined, sweepAngle: undefined, color: head.color,
+          notes: curved ? `Includes ${curved} curved part${curved === 1 ? '' : 's'}` : '',
+        } as TakeoffRow];
+        if (consumeDrawnRef.current(rows) || adoptRef.current(rows)) return;
+        commitMeasurement(rows[0]);
+        return;
+      }
+    }
     if (consumeDrawnRef.current(rows) || adoptRef.current(rows)) return;
     batchCommitMeasurements(rows);
-  }, [batchCommitMeasurements]);
+  }, [batchCommitMeasurements, commitMeasurement]);
   const shapePendingRef = useRef(false);
   const magicItemIdRef = useRef<string | null>(null);
   const [showTechInfo, setShowTechInfo] = useState(false);
@@ -1169,6 +1191,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, [activeTool, handleMagicAbortSession]);
 
   const finishLatestRef = useRef<() => void>(() => {});
+  const finishQueuedRef = useRef(false);
   finishLatestRef.current = () => finishMeasurement();
 
   // ── Finish + measurement name dialog ──────────────────────────────────────
@@ -1180,7 +1203,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     // next frame, with the newest points — a double-click finishes in the same
     // instant as its last click, before that point has been stored.
     if (shapePendingRef.current || itemActiveRef.current) {
-      requestAnimationFrame(() => requestAnimationFrame(() => finishLatestRef.current()));
+      if (finishQueuedRef.current) return;          // Enter can reach here twice for one press — finish once
+      finishQueuedRef.current = true;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        finishLatestRef.current();
+        setTimeout(() => { finishQueuedRef.current = false; }, 60);
+      }));
       return;
     }
     const type =
@@ -1542,6 +1570,23 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     handleCanvasClick(e);
   }, [activeTool, findShapeAt, setSelectedId, handleCanvasClick, handleArcAnchorClick, selectedId, extraSelected]);
 
+  // "Select all in the group" from the takeoff table.
+  useEffect(() => {
+    const onSelect = (e: Event) => {
+      const here = new Set(measurements.map(m => m.id));
+      const ids = (((e as CustomEvent).detail?.ids ?? []) as string[]).filter(id => here.has(id));
+      if (!ids.length) return;
+      if (tempPoints.length > 0) clearTempPoints();
+      setActiveTool('select');
+      setShapeMenu(null);
+      setSelectedId(ids[0]);
+      // After the tool switch has settled (it clears the extra selection).
+      setTimeout(() => setExtraSelected(ids.slice(1)), 0);
+    };
+    window.addEventListener('foldrule:select-rows', onSelect);
+    return () => window.removeEventListener('foldrule:select-rows', onSelect);
+  }, [measurements, tempPoints.length, clearTempPoints, setActiveTool, setSelectedId]);
+
   // Right-click on a shape (Select tool) → what you can do with it.
   const handleContextMenuWithShapes = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (activeTool !== 'select') { handleContextMenu(e); return; }
@@ -1603,6 +1648,22 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   const parkedRef = useRef<{ tool: ToolType; mode: DrawMode; points: typeof tempPoints } | null>(null);
   const [parked, setParked] = useState(0);
   if (activeTool !== 'select') lastToolRef.current = { tool: activeTool as ToolType, mode: drawMode };
+  // Leaving a measuring tool with Esc (or by picking Select) means "done with
+  // this item": the next time the tool is picked it asks what is being measured,
+  // with the item just used offered first. Space is only a pause, so it keeps the item.
+  const swapLeaveRef = useRef(false);
+  const borrowedToolRef = useRef(false);
+  if (shapeApi.pending) borrowedToolRef.current = true;
+  const prevToolKindRef = useRef<ReturnType<typeof kindOfTool>>(null);
+  useEffect(() => {
+    const prev = prevToolKindRef.current;
+    prevToolKindRef.current = kindOfTool(activeTool, drawMode);
+    if (activeTool !== 'select') { swapLeaveRef.current = false; return; }
+    // (A cut-out or split borrows a drawing tool for a moment — that is not leaving the item.)
+    if (prev && !swapLeaveRef.current && !parkedRef.current && !borrowedToolRef.current) itemApi.forget(prev);
+    swapLeaveRef.current = false; borrowedToolRef.current = false;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool]);
   const swapRef = useRef<() => void>(() => {});
   swapRef.current = () => {
     if (shapeApi.pending || showMeasurementDialog) return;
@@ -1615,6 +1676,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       return;
     }
     if (activeTool !== 'select') {
+      swapLeaveRef.current = true;                 // a pause, not "I'm done with this item"
       // Park the half-drawn shape — unless one is already parked (then this one is a side job: let it go).
       if (tempPoints.length > 0) {
         if (!parkedRef.current) { parkedRef.current = { tool: activeTool as ToolType, mode: drawMode, points: tempPoints }; setParked(tempPoints.length); }
