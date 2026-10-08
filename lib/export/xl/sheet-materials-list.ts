@@ -203,15 +203,14 @@ export async function buildMaterialsListSheet(
     ws.getCell(r, 4).border = brd;
     trackWidth(4, labelClean);
 
-    // Classify material type
-    const isCount  = countOnlyKeys.has(key);
-    const isLinear = /lipping|lm|skirting|runner/i.test(key);
-    const isVolume = /volume|timber/i.test(key);
-
-    let unitStr = 'M²';
-    if (isCount)       unitStr = 'Nr / Pr';
-    else if (isVolume) unitStr = 'M³';
-    else if (isLinear) unitStr = 'LM';
+    // Use the vendor-selected material unit. Quantities remain normalized by the
+    // takeoff, while the workbook shows the unit used for pricing.
+    const materialUnit = String((col as any).unit ?? '').trim();
+    const normalizedUnit = materialUnit.toLowerCase();
+    const isCount = countOnlyKeys.has(key) || ['ea', 'each', 'nr', 'nos', 'pcs', 'pc', 'pr', 'pair', 'set', 'kit', 'box'].includes(normalizedUnit);
+    const isLinear = ['m', 'lm', 'ft', 'in', 'cm', 'mm'].includes(normalizedUnit);
+    const isVolume = ['m³', 'm3', 'cu m', 'cu ft'].includes(normalizedUnit);
+    const unitStr = materialUnit || (isCount ? 'Nr / Pr' : isVolume ? 'M³' : isLinear ? 'LM' : 'M²');
 
     // Col 5 — unit string
     ws.getCell(r, 5).value = unitStr;
