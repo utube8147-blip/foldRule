@@ -1,5 +1,6 @@
 import { unitRateOf } from '@/lib/takeoff/materialRate';
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useSyncExternalStore } from 'react';
+import { subscribePageRooms, getCurrentPageRooms } from '@/lib/takeoff/roomNames';
 import { DoorOpen, Wind, Fan, Zap, Plug, Library } from 'lucide-react';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import { formatCurrency } from '@/lib/utils';
@@ -36,6 +37,8 @@ export function MeasurementDetailsDialog({
   const [material, setMaterial] = useState(defaultMaterial);
   const [selectedIcon, setSelectedIcon] = useState<string | undefined>(undefined);
   const isCountType = measurementType === 'Count';
+  // Room names read from the page being measured, offered as ready-made names.
+  const pageRooms = useSyncExternalStore(subscribePageRooms, getCurrentPageRooms, getCurrentPageRooms);
   const { projectState, setMaterialLibraryOpen } = useTakeoffData();
   const materials = projectState.materials as Material[];
   const rateOf = (m: Material) => unitRateOf(m);
@@ -83,6 +86,17 @@ export function MeasurementDetailsDialog({
               ref={nameRef}
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); onConfirm(name, material, selectedIcon); } }}
             />
+            {!isCountType && pageRooms.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-1" aria-label="Rooms named on this page">
+                <span className="text-[10px] font-mono text-zinc-500 mr-1">Rooms on this page:</span>
+                {pageRooms.slice(0, 8).map(r => (
+                  <button key={`${r.name}-${r.x}`} type="button" onClick={() => { setName(r.name); nameRef.current?.focus(); }}
+                    title="Use this room's name" className="border border-zinc-700 px-1.5 py-0.5 text-[10px] font-mono text-zinc-300 hover:border-amber-400 hover:text-amber-300">
+                    {r.name}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           
           <div>

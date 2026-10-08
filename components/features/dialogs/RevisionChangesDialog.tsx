@@ -54,7 +54,7 @@ export function RevisionChangesDialog({ log, measurements, drawings, materials, 
   const newWork = node.restore?.target === 'from' && restoreRecord ? newWorkSince(restoreRecord, measurements).filter(m => !m.isGroupHeader).length : 0;
 
   return (
-    <div className={embedded ? 'flex-1 min-h-0 flex bg-[#1D2125] font-mono' : 'fixed inset-0 z-[160] flex bg-[#1D2125] font-mono'}>
+    <div className={embedded ? 'flex-1 min-h-0 flex bg-[#0d0d0d] font-mono' : 'fixed inset-0 z-[160] flex bg-[#1D2125] font-mono'}>
       <div className="w-full h-full flex flex-col min-h-0">
         <div className={embedded ? 'hidden' : 'bg-[#1a1a1a] border-b border-amber-accent px-5 py-3 flex items-center gap-3'}>
           <GitBranch className="w-4 h-4 text-amber-accent" />
@@ -121,7 +121,7 @@ export function RevisionChangesDialog({ log, measurements, drawings, materials, 
               </div>
               <div className="flex-1 overflow-auto">
                 <table className="w-full text-xs border-collapse">
-                  <thead className="sticky top-0 bg-stone-900 text-[10px] uppercase tracking-widest text-zinc-500">
+                  <thead className={`sticky top-0 ${embedded ? 'bg-zinc-900' : 'bg-stone-900'} text-[10px] uppercase tracking-widest text-zinc-500`}>
                     <tr>
                       <th className="text-left px-5 py-2">Item</th><th className="text-left px-3 py-2">Change</th>
                       <th className="text-right px-3 py-2">Before</th><th className="text-right px-3 py-2">After</th>

@@ -124,3 +124,26 @@ describe('audit trail', () => {
     expect(log).toHaveLength(0);
   });
 });
+
+import { roomFor, nameWithRoom, type Room } from '@/lib/takeoff/roomNames';
+describe('naming measurements after the room they are in', () => {
+  const rooms: Room[] = [{ name: 'Bedroom 1', x: 0.2, y: 0.2 }, { name: 'Kitchen', x: 0.6, y: 0.2 }];
+  const sq = (x: number, y: number, s: number) => [{ x, y }, { x: x + s, y }, { x: x + s, y: y + s }, { x, y: y + s }];
+  it('gives an area the one room label inside it, and nothing when it spans two', () => {
+    expect(roomFor({ type: 'Area', points: sq(0.1, 0.1, 0.2) }, rooms)?.name).toBe('Bedroom 1');
+    expect(roomFor({ type: 'Area', points: sq(0.1, 0.1, 0.6) }, rooms)).toBeNull();
+    expect(roomFor({ type: 'Area', points: sq(0.8, 0.8, 0.1) }, rooms)).toBeNull();
+  });
+  it('gives a wall line the clearly nearest room, but not a wall between two rooms', () => {
+    expect(roomFor({ type: 'Length', points: [{ x: 0.15, y: 0.1 }, { x: 0.15, y: 0.3 }] }, rooms)?.name).toBe('Bedroom 1');
+    expect(roomFor({ type: 'Length', points: [{ x: 0.4, y: 0.1 }, { x: 0.4, y: 0.3 }] }, rooms)).toBeNull();
+    expect(roomFor({ type: 'Length', points: [{ x: 0.1, y: 0.9 }, { x: 0.3, y: 0.9 }] }, rooms)).toBeNull();
+    expect(roomFor({ type: 'Count', points: [{ x: 0.2, y: 0.2 }, { x: 0.21, y: 0.2 }] }, rooms)).toBeNull();
+  });
+  it('builds the name from what is already there', () => {
+    expect(nameWithRoom('Tile 1 Floor Area 3', 'Bedroom 1', 'Area')).toBe('Tile 1 Floor Area – Bedroom 1');
+    expect(nameWithRoom('Area 4', 'Kitchen', 'Area')).toBe('Kitchen – floor');
+    expect(nameWithRoom('New Length', 'Kitchen', 'Length')).toBe('Kitchen – wall');
+    expect(nameWithRoom('Skirting – Kitchen', 'Kitchen', 'Length')).toBeNull();
+  });
+});

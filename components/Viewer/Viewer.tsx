@@ -14,6 +14,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { findScales } from '@/lib/takeoff/detectScale';
+import { findRooms, setPageRooms, pageKey } from '@/lib/takeoff/roomNames';
 import { presetScaleFactor } from '@/components/Viewer/ViewerToolbar';
 import React, {
   useRef, useEffect, useState, useCallback, useMemo,
@@ -398,6 +399,21 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
         const page = await pdf.getPage(pageNumber);
         const text = await page.getTextContent();
         const found = findScales(text.items.map(i => ('str' in i ? i.str : '')));
+        // Room names on this page, for suggesting names of the measurements drawn in them.
+        try {
+          const vp = page.getViewport({ scale: 1 });
+          const items = text.items.flatMap(i => {
+            if (!('str' in i) || !i.str.trim()) return [];
+            const [a, b, c, d, e, f] = i.transform as number[];
+            const [va, vb, vc, vd, ve, vf] = vp.transform as number[];
+            const x = va * e + vc * f + ve, y = vb * e + vd * f + vf;
+            const h = Math.hypot(va * c + vc * d, vb * c + vd * d) || 10;
+            void a; void b;
+            return [{ str: i.str, x, y: y - h, w: i.width ?? 0, h }];
+          });
+          const rooms = findRooms(items).map(r => ({ ...r, x: r.x / vp.width, y: r.y / vp.height }));
+          if (!cancelled) setPageRooms(pageKey(activeDrawingId, pageNumber), rooms);
+        } catch { /* no usable text: no suggestions */ }
         if (!cancelled) setStatedScale(found[0] ? { key, ratio: found[0].ratio, confident: found[0].confident } : null);
       } catch { if (!cancelled) setStatedScale(null); }
     })();

@@ -11,7 +11,8 @@ import {
 } from 'lucide-react';
 import * as motion from 'motion/react-m';
 import { useAuth } from '@/context/AuthContext';
-import { useStorageMode } from '@/components/pwa/hooks';
+import { useStorageMode, useFolderStatus } from '@/components/pwa/hooks';
+import { connectFolder, resumeFolder } from '@/lib/storage/folderSync';
 import { initFolderSync, syncFolder, removeProjectFromFolder } from '@/lib/storage/folderSync';
 import { useConfirm } from '@/components/common/ConfirmDialog';
 import { InstallAppButton, StorageButton, FolderPermissionStrip, StorageDialog, StorageModeBanner } from '@/components/pwa/FolderControls';
@@ -448,6 +449,14 @@ function RenameField({ initial, onSave, onCancel }: { initial: string; onSave: (
 function NewProjectDialog({ onCreate, onCancel }: { onCreate: (name: string, number: string) => void; onCancel: () => void }) {
   const [name,   setName]   = useState('');
   const [number, setNumber] = useState('');
+  // A project needs somewhere safe to live first: a folder on this computer (or a synced
+  // drive), which also holds the price bank. Browser-only storage is a deliberate exception.
+  const folder = useFolderStatus();
+  const [browserOnly, setBrowserOnly] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const inFolder = !!folder.folderName && folder.permission === 'granted';
+  const ready = inFolder || browserOnly || (folder.loaded && !folder.supported);
+  const pick = async (fn: () => Promise<boolean>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
   return (
     <div
       role="dialog"
@@ -457,11 +466,48 @@ function NewProjectDialog({ onCreate, onCancel }: { onCreate: (name: string, num
       onKeyDown={e => { if (e.key === 'Escape') onCancel(); }}
     >
       <form
-        onSubmit={e => { e.preventDefault(); if (name.trim()) onCreate(name, number); }}
+        onSubmit={e => { e.preventDefault(); if (name.trim() && ready) onCreate(name, number); }}
         className="w-full max-w-md bg-industrial-panel border border-industrial-border p-6"
       >
         <h2 id="new-project-title" className="text-lg font-semibold">New project</h2>
-        <label className="mt-5 block text-xs font-semibold text-zinc-400" htmlFor="np-name">Project name</label>
+
+        <div className={`mt-4 border p-3 text-xs leading-relaxed ${inFolder ? 'border-emerald-700/60 bg-emerald-500/5' : 'border-amber-accent/60 bg-amber-accent/10'}`} role="group" aria-label="Where projects are saved">
+          <div className="font-bold uppercase tracking-widest text-[10px] text-zinc-400 mb-1">1 · Where it is saved</div>
+          {!folder.loaded ? (
+            <p className="text-zinc-500">Checking…</p>
+          ) : inFolder ? (
+            <p className="text-emerald-400">Saved in your folder “{folder.folderName}”, with the drawings and your price bank.</p>
+          ) : !folder.supported ? (
+            <p className="text-amber-200">This browser cannot save to a folder (Edge and Chrome can). The project will be kept in this browser only: download a backup from the project list regularly.</p>
+          ) : (
+            <>
+              <p className="text-amber-100">
+                {folder.folderName
+                  ? <>Your projects folder “{folder.folderName}” needs access allowed again.</>
+                  : <>Choose a folder for your projects first. Drawings, measurements and your price bank are saved there as ordinary files, so nothing is lost if the browser is cleared. A OneDrive or Google Drive folder also backs them up.</>}
+              </p>
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <button type="button" disabled={busy} onClick={() => void pick(folder.folderName ? resumeFolder : connectFolder)}
+                  className="bg-amber-accent hover:bg-amber-400 disabled:opacity-50 text-black text-xs font-bold px-3 py-1.5">
+                  {busy ? 'Waiting…' : folder.folderName ? 'Allow access' : 'Choose a folder'}
+                </button>
+                {folder.folderName && (
+                  <button type="button" disabled={busy} onClick={() => void pick(connectFolder)} className="text-zinc-300 underline underline-offset-2 hover:text-white">Choose a different folder</button>
+                )}
+                {!browserOnly && (
+                  <button type="button" onClick={() => setBrowserOnly(true)} className="text-zinc-500 underline underline-offset-2 hover:text-zinc-300"
+                    title="Not recommended: clearing the browser's data deletes the project and your prices">
+                    Not now, keep it in this browser only
+                  </button>
+                )}
+              </div>
+              {browserOnly && <p className="mt-2 text-amber-300">Browser only: clearing this browser’s data will delete the project and your prices. You can choose a folder later from “Storage”.</p>}
+              {folder.error && <p className="mt-2 text-red-400">{folder.error}</p>}
+            </>
+          )}
+        </div>
+        <div className="mt-4 font-bold uppercase tracking-widest text-[10px] text-zinc-400">2 · The project</div>
+        <label className="mt-2 block text-xs font-semibold text-zinc-400" htmlFor="np-name">Project name</label>
         <input
           id="np-name"
           autoFocus
@@ -486,7 +532,8 @@ function NewProjectDialog({ onCreate, onCancel }: { onCreate: (name: string, num
           </button>
           <button
             type="submit"
-            disabled={!name.trim()}
+            disabled={!name.trim() || !ready}
+            title={ready ? undefined : 'Choose where the project is saved first'}
             className="bg-amber-accent hover:bg-amber-400 disabled:opacity-40 text-black text-xs font-bold px-4 py-2"
           >
             Create project

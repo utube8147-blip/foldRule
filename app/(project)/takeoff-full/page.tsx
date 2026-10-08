@@ -554,6 +554,7 @@ export default function TakeoffFullPage() {
             <SideNavItem icon={BarChart3} label="Savings" guide="savings" hint="Value engineering: cheaper alternatives and their savings" active={section === 've'} onClick={() => openVe()} />
             <SideNavItem icon={History} label="Revisions" hint="Drawing revisions: every version of a sheet and what each one changed" active={section === 'revisions'} onClick={() => setSection('revisions')} />
             <SideNavItem icon={Download} label="Reports" hint="Excel workbook, CSV, marked-up drawings and the full analysis" active={section === 'reports'} onClick={() => setSection('reports')} />
+            {/* EXPERIMENTS LINK: delete this line with lib/demo (see lib/demo/README.md) */}<SideNavItem icon={Zap} label="Labs" hint="Experiments on trial: count symbols, rooms from text, project as a template" onClick={() => router.push(`/demo${typeof window !== 'undefined' ? window.location.search : ''}`)} />
             <SideNavItem icon={Layers} label="Layers" locked />
             <SideNavItem icon={Target} label="Snap" locked />
             <SideNavItem icon={Wrench} label="Tools" locked />
@@ -646,6 +647,19 @@ export default function TakeoffFullPage() {
                       key: 'xlsx', title: 'Excel workbook', action: 'Download .xlsx',
                       text: `Takeoff and Bill of Quantities${revisionLines.length ? ', Revision changes' : ''}${proposals.length ? ', Value engineering' : ''}. Quantities are as billed; accepted alternatives are already in the prices.`,
                       run: () => exportProjectToExcel(ps).then(() => undefined),
+                    },
+                    {
+                      key: 'billpdf', title: 'Bill and estimate as a PDF', action: 'Download .pdf',
+                      text: 'The estimate summary (measured work to tender sum and VAT) and the Bill of Quantities by section, on A4 with page numbers. For clients who want a document rather than a spreadsheet.',
+                      run: async () => {
+                        const { buildBillPdf } = await import('@/lib/export/billPdf');
+                        const pdf = await buildBillPdf({
+                          projectName: ps.projectName, projectNumber: ps.projectNumber, location: ps.projectLocation, documentTitle: ps.documentTitle, documentDate: ps.documentDate,
+                          revision: ps.revision, currency: ps.currency, vatPercent: ps.vatPercent, markups: ps.markups,
+                          measurements: billedRows(ps.measurements, ps.drawings), materials: materialsList,
+                        });
+                        downloadBlob(new Blob([pdf as BlobPart], { type: 'application/pdf' }), `${ps.projectName.replace(/[^\w\- ]+/g, '') || 'project'}-bill.pdf`);
+                      },
                     },
                     {
                       key: 'csv', title: 'CSV', action: 'Download .csv',

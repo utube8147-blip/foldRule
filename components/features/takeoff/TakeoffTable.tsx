@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from 'react';
+import { roomFor, nameWithRoom, getPageRooms, pageKey, subscribePageRooms, pageRoomsVersion } from '@/lib/takeoff/roomNames';
 import { unitRateOf } from '@/lib/takeoff/materialRate';
 // components/TakeoffTable.tsx
 import { BarChart3 as ActAnalysis, GitCompareArrows as ActCompare, History as ActHistory, PiggyBank as ActSavings } from 'lucide-react';
@@ -910,6 +912,7 @@ function TakeoffTableImpl({
                                 {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                               </span>
                             </div>
+                            <RoomNameHint row={item} onRename={name => onUpdate(item.id, { description: name, label: name })} />
                             {renderMaterialChip(item)}
                           </td>
                           <td className="p-2 text-right pr-1">
@@ -971,6 +974,7 @@ function TakeoffTableImpl({
                           {isRowExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
                         </span>
                       </div>
+                      <RoomNameHint row={row} onRename={name => onUpdate(row.id, { description: name, label: name })} />
                       {renderMaterialChip(row)}
                     </td>
                     <td className="p-2 text-right pr-1">
@@ -1107,4 +1111,26 @@ function TakeoffTableImpl({
 }
 
 /** Memoized: skips re-rendering when its props are unchanged. */
+/**
+ * "→ Bedroom 1": the room this measurement was drawn in, read from the drawing's text.
+ * One click puts it in the name. Only a suggestion: it shows when exactly one room fits.
+ */
+function RoomNameHint({ row, onRename }: { row: TakeoffRow; onRename: (name: string) => void }) {
+  useSyncExternalStore(subscribePageRooms, pageRoomsVersion, () => 0);
+  if (row.isGroupHeader || !row.points?.length) return null;
+  const room = roomFor(row, getPageRooms(pageKey(row.drawingId, row.pageNumber)));
+  const name = room ? nameWithRoom(row.description || row.label || '', room.name, row.type) : null;
+  if (!room || !name) return null;
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); onRename(name); }}
+      title={`The drawing labels this room “${room.name}”. Click to rename to “${name}”.`}
+      className="mt-0.5 ml-4 block max-w-full truncate text-left text-[10px] text-zinc-500 hover:text-amber-accent"
+    >
+      → {room.name}?
+    </button>
+  );
+}
+
 export const TakeoffTable = React.memo(TakeoffTableImpl);

@@ -102,7 +102,7 @@ export function ValueEngineeringDialog({ measurements, drawings, materials, prop
   };
 
   return (
-    <div className={embedded ? 'flex-1 min-h-0 flex bg-[#1D2125] font-mono' : 'fixed inset-0 z-[160] flex bg-[#1D2125] font-mono'}>
+    <div className={embedded ? 'flex-1 min-h-0 flex bg-[#0d0d0d] font-mono' : 'fixed inset-0 z-[160] flex bg-[#1D2125] font-mono'}>
       <div className="w-full h-full flex flex-col min-h-0">
         <div className={embedded ? 'hidden' : 'bg-[#1a1a1a] border-b border-amber-accent px-5 py-3 flex items-center gap-3'}>
           <Scale className="w-4 h-4 text-amber-accent" />
@@ -147,7 +147,7 @@ export function ValueEngineeringDialog({ measurements, drawings, materials, prop
               )}
             </div>
             {from && (
-              <div className="p-4 border-t border-amber-accent/60 bg-[#16191C] space-y-2 max-h-[75%] overflow-y-auto shrink-0">
+              <div className={`p-4 border-t border-amber-accent/60 ${embedded ? 'bg-zinc-950' : 'bg-[#16191C]'} space-y-2 max-h-[75%] overflow-y-auto shrink-0`}>
                 <div className="flex items-center justify-between">
                   <div className="text-[10px] uppercase tracking-widest text-zinc-400">Alternative to</div>
                   <button type="button" aria-label="Close the alternative picker" title="Close" onClick={() => { setFromId(null); setToId(''); setSearch(''); }}
@@ -216,7 +216,7 @@ export function ValueEngineeringDialog({ measurements, drawings, materials, prop
 
           <div className="flex-1 min-w-0 overflow-auto">
             <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 bg-stone-900 text-[10px] uppercase tracking-widest text-zinc-500">
+              <thead className={`sticky top-0 ${embedded ? 'bg-zinc-900' : 'bg-stone-900'} text-[10px] uppercase tracking-widest text-zinc-500`}>
                 <tr>
                   <th className="text-left px-5 py-2">As designed</th><th className="text-left px-3 py-2">Alternative</th>
                   <th className="text-right px-3 py-2">Quantity</th><th className="text-right px-3 py-2">Designed cost</th>
