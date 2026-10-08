@@ -22,6 +22,7 @@ export interface UseMeasurementsParams {
   clearTempPoints:      () => void;
   onAppendComplete?: () => void;
   scaleFactor:          number;
+  displayUnit?:         'm' | 'cm' | 'mm' | 'ft' | 'in';
   onUpdateMeasurement?: (id: string, updates: Partial<TakeoffRow>) => void;
   isPanning:            boolean;
   snapToCorner:         (rawX: number, rawY: number) => SnapResult;

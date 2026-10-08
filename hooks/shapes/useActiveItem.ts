@@ -35,10 +35,11 @@ export function kindOfType(type: string): ItemKind | null {
   return (Object.keys(KIND_TYPES) as ItemKind[]).find(k => KIND_TYPES[k].types.includes(type)) ?? null;
 }
 
-export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeasurements }: {
+export function useActiveItem({ measurements, activeDrawingId, kind, displayUnit, replaceMeasurements }: {
   measurements: TakeoffRow[];
   activeDrawingId: string | null | undefined;
   kind: ItemKind | null;
+  displayUnit: 'm' | 'cm' | 'mm' | 'ft' | 'in';
   replaceMeasurements: (removeIds: string[], add?: TakeoffRow[], updates?: Record<string, Partial<TakeoffRow>>) => void;
 }) {
   // 'none' = the user chose to name each shape separately for this kind.
@@ -56,7 +57,7 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
 
   const headerRow = (it: ActiveItem, k: ItemKind, kids: TakeoffRow[] = []): TakeoffRow => ({
     id: it.id, drawingId: activeDrawingId || '', label: it.name, description: it.name, groupName: it.name,
-    type: KIND_TYPES[k].header, quantity: kids.reduce((t, r) => t + r.quantity, 0), unit: kids[0]?.unit ?? KIND_TYPES[k].unit,
+    type: KIND_TYPES[k].header, quantity: kids.reduce((t, r) => t + r.quantity, 0), unit: k === 'area' ? `sq ${displayUnit}` : k === 'count' ? 'EA' : displayUnit,
     unitRate: 0, notes: '', points: [], isOverridden: false, isGroupHeader: true, isExpanded: true,
     color: it.color, isVisible: true, childIds: kids.map(r => r.id),
   } as TakeoffRow);
@@ -69,7 +70,7 @@ export function useActiveItem({ measurements, activeDrawingId, kind, replaceMeas
     replaceMeasurements([], [headerRow(it, k)]);
     setItems(s => ({ ...s, [k]: it }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [replaceMeasurements, activeDrawingId]);
+  }, [replaceMeasurements, activeDrawingId, displayUnit]);
 
   /** Carry on with a group that already exists. */
   const use = useCallback((groupId: string) => {

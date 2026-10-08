@@ -25,6 +25,7 @@ interface Params {
   setExtraSelected: (ids: string[]) => void;
   pageSizePt:     { w: number; h: number } | null;
   scaleFactor:    number;
+  displayUnit:    'm' | 'cm' | 'mm' | 'ft' | 'in';
   activeTool:     string;
   tempPointCount: number;
   replaceMeasurements: (removeIds: string[], add?: TakeoffRow[], updates?: Record<string, Partial<TakeoffRow>>) => void;
@@ -46,7 +47,7 @@ export const hasPlainPoints = (m: TakeoffRow | null | undefined) =>
 
 export function useShapeActions({
   measurements, selectedId, setSelectedId, extraSelected, setExtraSelected,
-  pageSizePt, scaleFactor, activeTool, tempPointCount,
+  pageSizePt, scaleFactor, displayUnit, activeTool, tempPointCount,
   replaceMeasurements, startDrawing, backToSelect,
 }: Params) {
   const [message, setMessage] = useState<string | null>(null);
@@ -556,7 +557,7 @@ export function useShapeActions({
       .filter(c => c.quantity > 0);
   }, [measurements]);
 
-  // ── Move to another group ────────────────────────────────────────────────
+  // ── Move to another group ──────────────────────────────────��─────────────
   const kindOfType = (t: string) => (AREA_TYPES.has(t) ? 'area' : t);
   /** Groups the whole selection could go into (same kind of quantity). */
   const groupTargets = useMemo(() => {
@@ -596,13 +597,13 @@ export function useShapeActions({
     const kids = rows.map((r, i) => ({ ...r, parentId: id, groupId: id, color: rows[0].color, label: `${name} ${i + 1}`, description: `${name} ${i + 1}` } as TakeoffRow));
     const header = {
       id, drawingId: rows[0].drawingId, pageNumber: rows[0].pageNumber, label: name, description: name, groupName: name,
-      type: k === 'area' ? 'Polygon' : rows[0].type, quantity: round(kids.reduce((t, r) => t + r.quantity, 0)), unit: rows[0].unit,
+      type: k === 'area' ? 'Polygon' : rows[0].type, quantity: round(kids.reduce((t, r) => t + r.quantity, 0)), unit: k === 'area' ? `sq ${displayUnit}` : displayUnit,
       unitRate: rows[0].unitRate ?? 0, materialId: rows[0].materialId, notes: '', points: [], isOverridden: false,
       isGroupHeader: true, isExpanded: true, color: rows[0].color, isVisible: true, childIds: kids.map(r => r.id),
     } as TakeoffRow;
     replaceMeasurements(rows.map(r => r.id), [header, ...kids]);
     say(`“${name}” is now a group — use + on it in the takeoff to add more.`);
-  }, [selectedRows, replaceMeasurements, say]);
+  }, [displayUnit, selectedRows, replaceMeasurements, say]);
 
   // Delete or Backspace removes the selection (not while typing).
   useEffect(() => {

@@ -37,6 +37,7 @@ import { AnimatePresence } from 'motion/react';
 import { Library } from 'lucide-react';
 import type { Material } from '@/types';
 import { MaterialLibrary } from '@/components/features/takeoff/MaterialLibrary';
+import { UnitSelect } from '@/components/features/takeoff/UnitSelect';
 import { useRouter } from 'next/navigation';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import {
@@ -852,7 +853,7 @@ export default function TakeoffFullPage() {
                     const expanded = expandedGroups.has(groupId);
                     const gCode = `G-${String(gIdx + 1).padStart(3, '0')}-A`;
                     const groupTotal = groupCost(items);
-                    const groupTotalQty = groupQty(items);
+                    const groupTotalQty = header.quantity ?? groupQty(items);
                     
                     return (
                       <React.Fragment key={groupId}>
@@ -913,11 +914,16 @@ export default function TakeoffFullPage() {
                             })()}
                           </td>
                           <td className="p-2 border-r border-zinc-800 text-right">
-                            {new Set(items.map(i => i.unit)).size > 1
-                              ? <span className="text-zinc-600 text-xs" title="The items use different units, so they cannot be added up">—</span>
-                              : <span className="text-amber-accent font-bold text-xs">{groupTotalQty.toFixed(2)}</span>}
+                            <span className="text-amber-accent font-bold text-xs">{groupTotalQty.toFixed(2)}</span>
                            </td>
-                          <td className="p-2 border-r border-zinc-800 text-center text-zinc-500 text-[11px]">{(() => { const u = new Set(items.map(i => i.unit)); return u.size === 1 ? items[0].unit : u.size ? 'mixed' : '—'; })()}</td>
+                          <td className="p-2 border-r border-zinc-800 text-center" onClick={e => e.stopPropagation()}>
+                            <UnitSelect
+                              row={header}
+                              childrenRows={items}
+                              onChange={updates => updateMeasurement(header.id, updates)}
+                              className="text-zinc-400"
+                            />
+                          </td>
                           <td className="p-2 border-r border-zinc-800 text-right text-zinc-600">
                             {(() => {
                               const rates = new Set(items.map(i => i.unitRate || 0));
@@ -981,8 +987,12 @@ export default function TakeoffFullPage() {
                                   {item.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/50 flex-shrink-0" />}
                                 </div>
                                </td>
-                              <td className="p-2 border-r border-zinc-800 text-center text-zinc-500 text-[11px]">
-                                {item.unit}
+                              <td className="p-2 border-r border-zinc-800 text-center" onClick={e => e.stopPropagation()}>
+                                <UnitSelect
+                                  row={item}
+                                  onChange={updates => updateMeasurement(item.id, updates)}
+                                  className="text-zinc-400"
+                                />
                                </td>
                               <td className="p-2 border-r border-zinc-800 text-right">
                                 <EditableCell row={item} field="unitRate" type="number" onUpdate={updateMeasurement} />

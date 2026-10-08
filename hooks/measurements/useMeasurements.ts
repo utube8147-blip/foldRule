@@ -40,6 +40,7 @@ export function useMeasurements({
   batchCommitMeasurements,
   clearTempPoints,
   scaleFactor,
+  displayUnit,
   onUpdateMeasurement,
   isPanning,
   snapToCorner,
@@ -163,6 +164,26 @@ export function useMeasurements({
   const nearStartPointRef  = (canvas.nearStartPointRef  ?? fallbackNearStartRef) as React.RefObject<boolean>;
   const startPointSnapRef  = (canvas.startPointSnapRef  ?? fallbackStartSnapRef) as React.RefObject<{ x: number; y: number } | null>;
 
+  const commitForDisplayUnit = useCallback((row: import('@/types').TakeoffRow) => {
+    if (row.type === 'Count' || row.type === 'Point' || displayUnit === 'm') {
+      commitMeasurement(row);
+      return;
+    }
+    const selectedUnit = displayUnit ?? 'm';
+    const factors: Record<string, number> = { m: 1, cm: 100, mm: 1000, ft: 3.28084, in: 39.3701 };
+    const factor = factors[selectedUnit] ?? 1;
+    const exponent = row.type === 'Area' || row.type === 'Polygon' || row.type === 'Rectangle' ? 2 : 1;
+    commitMeasurement({
+      ...row,
+      quantity: row.quantity * factor ** exponent,
+      unit: exponent === 2 ? `sq ${selectedUnit}` : selectedUnit,
+    });
+  }, [commitMeasurement, displayUnit]);
+
+  const batchCommitForDisplayUnit = useCallback((rows: import('@/types').TakeoffRow[]) => {
+    rows.forEach(commitForDisplayUnit);
+  }, [commitForDisplayUnit]);
+
   const commit = useMeasurementCommit({
     pdfDimensionsRef,
     pageNumberRef,
@@ -172,10 +193,11 @@ export function useMeasurements({
     measurements,
     tempPoints,
     pushPoint,
-    commitMeasurement,
-    batchCommitMeasurements,
+    commitMeasurement: commitForDisplayUnit,
+    batchCommitMeasurements: batchCommitForDisplayUnit,
     clearTempPoints,
     scaleFactor,
+    displayUnit,
     onUpdateMeasurement,
     snapToCorner,
     triggerSnapFlash,

@@ -27,7 +27,7 @@ const nudge = (r: TakeoffRow): TakeoffRow => ({
 });
 
 export function useRowOps(measurements: TakeoffRow[], materials: Material[]) {
-  const { replaceMeasurements, ungroupMeasurements, deleteMeasurement, toggleVisibility } = useTakeoffData();
+  const { replaceMeasurements, ungroupMeasurements, deleteMeasurement, toggleVisibility, displayUnit } = useTakeoffData();
 
   const moveRow = useCallback((rowId: string, targetId: string | null) => {
     const row = measurements.find(m => m.id === rowId);
@@ -55,12 +55,12 @@ export function useRowOps(measurements: TakeoffRow[], materials: Material[]) {
     const id = uid();
     replaceMeasurements([row.id], [
       { id, drawingId: row.drawingId, pageNumber: row.pageNumber, label: name, description: name, groupName: name,
-        type: kindOf(row.type) === 'area' ? 'Polygon' : row.type, quantity: row.quantity, unit: row.unit, unitRate: row.unitRate ?? 0,
+        type: kindOf(row.type) === 'area' ? 'Polygon' : row.type, quantity: row.quantity, unit: kindOf(row.type) === 'area' ? `sq ${displayUnit}` : displayUnit, unitRate: row.unitRate ?? 0,
         materialId: row.materialId, notes: '', points: [], isOverridden: false, isGroupHeader: true, isExpanded: true,
         color: row.color, isVisible: true, childIds: [row.id] } as TakeoffRow,
       { ...row, parentId: id, groupId: id, label: `${name} 1`, description: `${name} 1` },
     ]);
-  }, [measurements, replaceMeasurements]);
+  }, [displayUnit, measurements, replaceMeasurements]);
 
   const duplicateRow = useCallback((rowId: string) => {
     const row = measurements.find(m => m.id === rowId);

@@ -905,8 +905,16 @@ export function MaterialLibrary({ materials, onUpdateMaterials, onClose, initial
                         className="w-full bg-industrial-black border border-industrial-border p-2 text-zinc-100 outline-none focus:border-amber-accent" />
                     </Field>
                     <Field label="Unit">
-                      <input list="material-units" value={selected.unit} onChange={e => update(selected.id, { unit: e.target.value })}
-                        className="w-full bg-industrial-black border border-industrial-border p-2 text-zinc-100 outline-none focus:border-amber-accent" />
+                      <select
+                        value={selected.unit}
+                        onChange={e => update(selected.id, { unit: e.target.value })}
+                        aria-label={`Unit for ${selected.name}`}
+                        className="w-full bg-industrial-black border border-industrial-border p-2 text-zinc-100 outline-none focus:border-amber-accent"
+                      >
+                        {[...new Set([selected.unit, ...UNITS])].map(unit => (
+                          <option key={unit} value={unit}>{unit}</option>
+                        ))}
+                      </select>
                     </Field>
                   </div>
                   <datalist id="material-units">{UNITS.map(u => <option key={u} value={u} />)}</datalist>

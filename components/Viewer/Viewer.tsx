@@ -160,7 +160,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     undo, redo, canUndo, canRedo,
     selectedId, setSelectedId, projectState, updateMeasurement, replaceMeasurements,
     setActivePage, showLabels, pendingPage, clearPendingPage,
-    setDrawingPageCount, focusSeq, setNextMaterial, showGeometry, projectId: takeoffProjectId,
+    setDrawingPageCount, focusSeq, setNextMaterial, showGeometry, projectId: takeoffProjectId, displayUnit,
     setShowLabels, setShowGeometry,
   } = useTakeoffContext();
   const selectedIdRef = useRef<string | null>(selectedId);
@@ -190,8 +190,15 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       };
     }
     if (consumeDrawnRef.current([m]) || adoptRef.current([m])) return;
-    commitMeasurement(m);
-  }, [commitMeasurement]);
+    const factors: Record<string, number> = { m: 1, cm: 100, mm: 1000, ft: 3.28084, in: 39.3701 };
+    const factor = factors[displayUnit] ?? 1;
+    const exponent = m.type === 'Area' || m.type === 'Polygon' || m.type === 'Rectangle' ? 2 : 1;
+    commitMeasurement({
+      ...m,
+      quantity: m.quantity * factor ** exponent,
+      unit: exponent === 2 ? `sq ${displayUnit}` : displayUnit,
+    });
+  }, [commitMeasurement, displayUnit]);
   const batchCommitOrConsume = useCallback((rows: TakeoffRow[]) => {
     // A run drawn with straight and curved parts arrives as a group of
     // pieces. Keep it as ONE line (curves become fine steps), so selecting it
@@ -216,8 +223,14 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       }
     }
     if (consumeDrawnRef.current(rows) || adoptRef.current(rows)) return;
-    batchCommitMeasurements(rows);
-  }, [batchCommitMeasurements, commitMeasurement]);
+    const factors: Record<string, number> = { m: 1, cm: 100, mm: 1000, ft: 3.28084, in: 39.3701 };
+    const factor = factors[displayUnit] ?? 1;
+    const convertedRows = rows.map(row => {
+      const exponent = row.type === 'Area' || row.type === 'Polygon' || row.type === 'Rectangle' ? 2 : 1;
+      return { ...row, quantity: row.quantity * factor ** exponent, unit: exponent === 2 ? `sq ${displayUnit}` : displayUnit };
+    });
+    batchCommitMeasurements(convertedRows);
+  }, [batchCommitMeasurements, commitMeasurement, displayUnit]);
   const shapePendingRef = useRef(false);
   const magicItemIdRef = useRef<string | null>(null);
   const [showTechInfo, setShowTechInfo] = useState(false);
@@ -279,7 +292,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     dims:        pdfDocDims,
   } = usePdfDocument();
 
-  // ── PDF viewer hook ───────────────────────────────────────────────────────
+  // ── PDF viewer hook ───────────────────────────────��───────────────────────
   const {
     pdf, pageNumber, setPageNumber, loading,
     scale, setScale, committedScale,
@@ -831,10 +844,12 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
   }, []);
 
   const handleCalibrationConfirm = useCallback(() => {
-    const r = parseFloat(calibrationInput);
-    if (!isNaN(r) && r > 0 && pendingPtLen > 0) onScaleSetRef.current(r / pendingPtLen);
+  const r = parseFloat(calibrationInput);
+  const toMetres: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
+  const metres = r * (toMetres[displayUnit] ?? 1);
+  if (!isNaN(metres) && metres > 0 && pendingPtLen > 0) onScaleSetRef.current(metres / pendingPtLen);
     setShowCalibrationDialog(false);
-  }, [calibrationInput, pendingPtLen, onScaleSetRef]);
+  }, [calibrationInput, displayUnit, pendingPtLen, onScaleSetRef]);
 
   const onUpdateMeasurement = useCallback(
     (id: string, updates: Partial<TakeoffRow>) => onUpdateMeasurementProp?.(id, updates),
@@ -861,7 +876,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
     commitMeasurement: commitOrConsume, batchCommitMeasurements: batchCommitOrConsume,
     appendToGroupId, onAppendComplete,
     onScalePrompt: handleScalePrompt,
-    clearTempPoints, scaleFactor, onUpdateMeasurement,
+    clearTempPoints, scaleFactor, displayUnit, onUpdateMeasurement,
     isPanning, snapToCorner: snapToCanvas as any, getScaledCorners: () => [],
     triggerSnapFlash, snapEnabled, snapThreshold,
     redrawPinCanvas, cursorPointRef, activeDrawingId,
@@ -1637,7 +1652,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
 
   const shapeApi = useShapeActions({
     measurements, selectedId, setSelectedId, extraSelected, setExtraSelected,
-    pageSizePt: pdfDocDims ?? null, scaleFactor, activeTool, tempPointCount: tempPoints.length,
+    pageSizePt: pdfDocDims ?? null, scaleFactor, displayUnit, activeTool, tempPointCount: tempPoints.length,
     replaceMeasurements,
     startDrawing: kind => setToolMode('polyarc' as ToolType, { area: kind === 'area' }),
     backToSelect: () => { if (tempPoints.length > 0) clearTempPoints(); setActiveTool('select'); },
@@ -1646,7 +1661,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
 
   // ── Named item: everything drawn is added to it until it is changed ───────
   const itemApi = useActiveItem({
-    measurements, activeDrawingId, replaceMeasurements,
+    measurements, activeDrawingId, displayUnit, replaceMeasurements,
     kind: shapeApi.pending ? null : kindOfTool(activeTool, drawMode),
   });
   adoptRef.current = itemApi.adopt;
@@ -2348,7 +2363,7 @@ export function Viewer(props: import('./ViewerConstants').ViewerProps) {
       <CalibrationDialog
         show={showCalibrationDialog} calibrationInput={calibrationInput}
         setCalibrationInput={setCalibrationInput}
-        ptLen={pendingPtLen} currentScale={isPageCalibrated ? scaleFactor : null}
+        ptLen={pendingPtLen} currentScale={isPageCalibrated ? scaleFactor : null} displayUnit={displayUnit}
         onConfirm={handleCalibrationConfirm} onCancel={() => setShowCalibrationDialog(false)}
       />
       <MeasurementDetailsWired

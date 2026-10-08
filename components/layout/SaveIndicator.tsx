@@ -50,8 +50,8 @@ export function SaveIndicator() {
     saveStatus === 'saving' ? 'bg-amber-400 animate-pulse' : 'bg-zinc-500';
 
   return (
-    <span className="flex items-center gap-1.5">
-      <span role="status" aria-live="polite" className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-500">
+    <span className="flex min-w-[118px] items-center justify-start gap-1.5 whitespace-nowrap">
+      <span role="status" aria-live="polite" className="flex min-w-[92px] items-center gap-1.5 text-[11px] font-semibold text-zinc-500 whitespace-nowrap">
         <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
         {label}
       </span>

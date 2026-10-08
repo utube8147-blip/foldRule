@@ -174,7 +174,7 @@ interface TakeoffContextValue {
   /** Increments on every focusMeasurement call so the viewer can re-centre. */
   focusSeq:            number;
 
-  // ── Material bank ─────────────────────────────────────────────────────────
+  // ── Material bank ────────���────────────────────────────────────────────────
   materialLibraryOpen:    boolean;
   setMaterialLibraryOpen: (open: boolean) => void;
   /**
@@ -210,7 +210,7 @@ interface TakeoffContextValue {
   activePage:          number;
   setActivePage:       (page: number) => void;
 
-  // ── Persistence ───────────────────────────────────────────────────────────
+  // ── Persistence ────────────────────────────────────────────────��──────────
   projectId:   string | null;
   loadStatus:  LoadStatus;
   loadError:   string | null;
@@ -459,6 +459,19 @@ export function TakeoffProvider({
     syncedSetTempPoints(() => tempPts);
   }, [syncedSetProjectState, syncedSetTempPoints]);
 
+  const unitFactor = (unit: string | undefined, type: TakeoffRow['type']) => {
+    const area = type === 'Area' || type === 'Polygon' || type === 'Rectangle' || unit?.startsWith('sq ');
+    const factors: Record<string, number> = { m: 1, 'sq m': 1, cm: 100, 'sq cm': 10_000, mm: 1000, 'sq mm': 1_000_000, ft: 3.28084, 'sq ft': 10.7639, in: 39.3701, 'sq in': 1550.0031 };
+    const factor = factors[unit || (area ? 'sq m' : 'm')] ?? 1;
+    return area ? Math.sqrt(factor) : factor;
+  };
+
+  const convertBetweenUnits = (value: number, from: string | undefined, to: string | undefined, type: TakeoffRow['type']) => {
+    const area = type === 'Area' || type === 'Polygon' || type === 'Rectangle' || from?.startsWith('sq ') || to?.startsWith('sq ');
+    const ratio = unitFactor(to, type) / unitFactor(from, type);
+    return value * (area ? ratio ** 2 : ratio);
+  };
+
   const recalculateParentTotal = useCallback((parentId: string, measurements: TakeoffRow[]): TakeoffRow[] => {
     const parentIndex = measurements.findIndex(m => m.id === parentId);
     if (parentIndex === -1) return measurements;
@@ -473,15 +486,9 @@ export function TakeoffProvider({
       return measurements.filter(m => m.id !== parentId);
     }
 
-    let newTotal = 0;
-    let newUnit = parent.unit;
-
-    for (const child of existingChildren) {
-      if (child.type === 'Length' || child.type === 'Area' || child.type === 'Count' || child.type === 'Polygon' || child.type === 'Rectangle') {
-        newTotal += child.quantity;
-        newUnit = child.unit;
-      }
-    }
+    const newUnit = parent.unit || existingChildren[0]?.unit || (parent.type === 'Area' || parent.type === 'Polygon' || parent.type === 'Rectangle' ? 'sq m' : 'm');
+    const newTotal = existingChildren.reduce((sum, child) =>
+      sum + convertBetweenUnits(child.quantity, child.unit, newUnit, child.type), 0);
 
     const updatedMeasurements = [...measurements];
     updatedMeasurements[parentIndex] = { ...parent, quantity: newTotal, unit: newUnit };
@@ -492,7 +499,8 @@ export function TakeoffProvider({
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
       const childIds = measurement.childIds as string[];
       const children = measurementsRef.current.filter(m => childIds.includes(m.id));
-      return children.reduce((sum, child) => sum + (child.quantity || 0), 0);
+      const groupUnit = measurement.unit || children[0]?.unit;
+      return children.reduce((sum, child) => sum + convertBetweenUnits(child.quantity || 0, child.unit, groupUnit, child.type), 0);
     }
     return measurement.quantity || 0;
   }, []);
@@ -501,7 +509,7 @@ export function TakeoffProvider({
     if (measurement.isGroupHeader && measurement.childIds && measurement.childIds.length > 0) {
       const childIds = measurement.childIds as string[];
       const children = measurementsRef.current.filter(m => childIds.includes(m.id));
-      if (children.length > 0) return children[0].unit || measurement.unit;
+      if (children.length > 0) return measurement.unit || children[0].unit;
     }
     return measurement.unit || '';
   }, []);
@@ -839,7 +847,7 @@ export function TakeoffProvider({
       description:   groupName,
       type:          groupType === 'count' ? 'Count' : 'Length',
       quantity:      0,
-      unit:          groupType === 'count' ? 'EA' : 'm',
+      unit:          groupType === 'count' ? 'EA' : (groupType === 'area' ? `sq ${displayUnit}` : displayUnit),
       unitRate:      0,
       notes:         '',
       points:        [],
@@ -851,21 +859,21 @@ export function TakeoffProvider({
       childIds:      measurementIds,
     };
 
-    const mAfter = mBefore.map(m =>
-      measurementIds.includes(m.id)
-        ? { ...m, groupId, parentId: groupId }
-        : m
-    );
+  let mAfter = mBefore.map(m =>
+  measurementIds.includes(m.id)
+  ? { ...m, groupId, parentId: groupId }
+  : m
+  );
 
     const firstMeasurementIndex = mAfter.findIndex(m => measurementIds.includes(m.id));
     if (firstMeasurementIndex >= 0) {
       mAfter.splice(firstMeasurementIndex, 0, groupHeader);
-    } else {
-      mAfter.push(groupHeader);
-    }
+  } else {
+  mAfter.push(groupHeader);
+  }
+    mAfter = recalculateParentTotal(groupId, mAfter);
 
-    measurementsRef.current = mAfter;   // now, so back-to-back changes build on each other
-
+    measurementsRef.current = mAfter;
     syncedSetProjectState(prev => {
       measurementsRef.current = mAfter;
       return { ...prev, measurements: mAfter };
@@ -879,7 +887,7 @@ export function TakeoffProvider({
     });
 
     return groupId;
-  }, [projectState, pushEntry, syncedSetProjectState]);
+  }, [displayUnit, projectState, pushEntry, recalculateParentTotal, syncedSetProjectState]);
 
   // ── deleteGroup ────────────────────────────────────────────────────────────
   const deleteGroup = useCallback((groupId: string, deleteChildren: boolean = false) => {
@@ -1155,7 +1163,7 @@ export function TakeoffProvider({
     syncedSetProjectState(prev => ({ ...prev, drawings: dAfter }));
   }, [syncedSetProjectState]);
 
-  // ── Load project from local storage ────────────────────────────────────────
+  // ── Load project from local storage ───────────��────────────────────────────
   const hydratedRef = useRef(false);
   const objectUrlsRef = useRef<string[]>([]);
 
@@ -1242,7 +1250,7 @@ export function TakeoffProvider({
     };
   }, [projectId, resetHistory, reloadTick]);
 
-  // ── Audit trail ────────────────────────────────────────────────────────────
+  // ── Audit trail ─────────��──────────────────────────────────────────────────
   // Worked out from the state before and after, so every way of editing is covered.
   const { user: signedIn } = useAuth();
   const whoRef = useRef('');

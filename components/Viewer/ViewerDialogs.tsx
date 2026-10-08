@@ -13,7 +13,7 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
-import React from 'react';
+import React, { useState } from 'react';
 import { Scaling, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { checkScale } from '@/lib/takeoff/scale';
 import { TakeoffRow } from '@/types';
@@ -37,6 +37,7 @@ interface CalibrationDialogProps {
   ptLen?:            number;
   /** Current scale of the page (metres per PDF point), or null when it has none yet. */
   currentScale?:     number | null;
+  displayUnit?:      'm' | 'cm' | 'mm' | 'ft' | 'in';
 }
 
 const pct = (v: number) => `${v > 0 ? '+' : ''}${(v * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0)}%`;
@@ -44,20 +45,24 @@ const pct = (v: number) => `${v > 0 ? '+' : ''}${(v * 100).toFixed(Math.abs(v) <
 const off = (v: number) => `${(Math.abs(v) * 100).toFixed(Math.abs(v) < 0.1 ? 1 : 0)}% too ${v < 0 ? 'small' : 'big'}`;
 
 export function CalibrationDialog({
-  show, calibrationInput, setCalibrationInput, onConfirm, onCancel, ptLen = 0, currentScale = null,
+  show, calibrationInput, setCalibrationInput, onConfirm, onCancel, ptLen = 0, currentScale = null, displayUnit = 'm',
 }: CalibrationDialogProps) {
+  const [selectedUnit, setSelectedUnit] = useState(displayUnit);
+  const toMetres: Record<string, number> = { m: 1, cm: 0.01, mm: 0.001, ft: 0.3048, in: 0.0254 };
   if (!show) return null;
 
   // On a page that already has a scale, the same gesture checks it against a printed dimension.
   const checking = currentScale != null && currentScale > 0 && ptLen > 0;
   const entered  = parseFloat(calibrationInput);
-  const check    = checking ? checkScale(ptLen, entered, currentScale) : null;
+  const enteredMetres = entered * (toMetres[selectedUnit] ?? 1);
+  const displayedLength = ptLen * (currentScale ?? 0) / (toMetres[selectedUnit] ?? 1);
+  const check    = checking ? checkScale(ptLen, enteredMetres, currentScale) : null;
   const valid    = !!calibrationInput && !isNaN(entered) && entered > 0;
   const passed   = !!check?.ok;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-      <div className="bg-zinc-900 border border-amber-400/40 shadow-2xl shadow-amber-400/10 p-6 w-80 font-mono">
+      <div className="bg-zinc-900 border border-amber-400/40 shadow-2xl shadow-amber-400/10 p-6 w-[min(28rem,calc(100vw-2rem))] font-mono">
         <div className="flex items-center gap-2 mb-4">
           <Scaling className="w-4 h-4 text-amber-400 flex-shrink-0" />
           <span className="text-xs font-bold text-amber-400 uppercase tracking-widest">
@@ -67,19 +72,20 @@ export function CalibrationDialog({
         <p className="text-[11px] text-zinc-400 uppercase tracking-wider mb-4 leading-relaxed">
           {checking ? (
             <>
-              This page’s scale reads your line as{' '}
-              <span className="text-zinc-100">{(ptLen * currentScale).toFixed(3)} m</span>.<br />
-              Enter the dimension printed on the drawing, in meters.
+              This page&apos;s scale reads your line as{' '}
+              <span className="text-zinc-100">{displayedLength.toFixed(3)} {selectedUnit}</span>.<br />
+              Enter the dimension printed on the drawing in {selectedUnit}.
             </>
           ) : (
             <>
               You drew a line across a known distance.<br />
-              Enter the real-world length in meters.
+              Enter the real-world length using the selected unit. The saved calibration remains in meters.
             </>
           )}
         </p>
-        <input
-          autoFocus
+        <div className="flex gap-2 mb-4">
+          <input
+            autoFocus
           type="number"
           min="0.001"
           step="any"
@@ -90,8 +96,22 @@ export function CalibrationDialog({
             if (e.key === 'Enter') { if (passed) onCancel(); else if (valid) onConfirm(); }
             if (e.key === 'Escape') onCancel();
           }}
-          className="w-full bg-zinc-800 border border-zinc-600 focus:border-amber-400 text-zinc-100 text-sm font-mono px-3 py-2 outline-none mb-4 transition-colors"
-        />
+            className="flex-1 bg-zinc-800 border border-zinc-600 focus:border-amber-400 text-zinc-100 text-sm font-mono px-3 py-2 outline-none transition-colors"
+          />
+          <select
+            aria-label="Calibration unit"
+            value={selectedUnit}
+            onChange={e => {
+              setSelectedUnit(e.target.value as 'm' | 'cm' | 'mm' | 'ft' | 'in');
+              const next = e.target.value;
+              const metres = parseFloat(calibrationInput) * (toMetres[selectedUnit] ?? 1);
+              setCalibrationInput(Number.isFinite(metres) ? String(metres / (toMetres[next] ?? 1)) : calibrationInput);
+            }}
+            className="w-20 bg-zinc-800 border border-zinc-600 focus:border-amber-400 text-zinc-100 text-sm font-mono px-2 py-2 outline-none transition-colors"
+          >
+            {['m', 'cm', 'mm', 'ft', 'in'].map(unit => <option key={unit} value={unit}>{unit}</option>)}
+          </select>
+        </div>
         {check && (
           <div
             role="status"
@@ -143,7 +163,7 @@ export function CalibrationDialog({
   );
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
+// ─���─────────────────────────────────────────────��─────────────────────────────
 // 2. Append Group Banner
 // ─────────────────────────────────────────────────────────────────────────────
 

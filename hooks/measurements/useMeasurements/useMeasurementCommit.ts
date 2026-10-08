@@ -177,7 +177,7 @@ export function polyarcClickPoints(
   return out;
 }
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// ─── Types ──────────────────��─────────────────────────────────────────────────
 interface UseMeasurementCommitParams {
   pdfDimensionsRef:        React.MutableRefObject<PdfDimensions | null>;
   pageNumberRef:           React.MutableRefObject<number>;
@@ -191,6 +191,7 @@ interface UseMeasurementCommitParams {
   batchCommitMeasurements: (ms: TakeoffRow[]) => void;
   clearTempPoints:         () => void;
   scaleFactor:             number;
+  displayUnit?:            'm' | 'cm' | 'mm' | 'ft' | 'in';
   onUpdateMeasurement?:    (id: string, updates: Partial<TakeoffRow>) => void;
   snapToCorner:            (x: number, y: number) => { point: { x: number; y: number }; snapped: boolean };
   triggerSnapFlash:        (x: number, y: number) => void;
@@ -385,7 +386,7 @@ export function useMeasurementCommit({
   activeTool, setActiveTool,
   measurements, tempPoints, pushPoint,
   commitMeasurement, batchCommitMeasurements, clearTempPoints,
-  scaleFactor, onUpdateMeasurement,
+  scaleFactor, displayUnit = 'm', onUpdateMeasurement,
   snapToCorner, triggerSnapFlash,
   snapEnabledRef, snapThresholdRef, getScaledCorners,
   activeDrawingId, drawingCanvasRef, cursorPointRef,
@@ -495,7 +496,7 @@ export function useMeasurementCommit({
         id: crypto.randomUUID(), drawingId: activeDrawingId || '',
         description: rowLabel, label: rowLabel,
         type: 'Length', quantity: +calcLength([p1, p2, p3]).toFixed(4),
-        unit: 'm', unitRate: 0, notes: 'Arc (collinear fallback)',
+        unit: displayUnit, unitRate: 0, notes: 'Arc (collinear fallback)',
         points: [p1, p2, p3], isOverridden: false,
         color: groupColor, isVisible: true, childIds: [],
         ...(groupId ? { parentId: groupId } : {}),
@@ -505,7 +506,7 @@ export function useMeasurementCommit({
       id: crypto.randomUUID(), drawingId: activeDrawingId || '',
       description: rowLabel, label: rowLabel,
       type: 'Length', quantity: +arcResult.arcLengthM.toFixed(4),
-      unit: 'm', unitRate: 0,
+      unit: displayUnit, unitRate: 0,
       notes: `Arc: r=${arcResult.radiusM.toFixed(3)}m θ=${(arcResult.sweepAngle * 180 / Math.PI).toFixed(1)}°`,
       points: [p1, p2, p3], isOverridden: false,
       color: groupColor, isVisible: true, childIds: [],
@@ -590,7 +591,7 @@ export function useMeasurementCommit({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Section ${(targetGroup.childIds?.length ?? 0) + 1}`,
           label: `Section ${(targetGroup.childIds?.length ?? 0) + 1}`,
-          type: 'Length', quantity, unit: 'm', unitRate: 0, notes: '',
+          type: 'Length', quantity, unit: displayUnit, unitRate: 0, notes: '',
           points: pts.map(p => ({ x: p.x, y: p.y })),
           isOverridden: false, color: targetGroup.color, isVisible: true,
           parentId: targetGroup.id, childIds: [],
@@ -613,7 +614,7 @@ export function useMeasurementCommit({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Shape ${(targetGroup.childIds?.length ?? 0) + 1}`,
           label: targetGroup.label || targetGroup.description,
-          type: 'Polygon', quantity: newQuantity, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Polygon', quantity: newQuantity, unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
           points: newPoints, isOverridden: false, color: targetGroup.color,
           isVisible: true, parentId: targetGroup.id, childIds: [],
         });
@@ -635,7 +636,7 @@ export function useMeasurementCommit({
           id: newChildId, drawingId: activeDrawingId || '',
           description: `Rectangle ${(targetGroup.childIds?.length ?? 0) + 1}`,
           label: targetGroup.label || targetGroup.description,
-          type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Rectangle', quantity: area, unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
           points: normPts, isOverridden: false, color: targetGroup.color,
           isVisible: true, parentId: targetGroup.id, childIds: [],
         });
@@ -723,7 +724,7 @@ export function useMeasurementCommit({
           id: crypto.randomUUID(), drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Length', quantity: +totalLength.toFixed(4),
-          unit: 'm', unitRate: 0, notes: `${validArcs.length} arcs`,
+          unit: displayUnit, unitRate: 0, notes: `${validArcs.length} arcs`,
           points: [], isOverridden: false, color: groupColor,
           isVisible: true, isGroupHeader: true, childIds,
         }, ...children]);
@@ -746,7 +747,7 @@ export function useMeasurementCommit({
           return {
             id: crypto.randomUUID(), drawingId: activeDrawingId || '',
             description: label, label,
-            type: 'Polygon', quantity: +(Math.PI * rMetres * rMetres).toFixed(4), unit: 'sq m', unitRate: 0,
+            type: 'Polygon', quantity: +(Math.PI * rMetres * rMetres).toFixed(4), unit: `sq ${displayUnit}`, unitRate: 0,
             notes: `Circle: r=${rMetres.toFixed(3)}m`,
             points: ring, isOverridden: false, color, isVisible: true, childIds: [],
           } as TakeoffRow;
@@ -764,7 +765,7 @@ export function useMeasurementCommit({
         commitMeasurement({
           id: crypto.randomUUID(), drawingId: activeDrawingId || '',
           description: meta?.label || 'Circle', label: meta?.label || 'Circle',
-          type: 'Length', quantity: circ, unit: 'm', unitRate: 0,
+          type: 'Length', quantity: circ, unit: displayUnit, unitRate: 0,
           notes: `Circle: r=${rMetres.toFixed(3)}m  circ=${circ}m`,
           points: [centre, edge], isOverridden: false,
           color: groupColor, isVisible: true, childIds: [],
@@ -783,7 +784,7 @@ export function useMeasurementCommit({
           children.push({
             id: cid, drawingId: activeDrawingId || '',
             description: `Circle ${i + 1}`, label: `Circle ${i + 1}`,
-            type: 'Length', quantity: circ, unit: 'm', unitRate: 0,
+            type: 'Length', quantity: circ, unit: displayUnit, unitRate: 0,
             notes: `Circle: r=${rMetres.toFixed(3)}m  circ=${circ}m`,
             points: [centre, edge], isOverridden: false,
             color: groupColor, isVisible: true, childIds: [], parentId: groupId,
@@ -794,7 +795,7 @@ export function useMeasurementCommit({
           id: groupId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Length', quantity: +children.reduce((s, c) => s + (c.quantity ?? 0), 0).toFixed(4),
-          unit: 'm', unitRate: 0, notes: `${validCircles.length} circles`,
+          unit: displayUnit, unitRate: 0, notes: `${validCircles.length} circles`,
           points: [], isOverridden: false, color: groupColor,
           isVisible: true, isGroupHeader: true, childIds,
         }, ...children]);
@@ -822,7 +823,7 @@ export function useMeasurementCommit({
         commitMeasurement({
           id: areaId, drawingId: activeDrawingId || '',
           description: label, label,
-          type: 'Polygon', quantity: calcArea(ring), unit: 'sq m', unitRate: 0,
+          type: 'Polygon', quantity: calcArea(ring), unit: `sq ${displayUnit}`, unitRate: 0,
           notes: curved ? `Includes ${curved} curved edge${curved === 1 ? '' : 's'}` : '',
           points: ring, isOverridden: false, color: getNextMeasurementColor(), isVisible: true, childIds: [],
         });
@@ -849,7 +850,7 @@ export function useMeasurementCommit({
             id: crypto.randomUUID(), drawingId: activeDrawingId || '',
             description: groupLabel, label: groupLabel,
             type: 'Length', quantity: +totalLength.toFixed(4),
-            unit: 'm', unitRate: 0, notes: '',
+            unit: displayUnit, unitRate: 0, notes: '',
             points: seg.points.map(p => ({ x: p.x, y: p.y })),
             isOverridden: false, color: groupColor, isVisible: true, childIds: [],
           });
@@ -873,7 +874,7 @@ export function useMeasurementCommit({
               id: cid, drawingId: activeDrawingId || '',
               description: label, label,
               type: 'Length', quantity: +qty.toFixed(4),
-              unit: 'm', unitRate: 0, notes: 'Straight segment',
+              unit: displayUnit, unitRate: 0, notes: 'Straight segment',
               points: seg.points.map(p => ({ x: p.x, y: p.y })),
               isOverridden: false, color: groupColor, isVisible: true,
               parentId: groupId, childIds: [],
@@ -887,7 +888,7 @@ export function useMeasurementCommit({
           id: groupId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
           type: 'Length', quantity: +totalLength.toFixed(4),
-          unit: 'm', unitRate: 0,
+          unit: displayUnit, unitRate: 0,
           notes: `${segments.filter(s => s.type === 'line').length} line + ${segments.filter(s => s.type === 'arc').length} arc segments`,
           points: [], isOverridden: false, color: groupColor,
           isVisible: true, isGroupHeader: true, childIds,
@@ -914,7 +915,7 @@ export function useMeasurementCommit({
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Length', quantity: totalQty, unit: 'm', unitRate: 0, notes: '',
+          type: 'Length', quantity: totalQty, unit: displayUnit, unitRate: 0, notes: '',
           points: validSegs[0].points.map(p => ({ x: p.x, y: p.y })),
           isOverridden: false, color: groupColor, isVisible: true, childIds: [],
         });
@@ -927,7 +928,7 @@ export function useMeasurementCommit({
           children.push({
             id: cid, drawingId: activeDrawingId || '',
             description: `Section ${idx + 1}`, label: `Section ${idx + 1}`,
-            type: 'Length', quantity: segLength(seg), unit: 'm', unitRate: 0, notes: '',
+            type: 'Length', quantity: segLength(seg), unit: displayUnit, unitRate: 0, notes: '',
             points: seg.points.map(p => ({ x: p.x, y: p.y })),
             isOverridden: false, color: groupColor, isVisible: true, parentId: newId, childIds: [],
           });
@@ -935,7 +936,7 @@ export function useMeasurementCommit({
         batchCommitMeasurements([{
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Length', quantity: totalQty, unit: 'm', unitRate: 0, notes: '', points: [],
+          type: 'Length', quantity: totalQty, unit: displayUnit, unitRate: 0, notes: '', points: [],
           isOverridden: false, color: groupColor, isVisible: true, isGroupHeader: true, childIds,
         }, ...children]);
       }
@@ -956,7 +957,7 @@ export function useMeasurementCommit({
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Polygon', quantity: totalArea, unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
           points: validSegs[0].points.map(p => ({ x: p.x, y: p.y })),
           isOverridden: false, color: groupColor, isVisible: true, childIds: [],
         });
@@ -969,7 +970,7 @@ export function useMeasurementCommit({
           children.push({
             id: cid, drawingId: activeDrawingId || '',
             description: `Shape ${idx + 1}`, label: `Shape ${idx + 1}`,
-            type: 'Polygon', quantity: segArea(seg), unit: 'sq m', unitRate: 0, notes: '',
+            type: 'Polygon', quantity: segArea(seg), unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
             points: seg.points.map(p => ({ x: p.x, y: p.y })),
             isOverridden: false, color: groupColor, isVisible: true, parentId: newId, childIds: [],
           });
@@ -977,7 +978,7 @@ export function useMeasurementCommit({
         batchCommitMeasurements([{
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Polygon', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '', points: [],
+          type: 'Polygon', quantity: totalArea, unit: `sq ${displayUnit}`, unitRate: 0, notes: '', points: [],
           isOverridden: false, color: groupColor, isVisible: true, isGroupHeader: true, childIds,
         }, ...children]);
       }
@@ -1001,7 +1002,7 @@ export function useMeasurementCommit({
         commitMeasurement({
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
+          type: 'Rectangle', quantity: area, unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
           points: normPts, isOverridden: false, color: groupColor, isVisible: true, childIds: [],
         });
       } else {
@@ -1014,7 +1015,7 @@ export function useMeasurementCommit({
           children.push({
             id: cid, drawingId: activeDrawingId || '',
             description: `Rectangle ${idx + 1}`, label: `Rectangle ${idx + 1}`,
-            type: 'Rectangle', quantity: area, unit: 'sq m', unitRate: 0, notes: '',
+            type: 'Rectangle', quantity: area, unit: `sq ${displayUnit}`, unitRate: 0, notes: '',
             points: normPts, isOverridden: false, color: groupColor, isVisible: true,
             parentId: newId, childIds: [],
           });
@@ -1022,7 +1023,7 @@ export function useMeasurementCommit({
         batchCommitMeasurements([{
           id: newId, drawingId: activeDrawingId || '',
           description: groupLabel, label: groupLabel,
-          type: 'Rectangle', quantity: totalArea, unit: 'sq m', unitRate: 0, notes: '', points: [],
+          type: 'Rectangle', quantity: totalArea, unit: `sq ${displayUnit}`, unitRate: 0, notes: '', points: [],
           isOverridden: false, color: groupColor, isVisible: true, isGroupHeader: true, childIds,
         }, ...children]);
       }
@@ -1203,7 +1204,7 @@ export function useMeasurementCommit({
       commitMeasurement({
         id: crypto.randomUUID(), drawingId: activeDrawingId || '',
         description: label, label,
-        type: 'Polygon', quantity: calcArea(ring), unit: 'sq m', unitRate: 0, notes: `Regular polygon, ${sides} sides`,
+        type: 'Polygon', quantity: calcArea(ring), unit: `sq ${displayUnit}`, unitRate: 0, notes: `Regular polygon, ${sides} sides`,
         points: ring, isOverridden: false, color: getNextMeasurementColor(), isVisible: true, childIds: [],
       });
       clearTempPoints(); setCursorPoint(null);
@@ -1222,7 +1223,7 @@ export function useMeasurementCommit({
       return;
     }
 
-    // ── POLYARC ───────────────────────────────────────────────────────────────
+    // ── POLYARC ──��────────────────────────────────────────────────────────────
     if (activeTool === 'polyarc') {
       const segmentType: 'line' | 'arc' = (e.shiftKey || polyarcMode === 'arc') ? 'arc' : 'line';
       for (const p of polyarcClickPoints(tempPoints, segmentType, { x: norm.x, y: norm.y, snapped: snap.snapped })) {

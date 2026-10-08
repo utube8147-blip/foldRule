@@ -16,6 +16,7 @@ import { TakeoffRow, Material } from '@/types';
 import { useTakeoffData } from '@/context/TakeoffContext';
 import { MaterialPicker } from '@/components/common/MaterialPicker';
 import { useConfirm } from '@/components/common/ConfirmDialog';
+import { UnitSelect } from '@/components/features/takeoff/UnitSelect';
 
 interface TakeoffTableProps {
   measurements: TakeoffRow[];
@@ -402,7 +403,12 @@ function TakeoffTableImpl({
           {value.toFixed(3)}
         </span>
         {row.isOverridden && <Pencil className="w-2 h-2 text-amber-accent/60" />}
-        {row.unit && <span className="text-[10px] text-zinc-600">{row.unit}</span>}
+        <UnitSelect
+          row={row}
+          childrenRows={row.isGroupHeader ? measurements.filter(child => child.parentId === row.id) : undefined}
+          onChange={(updates) => onUpdate(row.id, updates)}
+          className="text-[10px] text-zinc-600"
+        />
         {timesOf(row).total !== 1 && (
           <span
             className="text-[10px] font-mono font-bold text-black bg-amber-accent px-1"
@@ -693,8 +699,8 @@ function TakeoffTableImpl({
           <tbody className="divide-y divide-industrial-border">
             {Array.from(organizedData.groups.entries()).map(([groupId, { header, items }], groupIdx) => {
               const isGroupExpanded = expandedGroups.has(groupId);
-              const groupTotalQuantity = calculateGroupTotal(items, 'quantity');
-              const isEditingGroup = editingGroupId === groupId;
+  const groupTotalQuantity = header.quantity ?? calculateGroupTotal(items, 'quantity');
+  const isEditingGroup = editingGroupId === groupId;
 
               // ── FIX: group is "all visible" only when BOTH the header AND
               //         all children have isVisible !== false.
@@ -806,8 +812,14 @@ function TakeoffTableImpl({
                             {isGroupCopied ? <Check className="w-2.5 h-2.5" /> : <Copy className="w-2.5 h-2.5" />}
                           </button>
                           <span className="font-bold text-amber-500 whitespace-nowrap">
-                            {groupTotalQuantity.toFixed(3)} {items[0]?.unit || ''}
+                            {groupTotalQuantity.toFixed(3)} {header.unit || items[0]?.unit || ''}
                           </span>
+                          <UnitSelect
+                            row={header}
+                            childrenRows={items}
+                            onChange={(updates) => onUpdate(header.id, updates)}
+                            className="text-[10px] text-zinc-600"
+                          />
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
