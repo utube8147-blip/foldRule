@@ -93,10 +93,10 @@ describe('revision changes sheet', () => {
     const back = new ExcelJS.Workbook();
     await back.xlsx.load(await wb.xlsx.writeBuffer() as ArrayBuffer);
     const ws = back.getWorksheet('Revision changes')!;
-    expect(ws.getCell('A4').value).toContain('Rev A');
-    expect(ws.getCell('A6').value).toBe('Wall 1 (Walls)');
-    expect(ws.getCell('C6').value).toBe(20);
-    expect(ws.getCell('D6').value).toBe(24);
+    expect(ws.getCell('C7').value).toContain('Rev A');
+    expect(ws.getCell('B9').value).toBe('Wall 1 (Walls)');
+    expect(ws.getCell('D9').value).toBe(20);
+    expect(ws.getCell('E9').value).toBe(24);
   });
 });
 

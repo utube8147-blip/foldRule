@@ -1,73 +1,49 @@
-// "Value engineering" worksheet: each proposed alternative against the designed
-// material, with quantity, both costs, the saving and whether it was accepted.
+// "Value engineering": each proposed alternative against the designed material,
+// with quantity, both costs, the saving and whether it was accepted.
 
 import type * as ExcelJS from 'exceljs';
 import { excelMoneyFormat } from '@/lib/takeoff/currency';
-import type { TakeoffExportInput } from './takeoffSheet';
+import { addSheet, banner, note, headerRow, bodyRow, moneyCell, totalRow, footer, fitWidth, font, align, Palette, QTY_FMT } from './theme';
+import { projectLine, type TakeoffExportInput } from './exportTypes';
 
-const INK = 'FF1F2328', MUTED = 'FF5B6470', RULE = 'FFD0D4DA', HEAD_BG = 'FF26303B';
 const LABEL: Record<string, string> = { proposed: 'Proposed', accepted: 'Accepted', rejected: 'Rejected' };
+const TONE: Record<string, string> = { accepted: 'FF1A5C3A', rejected: 'FF6C7A8D', proposed: 'FF9A6B00' };
 
 export function addVeSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput): ExcelJS.Worksheet | null {
   const ve = input.valueEngineering;
   if (!ve?.lines.length) return null;
-  const ws = workbook.addWorksheet('Value engineering', {
-    views: [{ state: 'frozen', ySplit: 4 }],
-    pageSetup: { orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 },
+  const { ws, last } = addSheet(workbook, 'Value engineering', {
+    widths: [30, 30, 11, 7, 13, 15, 13, 15, 15, 9, 11, 32], landscape: true, freezeBelow: 8, tab: 'FF1A5C3A',
   });
-  ws.columns = [{ width: 34 }, { width: 34 }, { width: 12 }, { width: 7 }, { width: 13 }, { width: 16 }, { width: 13 }, { width: 16 }, { width: 16 }, { width: 9 }, { width: 11 }, { width: 36 }];
   const money = excelMoneyFormat(input.currency);
+  banner(ws, last, 'VALUE ENGINEERING  ·  ALTERNATIVES TO THE DESIGNED MATERIALS', projectLine(input));
+  note(ws, 5, last, '★  Quantities are as billed and do not change. Accepted alternatives are already in the takeoff and the bill; proposed ones are options still on the table.');
+  ws.getRow(6).height = 6;
+  headerRow(ws, 7, ['As designed', 'Alternative', 'Quantity', 'Unit', 'Designed\nrate', 'Designed\ncost', 'Alt.\nrate', 'Alt.\ncost', 'Saving', 'Saving %', 'Status', 'Note'],
+    { center: [5, 11, 12], right: [4, 6, 7, 8, 9, 10] });
 
-  ws.mergeCells('A1:L1');
-  ws.getCell('A1').value = `${input.projectName} — Value engineering`;
-  ws.getCell('A1').font = { bold: true, size: 15, color: { argb: INK } };
-  ws.mergeCells('A2:L2');
-  ws.getCell('A2').value = 'Alternatives to the designed materials. Quantities are as billed and do not change; accepted alternatives are already in the takeoff and the bill.';
-  ws.getCell('A2').font = { size: 9, italic: true, color: { argb: MUTED } };
-
-  const head = ws.getRow(4);
-  ['As designed', 'Alternative', 'Quantity', 'Unit', 'Designed rate', 'Designed cost', 'Alt. rate', 'Alt. cost', 'Saving', 'Saving %', 'Status', 'Note']
-    .forEach((h, i) => { head.getCell(i + 1).value = h; });
-  head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  for (let c = 1; c <= 12; c++) head.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_BG } };
-  [3, 5, 6, 7, 8, 9, 10].forEach(c => { head.getCell(c).alignment = { horizontal: 'right' }; });
-
-  let r = 5;
-  for (const l of ve.lines) {
-    const row = ws.getRow(r);
-    row.getCell(1).value = l.designed;
-    row.getCell(2).value = l.alternative;
-    row.getCell(3).value = l.quantity; row.getCell(3).numFmt = '#,##0.00';
-    row.getCell(4).value = l.unit;
-    row.getCell(5).value = l.designedRate; row.getCell(5).numFmt = money;
-    row.getCell(6).value = l.designedCost; row.getCell(6).numFmt = money;
-    row.getCell(7).value = l.alternativeRate; row.getCell(7).numFmt = money;
-    row.getCell(8).value = l.alternativeCost; row.getCell(8).numFmt = money;
-    row.getCell(9).value = { formula: `F${r}-H${r}` }; row.getCell(9).numFmt = money;
-    row.getCell(10).value = { formula: `IF(F${r}=0,0,I${r}/F${r})` }; row.getCell(10).numFmt = '0.0%';
-    row.getCell(11).value = LABEL[l.status] ?? l.status;
-    row.getCell(12).value = l.note ?? '';
-    if (l.status === 'rejected') row.font = { color: { argb: MUTED } };
-    for (let c = 1; c <= 12; c++) row.getCell(c).border = { bottom: { style: 'hair', color: { argb: RULE } } };
-    r += 1;
-  }
-  const last = r - 1;
-  r += 1;
-  const total = (label: string, formula: string) => {
-    const row = ws.getRow(r);
-    row.getCell(8).value = label;
-    row.getCell(8).alignment = { horizontal: 'right' };
-    row.getCell(9).value = { formula };
-    row.getCell(9).numFmt = money;
-    row.font = { bold: true, color: { argb: INK } };
-    r += 1;
-  };
-  total('Saving accepted', `SUMIF(K5:K${last},"Accepted",I5:I${last})`);
+  let r = 8;
+  ve.lines.forEach((l, i) => {
+    const row = bodyRow(ws, r, last, i % 2 === 1);
+    row.getCell(2).value = l.designed; row.getCell(2).alignment = align('left', true);
+    row.getCell(3).value = l.alternative; row.getCell(3).alignment = align('left', true);
+    row.getCell(4).value = l.quantity; row.getCell(4).numFmt = QTY_FMT; row.getCell(4).alignment = align('right');
+    row.getCell(5).value = l.unit; row.getCell(5).alignment = align('center'); row.getCell(5).font = font(10, false, Palette.MID_GREY);
+    for (const [c, v] of [[6, l.designedRate], [7, l.designedCost], [8, l.alternativeRate], [9, l.alternativeCost]] as const) moneyCell(row.getCell(c), v, money);
+    moneyCell(row.getCell(10), { formula: `G${r}-I${r}` }, money, true);
+    row.getCell(11).value = { formula: `IF(G${r}=0,0,J${r}/G${r})` }; row.getCell(11).numFmt = '0.0%'; row.getCell(11).alignment = align('right');
+    row.getCell(12).value = LABEL[l.status] ?? l.status; row.getCell(12).alignment = align('center');
+    row.getCell(12).font = font(10, true, TONE[l.status] ?? Palette.DARK_TEXT);
+    row.getCell(13).value = l.note ?? ''; row.getCell(13).font = font(9, false, Palette.REMARK, true);
+    r++;
+  });
+  const lastRow = r - 1;
+  r++;
+  r = totalRow(ws, r, last, { label: 'Saving accepted', labelFrom: 7, valueCol: 10, kind: 'sub', fmt: money, value: { formula: `SUMIF(L8:L${lastRow},"Accepted",J8:J${lastRow})` } });
   // Pending options for one material are either/or, so this figure is worked out, not summed.
-  const pend = ws.getRow(r);
-  pend.getCell(8).value = 'Saving still on offer';
-  pend.getCell(8).alignment = { horizontal: 'right' };
-  pend.getCell(9).value = ve.pending; pend.getCell(9).numFmt = money;
-  pend.font = { bold: true, color: { argb: INK } };
+  r = totalRow(ws, r, last, { label: 'Saving still on offer', labelFrom: 7, valueCol: 10, kind: 'grand', fmt: money, value: ve.pending });
+  footer(ws, r, last, 'Saving = designed cost − alternative cost.');
+  fitWidth(ws, 2, ve.lines.map(l => l.designed), 22, 40);
+  fitWidth(ws, 3, ve.lines.map(l => l.alternative), 22, 40);
   return ws;
 }

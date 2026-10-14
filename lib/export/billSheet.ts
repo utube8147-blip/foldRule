@@ -1,113 +1,81 @@
-// "Bill of Quantities" worksheet: items by POMI work section, each section carried
-// to a summary with VAT. Quantities here are billed (timesed and rounded); the
-// Takeoff sheet keeps the measured figures.
+// "Bill of Quantities": items by POMI work section, each section carried to a summary
+// with (× units,) VAT and total. Quantities are billed (timesed) and given to two
+// decimals so the bill adds up to the same money as the Takeoff sheet.
 
 import type * as ExcelJS from 'exceljs';
-import { buildBill } from '@/lib/takeoff/pomi';
+import { buildBill, type BillSection } from '@/lib/takeoff/pomi';
 import { excelMoneyFormat } from '@/lib/takeoff/currency';
-import type { TakeoffExportInput } from './takeoffSheet';
+import { addSheet, banner, note, sectionBar, headerRow, bodyRow, qtyCell, rateCell, moneyCell, totalRow, footer, fitWidth, font, align, Palette } from './theme';
+import { cleanName } from './workbookModel';
+import { projectLine, unitsOf, type TakeoffExportInput } from './exportTypes';
 
-const INK = 'FF1F2328', MUTED = 'FF5B6470', RULE = 'FFD0D4DA', HEAD_BG = 'FF26303B', SECTION_BG = 'FFEEF1F4';
+export const BILL = 'Bill of Quantities';
 
-export function addBillSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput): ExcelJS.Worksheet | null {
-  const bill = buildBill(input.measurements, input.materials);
+export interface BillSheetRefs {
+  sections: Array<{ code: string; title: string; items: number; cell: string }>;
+  netCell: string;
+  totalCell: string;
+}
+
+export function addBillSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput): BillSheetRefs | null {
+  const bill: BillSection[] = buildBill(input.measurements, input.materials, { round: false });
   if (!bill.length) return null;
 
-  const ws = workbook.addWorksheet('Bill of Quantities', {
-    views: [{ state: 'frozen', ySplit: 5 }],
-    pageSetup: { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, paperSize: 9 },
-  });
-  ws.columns = [{ width: 7 }, { width: 58 }, { width: 11 }, { width: 7 }, { width: 14 }, { width: 18 }];
+  const { ws, last } = addSheet(workbook, BILL, { widths: [8, 58, 12, 7, 14, 17], freezeBelow: 8, tab: 'FF1A3A5C' });
   const money = excelMoneyFormat(input.currency);
+  const units = unitsOf(input);
 
-  ws.mergeCells('A1:F1');
-  ws.getCell('A1').value = `${input.projectName} — Bill of Quantities`;
-  ws.getCell('A1').font = { bold: true, size: 15, color: { argb: INK } };
-  ws.mergeCells('A2:F2');
-  ws.getCell('A2').value = [
-    input.projectNumber ? `Project no. ${input.projectNumber}` : '', input.location ?? '',
-    input.revision ? `Rev ${input.revision}` : '', input.documentDate ?? new Date().toISOString().slice(0, 10),
-  ].filter(Boolean).join('   |   ');
-  ws.getCell('A2').font = { size: 10, color: { argb: MUTED } };
-  ws.mergeCells('A3:F3');
-  ws.getCell('A3').value = 'Sections follow the Principles of Measurement (International). Quantities are given to the '
-    + 'nearest whole unit (tonnes to two decimal places); measured figures are on the Takeoff sheet.';
-  ws.getCell('A3').font = { size: 9, italic: true, color: { argb: MUTED } };
-  ws.getCell('A3').alignment = { wrapText: true, vertical: 'top' };
-  ws.getRow(3).height = 26;
+  banner(ws, last, 'BILL OF QUANTITIES', projectLine(input));
+  note(ws, 5, last, `★  Items follow the work sections of the Principles of Measurement (International). Groups whose rows share a unit are billed as one item. Quantities as billed, to two decimals${units > 1 ? `, per unit (${units} units)` : ''}; the measured detail is on the Takeoff sheet.`);
+  ws.getRow(6).height = 6;
+  headerRow(ws, 7, ['Item', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount'], { center: [2, 5], right: [4, 6, 7] });
 
-  const head = ws.getRow(5);
-  ['Item', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount'].forEach((h, i) => { head.getCell(i + 1).value = h; });
-  head.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_BG } };
-  head.height = 20;
-  [3, 5, 6].forEach(c => { head.getCell(c).alignment = { horizontal: 'right', vertical: 'middle' }; });
-
-  let r = 6;
-  const sectionTotals: { label: string; cell: string }[] = [];
+  let r = 8;
+  const sections: BillSheetRefs['sections'] = [];
   for (const s of bill) {
-    const title = ws.getRow(r);
-    title.getCell(1).value = s.code;
-    title.getCell(2).value = s.title.toUpperCase();
-    title.font = { bold: true, color: { argb: INK } };
-    for (let c = 1; c <= 6; c++) title.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_BG } };
-    r += 1;
+    r = sectionBar(ws, r, last, s.code || '—', s.title, `${s.items.length} item${s.items.length === 1 ? '' : 's'}`);
     const first = r;
-    for (const it of s.items) {
-      const row = ws.getRow(r);
-      row.getCell(1).value = it.ref;
-      row.getCell(2).value = it.description;
-      row.getCell(2).alignment = { wrapText: true, vertical: 'top' };
-      row.getCell(3).value = it.quantity;
-      row.getCell(3).numFmt = it.unit === 't' ? '#,##0.00' : '#,##0';
-      row.getCell(4).value = it.unit;
-      row.getCell(5).value = it.rate;
-      row.getCell(5).numFmt = money;
-      row.getCell(6).value = { formula: `C${r}*E${r}` };
-      row.getCell(6).numFmt = money;
-      for (let c = 1; c <= 6; c++) row.getCell(c).border = { bottom: { style: 'hair', color: { argb: RULE } } };
-      r += 1;
-    }
-    const total = ws.getRow(r);
-    total.getCell(5).value = 'To summary';
-    total.getCell(5).alignment = { horizontal: 'right' };
-    total.getCell(6).value = { formula: `SUM(F${first}:F${r - 1})` };
-    total.getCell(6).numFmt = money;
-    total.getCell(6).border = { top: { style: 'thin' } };
-    total.font = { bold: true, color: { argb: INK } };
-    sectionTotals.push({ label: s.code ? `${s.code}  ${s.title}` : s.title, cell: `F${r}` });
-    r += 2;
+    s.items.forEach((it, i) => {
+      const row = bodyRow(ws, r, last, i % 2 === 1, Math.max(18, Math.ceil(it.description.length / 62) * 15));
+      row.getCell(2).value = it.ref; row.getCell(2).font = font(10, true, Palette.NAVY); row.getCell(2).alignment = align('center');
+      row.getCell(3).value = cleanName(it.description); row.getCell(3).alignment = align('left', true);
+      qtyCell(row.getCell(4), it.quantity);
+      row.getCell(5).value = it.unit; row.getCell(5).font = font(10, false, Palette.MID_GREY); row.getCell(5).alignment = align('center');
+      rateCell(row.getCell(6), it.rate, money);
+      moneyCell(row.getCell(7), { formula: `D${r}*F${r}` }, money);
+      r++;
+    });
+    const cell = `G${r}`;
+    r = totalRow(ws, r, last, { label: 'Carried to summary', labelFrom: 5, valueCol: 7, kind: 'sub', fmt: money, value: { formula: `SUM(G${first}:G${r - 1})` } });
+    sections.push({ code: s.code, title: s.title, items: s.items.length, cell });
+    ws.getRow(r).height = 8; r++;
   }
 
   // ── Summary ───────────────────────────────────────────────────────────────
-  const sumHead = ws.getRow(r);
-  sumHead.getCell(2).value = 'SUMMARY';
-  sumHead.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-  for (let c = 1; c <= 6; c++) sumHead.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: HEAD_BG } };
-  r += 1;
+  r = sectionBar(ws, r, last, 'Σ', 'Summary');
   const firstSum = r;
-  for (const t of sectionTotals) {
-    ws.getRow(r).getCell(2).value = t.label;
-    ws.getRow(r).getCell(6).value = { formula: t.cell };
-    ws.getRow(r).getCell(6).numFmt = money;
-    r += 1;
-  }
-  const line = (label: string, formula: string, bold = false) => {
-    const row = ws.getRow(r);
-    row.getCell(5).value = label;
-    row.getCell(5).alignment = { horizontal: 'right' };
-    row.getCell(6).value = { formula };
-    row.getCell(6).numFmt = money;
-    row.font = { bold, color: { argb: INK } };
-    r += 1;
-  };
+  sections.forEach((s, i) => {
+    const row = bodyRow(ws, r, last, i % 2 === 1);
+    row.getCell(2).value = s.code || '—'; row.getCell(2).font = font(10, true, Palette.NAVY); row.getCell(2).alignment = align('center');
+    row.getCell(3).value = s.title;
+    moneyCell(row.getCell(7), { formula: s.cell }, money);
+    r++;
+  });
   const sub = r;
-  line('Subtotal', `SUM(F${firstSum}:F${r - 1})`, true);
+  r = totalRow(ws, r, last, { label: units > 1 ? 'Subtotal, one unit' : 'Subtotal', labelFrom: 5, valueCol: 7, kind: 'sub', fmt: money, value: { formula: `SUM(G${firstSum}:G${r - 1})` } });
+  let net = sub;
+  if (units > 1) { net = r; r = totalRow(ws, r, last, { label: `${units} units`, labelFrom: 5, valueCol: 7, kind: 'sub', fmt: money, value: { formula: `G${sub}*${units}` } }); }
   const vat = Math.max(0, Number(input.vatPercent) || 0);
+  let total: number;
   if (vat > 0) {
-    line(`VAT ${vat}%`, `F${sub}*${vat}/100`);
-    line('Total', `F${sub}+F${sub + 1}`, true);
-  } else line('Total', `F${sub}`, true);
-  ws.getRow(r - 1).getCell(6).border = { top: { style: 'thin' }, bottom: { style: 'double' } };
-  return ws;
+    r = totalRow(ws, r, last, { label: `VAT ${vat}%`, labelFrom: 5, valueCol: 7, fmt: money, value: { formula: `G${net}*${vat}/100` } });
+    total = r;
+    r = totalRow(ws, r, last, { label: 'Total', labelFrom: 5, valueCol: 7, kind: 'grand', fmt: money, value: { formula: `G${net}+G${net + 1}` } });
+  } else {
+    total = r;
+    r = totalRow(ws, r, last, { label: 'Total', labelFrom: 5, valueCol: 7, kind: 'grand', fmt: money, value: { formula: `G${net}` } });
+  }
+  footer(ws, r, last, 'All quantities subject to field verification. Amber rates are still to be priced.');
+  fitWidth(ws, 3, bill.flatMap(s => s.items.map(i => i.description)), 36, 62);
+  return { sections, netCell: `G${net}`, totalCell: `G${total}` };
 }

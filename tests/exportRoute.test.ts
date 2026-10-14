@@ -34,4 +34,21 @@ describe('POST /api/export', () => {
     const buf = new Uint8Array(await res.arrayBuffer());
     expect(buf[0]).toBe(0x50); expect(buf[1]).toBe(0x4b); // "PK" zip header
   });
+
+  it('carries project details through to the Summary sheet', async () => {
+    const res = await post({
+      project: {
+        projectName: 'House', kitchenType: 'D01', drawingReferences: ['A-101 Rev B'],
+        stakeholders: { mainContractor: 'Acme Contracting' },
+        drawings: [], materials: [], measurements: [],
+      },
+    });
+    expect(res.status).toBe(200);
+    const ExcelJS = await import('exceljs');
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(await res.arrayBuffer());
+    const text: string[] = [];
+    wb.getWorksheet('Summary')!.eachRow(r => r.eachCell(c => { if (typeof c.value === 'string') text.push(c.value); }));
+    expect(text).toEqual(expect.arrayContaining(['Acme Contracting', 'A-101 Rev B', 'D01']));
+  });
 });

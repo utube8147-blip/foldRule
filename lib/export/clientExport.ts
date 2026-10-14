@@ -39,9 +39,13 @@ async function exportProjectToExcelInner(ps: ProjectState, filename?: string): P
   };
   // Build-up to the tender sum, and what to buy.
   const billed = billedRows(stored.measurements, stored.drawings);
-  const measured = billed.reduce((s, m) => s + (m.isGroupHeader ? 0 : m.quantity * (m.unitRate || 0)), 0);
+  // Same rate rule as the workbook: the row's own rate, else its material's.
+  const mats = new Map((ps.materials as Material[]).map(m => [m.id, m]));
+  const measured = billed.reduce((s, m) => s + (m.isGroupHeader ? 0
+    : m.quantity * (m.unitRate || (m.materialId ? mats.get(m.materialId)?.unitRate ?? 0 : 0))), 0) * (ps.totalUnits && ps.totalUnits > 0 ? ps.totalUnits : 1);
   const estimate = {
-    lines: buildUp(measured, ps.markups, ps.vatPercent).map(({ key: _k, ...l }) => l),
+    // Keys let the Summary sheet rebuild the build-up as live formulas.
+    lines: buildUp(measured, ps.markups, ps.vatPercent),
     provisional: (ps.markups?.provisional ?? []).map(p => ({ name: p.name, amount: p.amount })),
     order: orderSchedule(billed, ps.materials as Material[]),
   };

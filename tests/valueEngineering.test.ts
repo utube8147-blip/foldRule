@@ -81,11 +81,11 @@ describe('value engineering sheet', () => {
     const back = new ExcelJS.Workbook();
     await back.xlsx.load(await wb.xlsx.writeBuffer() as ArrayBuffer);
     const ws = back.getWorksheet('Value engineering')!;
-    expect([ws.getCell('A5').value, ws.getCell('B5').value, ws.getCell('C5').value, ws.getCell('F5').value, ws.getCell('H5').value])
+    expect([ws.getCell('B8').value, ws.getCell('C8').value, ws.getCell('D8').value, ws.getCell('G8').value, ws.getCell('I8').value])
       .toEqual(['Marble flooring', 'Porcelain tile', 250, 100000, 77500]);
-    expect(ws.getCell('K5').value).toBe('Proposed');
-    expect(ws.getCell('L5').value).toBe('Same slip rating');
-    expect(ws.getCell('I8').value).toBe(22500);
+    expect(ws.getCell('L8').value).toBe('Proposed');
+    expect(ws.getCell('M8').value).toBe('Same slip rating');
+    expect(ws.getCell('J11').value).toBe(22500);
     expect((await buildProjectWorkbook({ projectName: 'V', drawings: [], materials: [], measurements: [] })).getWorksheet('Value engineering')).toBeUndefined();
   });
 });

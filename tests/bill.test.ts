@@ -80,9 +80,11 @@ describe('POMI bill', () => {
     await back.xlsx.load(await wb.xlsx.writeBuffer() as ArrayBuffer);
     const ws = back.getWorksheet('Bill of Quantities')!;
     const text: string[] = [];
-    ws.eachRow(r => r.eachCell(c => { if (typeof c.value === 'string') text.push(c.value); }));
+    ws.eachRow(r => r.eachCell(c => { if (typeof c.value === 'string') text.push(c.value.trim()); }));
     expect(text).toEqual(expect.arrayContaining(['MASONRY', 'FINISHES', 'SUMMARY', 'VAT 5%', 'Total']));
-    expect(ws.getCell('C7').value).toBe(16);
-    expect(ws.getCell('F7').numFmt).toBe('"AED "#,##0.00');
+    // Row 8 is the MASONRY section bar; its first item is on row 9. Quantities stay at two
+    // decimals in the export so the bill adds up to the same money as the takeoff.
+    expect(ws.getCell('D9').value).toBe(15.6);
+    expect(ws.getCell('G9').numFmt).toBe('"AED "#,##0.00');
   });
 });

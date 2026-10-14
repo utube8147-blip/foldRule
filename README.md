@@ -69,10 +69,23 @@ Shortcuts ignore key presses with Ctrl/⌘/Alt and anything typed into fields.
 ### Export
 
 `POST /api/export` receives the project's measurements (no PDFs), validates
-them with zod, and returns a workbook whose first sheet, **Takeoff**, lists
-every measurement with live formulas for amounts, group subtotals, VAT and the
-total. When the project has a material library, the Summary / BOQ matrix /
-Materials / Cost breakdown sheets are added after it.
+them with zod, and returns one workbook in a single navy / gold design
+(`lib/export/theme.ts`), with sheets linked by formulas:
+
+| Sheet | What it holds |
+| ----- | ------------- |
+| Summary | Cover: project info, drawings, bill by section, estimate build-up (prelims → contingency → overheads → profit → VAT) as live formulas |
+| Takeoff | Every measurement: drawing, page, how measured, material, quantity, rate, amount; group subtotals, × units, VAT, total |
+| Bill of Quantities | Priced bill by POMI work section (quantities to 2 dp so it matches the Takeoff) |
+| BOQ_Matrix | Rows × one column per material **and unit** (lengths never add into m²) |
+| Materials | Net (from the matrix) + waste → sheet / pack size → order qty × price → purchase cost |
+| Cost_Breakdown | Material / labour / equipment rate × quantity, VAT, and a check against the Takeoff total |
+| Revision changes · Value engineering · Change log | Only when there is data |
+
+The last three material sheets appear only when measurements use materials.
+`lib/export/workbookModel.ts` works out the rows, numbering, material columns
+and sections once; each sheet builder only lays them out. The older kitchen
+BOQ builders in `lib/export/xl/` are kept for the lab sample (`GET /api/export`).
 
 ## Accounts
 
