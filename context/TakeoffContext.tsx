@@ -45,6 +45,7 @@ import { effectivePageScale, rescaleMeasurementsForPage } from '@/lib/takeoff/sc
 import { defaultMaterialBank } from '@/data/materials';
 import type { Markups } from '@/lib/takeoff/estimate';
 import { diffAudit, appendAudit, type AuditEntry } from '@/lib/takeoff/audit';
+import type { ExportSettings } from '@/lib/export/studio/edits';
 import { useAuth } from '@/context/AuthContext';
 import {
   getProject, loadDrawingFiles, saveDrawingFile, deleteDrawingFile,
@@ -109,6 +110,8 @@ export type ProjectState = {
   markups?:              Markups;
   /** Who changed which quantity, rate, material or setting, and when. */
   auditLog?:             AuditEntry[];
+  /** Export page: sheets left out, colours, and cell edits made in the preview. */
+  exportSettings?:       ExportSettings;
 };
 
 // ─── InProgressPoint ──────────────────────────────────────────────────────────

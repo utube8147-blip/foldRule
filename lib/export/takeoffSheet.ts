@@ -34,7 +34,7 @@ export interface TakeoffSheetRefs {
 export function addTakeoffSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput, model: WorkbookModel): TakeoffSheetRefs {
   const { ws, last } = addSheet(workbook, TAKEOFF, {
     widths: [7, 40, 26, 6, 8, 24, 12, 7, 13, 15, 34],
-    landscape: true, freezeBelow: 8, tab: 'FFB8962E',
+    landscape: true, tab: 'GOLD',
   });
   ws.getColumn(TK.flag).hidden = true;
 

@@ -83,6 +83,29 @@ them with zod, and returns one workbook in a single navy / gold design
 | Revision changes · Value engineering · Change log | Only when there is data |
 
 The last three material sheets appear only when measurements use materials.
+
+**Export page (`/export?project=<id>`)**, opened from the export dialog
+("Details, sheets & preview…") or the Reports section of the takeoff screen:
+
+1. *Project details* (skippable): title, revision, date, location, type, units,
+   currency/VAT, people, drawing references, assumptions, exclusions. Saved
+   straight into the project; they fill the Summary cover and sheet headings.
+2. *Sheets & preview*: tick the sheets to include, pick a colour preset or your
+   own colours and font, and work in an Excel-like grid of the real workbook:
+   select (click, drag, Shift), type / F2 / double-click to edit, formulas with
+   live results across sheets, Delete, Ctrl+C / Ctrl+V, Ctrl+Z / Ctrl+Y,
+   bold / italic / colours / alignment / wrap / number format, zoom, show
+   formulas, sum / average / count of the selection.
+
+Settings and cell edits live in `ProjectState.exportSettings` and apply to every
+export, including the quick "Download .xlsx". Each edit remembers what the cell
+held when it was made; if the takeoff later changes that cell, the edit is put
+on hold for you to re-apply or discard instead of landing on the wrong row.
+Links into a left-out sheet are saved as values. The workbook is built in the
+browser (`lib/export/studio/pipeline.ts`); formulas are evaluated with
+fast-formula-parser (MIT) and displayed with SSF (Apache-2.0). Quantities and
+rates on the Bill, BOQ_Matrix and Cost_Breakdown link to the Takeoff, so an
+edit there flows through every sheet.
 `lib/export/workbookModel.ts` works out the rows, numbering, material columns
 and sections once; each sheet builder only lays them out. The older kitchen
 BOQ builders in `lib/export/xl/` are kept for the lab sample (`GET /api/export`).

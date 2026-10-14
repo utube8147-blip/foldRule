@@ -13,7 +13,7 @@ export function addVeSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput
   const ve = input.valueEngineering;
   if (!ve?.lines.length) return null;
   const { ws, last } = addSheet(workbook, 'Value engineering', {
-    widths: [30, 30, 11, 7, 13, 15, 13, 15, 15, 9, 11, 32], landscape: true, freezeBelow: 8, tab: 'FF1A5C3A',
+    widths: [30, 30, 11, 7, 13, 15, 13, 15, 15, 9, 11, 32], landscape: true, tab: 'GREEN_TEXT',
   });
   const money = excelMoneyFormat(input.currency);
   banner(ws, last, 'VALUE ENGINEERING  ·  ALTERNATIVES TO THE DESIGNED MATERIALS', projectLine(input));

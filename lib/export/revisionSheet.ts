@@ -13,7 +13,7 @@ export function addRevisionSheet(workbook: ExcelJS.Workbook, input: TakeoffExpor
   const revisions = (input.revisionChanges ?? []).filter(r => r.lines.some(l => l.status !== 'same'));
   if (!revisions.length) return null;
 
-  const { ws, last } = addSheet(workbook, 'Revision changes', { widths: [46, 11, 13, 13, 13, 8, 14, 18], landscape: true, tab: 'FF9A3412' });
+  const { ws, last } = addSheet(workbook, 'Revision changes', { widths: [46, 11, 13, 13, 13, 8, 14, 18], landscape: true, tab: 'WARN_TEXT' });
   const money = excelMoneyFormat(input.currency);
   banner(ws, last, 'REVISION CHANGES  ·  WHAT EACH NEW DRAWING CHANGED', projectLine(input));
   let r = note(ws, 5, last, '★  Quantities as billed, before and after each accepted drawing revision. Unchanged items are left out.');

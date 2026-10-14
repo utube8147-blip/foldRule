@@ -30,7 +30,7 @@ export interface MaterialsSheetRefs {
 export function addMaterialsSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput, model: WorkbookModel, matrix: MatrixSheetRefs): MaterialsSheetRefs {
   const { ws, last } = addSheet(workbook, MATERIALS, {
     widths: [5, 11, 30, 7, 12, 8, 12, 11, 9, 11, 13, 15, 18, 34],
-    landscape: true, freezeBelow: 8, tab: 'FF1A5C3A',
+    landscape: true, tab: 'GREEN_TEXT',
   });
   const money = excelMoneyFormat(input.currency);
   const units = unitsOf(input);

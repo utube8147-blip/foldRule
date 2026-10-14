@@ -740,6 +740,7 @@ export default function Workspace() {
             projectState={ps}
             onClose={() => setShowExportModal(false)}
             onExport={executeExport}
+            studioHref={href('/export')}
             onExportMarkup={activeDrawing ? async () => {
               try {
                 const bytes = activeDrawing.file

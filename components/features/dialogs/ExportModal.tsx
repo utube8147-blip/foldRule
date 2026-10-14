@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { X, Pencil, Table, Download } from 'lucide-react';
+import { X, Pencil, Table, Download, SlidersHorizontal } from 'lucide-react';
+import Link from 'next/link';
 import * as motion from 'motion/react-m';
 
 interface ExportModalProps {
@@ -9,9 +10,11 @@ interface ExportModalProps {
   onExportCsv?: (filename: string) => void;
   /** Download the open drawing with the measurements drawn on it, plus a legend page. */
   onExportMarkup?: () => void;
+  /** Link to the export page (details, sheet choice, preview and edits). */
+  studioHref?: string;
 }
 
-export function ExportModal({ projectState, onClose, onExport, onExportCsv, onExportMarkup }: ExportModalProps) {
+export function ExportModal({ projectState, onClose, onExport, onExportCsv, onExportMarkup, studioHref }: ExportModalProps) {
   const [fileName, setFileName] = useState(
     `${projectState.projectName.toLowerCase().replace(/\s+/g, '-')}-takeoff.xlsx`
   );
@@ -89,6 +92,14 @@ export function ExportModal({ projectState, onClose, onExport, onExportCsv, onEx
 
         {/* Modal Footer */}
         <div className="px-6 pb-6 pt-2">
+          {studioHref && (
+            <Link
+              href={studioHref}
+              className="w-full mb-2 border border-amber-accent text-amber-accent font-black text-[11px] py-3 hover:bg-amber-accent hover:text-[#16191C] transition-colors uppercase tracking-[0.2em] flex items-center justify-center gap-2"
+            >
+              <SlidersHorizontal className="w-4 h-4" /> Details, sheets &amp; preview…
+            </Link>
+          )}
           <button
             onClick={handleExport}
             className="w-full bg-amber-accent text-[#16191C] font-black text-xs py-4 hover:bg-amber-400 transition-colors flex items-center justify-center gap-3 shadow-lg active:translate-y-px uppercase tracking-[0.2em]"
@@ -115,6 +126,9 @@ export function ExportModal({ projectState, onClose, onExport, onExportCsv, onEx
           <p className="text-[10px] text-center text-stone-600 mt-4 uppercase tracking-widest font-bold">
             EXPORTING {filesCount} FILES WITH {pointsCount} TOTAL TAKEOFF POINTS
           </p>
+          {(projectState.exportSettings?.edits?.length || projectState.exportSettings?.exclude?.length || projectState.exportSettings?.theme) ? (
+            <p className="text-[10px] text-center text-stone-500 mt-1">Uses your saved sheet choice, colours and {projectState.exportSettings?.edits?.length ?? 0} cell edit(s).</p>
+          ) : null}
         </div>
       </motion.div>
     </div>

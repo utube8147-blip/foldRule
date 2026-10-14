@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { buildProjectWorkbook, safeXlsxFilename } from '@/lib/export/projectWorkbook';
 import { buildWorkbook } from '@/lib/export/excelExport';
 import { LABS_ENABLED } from '@/lib/config/labs';
-import type { TakeoffRow, Material } from '@/types';
+import { payloadToInput, type ExportPayload } from '@/lib/export/exportInput';
 
 export const runtime = 'nodejs';
 
@@ -74,6 +74,8 @@ const ProjectSchema = z.object({
     mainContractor:   z.string().max(200).optional().catch(undefined),
     designConsultant: z.string().max(200).optional().catch(undefined),
     supervision:      z.string().max(200).optional().catch(undefined),
+    client:           z.string().max(200).optional().catch(undefined),
+    projectManager:   z.string().max(200).optional().catch(undefined),
   }).optional().catch(undefined),
   drawingReferences: z.array(z.string().max(300)).max(500).optional().catch(undefined),
   generalAssumptions: z.array(z.object({ category: z.string().catch(''), content: z.string().catch('') }).passthrough()).max(500).optional().catch(undefined),
@@ -160,35 +162,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const { project, filename } = parsed.data;
   try {
-    const workbook = await buildProjectWorkbook({
-      projectName:   project.projectName,
-      projectNumber: project.projectNumber,
-      location:      project.projectLocation,
-      phase:         project.projectPhase,
-      projectType:   project.kitchenType,
-      totalUnits:    project.totalUnits,
-      stakeholders:  project.stakeholders,
-      drawingReferences: project.drawingReferences,
-      assumptions:   project.generalAssumptions?.map(a => ({ category: a.category, content: a.content })),
-      exclusions:    project.excludedItems?.map(e => ({ item: e.item, reason: e.reason })),
-      documentTitle: project.documentTitle,
-      documentDate:  project.documentDate,
-      revision:      project.revision,
-      currency:      project.currency,
-      vatPercent:    project.vatPercent,
-      drawings:      project.drawings.map(d => ({
-        id: d.id, name: d.name, scaleFactor: d.scaleFactor,
-        pageScales: d.pageScales
-          ? Object.fromEntries(Object.entries(d.pageScales).map(([k, v]) => [Number(k), v]))
-          : undefined,
-      })),
-      measurements:  project.measurements as unknown as TakeoffRow[],
-      revisionChanges: project.revisionChanges,
-      valueEngineering: project.valueEngineering,
-      estimate: project.estimate,
-      auditLog: project.auditLog,
-      materials:     project.materials as unknown as Material[],
-    });
+    const workbook = await buildProjectWorkbook(payloadToInput(project as ExportPayload));
     const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     return xlsxResponse(buffer, safeXlsxFilename(filename, project.projectName));
   } catch (error) {

@@ -148,7 +148,7 @@ describe('material sheets', () => {
     const matrix = wb.getWorksheet('BOQ_Matrix')!;
     const measured: unknown[] = [];
     matrix.eachRow(r => { if (r.getCell(2).value === '1.1') measured.push(r.getCell(6).value); });
-    expect(measured).toEqual([4.0849]);
+    expect(measured).toEqual([{ formula: expect.stringMatching(/^'Takeoff'!H\d+$/), result: 4.0849 }]);
     expect(formulasIn(matrix, 7).every(f => /^F\d+\*IF\(E\d+<>"",E\d+,1\)$/.test(f))).toBe(true);
     // No board-size division hidden in the project totals.
     const all: string[] = [];

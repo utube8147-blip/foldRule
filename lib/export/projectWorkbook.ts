@@ -25,10 +25,23 @@ import { addChangeLogSheet } from './changeLogSheet';
 import { createSummarySheet, fillSummarySheet } from './summarySheet';
 import { buildWorkbookModel } from './workbookModel';
 import type { TakeoffExportInput } from './exportTypes';
+import { withTheme, type ThemeSettings } from './theme';
 
 export type { TakeoffExportInput } from './exportTypes';
 
-export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<ExcelJS.Workbook> {
+export interface BuildOptions {
+  /** Colours and font. Default: the original navy / gold. */
+  theme?: ThemeSettings;
+  /** Which sheets the Summary's "In this workbook" list names (all by default). */
+  listSheet?: (name: string) => boolean;
+}
+
+export async function buildProjectWorkbook(input: TakeoffExportInput, options: BuildOptions = {}): Promise<ExcelJS.Workbook> {
+  return withTheme(options.theme, () => buildSync(input, options.listSheet ?? (() => true)));
+}
+
+/** Every sheet builder is synchronous, so a theme set around this call cannot leak into another build. */
+function buildSync(input: TakeoffExportInput, listSheet: (name: string) => boolean): ExcelJS.Workbook {
   const workbook = new ExcelJS.Workbook();
   workbook.creator  = 'Foldrule';
   workbook.title    = `${input.projectName} — Bill of quantities`;
@@ -41,11 +54,11 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
   const summary = createSummarySheet(workbook);
   const takeoff = addTakeoffSheet(workbook, input, model);
   guide.push({ name: TAKEOFF, about: 'Every measurement with its drawing, page, material, quantity, rate and amount.' });
-  const bill = addBillSheet(workbook, input);
+  const bill = addBillSheet(workbook, input, takeoff);
   if (bill) guide.push({ name: BILL, about: 'The priced bill, item by item under its work section, carried to a summary.' });
 
   if (model.columns.length > 0) {
-    const matrix = addMatrixSheet(workbook, input, model);
+    const matrix = addMatrixSheet(workbook, input, model, takeoff);
     const materials = addMaterialsSheet(workbook, input, model, matrix);
     addCostSheet(workbook, input, model, materials, takeoff);
     guide.push(
@@ -59,7 +72,7 @@ export async function buildProjectWorkbook(input: TakeoffExportInput): Promise<E
   if (addVeSheet(workbook, input)) guide.push({ name: 'Value engineering', about: 'Alternative materials and the saving each would make.' });
   if (addChangeLogSheet(workbook, input)) guide.push({ name: 'Change log', about: 'Who changed which quantity, rate or setting, and when.' });
 
-  fillSummarySheet(summary, input, { takeoff, bill, sheets: guide });
+  fillSummarySheet(summary, input, { takeoff, bill, sheets: guide.filter(g => listSheet(g.name)) });
   return workbook;
 }
 

@@ -25,7 +25,7 @@ export function changeLogEntries(log: Entry[]): Entry[] {
 export function addChangeLogSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput): ExcelJS.Worksheet | null {
   const entries = changeLogEntries(input.auditLog ?? []);
   if (!entries.length) return null;
-  const { ws, last } = addSheet(workbook, 'Change log', { widths: [17, 16, 12, 38, 28, 28], landscape: true, freezeBelow: 8, tab: 'FF6C7A8D' });
+  const { ws, last } = addSheet(workbook, 'Change log', { widths: [17, 16, 12, 38, 28, 28], landscape: true, tab: 'MID_GREY' });
   banner(ws, last, 'CHANGE LOG  ·  WHO CHANGED WHAT', projectLine(input));
   note(ws, 5, last, '★  Every change to a quantity, rate, material, price or estimate setting, newest first.');
   ws.getRow(6).height = 6;

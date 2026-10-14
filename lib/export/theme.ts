@@ -12,7 +12,8 @@
 
 import type * as ExcelJS from 'exceljs';
 
-export const Palette = {
+/** Default colours: the original navy / gold BOQ design. */
+const NAVY_GOLD = {
   NAVY:       'FF0D1B2A',
   GOLD:       'FFB8962E',
   GOLD_LIGHT: 'FFC8A84B',
@@ -34,8 +35,101 @@ export const Palette = {
   LINK_BG:    'FFEBF3FA',
   WARN_TEXT:  'FF9A3412',
   REMARK:     'FF8A9BAE',
-} as const;
+};
+export type PaletteKey = keyof typeof NAVY_GOLD;
 
+/**
+ * The colours the sheet builders paint with. Read at build time, so a theme can be
+ * swapped in for one build with `withTheme()`.
+ */
+export const Palette: Record<PaletteKey, string> = { ...NAVY_GOLD };
+
+// ── Themes ───────────────────────────────────────────────────────────────────
+
+/** The colours a person picks; every other shade is worked out from these. */
+export interface ThemeColors {
+  /** Title bars, section bars, grand totals. */
+  primary: string;
+  /** Column headers and subtitles. */
+  secondary: string;
+  /** Stripes, borders and figures on dark bars. */
+  accent: string;
+  /** Group / component rows. */
+  group: string;
+  /** Quantity cells. */
+  quantity: string;
+  /** Input cells: rates to price, percentages, sizes. */
+  input: string;
+}
+
+export interface ThemeSettings {
+  preset?: string;
+  /** Overrides on top of the preset. Hex, "#RRGGBB". */
+  colors?: Partial<ThemeColors>;
+  font?: string;
+}
+
+export interface ThemePreset { id: string; name: string; colors: ThemeColors }
+
+export const THEME_PRESETS: ThemePreset[] = [
+  { id: 'navy-gold', name: 'Navy & gold', colors: { primary: '#0D1B2A', secondary: '#1A3A5C', accent: '#B8962E', group: '#D9E1F2', quantity: '#E8F5E9', input: '#FFF8E7' } },
+  { id: 'foldrule', name: 'Foldrule graphite', colors: { primary: '#1D2125', secondary: '#2E353C', accent: '#F2C230', group: '#E6E9EC', quantity: '#EEF6E8', input: '#FFF6D6' } },
+  { id: 'forest', name: 'Forest', colors: { primary: '#14281D', secondary: '#24523A', accent: '#C9A227', group: '#DCEBDF', quantity: '#E8F5E9', input: '#FFF8E7' } },
+  { id: 'slate-teal', name: 'Slate & teal', colors: { primary: '#1F2A36', secondary: '#2F4858', accent: '#2A9D8F', group: '#DCEFED', quantity: '#E6F4F1', input: '#FFF4E0' } },
+  { id: 'burgundy', name: 'Burgundy', colors: { primary: '#3B0D18', secondary: '#6B1E2E', accent: '#C8A165', group: '#F1E1E4', quantity: '#EEF5EA', input: '#FFF6E5' } },
+  { id: 'print', name: 'Print (greys)', colors: { primary: '#262626', secondary: '#4D4D4D', accent: '#8C8C8C', group: '#E6E6E6', quantity: '#F2F2F2', input: '#FAFAFA' } },
+];
+
+export const THEME_FONTS = ['Calibri', 'Aptos', 'Arial', 'Segoe UI', 'Cambria'];
+
+const hex = (s: string) => (s || '').replace(/^#|^FF(?=[0-9a-f]{6}$)/i, '').padStart(6, '0').slice(-6).toUpperCase();
+const argb = (h: string) => `FF${hex(h)}`;
+const rgb = (h: string) => [0, 2, 4].map(i => parseInt(hex(h).slice(i, i + 2), 16));
+/** Mix colour a toward b by t (0 = a, 1 = b). */
+export function mix(a: string, b: string, t: number): string {
+  const x = rgb(a), y = rgb(b);
+  return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+export function presetColors(id?: string): ThemeColors {
+  return (THEME_PRESETS.find(p => p.id === id) ?? THEME_PRESETS[0]).colors;
+}
+
+/** The full palette for a theme. The untouched default gives the original colours exactly. */
+export function paletteFor(theme?: ThemeSettings): Record<PaletteKey, string> {
+  const base = presetColors(theme?.preset);
+  const c: ThemeColors = { ...base, ...(theme?.colors ?? {}) };
+  if ((theme?.preset ?? 'navy-gold') === 'navy-gold' && !Object.keys(theme?.colors ?? {}).length) return { ...NAVY_GOLD };
+  return {
+    ...NAVY_GOLD,
+    NAVY: argb(c.primary),
+    MID_BLUE: argb(c.secondary),
+    CHARCOAL: argb(mix(c.primary, c.secondary, 0.55)),
+    GOLD: argb(c.accent),
+    GOLD_LIGHT: argb(mix(c.accent, '#FFFFFF', 0.25)),
+    SUBGRP_BG: argb(c.group),
+    PALE_BLUE: argb(mix(c.secondary, '#FFFFFF', 0.92)),
+    BAND: argb(mix(c.secondary, '#FFFFFF', 0.975)),
+    LINK_BG: argb(mix(c.secondary, '#FFFFFF', 0.9)),
+    LINK_BLUE: argb(mix(c.secondary, '#2A6496', 0.5)),
+    GREEN_HL: argb(c.quantity),
+    AMBER_HL: argb(c.input),
+    LIME_HL: argb(mix(c.quantity, c.group, 0.5)),
+    PEACH_HL: argb(mix(c.input, c.accent, 0.18)),
+  };
+}
+
+let currentFont = 'Calibri';
+
+/** Run a (synchronous) build with a theme, then put the default back. */
+export function withTheme<T>(theme: ThemeSettings | undefined, build: () => T): T {
+  const saved = { ...Palette }, savedFont = currentFont;
+  Object.assign(Palette, paletteFor(theme));
+  currentFont = theme?.font || 'Calibri';
+  try { return build(); } finally { Object.assign(Palette, saved); currentFont = savedFont; }
+}
+
+/** @deprecated kept for older imports; the font now follows the theme. */
 export const FONT_FACE = 'Calibri';
 export const QTY_FMT   = '#,##0.00';
 export const QTY3_FMT  = '#,##0.000';
@@ -44,7 +138,7 @@ export const PCT_FMT   = '0.0#%';
 export const fill = (argb: string): ExcelJS.Fill => ({ type: 'pattern', pattern: 'solid', fgColor: { argb } });
 
 export const font = (size = 10, bold = false, argb: string = Palette.DARK_TEXT, italic = false): Partial<ExcelJS.Font> =>
-  ({ name: FONT_FACE, size, bold, italic, color: { argb } });
+  ({ name: currentFont, size, bold, italic, color: { argb } });
 
 export const align = (horizontal: ExcelJS.Alignment['horizontal'] = 'left', wrapText = false): Partial<ExcelJS.Alignment> =>
   ({ horizontal, vertical: 'middle', wrapText });
@@ -64,25 +158,38 @@ export function col(n: number): string {
 /** Quote a sheet name for use in a formula. */
 export const ref = (sheet: string, cell: string) => `'${sheet.replace(/'/g, "''")}'!${cell}`;
 
+/** "'Takeoff'!H9:H11,'Takeoff'!H14" — rows of one column, runs written as ranges. */
+export function refRows(sheet: string, column: number, rows: number[]): string {
+  const sorted = [...new Set(rows)].sort((a, b) => a - b);
+  const parts: string[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    const L = col(column);
+    parts.push(ref(sheet, i === j ? `${L}${sorted[i]}` : `${L}${sorted[i]}:${L}${sorted[j]}`));
+    i = j;
+  }
+  return parts.join(',');
+}
+
 export interface SheetOptions {
   /** Widths of columns B, C, … (column A is the accent stripe). */
   widths: number[];
   landscape?: boolean;
-  /** Freeze everything above this row. */
-  freezeBelow?: number;
-  tab?: string;
+  /** Tab colour, as a palette role. */
+  tab?: PaletteKey;
 }
 
 /** A new sheet in the house style. Returns the sheet and its last column number. */
 export function addSheet(wb: ExcelJS.Workbook, name: string, o: SheetOptions): { ws: ExcelJS.Worksheet; last: number } {
   const ws = wb.addWorksheet(name, {
-    views: [{ showGridLines: false, ...(o.freezeBelow ? { state: 'frozen', ySplit: o.freezeBelow - 1 } : {}) }],
+    views: [{ showGridLines: false }],   // no frozen panes: the sheets scroll freely
     pageSetup: {
       orientation: o.landscape ? 'landscape' : 'portrait', paperSize: 9,
       fitToPage: true, fitToWidth: 1, fitToHeight: 0,
       margins: { left: 0.4, right: 0.4, top: 0.5, bottom: 0.5, header: 0.2, footer: 0.2 },
     },
-    properties: { tabColor: { argb: o.tab ?? Palette.NAVY } },
+    properties: { tabColor: { argb: Palette[o.tab ?? 'NAVY'] } },
   });
   ws.getColumn(1).width = 2.5;
   o.widths.forEach((w, i) => { ws.getColumn(i + 2).width = w; });

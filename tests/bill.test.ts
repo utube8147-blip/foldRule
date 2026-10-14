@@ -84,7 +84,10 @@ describe('POMI bill', () => {
     expect(text).toEqual(expect.arrayContaining(['MASONRY', 'FINISHES', 'SUMMARY', 'VAT 5%', 'Total']));
     // Row 8 is the MASONRY section bar; its first item is on row 9. Quantities stay at two
     // decimals in the export so the bill adds up to the same money as the takeoff.
-    expect(ws.getCell('D9').value).toBe(15.6);
+    // …and they follow the Takeoff: the quantity is a link to its row there.
+    const q = ws.getCell('D9').value as { formula: string; result: number };
+    expect(q.formula).toMatch(/^SUM\('Takeoff'!H\d+\)$/);
+    expect(q.result).toBe(15.6);
     expect(ws.getCell('G9').numFmt).toBe('"AED "#,##0.00');
   });
 });

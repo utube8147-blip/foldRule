@@ -12,7 +12,7 @@ import { materialPart } from '@/lib/takeoff/materialRate';
 import { billUnit } from '@/lib/takeoff/pomi';
 import {
   addSheet, banner, note, sectionBar, headerRow, bodyRow, linkCell, rateCell, moneyCell, totalRow, footer, fitWidth,
-  font, align, ref, col, Palette,
+  font, align, ref, refRows, col, Palette,
 } from './theme';
 import { cleanName, type WorkbookModel } from './workbookModel';
 import type { MaterialsSheetRefs } from './materialsSheet';
@@ -33,7 +33,7 @@ export function addCostSheet(
 ): CostSheetRefs {
   const { ws, last } = addSheet(workbook, COST, {
     widths: [5, 11, 32, 7, 12, 12, 12, 12, 13, 16, 34],
-    landscape: true, freezeBelow: 8, tab: 'FF9A6B00',
+    landscape: true, tab: 'GOLD_LIGHT',
   });
   const money = excelMoneyFormat(input.currency);
   const units = unitsOf(input);
@@ -41,7 +41,7 @@ export function addCostSheet(
 
   banner(ws, last, 'COST BREAKDOWN  ·  QUANTITIES × UNIT RATES',
     `${projectLine(input)}   ·   ${input.currency || 'Currency not set'}${vat ? `   ·   VAT ${vat}%` : ''}`);
-  note(ws, 5, last, '★  Quantities are live from the Materials sheet. Unit rate = material (incl. waste) + labour + equipment; where rows carry their own rate, the average rate of those rows is used so this sheet agrees with the Takeoff. Green = rate from data · Amber = still to be priced.');
+  note(ws, 5, last, '★  Quantities are live from the Materials sheet. Unit rates follow the Takeoff (amount ÷ quantity of each material\'s rows), so a rate changed there changes here; the material / labour / equipment columns show the build-up from the material library. Amber = still to be priced.');
   ws.getRow(6).height = 6;
   headerRow(ws, 7, ['#', 'Code', 'Description', 'Unit', 'Quantity', 'Material\nrate', 'Labour\nrate', 'Equipment\nrate', 'Unit rate', 'Amount', 'Notes'],
     { center: [K.no, K.unit], right: [K.qty, K.mat, K.lab, K.eqp, K.rate, K.amount] });
@@ -69,14 +69,15 @@ export function addCostSheet(
         cell.value = parts[j] || null; cell.numFmt = money; cell.alignment = align('right');
         cell.font = font(10, false, Palette.CHARCOAL);
       });
+      // The rate follows the Takeoff: amount ÷ quantity of this material's rows there.
+      const rows = c.rowIds.map(id => takeoff.rowOf.get(id)).filter((x): x is number => !!x);
       const usesParts = built > 0 && Math.abs(built - effective) < 0.005;
-      if (usesParts) {
-        // Live build-up: edit a part and the rate and amount follow.
-        const cell = row.getCell(K.rate);
-        rateCell(cell, built, money);
-        cell.value = { formula: `${col(K.mat)}${r}+${col(K.lab)}${r}+${col(K.eqp)}${r}`, result: built };
-      } else {
-        rateCell(row.getCell(K.rate), effective || null, money);
+      rateCell(row.getCell(K.rate), effective || null, money);
+      if (rows.length === c.rowIds.length && rows.length) {
+        row.getCell(K.rate).value = {
+          formula: `IFERROR(SUM(${refRows(TAKEOFF, TK.amount, rows)})/SUM(${refRows(TAKEOFF, TK.qty, rows)}),0)`,
+          result: effective,
+        };
       }
       moneyCell(row.getCell(K.amount), { formula: `${Q}${r}*${R}${r}` }, money);
       const notes = [
@@ -109,6 +110,7 @@ export function addCostSheet(
       const q = Number.isFinite(m.quantity) ? m.quantity : 0;
       linkCell(row.getCell(K.qty), at ? `${ref(TAKEOFF, `${col(TK.qty)}${at}`)}${units > 1 ? `*${units}` : ''}` : String(q * units), undefined, q * units);
       rateCell(row.getCell(K.rate), model.rateOf(m) || null, money);
+      if (at) row.getCell(K.rate).value = { formula: ref(TAKEOFF, `${col(TK.rate)}${at}`), result: model.rateOf(m) };
       moneyCell(row.getCell(K.amount), { formula: `${Q}${r}*${R}${r}` }, money);
       row.getCell(K.notes).value = `Takeoff item ${item}`; row.getCell(K.notes).font = font(9, false, Palette.REMARK, true);
       amountRows.push(r);

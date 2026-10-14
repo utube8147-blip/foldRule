@@ -10,8 +10,9 @@ import type * as ExcelJS from 'exceljs';
 import { billUnit } from '@/lib/takeoff/pomi';
 import {
   addSheet, banner, note, sectionBar, headerRow, groupRow, bodyRow, qtyCell, fitWidth,
-  fill, font, align, side, col, Palette, QTY3_FMT,
+  fill, font, align, side, col, ref, Palette, QTY3_FMT,
 } from './theme';
+import { TAKEOFF, TK } from './takeoffSheet';
 import { cleanName, type WorkbookModel } from './workbookModel';
 import { projectLine, unitsOf, type TakeoffExportInput } from './exportTypes';
 
@@ -24,20 +25,19 @@ export interface MatrixSheetRefs {
   totalOf: Map<string, string>;
 }
 
-export function addMatrixSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput, model: WorkbookModel): MatrixSheetRefs {
+export function addMatrixSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput, model: WorkbookModel, takeoff?: { rowOf: Map<string, number> }): MatrixSheetRefs {
   const cols = model.columns;
   const REM = M.mat + cols.length;
   const { ws, last } = addSheet(workbook, MATRIX, {
     widths: [8, 40, 7, 7, 11, 12, ...cols.map(() => 14), 34],
-    landscape: true, freezeBelow: 8, tab: 'FF0D1B2A',
+    landscape: true, tab: 'NAVY',
   });
-  ws.views = [{ showGridLines: false, state: 'frozen', xSplit: M.desc, ySplit: 7 }];
   const units = unitsOf(input);
   const T = col(M.times), Q = col(M.measured);
 
   const type = input.projectType && input.projectType !== input.documentTitle ? input.projectType : '';
   banner(ws, last, `BOQ MATRIX${input.documentTitle ? `  ·  ${input.documentTitle.toUpperCase()}` : ''}${type ? `  ·  TYPE ${type}` : ''}  ·  QUANTITIES BY MATERIAL`, projectLine(input));
-  note(ws, 5, last, `★  Each row's quantity is carried into its material's column. "Times" multiplies a row (blank = 1). Section totals add up each column${units > 1 ? `; project totals are × ${units} units` : ''}. Materials and Cost_Breakdown take their quantities from the PROJECT TOTALS row.`);
+  note(ws, 5, last, `★  Measured quantities follow the Takeoff sheet; each row's quantity is carried into its material's column. "Times" multiplies a row (blank = 1). Section totals add up each column${units > 1 ? `; project totals are × ${units} units` : ''}. Materials and Cost_Breakdown take their quantities from the PROJECT TOTALS row.`);
   ws.getRow(6).height = 6;
 
   const headers = ['S.No', 'Description', 'Unit', 'Times', 'Measured', 'Total QTY', ...cols.map(c => `${c.name}\n${c.unit ? `(${c.unit})` : ''}`.trim()), 'Remarks'];
@@ -70,7 +70,9 @@ export function addMatrixSheet(workbook: ExcelJS.Workbook, input: TakeoffExportI
         const times = line.getCell(M.times);
         times.value = null; times.fill = fill(Palette.AMBER_HL); times.alignment = align('center'); times.font = font(10, true, Palette.GOLD);
         const measured = line.getCell(M.measured);
-        measured.value = Number.isFinite(row.quantity) ? row.quantity : 0; measured.numFmt = QTY3_FMT;
+        const q = Number.isFinite(row.quantity) ? row.quantity : 0;
+        const at = takeoff?.rowOf.get(row.id);
+        measured.value = at ? { formula: ref(TAKEOFF, `${col(TK.qty)}${at}`), result: q } : q; measured.numFmt = QTY3_FMT;
         measured.font = font(10, false, Palette.DARK_TEXT); measured.alignment = align('right');
         qtyCell(line.getCell(M.total), { formula: `${Q}${r}*IF(${T}${r}<>"",${T}${r},1)` }, QTY3_FMT);
         const c = model.columnOf(row);

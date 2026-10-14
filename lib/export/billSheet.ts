@@ -5,9 +5,10 @@
 import type * as ExcelJS from 'exceljs';
 import { buildBill, type BillSection } from '@/lib/takeoff/pomi';
 import { excelMoneyFormat } from '@/lib/takeoff/currency';
-import { addSheet, banner, note, sectionBar, headerRow, bodyRow, qtyCell, rateCell, moneyCell, totalRow, footer, fitWidth, font, align, Palette } from './theme';
+import { refRows, addSheet, banner, note, sectionBar, headerRow, bodyRow, qtyCell, rateCell, moneyCell, totalRow, footer, fitWidth, font, align, Palette } from './theme';
 import { cleanName } from './workbookModel';
 import { projectLine, unitsOf, type TakeoffExportInput } from './exportTypes';
+import { TAKEOFF, TK } from './takeoffSheet';
 
 export const BILL = 'Bill of Quantities';
 
@@ -17,16 +18,20 @@ export interface BillSheetRefs {
   totalCell: string;
 }
 
-export function addBillSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput): BillSheetRefs | null {
+/**
+ * With `takeoff`, each item's quantity is the sum of its Takeoff rows and its rate is their
+ * amount ÷ quantity — so a change on the Takeoff carries through to the bill.
+ */
+export function addBillSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInput, takeoff?: { rowOf: Map<string, number> }): BillSheetRefs | null {
   const bill: BillSection[] = buildBill(input.measurements, input.materials, { round: false });
   if (!bill.length) return null;
 
-  const { ws, last } = addSheet(workbook, BILL, { widths: [8, 58, 12, 7, 14, 17], freezeBelow: 8, tab: 'FF1A3A5C' });
+  const { ws, last } = addSheet(workbook, BILL, { widths: [8, 58, 12, 7, 14, 17], tab: 'MID_BLUE' });
   const money = excelMoneyFormat(input.currency);
   const units = unitsOf(input);
 
   banner(ws, last, 'BILL OF QUANTITIES', projectLine(input));
-  note(ws, 5, last, `★  Items follow the work sections of the Principles of Measurement (International). Groups whose rows share a unit are billed as one item. Quantities as billed, to two decimals${units > 1 ? `, per unit (${units} units)` : ''}; the measured detail is on the Takeoff sheet.`);
+  note(ws, 5, last, `★  Items follow the work sections of the Principles of Measurement (International). Groups whose rows share a unit are billed as one item. Quantities and rates follow the Takeoff sheet${units > 1 ? `; they are per unit (${units} units)` : ''}.`);
   ws.getRow(6).height = 6;
   headerRow(ws, 7, ['Item', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount'], { center: [2, 5], right: [4, 6, 7] });
 
@@ -39,9 +44,12 @@ export function addBillSheet(workbook: ExcelJS.Workbook, input: TakeoffExportInp
       const row = bodyRow(ws, r, last, i % 2 === 1, Math.max(18, Math.ceil(it.description.length / 62) * 15));
       row.getCell(2).value = it.ref; row.getCell(2).font = font(10, true, Palette.NAVY); row.getCell(2).alignment = align('center');
       row.getCell(3).value = cleanName(it.description); row.getCell(3).alignment = align('left', true);
-      qtyCell(row.getCell(4), it.quantity);
+      const rows = takeoff ? it.rowIds.map(id => takeoff.rowOf.get(id)).filter((x): x is number => !!x) : [];
+      const linked = rows.length === it.rowIds.length && rows.length > 0;
+      qtyCell(row.getCell(4), linked ? { formula: `SUM(${refRows(TAKEOFF, TK.qty, rows)})`, result: it.measured } : it.quantity);
       row.getCell(5).value = it.unit; row.getCell(5).font = font(10, false, Palette.MID_GREY); row.getCell(5).alignment = align('center');
       rateCell(row.getCell(6), it.rate, money);
+      if (linked) row.getCell(6).value = { formula: `IFERROR(SUM(${refRows(TAKEOFF, TK.amount, rows)})/D${r},0)`, result: it.rate };
       moneyCell(row.getCell(7), { formula: `D${r}*F${r}` }, money);
       r++;
     });

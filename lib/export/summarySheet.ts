@@ -20,7 +20,7 @@ export const SUMMARY = 'Summary';
 const S = { label: 2, value: 3, pct: 5, amount: 6 } as const;
 
 export function createSummarySheet(workbook: ExcelJS.Workbook) {
-  return addSheet(workbook, SUMMARY, { widths: [26, 34, 16, 12, 20], tab: 'FFB8962E' });
+  return addSheet(workbook, SUMMARY, { widths: [26, 34, 16, 12, 20], tab: 'GOLD' });
 }
 
 export function fillSummarySheet(
@@ -74,9 +74,10 @@ export function fillSummarySheet(
   for (const [k, v] of info) if (v) detail(k, v);
   const st = input.stakeholders ?? {};
   const people: Array<[string, string | undefined]> = [
-    ['Main contractor', st.mainContractor], ['Design consultant', st.designConsultant], ['Supervision', st.supervision],
+    ['Client', st.client], ['Main contractor', st.mainContractor], ['Design consultant', st.designConsultant],
+    ['Supervision', st.supervision], ['Project manager', st.projectManager],
   ];
-  if (people.some(([, v]) => v)) for (const [k, v] of people) detail(k, v || '—');
+  for (const [k, v] of people) if (v) detail(k, v);
   gap();
 
   // ── Drawings ──────────────────────────────────────────────────────────────

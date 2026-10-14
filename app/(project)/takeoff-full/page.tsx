@@ -645,6 +645,11 @@ export default function TakeoffFullPage() {
                 <div className="grid gap-4 max-w-5xl" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
                   {([
                     {
+                      key: 'studio', title: 'Excel — details, sheets & preview', action: 'Open',
+                      text: 'Fill in the project details for the cover, choose which sheets go in the file and their colours, and see and edit the workbook like Excel before you download it.',
+                      run: async () => router.push(href('/export')),
+                    },
+                    {
                       key: 'xlsx', title: 'Excel workbook', action: 'Download .xlsx',
                       text: `Takeoff and Bill of Quantities${revisionLines.length ? ', Revision changes' : ''}${proposals.length ? ', Value engineering' : ''}. Quantities are as billed; accepted alternatives are already in the prices.`,
                       run: () => exportProjectToExcel(ps).then(() => undefined),

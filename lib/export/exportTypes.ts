@@ -23,7 +23,7 @@ export interface TakeoffExportInput {
   revision?:      string;
   currency?:      string;
   vatPercent?:    number;
-  stakeholders?:  { mainContractor?: string; designConsultant?: string; supervision?: string };
+  stakeholders?:  { mainContractor?: string; designConsultant?: string; supervision?: string; client?: string; projectManager?: string };
   drawingReferences?: string[];
   assumptions?:   Array<{ category: string; content: string }>;
   exclusions?:    Array<{ item: string; reason: string }>;
